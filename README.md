@@ -13,10 +13,11 @@ Support is currently only for linux operating systems.
 
 ### Step 1: Create a Virtual Environment
 
-First, create a virtual environment using Python 3.11. You can do this with the following command:
+First, create and activate a virtual environment using Python 3.11. You can do this with the following command:
 
 ```bash
-python3.11 -m venv masknmf-env
+python3.11 -m venv <your_venv_name>
+source <your_venv_name>
 ```
 
 ### Step 2: Install system-specific libraries
@@ -32,7 +33,7 @@ jax, and fastplotlib.
 Navigate to the top-level directory of this repository and run
 
 ```bash
-pip instal -e .
+pip install -e .
 ```
 
 ## Scripts and Interactive Notebooks
@@ -45,6 +46,4 @@ We provide scripts and notebooks for the following common use cases:
 ## Data Formats
 The above scripts only directly support multipage tiff files. However, the underlying code is highly modular
 and it is easy to add data-loading support for other input file types. This is only really relevant to the
-motion correction steps, since after that step all data is stored in the compressed PMD format in a .npz file. 
-
-
+motion correction steps, since after that step all data is stored in the compressed PMD format in a .npz file.
