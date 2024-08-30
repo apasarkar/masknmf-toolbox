@@ -22,7 +22,7 @@ source <your_venv_name>
 
 ### Step 2: Install system-specific libraries
 
-Based on the system you have (CUDA version, etc.) follow the instructions below to install the pytorch, 
+Based on the system you have (CUDA version, etc.) follow the instructions below to install pytorch, 
 jax, and fastplotlib.
 - [PyTorch Installation Guide](https://pytorch.org/get-started/locally/)
 - [JAX Installation Guide](https://jax.readthedocs.io/en/latest/installation.html)
@@ -44,6 +44,6 @@ We provide scripts and notebooks for the following common use cases:
 - Running NMF-based signal demixing
 
 ## Data Formats
-The above scripts only directly support multipage tiff files. However, the underlying code is highly modular
-and it is easy to add data-loading support for other input file types. This is only really relevant to the
+The above scripts only directly support multi-page tiff files. However, the underlying code is highly modular
+and is easy to add data-loading support for other input file types. This is only really relevant to the
 motion correction steps, since after that step all data is stored in the compressed PMD format in a .npz file.
