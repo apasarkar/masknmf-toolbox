@@ -25,6 +25,7 @@ source <your_venv_name>
 Based on the system you have (CUDA version, etc.) follow the instructions below to install pytorch, 
 jax, and fastplotlib.
 - [PyTorch Installation Guide](https://pytorch.org/get-started/locally/)
+  - NOTE: This must be at least version 2.0.0
 - [JAX Installation Guide](https://jax.readthedocs.io/en/latest/installation.html)
 - [fastplotlib Installation Guide](https://github.com/fastplotlib/fastplotlib)
 
