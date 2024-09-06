@@ -17,12 +17,11 @@ setup(
         'numpy',
         'scipy',
         'matplotlib',
+        'git+https://github.com/apasarkar/jnormcorre',
+        'git+https://github.com/apasarkar/localmd',
+        'git+https://github.com/apasarkar/rlocalnmf',
     ],
-    dependency_links=[
-        'https://github.com/apasarkar/jnormcorre/tarball/main#egg=jnormcorre',
-        'https://github.com/apasarkar/localmd/tarball/main#egg=localmd',
-        'https://github.com/apasarkar/rlocalnmf/tarball/main#egg=rlocalnmf',
-    ],
+
     classifiers=[
         'Programming Language :: Python :: 3',
         'License :: OSI Approved :: MIT License',
