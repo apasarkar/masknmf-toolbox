@@ -17,9 +17,9 @@ setup(
         'numpy',
         'scipy',
         'matplotlib',
-        'git+https://github.com/apasarkar/jnormcorre',
-        'git+https://github.com/apasarkar/localmd',
-        'git+https://github.com/apasarkar/rlocalnmf',
+        'jnormcorre @ git+https://github.com/apasarkar/jnormcorre@main',
+        'localmd @ git+https://github.com/apasarkar/localmd@main',
+        'rlocalnmf @ git+https://github.com/apasarkar/rlocalnmf@main'
     ],
 
     classifiers=[
