@@ -77,10 +77,8 @@ def plot_ith_roi(i: int,
         folder (str): folder where the data is saved. This folder must exist already.
         name (str): The name of the output .png file
     """
-    if os.path.exists(folder):
-        raise ValueError(f"folder {folder} already exists. delete it or pick different folder name")
-
-    os.mkdir(folder)
+    if not os.path.exists(folder):
+        raise ValueError(f"folder {folder} does not exist; please make it then run this code")
 
     order = results.order
     current_a = torch.index_select(results.a, 1,
