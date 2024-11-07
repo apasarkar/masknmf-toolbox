@@ -5,9 +5,15 @@ import torch
 import os
 import sys
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 
 import fastplotlib as fpl
 from fastplotlib.widgets import ImageWidget
+
+import os
+import re
+
+
 
 
 def make_demixing_video(results: localnmf.DemixingResults,
@@ -56,7 +62,10 @@ def get_roi_avg(array, p1, p2, normalize=True):
     """
     Given nonzero dim1 and dim2 indices p1 and p2, get the ROI average
     """
+
     selected_pixels = array[:, np.amin(p1):np.amax(p1) + 1, np.amin(p2):np.amax(p2) + 1]
+    if p1.shape[0] == 1:
+        selected_pixels = selected_pixels[:, None, None]
     data_2d = selected_pixels[:, p1 - np.amin(p1), p2 - np.amin(p2)]
     avg_trace = np.mean(data_2d, axis=1)
     if normalize:
@@ -101,7 +110,7 @@ def plot_ith_roi(i: int,
 
     # Need to show the right set of pixels
     ax[0].imshow(a[np.amin(p1):np.amax(p1), np.amin(p2):np.amax(p2)],
-                 extent=[np.amin(p2), np.amax(p2), np.amin(p1), np.amax(p1)])
+                 extent=[np.amin(p2), np.amax(p2), np.amax(p1), np.amin(p1)])
     ax[0].set_title("Spatial Footprint")
 
     ax[1].plot(signal_roi_avg)
