@@ -7,42 +7,53 @@ This toolbox integrates several key tools for end-to-end analysis of neuroimagin
 - **Signal Demixing:** [rlocalnmf](https://github.com/apasarkar/rlocalnmf)
 - **High-performance scientific plotting and visualization:** [fastplotlib](https://github.com/fastplotlib/fastplotlib)
 
-## Installation
 
-Support is currently only for linux operating systems.
+## Installation for developers
 
-### Step 1: Create a Virtual Environment
+Support is currently only for linux operating systems. The below instructions are for GPU Systems with
+CUDA 12 and python3.11. This is a loose template to follow - 
 
-First, create and activate a virtual environment using Python 3.11. You can do this with the following command:
+### Step 1: Create appropriate virtual environments
 
-```bash
-python3.11 -m venv <your_venv_name>
-source <your_venv_name>
-```
-
-### Step 2: Install system-specific libraries
-
-Based on the system you have (CUDA version, etc.) follow the instructions below to install pytorch, 
-jax, and fastplotlib.
-- [PyTorch Installation Guide](https://pytorch.org/get-started/locally/)
-  - NOTE: This must be at least version 2.0.0
-- [JAX Installation Guide](https://jax.readthedocs.io/en/latest/installation.html)
-- [fastplotlib Installation Guide](https://github.com/fastplotlib/fastplotlib)
-
-### Step 3: Install remaining code
-
-Navigate to the top-level directory of this repository and run
+The initial steps of the pipeline use JAX, and the final demixing step uses PyTorch. These two 
+frameworks are difficult to install in a single virtual environment (on GPU), so we use 
+two separate python virtual environments, one for registering and compressing the data and another
+for demixing and extracting the sources.
 
 ```bash
+# Make sure you are in the parent directory of this repo
+
+## Make the first venv, installing GPU jax and CPU pytorch
+python3.11 -m venv register_and_compress_venv
+source register_and_compress_venv/bin/activate
+
+#Modify the below command based on the latest jax install instructions here (https://github.com/jax-ml/jax)
+pip install -U "jax[cuda12]"
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+## Install jnormcorre and localmd from github (latest commit, main branch)
+pip install git+https://github.com/apasarkar/jnormcorre.git@main
+pip install git+https://github.com/apasarkar/localmd.git@main
 pip install -e .
+## Install fastplotlib from here: (https://github.com/fastplotlib/fastplotlib)
+pip install simplejpeg
+pip install -U "fastplotlib[notebook,imgui]"
+
+## Make the second venv, this time installing CPU jax and GPU torch
+python3.11 -m venv demixing_venv
+source demixing_venv/bin/activate
+
+## Modify the below line based on the latest pytorch install info here: https://pytorch.org/get-started/locally/
+pip install torch torchvision torchaudio
+pip install jax
+## Install localmd and rlocalnmf from github (latest commit, main branch)
+pip install git+https://github.com/apasarkar/localmd.git@main
+pip install git+https://github.com/apasarkar/rlocalnmf.git@main
+pip install -e .
+## Install fastplotlib from here: (https://github.com/fastplotlib/fastplotlib)
+pip install simplejpeg
+pip install -U "fastplotlib[notebook,imgui]"
 ```
 
-## Scripts and Interactive Notebooks
-
-We provide scripts and notebooks for the following common use cases:
-
-- Running fused motion correction and denoising
-- Running NMF-based signal demixing
 
 ## Data Formats
 The above scripts only directly support multi-page tiff files. However, the underlying code is highly modular
