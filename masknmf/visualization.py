@@ -58,12 +58,14 @@ def get_roi_avg(array, p1, p2, normalize=True):
 
 
 # Custom sorting function to sort based on the numerical part after 'neuron_'
-def numerical_sort(file):
-    match = re.search(r'neuron[_\s]*(\d+)', file)
-    return int(match.group(1)) if match else float('inf')  # Default to large number if no match
 
 
-def construct_index(folder: str, index_name = "index.html"):
+
+def construct_index(folder: str, file_prefix = "neuron", index_name = "index.html"):
+
+    def numerical_sort(file):
+        match = re.search(rf'{file_prefix}[_\s]*(\d+)', file)
+        return int(match.group(1)) if match else float('inf')  # Default to large number if no match
     
     index_file = os.path.join(folder, index_name)
     
