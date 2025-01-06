@@ -133,7 +133,8 @@ def construct_index(folder: str, file_prefix = "neuron", index_name = "index.htm
 
     
 
-def plot_ith_roi(i: int, results, folder=".", name="neuron.html", radius:int = 5):
+def plot_ith_roi(i: int, results, folder=".", name="neuron.html", radius:int = 5,
+                 residual_mode: Optional[localnmf.ResidCorrMode] = None):
     """
     Generates a diagnostic plot of the i-th ROI using Plotly
     Args:
@@ -143,6 +144,7 @@ def plot_ith_roi(i: int, results, folder=".", name="neuron.html", radius:int = 5
         name (str): The name of the output .html file
         radius (int): For each ROI we show, we provide a residual correlation image to show the broader context of the data. 
             This param specifies how big that radius is
+        residual_mode (localnmf.ResidCorrMode): The residual correlation mode of the localnmf resid corr object.
     """
     if not os.path.exists(folder):
         raise ValueError(f"folder {folder} does not exist; please make it then run this code")
@@ -171,7 +173,10 @@ def plot_ith_roi(i: int, results, folder=".", name="neuron.html", radius:int = 5
     
     mean_pmd_img = np.std(results.pmd_array[:, lb_dim1:ub_dim1, lb_dim2:ub_dim2], axis=0)
 
-    results.residual_correlation_image.mode = localnmf.ResidCorrMode.DEFAULT
+    if residual_mode is None:
+        results.residual_correlation_image.mode = localnmf.ResidCorrMode.DEFAULT
+    else:
+        residual.residual_correlation_image.mode = residual_mode
     resid_corr_img = results.residual_correlation_image[i, lb_dim1:ub_dim1, lb_dim2:ub_dim2]
 
     std_corr_img = results.standard_correlation_image[i, lb_dim1:ub_dim1, lb_dim2:ub_dim2]
