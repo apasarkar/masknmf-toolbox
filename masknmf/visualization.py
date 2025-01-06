@@ -176,7 +176,7 @@ def plot_ith_roi(i: int, results, folder=".", name="neuron.html", radius:int = 5
     if residual_mode is None:
         results.residual_correlation_image.mode = localnmf.ResidCorrMode.DEFAULT
     else:
-        residual.residual_correlation_image.mode = residual_mode
+        results.residual_correlation_image.mode = residual_mode
     resid_corr_img = results.residual_correlation_image[i, lb_dim1:ub_dim1, lb_dim2:ub_dim2]
 
     std_corr_img = results.standard_correlation_image[i, lb_dim1:ub_dim1, lb_dim2:ub_dim2]
