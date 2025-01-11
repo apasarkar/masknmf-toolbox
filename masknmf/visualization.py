@@ -206,10 +206,13 @@ def plot_ith_roi(i: int, results, folder=".", name="neuron.html", radius:int = 5
                              showscale=False, colorscale='Viridis'), row=1, col=2)
     fig.add_trace(go.Heatmap(z=mean_pmd_img, x=x_ticks, y=y_ticks, 
                              showscale=False, colorscale='Viridis'), row=1, col=3)
+
+    print('temp')
+    #Fix the values of the zmin and zmax for these correlation images so it's easier to visually compare them
     fig.add_trace(go.Heatmap(z=std_corr_img, x=x_ticks, y=y_ticks, 
-                             showscale=False, colorscale='Viridis'), row=1, col=4)
+                             showscale=False, colorscale='Viridis', zmin = 0, zmax = 1), row=1, col=4)
     fig.add_trace(go.Heatmap(z=resid_corr_img, x=x_ticks, y=y_ticks, 
-                             showscale=False, colorscale='Viridis'), row=1, col=5)
+                             showscale=False, colorscale='Viridis', zmin = 0, zmax = 1), row=1, col=5)
 
     # Temporal Trace
     fig.add_trace(go.Scatter(y=signal_roi_avg, mode='lines', name='Signal'), row=2, col=1)
