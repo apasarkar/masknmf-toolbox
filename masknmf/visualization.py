@@ -207,7 +207,6 @@ def plot_ith_roi(i: int, results, folder=".", name="neuron.html", radius:int = 5
     fig.add_trace(go.Heatmap(z=mean_pmd_img, x=x_ticks, y=y_ticks, 
                              showscale=False, colorscale='Viridis'), row=1, col=3)
 
-    print('temp')
     #Fix the values of the zmin and zmax for these correlation images so it's easier to visually compare them
     fig.add_trace(go.Heatmap(z=std_corr_img, x=x_ticks, y=y_ticks, 
                              showscale=False, colorscale='Viridis', zmin = 0, zmax = 1), row=1, col=4)
