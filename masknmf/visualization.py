@@ -58,12 +58,14 @@ def get_roi_avg(array, p1, p2, normalize=True):
 
 
 # Custom sorting function to sort based on the numerical part after 'neuron_'
-def numerical_sort(file):
-    match = re.search(r'neuron[_\s]*(\d+)', file)
-    return int(match.group(1)) if match else float('inf')  # Default to large number if no match
 
 
-def construct_index(folder: str, index_name = "index.html"):
+
+def construct_index(folder: str, file_prefix = "neuron", index_name = "index.html"):
+
+    def numerical_sort(file):
+        match = re.search(rf'{file_prefix}[_\s]*(\d+)', file)
+        return int(match.group(1)) if match else float('inf')  # Default to large number if no match
     
     index_file = os.path.join(folder, index_name)
     
@@ -131,7 +133,8 @@ def construct_index(folder: str, index_name = "index.html"):
 
     
 
-def plot_ith_roi(i: int, results, folder=".", name="neuron.html", radius:int = 5):
+def plot_ith_roi(i: int, results, folder=".", name="neuron.html", radius:int = 5,
+                 residual_mode: Optional[localnmf.ResidCorrMode] = None):
     """
     Generates a diagnostic plot of the i-th ROI using Plotly
     Args:
@@ -141,6 +144,7 @@ def plot_ith_roi(i: int, results, folder=".", name="neuron.html", radius:int = 5
         name (str): The name of the output .html file
         radius (int): For each ROI we show, we provide a residual correlation image to show the broader context of the data. 
             This param specifies how big that radius is
+        residual_mode (localnmf.ResidCorrMode): The residual correlation mode of the localnmf resid corr object.
     """
     if not os.path.exists(folder):
         raise ValueError(f"folder {folder} does not exist; please make it then run this code")
@@ -169,7 +173,10 @@ def plot_ith_roi(i: int, results, folder=".", name="neuron.html", radius:int = 5
     
     mean_pmd_img = np.std(results.pmd_array[:, lb_dim1:ub_dim1, lb_dim2:ub_dim2], axis=0)
 
-    results.residual_correlation_image.mode = localnmf.ResidCorrMode.DEFAULT
+    if residual_mode is None:
+        results.residual_correlation_image.mode = localnmf.ResidCorrMode.DEFAULT
+    else:
+        results.residual_correlation_image.mode = residual_mode
     resid_corr_img = results.residual_correlation_image[i, lb_dim1:ub_dim1, lb_dim2:ub_dim2]
 
     std_corr_img = results.standard_correlation_image[i, lb_dim1:ub_dim1, lb_dim2:ub_dim2]
@@ -199,10 +206,13 @@ def plot_ith_roi(i: int, results, folder=".", name="neuron.html", radius:int = 5
                              showscale=False, colorscale='Viridis'), row=1, col=2)
     fig.add_trace(go.Heatmap(z=mean_pmd_img, x=x_ticks, y=y_ticks, 
                              showscale=False, colorscale='Viridis'), row=1, col=3)
+
+    print('temp')
+    #Fix the values of the zmin and zmax for these correlation images so it's easier to visually compare them
     fig.add_trace(go.Heatmap(z=std_corr_img, x=x_ticks, y=y_ticks, 
-                             showscale=False, colorscale='Viridis'), row=1, col=4)
+                             showscale=False, colorscale='Viridis', zmin = 0, zmax = 1), row=1, col=4)
     fig.add_trace(go.Heatmap(z=resid_corr_img, x=x_ticks, y=y_ticks, 
-                             showscale=False, colorscale='Viridis'), row=1, col=5)
+                             showscale=False, colorscale='Viridis', zmin = 0, zmax = 1), row=1, col=5)
 
     # Temporal Trace
     fig.add_trace(go.Scatter(y=signal_roi_avg, mode='lines', name='Signal'), row=2, col=1)
