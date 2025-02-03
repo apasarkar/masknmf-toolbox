@@ -9,15 +9,41 @@ from matplotlib.gridspec import GridSpec
 
 import fastplotlib as fpl
 from fastplotlib.widgets import ImageWidget
-
+from ipywidgets import HBox, VBox
 import os
 import re
-
-
-
+from .utils import display
 import plotly.graph_objects as go
 import plotly.subplots as sp
 
+
+def get_correlation_widget(image_stack: np.ndarray) -> HBox:
+    num_frames = image_stack.shape[0]
+    mean_img = np.mean(image_stack, axis = 0)
+    std_img = np.std(image_stack, axis = 0)
+    mean_zero_norms = std_img * (num_frames**0.5)
+
+    std_img_fig = fpl.Figure((1, 1))
+    std_img_graphic = std_img_fig[0, 0].add_image(data=std_img, name="Std Img")
+    correlation_image_widget = fpl.ImageWidget(data=[np.zeros_like(std_img)],
+                                               names=['Select pixel on std img'])
+
+    def click_pixel(ev):
+        x, y = ev.pick_info['index']
+        curr_pixel = image_stack[:, y, x].copy()
+        curr_pixel = (curr_pixel - mean_img[y, x]) / mean_zero_norms[y, x]
+
+        local_corr_img = (np.tensordot(curr_pixel[None, :], image_stack, axes = (1, 0)) -
+                          mean_img[None, :, :] * np.sum(curr_pixel)).squeeze()
+        local_corr_img /= mean_zero_norms
+
+        correlation_image_widget.set_data(new_data=np.nan_to_num(local_corr_img, nan=0))
+        correlation_image_widget.figure[0, 0].auto_scale(maintain_aspect=True)
+        correlation_image_widget.figure[0, 0].set_title(f"Corr_Img at ({x}, {y})")
+
+    std_img_graphic.add_event_handler(click_pixel, "click")
+
+    return HBox([std_img_fig.show(), correlation_image_widget.show()])
 
 # For every signal, need to look at the temporal trace and the PMD average, superimposed
 def get_roi_avg(array, p1, p2, normalize=True):
