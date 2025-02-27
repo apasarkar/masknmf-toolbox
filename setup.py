@@ -19,9 +19,9 @@ setup(
         'plotly',
         'line-profiler',
         'matplotlib',
-        'jnormcorre @ git+https://github.com/apasarkar/jnormcorre.git@master',
-        'localmd @ git+https://github.com/apasarkar/localmd.git@master',
-        'rlocalnmf @ git+https://github.com/apasarkar/rlocalnmf.git@master'
+        'jnormcorre @ git+https://github.com/apasarkar/jnormcorre.git@main',
+        'localmd @ git+https://github.com/apasarkar/localmd.git@main',
+        'rlocalnmf @ git+https://github.com/apasarkar/rlocalnmf.git@main'
     ],
 
     classifiers=[

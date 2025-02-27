@@ -21,6 +21,8 @@ Install dependencies in the same virtual environment
 
 ## Make the first venv, installing GPU jax and CPU pytorch
 python -m venv register_and_compress_venv
+
+## Activate environment in linux (Windows activation is different)
 source register_and_compress_venv/bin/activate
 
 ## Install pytorch dependencies for your system (follow official instructions if you want to use GPU here)
