@@ -1,4 +1,5 @@
 import localnmf
+import localmd
 from typing import *
 import numpy as np
 import torch
@@ -15,6 +16,146 @@ import re
 from .utils import display
 import plotly.graph_objects as go
 import plotly.subplots as sp
+
+
+
+
+def signal_space_demixing(demixing_results: localnmf.DemixingResults,
+                          pmd_array: localmd.PMDArray,
+                         v_range: tuple):
+    mean_img = pmd_array.mean_img
+
+    dense_ac_movie = demixing_results.ac_array[:]
+
+    num_frames, fov_dim1, fov_dim2 = dense_ac_movie.shape
+
+    data_order = demixing_results.ac_array.order
+    a_dense = demixing_results.ac_array.a.cpu().to_dense().numpy().reshape((fov_dim1, fov_dim2, -1), order=data_order)
+    c_numpy = demixing_results.ac_array.c.cpu().numpy()
+    colors = demixing_results.colorful_ac_array.colors.cpu().numpy()
+
+    color_projection_img = np.tensordot(a_dense, colors, axes=(2, 0))
+
+    normalized_ac_movie = dense_ac_movie / np.amax(dense_ac_movie)
+    normalized_mean_img = mean_img / np.amax(mean_img)
+
+    superimposed_movie = normalized_ac_movie + 5 * normalized_mean_img[None, :, :]
+    iw = fpl.ImageWidget(data=[color_projection_img, dense_ac_movie, superimposed_movie],
+                         names=['Signal Img', 'Signal Movie', 'Superimposed'],
+                         rgb=[True, False, False],
+                         figure_shape=(1, 3),
+                         histogram_widget=True,
+                        graphic_kwargs = {'vmin':v_range[0], 'vmax': v_range[1]})
+
+    
+    ig = iw.figure[0, 0]["image_widget_managed"]
+    iw.vmin = 0
+    ig.vmax = 255
+
+    
+
+    line_fig = fpl.Figure((2, 1))
+
+    placeholder = np.column_stack([np.arange(num_frames), np.zeros((num_frames))])
+    lgraphic_1 = line_fig[0, 0].add_line(data=placeholder)
+    lgraphic_2 = line_fig[1, 0].add_line(data=placeholder)
+
+    def clickEvent(ev):
+        dim2_coord, dim1_coord = ev.pick_info['index']
+
+        a_identified = a_dense[dim1_coord, dim2_coord, :] != 0
+        num_neurons = np.sum(a_identified.astype("int"))
+        if num_neurons == 0:
+            line_fig[0, 0].clear()
+            line_fig[0, 0].add_line(data=placeholder)
+            line_fig[0, 0].set_title(f"No Signals at {dim2_coord, dim2_coord}")
+            line_fig[1, 0].clear()
+            trace_to_show = (pmd_array[:, dim1_coord, dim2_coord] - pmd_array.mean_img[
+                dim1_coord, dim2_coord]) / pmd_array.var_img[dim1_coord, dim2_coord]
+            mean_pmd_trace = np.column_stack([np.arange(num_frames), trace_to_show])
+            line_fig[1, 0].add_line(mean_pmd_trace)
+            line_fig[1, 0].set_title(f"PMD Signal")
+        else:
+            line_fig[0, 0].clear()
+            line_fig[1, 0].clear()
+            c_traces = c_numpy[:, a_identified]
+            colors_used = colors[a_identified, :]
+
+            if c_traces.ndim == 1:
+                c_traces = c_traces[:, None]
+            if colors_used.ndim == 1:
+                colors_used = colors_used[None, :]
+
+            rgba_colors = np.zeros((colors_used.shape[0], 4))
+            rgba_colors[:, :3] = colors_used
+            rgba_colors[:, 3] = 1.0
+
+            list_elts = []
+            for k in range(num_neurons):
+                curr = np.column_stack([np.arange(num_frames), c_traces[:, k] / np.amax(c_traces[:, k])])
+                list_elts.append(curr)
+
+            list_elts = np.array(list_elts)
+            if list_elts.ndim == 2:
+                list_elts = list_elts[None, :, :]
+            line_fig[0, 0].add_line_stack(
+                list_elts,
+                colors=rgba_colors.squeeze(),
+                separation=2
+            )
+            line_fig[0, 0].set_title(f"Signals at {dim2_coord, dim1_coord}.")
+            trace_to_show = (pmd_array[:, dim1_coord, dim2_coord] - pmd_array.mean_img[
+                dim1_coord, dim2_coord]) / pmd_array.var_img[dim1_coord, dim2_coord]
+            mean_pmd_trace = np.column_stack([np.arange(num_frames), trace_to_show])
+            line_fig[1, 0].add_line(mean_pmd_trace)
+            line_fig[1, 0].set_title(f"PMD Signal")
+
+        line_fig[1, 0].auto_scale(maintain_aspect=False)
+        line_fig[0, 0].auto_scale(maintain_aspect=False)
+
+    iw.figure[0, 0].graphics[0].add_event_handler(clickEvent, "click")
+    iw.figure[0, 1].graphics[0].add_event_handler(clickEvent, "click")
+    iw.figure[0, 2].graphics[0].add_event_handler(clickEvent, "click")
+
+    return VBox([iw.show(), line_fig.show()])
+
+
+def stack_comparison_interface(stack_1: Union[np.ndarray, localmd.PMDArray],
+                               stack_2: Union[np.ndarray, localmd.PMDArray],
+                               summary_img: np.ndarray,
+                               names: Optional[List] = ["Stack 1", "Stack 2", "Summary Img"]):
+
+    num_frames = stack_1.shape[0]
+    def clickEvent(ev):
+        dim2_coord, dim1_coord = ev.pick_info['index']
+
+        data_list = [stack_2, stack_1]
+        print(plot_trace_graphic.data[:].shape)
+        for k in range(2):
+            curr = data_list[k][:, dim1_coord, dim2_coord]
+            plot_trace_graphic[k].data[:, 1] = curr
+        line_fig[0, 0].set_title(f"Plots at {dim2_coord, dim1_coord}.")
+        line_fig[0, 0].auto_scale(maintain_aspect=False)
+
+    iw = fpl.ImageWidget(data=[stack_1, stack_2, summary_img],
+                         names=names,
+                         figure_shape=(1, 3))
+
+    iw.cmap = "gray"
+
+    iw.figure[0, 0].graphics[0].add_event_handler(clickEvent, "click")
+    iw.figure[0, 1].graphics[0].add_event_handler(clickEvent, "click")
+    iw.figure[0, 2].graphics[0].add_event_handler(clickEvent, "click")
+
+    line_fig = fpl.Figure((1, 1))
+    plot_trace_graphic = fpl.LineStack(
+        data=[np.column_stack([np.arange(num_frames), np.zeros((num_frames))]),
+              np.column_stack([np.arange(num_frames), np.zeros((num_frames))])],
+        colors=['red', 'w'])
+    line_fig[0, 0].add_graphic(plot_trace_graphic)
+    line_fig[0, 0].auto_scale(maintain_aspect=False)
+
+    return VBox([iw.show(), line_fig.show()])
 
 
 def get_correlation_widget(image_stack: np.ndarray) -> HBox:
@@ -284,11 +425,11 @@ def plot_ith_roi(i: int, results, folder=".", name="neuron.html", radius:int = 5
 
 def make_demixing_video(results: localnmf.DemixingResults,
                         device: str,
-                        v_range: Optional[tuple[float, float]]=None,
+                        v_range: tuple[float, float],
                         show_histogram: bool=False) -> ImageWidget:
 
 
-    results.to(device)
+    results.to(device) #Hardcoded for now until fastplotlib updates the vmin/vmax computations
 
     ac_arr = results.ac_array
     fluctuating_arr = results.fluctuating_background_array
@@ -310,16 +451,15 @@ def make_demixing_video(results: localnmf.DemixingResults,
                             'colorful signals',
                             'static Bkgd'],
                      rgb=[False, False, False, False, True, False],
-                     histogram_widget=show_histogram)
-
-    if v_range is not None:
-        values_to_set = [0, 1, 2, 3, 5]
-        for i, subplot in enumerate(iw.figure):
-            if i in values_to_set:
-                ig = subplot["image_widget_managed"]
-                ig.vmin = v_range[0]
-                ig.vmax = v_range[1]
-
+                     histogram_widget=show_histogram,
+                     graphic_kwargs = {'vmin':v_range[0], 'vmax':v_range[1]} if v_range is not None else None)
+   
+    for i, subplot in enumerate(iw.figure):
+       if i == 4:
+           ig = subplot["image_widget_managed"]
+           iw.vmin = 0
+           ig.vmax = 255
+    
     return iw
 
 
