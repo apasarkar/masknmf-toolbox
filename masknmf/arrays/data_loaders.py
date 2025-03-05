@@ -1,11 +1,11 @@
-from .lazy_array import lazy_data_loader
+from .array_interfaces import LazyFrameLoader
 import tifffile
 import numpy as np
 import h5py
 from typing import *
 
 
-class TiffArray(lazy_data_loader):
+class TiffArray(LazyFrameLoader):
     def __init__(self, filename):
         """
         TiffArray data loading object. Supports loading data from multipage tiff files.
@@ -62,7 +62,7 @@ class TiffArray(lazy_data_loader):
 
 
 
-class Hdf5Array(lazy_data_loader):
+class Hdf5Array(LazyFrameLoader):
     def __init__(self, filename: str, field: str) -> None:
         """
         Generic lazy loader for Hdf5 files video files, where data is stored as (T, x, y). T is number of frames,
