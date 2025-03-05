@@ -320,7 +320,7 @@ def compute_full_fov_spatial_basis(dataset: masknmf.LazyFrameLoader,
     """
     num_frames, fov_dim1, fov_dim2 = dataset.shape
     if background_rank <= 0:
-        return torch.zeros((fov_dim1*fov_dim2, 1)).to(dtype)
+        return torch.zeros((fov_dim1, fov_dim2, 1)).to(dtype)
     sample_list = [i for i in range(0, num_frames)]
     random_data = np.random.choice(
         sample_list, replace=False, size=min(num_samples, num_frames)
@@ -643,6 +643,7 @@ def localmd_decomposition(
     display("Running Blockwise Decompositions")
     for k in dim_1_iters:
         for j in dim_2_iters:
+            print(f"k {k} and j {j}")
             subset = data_for_spatial_fit[:, k : k + block_sizes[0], j : j + block_sizes[1]].to(device).to(dtype)
             subset = subset - dataset_mean[None, k : k + block_sizes[0], j : j + block_sizes[1]]
             subset /= dataset_noise_variance[None, k: k + block_sizes[0], j: j+ block_sizes[1]]
