@@ -290,7 +290,7 @@ def compute_mean_and_normalizer_dataset(dataset: masknmf.LazyFrameLoader,
         curr_tensor = torch.from_numpy(curr_data).to(device).to(dtype)
         curr_sum += torch.sum(curr_tensor / num_frames, dim = 0)
 
-    return noise_normalizer, curr_sum.cpu()
+    return curr_sum.cpu(), noise_normalizer.cpu()
 
 
 def compute_full_fov_spatial_basis(dataset: masknmf.LazyFrameLoader,
@@ -422,14 +422,14 @@ def compute_lowrank_factorized_svd(
         reduced space of the factorization.
     """
     ut_u = torch.sparse.mm(u.T, u).to_dense()
-    eig_vals, eig_vecs = torch.linalg.eigh(ut_u)
+    eig_vecs, eig_vals, _ = torch.linalg.svd(ut_u)
 
     good_components = eig_vals > 0
     eig_vals = eig_vals[good_components]
     eig_vecs = eig_vecs[:, good_components]
 
     singular_vectors = torch.sqrt(eig_vals)
-    spatial_mixing_matrix = eig_vecs / singular_vectors[:, None]
+    spatial_mixing_matrix = eig_vecs / singular_vectors[None, :]
 
     if only_left:
         return spatial_mixing_matrix
@@ -467,7 +467,7 @@ def regress_onto_spatial_basis(dataset: masknmf.LazyFrameLoader,
     for k in tqdm(range(num_iters)):
         start_pt = k * frame_batch_size
         end_pt = min(start_pt + frame_batch_size, num_frames)
-        curr_data = dataset[start_pt:end_pt].to(device).to(dtype).permute(1, 2, 0).reshape((fov_dim1*fov_dim2, -1))
+        curr_data = torch.from_numpy(dataset[start_pt:end_pt]).to(device).to(dtype).permute(1, 2, 0).reshape((fov_dim1*fov_dim2, -1))
         curr_data -= dataset_mean
         curr_data /= dataset_noise_variance
         temporal_full_fov_comp = full_fov_spatial_basis.T @ curr_data
@@ -475,6 +475,60 @@ def regress_onto_spatial_basis(dataset: masknmf.LazyFrameLoader,
         projection = spatial_mixing_matrix_projector @ (torch.sparse.mm(spatial_projector, curr_data))
         temporal_results.append(projection)
     return torch.concatenate(temporal_results, dim = 0)
+
+
+def blockwise_decomposition(video_subset: torch.tensor,
+                            full_fov_spatial_basis: torch.tensor,
+                            full_fov_temporal_basis: torch.tensor,
+                            subset_mean: torch.tensor,
+                            subset_noise_variance: torch.tensor,
+                            subset_pixel_weighting: torch.tensor,
+                            max_components: int,
+                            max_consecutive_failures: int,
+                            spatial_roughness_threshold: float,
+                            temporal_roughness_threshold: float,
+                            dtype: torch.dtype,
+                            device:str = "cpu"):
+
+    subset = video_subset.to(device).to(dtype)
+    subset = subset - subset_mean[None, :, :]
+    subset /= subset_noise_variance[None, :, :]
+    spatial_basis_product = full_fov_spatial_basis @ full_fov_temporal_basis
+    subset = subset.permute(1, 2, 0) - spatial_basis_product
+    subset *= subset_pixel_weighting
+    subset_r = subset.rehsape((-1, subset.shape[2]))
+    local_spatial_basis_r, temporal_basis = truncated_random_svd(subset_r,
+                                                                 max_components,
+                                                                 device=device)
+
+    local_spatial_basis = local_spatial_basis_r.reshape((subset.shape[0], subset.shape[1], -1))
+    decisions = evaluate_fitness(local_spatial_basis,
+                                 temporal_basis,
+                                 spatial_roughness_threshold,
+                                 temporal_roughness_threshold)
+    decisions = filter_by_failures(decisions, max_consecutive_failures)
+    return local_spatial_basis[:, :, decisions], temporal_basis[decisions, :]
+    #
+    # subset = data_for_spatial_fit[:, k: k + block_sizes[0], j: j + block_sizes[1]].to(device).to(dtype)
+    # subset = subset - dataset_mean[None, k: k + block_sizes[0], j: j + block_sizes[1]]
+    # subset /= dataset_noise_variance[None, k: k + block_sizes[0], j: j + block_sizes[1]]
+    # spatial_basis_product = full_fov_spatial_basis[k: k + block_sizes[0], j: j + block_sizes[1],
+    #                         :] @ full_fov_temporal_basis
+    # subset = subset.permute(1, 2, 0) - spatial_basis_product
+    # subset *= pixel_weighting[k:k + block_sizes[0], j:j + block_sizes[0], None]
+    #
+    # subset_r = subset.reshape((-1, subset.shape[2]))
+    # local_spatial_basis_r, temporal_basis = truncated_random_svd(subset_r,
+    #                                                              max_components,
+    #                                                              device=device)
+    #
+    # local_spatial_basis = local_spatial_basis_r.reshape((subset.shape[0], subset.shape[1], -1))
+    # decisions = evaluate_fitness(local_spatial_basis,
+    #                              temporal_basis,
+    #                              spatial_threshold,
+    #                              temporal_threshold)
+    # decisions = filter_by_failures(decisions, max_consecutive_failures)
+
 
 
 def localmd_decomposition(
@@ -638,38 +692,30 @@ def localmd_decomposition(
         temporal_denoiser = lambda x:x
 
     #TODO: Swap in the actual code here
-    spatial_threshold, temporal_threshold = (10, 10)
+    spatial_roughness_threshold, temporal_roughness_threshold = (100000, 1000000)
 
     display("Running Blockwise Decompositions")
     for k in dim_1_iters:
         for j in dim_2_iters:
-            print(f"k {k} and j {j}")
-            subset = data_for_spatial_fit[:, k : k + block_sizes[0], j : j + block_sizes[1]].to(device).to(dtype)
-            subset = subset - dataset_mean[None, k : k + block_sizes[0], j : j + block_sizes[1]]
-            subset /= dataset_noise_variance[None, k: k + block_sizes[0], j: j+ block_sizes[1]]
-            spatial_basis_product = full_fov_spatial_basis[k: k + block_sizes[0], j: j+ block_sizes[1], :] @ full_fov_temporal_basis
-            subset = subset.permute(1,2,0) - spatial_basis_product
-            subset *= pixel_weighting[k:k + block_sizes[0], j:j+block_sizes[0], None]
+            slice_dim1 = slice(k, k + block_sizes[0])
+            slice_dim2 = slice(j, j + block_sizes[1])
+            local_spatial_basis, local_temporal_basis = blockwise_decomposition(data_for_spatial_fit[:, slice_dim1, slice_dim2],
+                                                                                full_fov_spatial_basis[slice_dim1,slice_dim2, :],
+                                                                                full_fov_temporal_basis,
+                                                                                dataset_mean[slice_dim1, slice_dim2],
+                                                                                dataset_noise_variance[slice_dim1, slice_dim2],
+                                                                                pixel_weighting[slice_dim1, slice_dim2],
+                                                                                max_components,
+                                                                                max_consecutive_failures,
+                                                                                spatial_roughness_threshold,
+                                                                                temporal_roughness_threshold,
+                                                                                dtype,
+                                                                                device = device)
 
-            subset_r = subset.reshape((-1, subset.shape[2]))
-            local_spatial_basis_r, temporal_basis = truncated_random_svd(subset_r,
-                                                                 max_components,
-                                                                 device=device)
-
-            local_spatial_basis = local_spatial_basis_r.reshape((subset.shape[0], subset.shape[1], -1))
-            decisions = evaluate_fitness(local_spatial_basis,
-                             temporal_basis,
-                             spatial_threshold,
-                             temporal_threshold)
-            decisions = filter_by_failures(decisions, max_consecutive_failures)
-
-            local_spatial_basis = local_spatial_basis[:, :, decisions]
-            temporal_basis = temporal_basis[decisions, :]
-
-            total_temporal_fit.append(temporal_basis)
+            total_temporal_fit.append(local_temporal_basis)
 
             # Weight the spatial components here
-            local_spatial_basis *= local_spatial_basis * block_weights[:, :, None]
+            local_spatial_basis = local_spatial_basis * block_weights[:, :, None]
             current_cumulative_weight = block_weights
             cumulative_weights[
                 k : k + block_sizes[0], j : j + block_sizes[1]
@@ -700,7 +746,7 @@ def localmd_decomposition(
     #Normalize each pixel by the sum of the weights applied to it (this is patch wise linear interpolation)
     final_row_indices = torch.concatenate(final_row_indices, dim = 0)
     final_column_indices = torch.concatenate(final_column_indices, dim = 0)
-    spatial_overall_values = torch.concatenate(spatial_overall_values)
+    spatial_overall_values = torch.concatenate(spatial_overall_values, dim = 0)
     interpolation_weightings = torch.reciprocal(cumulative_weights.flatten()[final_row_indices])
     spatial_overall_values *= interpolation_weightings
 
@@ -722,13 +768,13 @@ def localmd_decomposition(
         total_temporal_fit.append(full_fov_temporal_basis)
 
 
-
     final_indices = torch.stack([final_row_indices, final_column_indices], dim = 0)
     u_aggregated = torch.sparse_coo_tensor(final_indices, spatial_overall_values, (num_rows, num_cols))
     v_aggregated = torch.concatenate(total_temporal_fit, dim = 0)
     display("Constructed U matrix. ")
 
-    if v_aggregated.shape[1] == dataset.shape[0]:
+
+    if v_aggregated.shape[1] == dataset.shape[0] and False:
         r, s, v = compute_lowrank_factorized_svd(u_aggregated, v_aggregated)
         #We have fit to the full dataset; there is no need to do any further regression; just need to factorize things
     else:
