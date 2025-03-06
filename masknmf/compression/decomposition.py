@@ -588,15 +588,14 @@ def blockwise_decomposition(video_subset: torch.tensor,
     return local_spatial_basis[:, :, decisions], local_temporal_basis[decisions, :]
 
 
-def localmd_decomposition(
+def pmd_decomposition(
     dataset: masknmf.LazyFrameLoader,
-    block_sizes: tuple,
+    block_sizes: tuple[int, int],
     frame_range: int,
     max_components: int = 50,
     background_rank: int = 15,
     sim_conf: int = 5,
     frame_batch_size: int = 10000,
-    num_workers: int = 0,
     max_consecutive_failures=1,
     spatial_avg_factor: int = 1,
     temporal_avg_factor: int = 1,
@@ -607,6 +606,34 @@ def localmd_decomposition(
     temporal_denoiser: Optional[Callable] = None,
     device: str = "cpu"
 ):
+    """
+    General PMD Compression method
+    Args:
+        dataset (masknmf.LazyFrameLoader): An array-like object with shape (frames, fov_dim1, fov_dim2) that loads frames of raw data
+        block_sizes (tuple[int, int]): The block sizes of the compression. Cannot be smaller than 10 in each dimension.
+        frame_range (int): Number of frames or raw data used to fit the spatial basis.
+            KEY: We assume that your system can store this many frames of raw data in RAM.
+        max_components (int): Max number of components we use to decompose any individual spatial block of the raw data.
+        background_rank (int): Before doing spatial blockwise decompositions, we estimate a full FOV truncated SVD; this often helps estimate global background trends
+            before blockwise decompositions; leading to better compression.
+        sim_conf (int): The percentile value used to define spatial and temporal roughness thresholds for rejecting/keeping SVD components
+        frame_batch_size (int): The maximum number of frames we load onto the computational device (CPU or GPU) at any point in time.
+        max_consecutive_failures (int): In each blockwise decomposition, we stop accepting SVD components after we see this many "bad" components.
+        spatial_avg_factor (int): In the blockwise decompositions, we can spatially downsample the data to estimate a cleaner temporal basis. We can use this to iteratively estimate a better
+            full-resolution basis for the data. If signal sits on only a few pixels, keep this parameter at 1 (spatially downsampling is undesirable in this case).
+        temporaL_avg_factor (int): In the blockwise decompositions, we can temporally downsample the data to estimate a cleaner spatial basis. We can use this to iteratively estimate a better
+            full-resolution basis for the data. If your signal "events" are very sparse (i.e. every event appears for only 1 frame) keep this parameter at 1 (temporal downsampling is undesirable in this case).
+         window_chunks (int): To be removed
+         compute_normalizer (bool): Whether or not we estimate a pixelwise noise variance. If False, the normalizer is set to 1 (no normalization).
+         pixel_weighting (Optional[np.ndarray]): Shape (fov_dim1, fov_dim2). We weight the data by this value to estimate a cleaner spatial basis. The pixel_weighting
+            should intuitively boost the relative variance of pixels containing signal to those that do not contain signal.
+        spatial_denoiser (Optional[Callable]): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
+        temporal_denoiser (Optional[Callable]): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
+        device (str): Which device the computations should be performed on. Options: "cuda" or "cpu".
+
+    Returns:
+        pmd_arr (masknmf.PMDArray): A PMD Array object capturing the compression results.
+    """
 
     num_frames, fov_dim1, fov_dim2 = dataset.shape
     if frame_batch_size < 1024:
