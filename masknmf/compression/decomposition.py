@@ -514,24 +514,19 @@ def spatial_downsample(image_stack: torch.Tensor, spatial_avg_factor: int) -> to
     downsampled = torch.nn.functional.avg_pool2d(image_stack, kernel_size=spatial_avg_factor, stride=spatial_avg_factor)  # (T, 1, H//2, W//2)
     return downsampled.squeeze(1).permute(1, 2, 0)
 
-
-def blockwise_decomposition(video_subset: torch.tensor,
+def _blockwise_decomposition_noprune(video_subset: torch.tensor,
                             full_fov_spatial_basis: torch.tensor,
                             full_fov_temporal_basis: torch.tensor,
                             subset_mean: torch.tensor,
                             subset_noise_variance: torch.tensor,
                             subset_pixel_weighting: torch.tensor,
                             max_components: int,
-                            max_consecutive_failures: int,
-                            spatial_roughness_threshold: float,
-                            temporal_roughness_threshold: float,
                             spatial_avg_factor: int,
                             temporal_avg_factor: int,
                             dtype: torch.dtype,
                             spatial_denoiser: Optional[Callable] = None,
                             temporal_denoiser: Optional[Callable] = None,
-                            device:str = "cpu"):
-
+                            device:str = "cpu") -> Tuple[torch.tensor, torch.tensor]:
     num_frames, fov_dim1, fov_dim2 = video_subset.shape
     subset = video_subset.to(device).to(dtype)
     subset = subset - subset_mean[None, :, :]
@@ -554,8 +549,8 @@ def blockwise_decomposition(video_subset: torch.tensor,
 
     spatiotemporal_pooled_subset_r = spatiotemporal_pooled_subset.reshape((-1, spatiotemporal_pooled_subset.shape[2]))
     lowres_spatial_basis_r, _, _ = truncated_random_svd(spatiotemporal_pooled_subset_r,
-                                                max_components,
-                                                device = device)
+                                                        max_components,
+                                                        device=device)
 
     temporal_projection_from_downsample = lowres_spatial_basis_r.T @ spatial_pooled_subset_r
     if temporal_denoiser is not None:
@@ -568,16 +563,51 @@ def blockwise_decomposition(video_subset: torch.tensor,
     if spatial_denoiser is not None:
         spatial_basis_fullres = spatial_basis_fullres.reshape((fov_dim1, fov_dim2, -1))
         spatial_basis_fullres = spatial_denoiser(spatial_basis_fullres)
-        spatial_basis_fullres = spatial_basis_fullres.reshape((fov_dim1*fov_dim2, -1))
+        spatial_basis_fullres = spatial_basis_fullres.reshape((fov_dim1 * fov_dim2, -1))
 
-    spatial_basis_orthogonal, _, _= torch.linalg.svd(spatial_basis_fullres, full_matrices=False)
+    spatial_basis_orthogonal, _, _ = torch.linalg.svd(spatial_basis_fullres, full_matrices=False)
 
-    #Regress the original (unweighted) data onto this basis
+    # Regress the original (unweighted) data onto this basis
     subset_r = subset.reshape((-1, subset.shape[2]))
     final_temporal_projection = spatial_basis_orthogonal.T @ subset_r
-    left, sing, right = torch.linalg.svd(final_temporal_projection, full_matrices = False)
+    left, sing, right = torch.linalg.svd(final_temporal_projection, full_matrices=False)
     local_spatial_basis = (spatial_basis_orthogonal @ left).reshape((fov_dim1, fov_dim2, -1))
     local_temporal_basis = sing[:, None] * right
+
+    return local_spatial_basis, local_temporal_basis
+
+
+def blockwise_decomposition(video_subset: torch.tensor,
+                            full_fov_spatial_basis: torch.tensor,
+                            full_fov_temporal_basis: torch.tensor,
+                            subset_mean: torch.tensor,
+                            subset_noise_variance: torch.tensor,
+                            subset_pixel_weighting: torch.tensor,
+                            max_components: int,
+                            max_consecutive_failures: int,
+                            spatial_roughness_threshold: float,
+                            temporal_roughness_threshold: float,
+                            spatial_avg_factor: int,
+                            temporal_avg_factor: int,
+                            dtype: torch.dtype,
+                            spatial_denoiser: Optional[Callable] = None,
+                            temporal_denoiser: Optional[Callable] = None,
+                            device:str = "cpu"):
+
+    local_spatial_basis, local_temporal_basis = _blockwise_decomposition_noprune(video_subset,
+                                     full_fov_spatial_basis,
+                                     full_fov_temporal_basis,
+                                     subset_mean,
+                                     subset_noise_variance,
+                                     subset_pixel_weighting,
+                                     max_components,
+                                     spatial_avg_factor,
+                                     temporal_avg_factor,
+                                     dtype,
+                                     spatial_denoiser = spatial_denoiser,
+                                     temporal_denoiser = temporal_denoiser,
+                                     device = device)
+
 
     decisions = evaluate_fitness(local_spatial_basis,
                                  local_temporal_basis,
@@ -586,6 +616,82 @@ def blockwise_decomposition(video_subset: torch.tensor,
 
     decisions = filter_by_failures(decisions, max_consecutive_failures)
     return local_spatial_basis[:, :, decisions], local_temporal_basis[decisions, :]
+
+
+def threshold_heuristic(
+    dimensions: tuple[int, int, int],
+    spatial_avg_factor: int,
+    temporal_avg_factor: int,
+    spatial_denoiser: Callable,
+    temporal_denoiser: Callable,
+    dtype: torch.dtype,
+    num_comps: int = 1,
+    iters: int = 250,
+    percentile_threshold: float = 5,
+    device: str = "cpu",
+) -> tuple[float, float]:
+    """
+    Generates a histogram of spatial and temporal roughness statistics from running the decomposition on random noise.
+    This is used to decide how "smooth" the temporal and spatial components need to be in order to contain signal.
+
+    Args:
+        dimensions (tuple): Tuple describing the dimensions of the blocks which we will
+            decompose. Contains (d1, d2, T), the two spatial field of view dimensions and the number of frames
+        num_comps (int): The number of components which we identify in the decomposition
+        iters (int): The number of times we run this simulation procedure to collect a histogram of spatial and temporal
+            roughness statistics
+        percentile_threshold (float): The threshold we use to decide whether the spatial and temporal roughness stats of
+            decomposition are "smooth" enough to contain signal.
+
+    Returns:
+        tuple[float, float]: The spatial and temporal "cutoffs" for deciding whether a spatial-temporal decomposition
+            contains signals.
+
+    """
+    spatial_list = []
+    temporal_list = []
+
+    d1, d2, t = dimensions
+    sim_mean = torch.zeros((d1, d2), device = device, dtype = dtype)
+    sim_noise_normalizer = torch.ones((d1, d2), device = device, dtype = dtype)
+    full_fov_spatial_basis = torch.zeros((d1, d2, 1), device = device, dtype = dtype)
+    full_fov_temporal_basis = torch.zeros((1, t), device = device, dtype = dtype)
+    pixel_weighting = torch.ones((d1, d2), device = device, dtype = dtype)
+    max_components = num_comps
+
+    for k in range(iters):
+        sim_data = torch.randn(t, d1*d2, device=device, dtype=dtype).reshape((t, d1, d2))
+
+        spatial, temporal = _blockwise_decomposition_noprune(sim_data,
+                                                                full_fov_spatial_basis,
+                                                                full_fov_temporal_basis,
+                                                                sim_mean,
+                                                                sim_noise_normalizer,
+                                                                pixel_weighting,
+                                                                max_components,
+                                                                spatial_avg_factor,
+                                                                temporal_avg_factor,
+                                                                dtype,
+                                                                spatial_denoiser = spatial_denoiser,
+                                                                temporal_denoiser = temporal_denoiser,
+                                                                device = device)
+
+        spatial_stat = spatial_roughness_statistic(spatial)
+        temporal_stat = temporal_roughness_statistic(temporal)
+        spatial_list.append(spatial_stat)
+        temporal_list.append(temporal_stat)
+
+    spatial_list = torch.concatenate(spatial_list, dim = 0).cpu().numpy()
+    temporal_list = torch.concatenate(temporal_list, dim = 0).cpu().numpy()
+
+
+    spatial_threshold = np.percentile(
+        spatial_list.flatten(), percentile_threshold)
+    temporal_threshold = np.percentile(
+        temporal_list.flatten(), percentile_threshold
+    )
+    return spatial_threshold, temporal_threshold
+
 
 
 def pmd_decomposition(
@@ -767,8 +873,16 @@ def pmd_decomposition(
     cumulative_weights = torch.zeros((fov_dim1, fov_dim2), dtype = dtype, device = device)
     total_temporal_fit = []
 
-    #TODO: Swap in the actual code here
-    spatial_roughness_threshold, temporal_roughness_threshold = (100000, 1000000)
+    display("Finding spatiotemporal roughness thresholds")
+    spatial_roughness_threshold, temporal_roughness_threshold = threshold_heuristic([block_sizes[0], block_sizes[1], window_chunks],
+                                                                                        spatial_avg_factor,
+                                                                                        temporal_avg_factor,
+                                                                                        spatial_denoiser,
+                                                                                        temporal_denoiser,
+                                                                                        dtype,
+                                                                                        num_comps=1,
+                                                                                        iters=250,
+                                                                                        percentile_threshold=sim_conf)
 
     display("Running Blockwise Decompositions")
     for k in dim_1_iters:
