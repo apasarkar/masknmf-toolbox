@@ -540,9 +540,17 @@ def blockwise_decomposition(video_subset: torch.tensor,
     subset = subset.permute(1, 2, 0) - spatial_basis_product
     subset_weighted = subset * subset_pixel_weighting[:, :, None]
 
-    spatial_pooled_subset = spatial_downsample(subset_weighted, spatial_avg_factor)
+    if spatial_avg_factor != 1:
+        spatial_pooled_subset = spatial_downsample(subset_weighted, spatial_avg_factor)
+    else:
+        spatial_pooled_subset = subset_weighted
+
     spatial_pooled_subset_r = spatial_pooled_subset.reshape((-1, spatial_pooled_subset.shape[2]))
-    spatiotemporal_pooled_subset = temporal_downsample(spatial_pooled_subset, temporal_avg_factor)
+
+    if temporal_avg_factor != 1:
+        spatiotemporal_pooled_subset = temporal_downsample(spatial_pooled_subset, temporal_avg_factor)
+    else:
+        spatiotemporal_pooled_subset = spatial_pooled_subset
 
     spatiotemporal_pooled_subset_r = spatiotemporal_pooled_subset.reshape((-1, spatiotemporal_pooled_subset.shape[2]))
     lowres_spatial_basis_r, _, _ = truncated_random_svd(spatiotemporal_pooled_subset_r,
