@@ -19,7 +19,7 @@ def truncated_random_svd(
     rank: int,
     num_oversamples: int = 5,
     device: str = "cpu"
-) -> tuple[torch.tensor, torch.tensor]:
+) -> Tuple[torch.tensor, torch.tensor, torch.tensor]:
     """
     Assumptions:
     (1) input_matrix has been adequately mean-subtracted (so every column has mean 0, at least over the full dataset)
@@ -34,7 +34,7 @@ def truncated_random_svd(
     u, s, v = torch.linalg.svd(b, full_matrices = False)
     u_final = q @ u
     v_final = s[:, None] * v
-    return u_final[:, :rank], v_final[:rank, :]
+    return u_final[:, :rank], s[:rank], v_final[:rank, :]
 
 
 """
@@ -334,7 +334,7 @@ def compute_full_fov_spatial_basis(dataset: masknmf.LazyFrameLoader,
     my_data = my_data.permute(1, 2, 0).reshape((fov_dim1*fov_dim2, -1))
 
     my_data = my_data.to(device).to(dtype)
-    spatial_basis, _ = truncated_random_svd(my_data,
+    spatial_basis, _, _ = truncated_random_svd(my_data,
                                          background_rank,
                                          device = device)
 
@@ -545,7 +545,7 @@ def blockwise_decomposition(video_subset: torch.tensor,
     spatiotemporal_pooled_subset = temporal_downsample(spatial_pooled_subset, temporal_avg_factor)
 
     spatiotemporal_pooled_subset_r = spatiotemporal_pooled_subset.reshape((-1, spatiotemporal_pooled_subset.shape[2]))
-    lowres_spatial_basis_r, _ = truncated_random_svd(spatiotemporal_pooled_subset_r,
+    lowres_spatial_basis_r, _, _ = truncated_random_svd(spatiotemporal_pooled_subset_r,
                                                 max_components,
                                                 device = device)
 
@@ -819,7 +819,7 @@ def localmd_decomposition(
     display("Constructed U matrix. ")
 
 
-    if v_aggregated.shape[1] == dataset.shape[0] and False:
+    if v_aggregated.shape[1] == dataset.shape[0]:
         r, s, v = compute_lowrank_factorized_svd(u_aggregated, v_aggregated)
         #We have fit to the full dataset; there is no need to do any further regression; just need to factorize things
     else:
