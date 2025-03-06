@@ -7,6 +7,7 @@ from masknmf import PMDArray
 import math
 import numpy as np
 from torch.multiprocessing import multiprocessing
+
 from tqdm import tqdm
 
 from masknmf import display
@@ -477,6 +478,43 @@ def regress_onto_spatial_basis(dataset: masknmf.LazyFrameLoader,
     return torch.concatenate(temporal_results, dim = 0)
 
 
+def temporal_downsample(tensor: torch.Tensor, temporal_avg_factor: int) -> torch.Tensor:
+    """
+    Temporally downsamples a (height, width, num_frames) tensor using avg_pool1d.
+
+    Args:
+        tensor: Input tensor of shape (num_frames, height, width).
+        n: Downsampling factor (number of frames per block).
+
+    Returns:
+        Downsampled tensor of shape (height, width, ceil(num_frames / n)).
+    """
+    height, width, num_frames = tensor.shape
+    tensor = tensor.reshape(height * width, num_frames).unsqueeze(1)
+    downsampled = torch.nn.functional.avg_pool1d(tensor,
+                                                 kernel_size=temporal_avg_factor,
+                                                 stride=temporal_avg_factor,
+                                                 ceil_mode=True)
+
+    # Reshape back to (num_frames // n, height, width)
+    return downsampled.squeeze().reshape(height, width, -1)
+
+def spatial_downsample(image_stack: torch.Tensor, spatial_avg_factor: int) -> torch.Tensor:
+    """
+    Downsamples a (height, width, num_frames) image stack via n x n binning.
+
+    Args:
+        image_stack: Tensor of shape (height, width, num_frames).
+
+    Returns:
+        Downsampled tensor of shape (H//factor, W//factor, T).
+    """
+
+    image_stack = image_stack.permute(2, 0, 1).unsqueeze(1)  # (num_frames, 1, height, width)
+    downsampled = torch.nn.functional.avg_pool2d(image_stack, kernel_size=spatial_avg_factor, stride=spatial_avg_factor)  # (T, 1, H//2, W//2)
+    return downsampled.squeeze(1).permute(1, 2, 0)
+
+
 def blockwise_decomposition(video_subset: torch.tensor,
                             full_fov_spatial_basis: torch.tensor,
                             full_fov_temporal_basis: torch.tensor,
@@ -487,48 +525,59 @@ def blockwise_decomposition(video_subset: torch.tensor,
                             max_consecutive_failures: int,
                             spatial_roughness_threshold: float,
                             temporal_roughness_threshold: float,
+                            spatial_avg_factor: int,
+                            temporal_avg_factor: int,
                             dtype: torch.dtype,
+                            spatial_denoiser: Optional[Callable] = None,
+                            temporal_denoiser: Optional[Callable] = None,
                             device:str = "cpu"):
 
+    num_frames, fov_dim1, fov_dim2 = video_subset.shape
     subset = video_subset.to(device).to(dtype)
     subset = subset - subset_mean[None, :, :]
     subset /= subset_noise_variance[None, :, :]
     spatial_basis_product = full_fov_spatial_basis @ full_fov_temporal_basis
     subset = subset.permute(1, 2, 0) - spatial_basis_product
-    subset *= subset_pixel_weighting
-    subset_r = subset.rehsape((-1, subset.shape[2]))
-    local_spatial_basis_r, temporal_basis = truncated_random_svd(subset_r,
-                                                                 max_components,
-                                                                 device=device)
+    subset_weighted = subset * subset_pixel_weighting[:, :, None]
 
-    local_spatial_basis = local_spatial_basis_r.reshape((subset.shape[0], subset.shape[1], -1))
+    spatial_pooled_subset = spatial_downsample(subset_weighted, spatial_avg_factor)
+    spatial_pooled_subset_r = spatial_pooled_subset.reshape((-1, spatial_pooled_subset.shape[2]))
+    spatiotemporal_pooled_subset = temporal_downsample(spatial_pooled_subset, temporal_avg_factor)
+
+    spatiotemporal_pooled_subset_r = spatiotemporal_pooled_subset.reshape((-1, spatiotemporal_pooled_subset.shape[2]))
+    lowres_spatial_basis_r, _ = truncated_random_svd(spatiotemporal_pooled_subset_r,
+                                                max_components,
+                                                device = device)
+
+    temporal_projection_from_downsample = lowres_spatial_basis_r.T @ spatial_pooled_subset_r
+    if temporal_denoiser is not None:
+        temporal_projection_from_downsample = temporal_denoiser(temporal_projection_from_downsample)
+
+    temporal_basis_from_downsample = torch.linalg.svd(temporal_projection_from_downsample, full_matrices=False)[2]
+    subset_weighted_r = subset_weighted.reshape((-1, subset_weighted.shape[2]))
+    spatial_basis_fullres = subset_weighted_r @ temporal_basis_from_downsample.T
+
+    if spatial_denoiser is not None:
+        spatial_basis_fullres = spatial_basis_fullres.reshape((fov_dim1, fov_dim2, -1))
+        spatial_basis_fullres = spatial_denoiser(spatial_basis_fullres)
+        spatial_basis_fullres = spatial_basis_fullres.reshape((fov_dim1*fov_dim2, -1))
+
+    spatial_basis_orthogonal, _, _= torch.linalg.svd(spatial_basis_fullres, full_matrices=False)
+
+    #Regress the original (unweighted) data onto this basis
+    subset_r = subset.reshape((-1, subset.shape[2]))
+    final_temporal_projection = spatial_basis_orthogonal.T @ subset_r
+    left, sing, right = torch.linalg.svd(final_temporal_projection, full_matrices = False)
+    local_spatial_basis = (spatial_basis_orthogonal @ left).reshape((fov_dim1, fov_dim2, -1))
+    local_temporal_basis = sing[:, None] * right
+
     decisions = evaluate_fitness(local_spatial_basis,
-                                 temporal_basis,
+                                 local_temporal_basis,
                                  spatial_roughness_threshold,
                                  temporal_roughness_threshold)
-    decisions = filter_by_failures(decisions, max_consecutive_failures)
-    return local_spatial_basis[:, :, decisions], temporal_basis[decisions, :]
-    #
-    # subset = data_for_spatial_fit[:, k: k + block_sizes[0], j: j + block_sizes[1]].to(device).to(dtype)
-    # subset = subset - dataset_mean[None, k: k + block_sizes[0], j: j + block_sizes[1]]
-    # subset /= dataset_noise_variance[None, k: k + block_sizes[0], j: j + block_sizes[1]]
-    # spatial_basis_product = full_fov_spatial_basis[k: k + block_sizes[0], j: j + block_sizes[1],
-    #                         :] @ full_fov_temporal_basis
-    # subset = subset.permute(1, 2, 0) - spatial_basis_product
-    # subset *= pixel_weighting[k:k + block_sizes[0], j:j + block_sizes[0], None]
-    #
-    # subset_r = subset.reshape((-1, subset.shape[2]))
-    # local_spatial_basis_r, temporal_basis = truncated_random_svd(subset_r,
-    #                                                              max_components,
-    #                                                              device=device)
-    #
-    # local_spatial_basis = local_spatial_basis_r.reshape((subset.shape[0], subset.shape[1], -1))
-    # decisions = evaluate_fitness(local_spatial_basis,
-    #                              temporal_basis,
-    #                              spatial_threshold,
-    #                              temporal_threshold)
-    # decisions = filter_by_failures(decisions, max_consecutive_failures)
 
+    decisions = filter_by_failures(decisions, max_consecutive_failures)
+    return local_spatial_basis[:, :, decisions], local_temporal_basis[decisions, :]
 
 
 def localmd_decomposition(
@@ -683,14 +732,6 @@ def localmd_decomposition(
     cumulative_weights = torch.zeros((fov_dim1, fov_dim2), dtype = dtype, device = device)
     total_temporal_fit = []
 
-    # Define placeholder spatial and temporal denoisers (identity functions) if user did not provide them
-    # If no spatial / temporal denoisers were specified, use placeholder functions that return the identity:
-    if spatial_denoiser is None:
-        spatial_denoiser = lambda x:x
-
-    if temporal_denoiser is None:
-        temporal_denoiser = lambda x:x
-
     #TODO: Swap in the actual code here
     spatial_roughness_threshold, temporal_roughness_threshold = (100000, 1000000)
 
@@ -709,7 +750,11 @@ def localmd_decomposition(
                                                                                 max_consecutive_failures,
                                                                                 spatial_roughness_threshold,
                                                                                 temporal_roughness_threshold,
+                                                                                spatial_avg_factor,
+                                                                                temporal_avg_factor,
                                                                                 dtype,
+                                                                                spatial_denoiser=spatial_denoiser,
+                                                                                temporal_denoiser=temporal_denoiser,
                                                                                 device = device)
 
             total_temporal_fit.append(local_temporal_basis)
