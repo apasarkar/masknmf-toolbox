@@ -365,7 +365,11 @@ def compute_full_fov_temporal_basis(dataset: torch.tensor,
     noise_variance_img = noise_variance_img.to(device).to(dtype)
     num_iters = math.ceil(dataset.shape[0] / frame_batch_size)
     final_results = []
+
+    mean_img_r = mean_img.reshape((fov_dim1*fov_dim2, 1)).T
+    noise_variance_img_r = noise_variance_img.reshape((fov_dim1*fov_dim2, 1))
     spatial_basis_r = full_fov_spatial_basis.to(device).to(dtype).reshape((fov_dim1 * fov_dim2, -1))
+    spatial_basis_r_weighted_by_variance = (spatial_basis_r * torch.reciprocal(noise_variance_img_r))
     for k in range(num_iters):
         if frame_batch_size >= dataset.shape[0]:
             curr_dataset = dataset.to(device).to(dtype)
@@ -373,9 +377,8 @@ def compute_full_fov_temporal_basis(dataset: torch.tensor,
             start_pt = k * frame_batch_size
             end_pt = min(dataset.shape[0], start_pt + frame_batch_size)
             curr_dataset = dataset[start_pt:end_pt].to(device).to(dtype)
-        curr_dataset = (curr_dataset - mean_img[None, :, :]) / noise_variance_img[None, :, :]
-        curr_dataset_r = curr_dataset.reshape((-1, fov_dim1 * fov_dim2))
-        projection = torch.matmul(curr_dataset_r, spatial_basis_r)
+        curr_dataset_r = curr_dataset.reshape((-1, fov_dim1*fov_dim2))
+        projection = curr_dataset_r @ spatial_basis_r_weighted_by_variance - mean_img_r @ spatial_basis_r_weighted_by_variance
         final_results.append(projection)
 
     final_tensor = torch.concatenate(final_results, dim = 0)
@@ -659,7 +662,7 @@ def threshold_heuristic(
     pixel_weighting = torch.ones((d1, d2), device = device, dtype = dtype)
     max_components = num_comps
 
-    for k in range(iters):
+    for k in tqdm(range(iters)):
         sim_data = torch.randn(t, d1*d2, device=device, dtype=dtype).reshape((t, d1, d2))
 
         spatial, temporal = _blockwise_decomposition_noprune(sim_data,
@@ -740,7 +743,7 @@ def pmd_decomposition(
     Returns:
         pmd_arr (masknmf.PMDArray): A PMD Array object capturing the compression results.
     """
-
+    display("Starting compression")
     num_frames, fov_dim1, fov_dim2 = dataset.shape
     if frame_batch_size < 1024:
         raise ValueError(f"frame_batch_size is too small ({frame_batch_size}). "
@@ -965,7 +968,7 @@ def pmd_decomposition(
     final_indices = torch.stack([final_row_indices, final_column_indices], dim = 0)
     u_aggregated = torch.sparse_coo_tensor(final_indices, spatial_overall_values, (num_rows, num_cols))
     v_aggregated = torch.concatenate(total_temporal_fit, dim = 0)
-    display("Constructed U matrix. ")
+    display(f"Constructed U matrix. Rank of U is {u_aggregated.shape[1]}")
 
 
     if v_aggregated.shape[1] == dataset.shape[0]:
@@ -979,14 +982,17 @@ def pmd_decomposition(
         r = spatial_mixing_matrix @ v_svd[0]
         s = v_svd[1]
         v = v_svd[2]
+    display("Finished orthogonalizing the data")
 
     ## TODO: Add the mean/standard deviation image. Add an interface that allows us to say "to".
-    return PMDArray((num_frames, fov_dim1, fov_dim2),
+    final_pmd_arr = PMDArray((num_frames, fov_dim1, fov_dim2),
                            "C",
                            u_aggregated.cpu(),
                            r.cpu(),
                            s.cpu(),
                            v.cpu())
+    display("PMD Objected constructed")
+    return final_pmd_arr
 
 
 
