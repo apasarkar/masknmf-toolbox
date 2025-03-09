@@ -385,10 +385,46 @@ def compute_full_fov_temporal_basis(dataset: torch.tensor,
     return final_tensor.T
 
 
+def compute_factorized_svd_with_leftbasis(p: torch.sparse_coo_tensor,
+                                          v: torch.tensor) -> Tuple[torch.tensor, torch.tensor, torch.tensor]:
+    """
+    Use case: you have a factorized movie, UPV where U is sparse (and you don't want to change that), and
+    UP has orthonormal columns. This function reformats the factorization into UPV = (UR)sV_{new} where (UR) are left
+    singular vecotrs, s describes singular values, V_new describes right singular vectors.
+
+    Args:
+        u (torch.sparse_coo_tensor): shape (pixels, rank)
+        p (torch.tensor): shape (rank, rank)
+        v: (torch.tensor): shape (rank, num_frames)
+    """
+    q, m = [i.float().T for i in torch.linalg.qr(v.T, mode = "reduced")]#Now v = mq
+
+    #Note that (upm)^T(upm) = (m^T)m
+    mtm = m.T @ m
+    # mtm = (mtm + mtm.T) / 2
+    # eig_vals, eig_vecs = [i.float() for i in torch.linalg.eigh(mtm.double())]
+    eig_vecs, eig_vals, _ = [i.float() for i in torch.linalg.svd(mtm, full_matrices = True)]
+
+    print(f"{torch.allclose(mtm, mtm.T)}")
+    print(f"When we ran the  leftbasis eigh routine, the smallest value we saw was {np.amin(eig_vals.cpu().numpy())}")
+
+    # eig_vecs = torch.flip(eig_vecs, dims = [1])
+    # eig_vals = torch.flip(eig_vals, dims = [0])
+
+    print(f"When we ran the eigh routine, the smallest value we saw was {np.amin(eig_vals.cpu().numpy())}")
+    good_components = eig_vals > 0
+    eig_vecs = eig_vecs[:, good_components]
+    eig_vals = eig_vals[good_components]
+
+    s = torch.sqrt(eig_vals)
+
+    r = p @ (eig_vecs / s[None, :])
+    v = eig_vecs.T @ q
+    return r, s, v
+
 def compute_lowrank_factorized_svd(
         u: torch.sparse_coo_tensor,
         v: torch.tensor,
-        only_left: bool = False
 ):
     """
     Compute the factorized Singular Value Decomposition (SVD) of a low-rank matrix factorization.
@@ -421,32 +457,33 @@ def compute_lowrank_factorized_svd(
             components of the matrix `v`.
 
     Notes:
-        This is not a full SVD; the result is truncated to preserve efficiency, especially
+        - This is not a full SVD; the result is truncated to preserve efficiency, especially
         for large matrices. The orthogonality of the left singular vectors holds within the
         reduced space of the factorization.
+        - This routine uses eigh on the spatial basis to exploit the low rank of the decomposition. This will lead to bad results if the matrix is ill-conditioned.
+        PMD gives us a reasonable guarantee that this is not true (due to the blockwise decompositions).
     """
+    q, p = [i.float().T for i in torch.linalg.qr(v.T, mode = "reduced")] # Here, v = pq, with q having orth rows
     ut_u = torch.sparse.mm(u.T, u).to_dense()
-    eig_vecs, eig_vals, _ = torch.linalg.svd(ut_u)
 
+    ptut_up = (p.T @ ut_u) @ p
+
+    eig_vecs, eig_vals, _ = [i for i in torch.linalg.svd(ptut_up, full_matrices = True)]
+
+    # print(f"{torch.allclose(ptut_up, ptut_up.T)}")
+    # print(f"When we ran the eigh routine, the smallest value we saw was {np.amin(eig_vals.cpu().numpy())}")
     good_components = eig_vals > 0
     eig_vals = eig_vals[good_components]
     eig_vecs = eig_vecs[:, good_components]
+    #
+    # eig_vals = torch.flip(eig_vals, dims = [0])
+    # eig_vecs = torch.flip(eig_vecs, dims = [1])
 
-    singular_vectors = torch.sqrt(eig_vals)
-    spatial_mixing_matrix = eig_vecs / singular_vectors[None, :]
+    s = torch.sqrt(eig_vals)
+    r = p @ (eig_vecs / s[None, :])
+    new_v = eig_vecs.T @ q
 
-    if only_left:
-        return spatial_mixing_matrix
-
-    else:
-        right_term = spatial_mixing_matrix.T @ (ut_u @ v)
-        left_orth, sing, right_orth = torch.linalg.svd(right_term, full_matrices = False)
-        return spatial_mixing_matrix @ left_orth, sing, right_orth
-
-def projected_svd(spatial_mixing_matrix: torch.tensor,
-                  temporal_basis: torch.tensor):
-    left_orth, sing, right_orth = torch.linalg.svd(temporal_basis, full_matrices = False)
-    return spatial_mixing_matrix @ left_orth, sing, right_orth
+    return r, s, new_v
 
 
 
@@ -474,11 +511,11 @@ def regress_onto_spatial_basis(dataset: masknmf.LazyFrameLoader,
         curr_data = torch.from_numpy(dataset[start_pt:end_pt]).to(device).to(dtype).permute(1, 2, 0).reshape((fov_dim1*fov_dim2, -1))
         curr_data -= dataset_mean
         curr_data /= dataset_noise_variance
-        temporal_full_fov_comp = full_fov_spatial_basis.T @ curr_data
-        curr_data -= full_fov_spatial_basis @ temporal_full_fov_comp
+        # temporal_full_fov_comp = full_fov_spatial_basis.T @ curr_data
+        # curr_data -= full_fov_spatial_basis @ temporal_full_fov_comp
         projection = spatial_mixing_matrix_projector @ (torch.sparse.mm(spatial_projector, curr_data))
         temporal_results.append(projection)
-    return torch.concatenate(temporal_results, dim = 0)
+    return torch.concatenate(temporal_results, dim = 1)
 
 
 def temporal_downsample(tensor: torch.Tensor, temporal_avg_factor: int) -> torch.Tensor:
@@ -971,17 +1008,17 @@ def pmd_decomposition(
     display(f"Constructed U matrix. Rank of U is {u_aggregated.shape[1]}")
 
 
+
     if v_aggregated.shape[1] == dataset.shape[0]:
         r, s, v = compute_lowrank_factorized_svd(u_aggregated, v_aggregated)
         #We have fit to the full dataset; there is no need to do any further regression; just need to factorize things
     else:
-        spatial_mixing_matrix = compute_lowrank_factorized_svd(u_aggregated, v_aggregated, only_left = True)
+        display("running regressions")
+        spatial_mixing_matrix, _, _ = compute_lowrank_factorized_svd(u_aggregated, v_aggregated)
         v_full_regression = regress_onto_spatial_basis(dataset, u_aggregated, spatial_mixing_matrix, frame_batch_size, dataset_mean,
                                    dataset_noise_variance, full_fov_spatial_basis, dtype, device=device)
-        v_svd = torch.linalg.svd(v_full_regression, full_matrices = False)
-        r = spatial_mixing_matrix @ v_svd[0]
-        s = v_svd[1]
-        v = v_svd[2]
+
+        r, s, v = compute_lowrank_factorized_svd(u_aggregated, spatial_mixing_matrix @ v_full_regression)
     display("Finished orthogonalizing the data")
 
     ## TODO: Add the mean/standard deviation image. Add an interface that allows us to say "to".
