@@ -493,26 +493,62 @@ def regress_onto_spatial_basis_earlier(dataset: masknmf.LazyFrameLoader,
                                full_fov_spatial_basis: torch.tensor,
                                dtype: torch.dtype,
                                device: str = "cpu") -> torch.tensor:
+    """
+    We have a spatial basis from blockwise decompositions. This function will do two things, in a single pass through the
+    data:
+        (1) It will project the data onto each block's orthogonal basis (this is NOT equivalent to a linear subspace projection onto the
+        spatial basis!)
+        (2) It will perform a linear subspace projection of the centered+standardized data onto the full FOV data
 
+    The computation to perform here is:
+    v_aggregate = u^T (I_{norms} * (Data - Mean) - Spatial_Full_FOV_Bkgd * Temporal_Full_FOV_Bkgd)
+    Here, I_{norms} is a diagonal matrix containing the reciprocal of the dataset_noise_variance. The term
+    I_{norms}(Data - Mean) does pixelwise centering + standardization of the data.
+    In the below routine, we exploit the low rank of u and conduct operations in an order that minimizes data size/number of computations.
+
+    Args:
+        dataset (masknmf.LazyFrameLoader): Any array-like object that supports __getitem__ for fast frame retrieval.
+        u_aggregated (torch.sparse_coo_tensor): The spatial basis, where components from the same block are orthonormal.
+        frame_batch_size (int): The number of frames we load at any point in time
+        dataset_mean (torch.tensor): Shape (fov_dim1, fov_dim2). The mean across all pixels
+        dataset_noise_variance (torch.tensor): Shape (fov_dim1, fov_dim2). The noise variance across all pixels.
+        full_fov_spatial_basis (torch.tensor): Shape (fov_dim1, fov_dim2, full_fov_rank): The rank of the full fov spatial basis term.
+            This basis is orthonormal.
+        dtype (torch.dtype): The dtype to which we convert the data for processing; should be torch.float32, or float64.
+        device (str): The platform on which processing occurs ("cuda" or "cpu")
+    """
     num_frames, fov_dim1, fov_dim2 = dataset.shape
     num_iters = math.ceil(dataset.shape[0] / frame_batch_size)
     dataset_mean = dataset_mean.to(device).to(dtype).reshape((fov_dim1*fov_dim2, 1))
     dataset_noise_variance = dataset_noise_variance.to(device).to(dtype).reshape((fov_dim1*fov_dim2, 1))
     full_fov_spatial_basis = full_fov_spatial_basis.to(device).to(dtype).reshape((fov_dim1*fov_dim2, -1))
 
-    spatial_projector = u_aggregated.T
+    u_t = u_aggregated.T.coalesce()
+
+    row_indices, col_indices = u_t.indices()
+    ut_values = u_t.values()
+
+    new_values = ut_values / dataset_noise_variance[col_indices].squeeze()
+
+    u_t_normalized = torch.sparse_coo_tensor(u_t.indices(), new_values, u_t.shape).coalesce()
+
+    full_fov_spatial_projected = torch.sparse.mm(u_t, full_fov_spatial_basis)
+    mean_projected = torch.sparse.mm(u_t_normalized, dataset_mean)
+
     temporal_results = []
     temporal_background_results = []
     for k in tqdm(range(num_iters)):
         start_pt = k * frame_batch_size
         end_pt = min(start_pt + frame_batch_size, num_frames)
         curr_data = torch.from_numpy(dataset[start_pt:end_pt]).to(device).to(dtype).permute(1, 2, 0).reshape((fov_dim1*fov_dim2, -1))
-        curr_data -= dataset_mean
-        curr_data /= dataset_noise_variance
+        projection = torch.sparse.mm(u_t_normalized, curr_data)
+        projection -= mean_projected
         temporal_full_fov_comp = full_fov_spatial_basis.T @ curr_data
+        full_fov_projected_term = full_fov_spatial_projected @ temporal_full_fov_comp
+        projection -= full_fov_projected_term
+
+        ## Add the full fov and blockwise temporal components that we estimate above to a list to concatenate later
         temporal_background_results.append(temporal_full_fov_comp)
-        curr_data -= full_fov_spatial_basis @ temporal_full_fov_comp
-        projection = torch.sparse.mm(spatial_projector, curr_data)
         temporal_results.append(projection)
     return torch.concatenate(temporal_results, dim = 1), torch.concatenate(temporal_background_results, dim = 1)
 
@@ -599,11 +635,11 @@ def blockwise_decomposition(video_subset: torch.tensor,
                             device:str = "cpu") -> Tuple[torch.tensor, torch.tensor]:
     num_frames, fov_dim1, fov_dim2 = video_subset.shape
     subset = video_subset.to(device).to(dtype)
-    subset = subset - subset_mean[None, :, :]
-    subset /= subset_noise_variance[None, :, :]
-    spatial_basis_product = full_fov_spatial_basis @ full_fov_temporal_basis
+    subset = subset - subset_mean.to(device).to(dtype)[None, :, :]
+    subset /= subset_noise_variance.to(device).to(dtype)[None, :, :]
+    spatial_basis_product = full_fov_spatial_basis.to(device).to(dtype) @ full_fov_temporal_basis.to(device).to(dtype)
     subset = subset.permute(1, 2, 0) - spatial_basis_product
-    subset_weighted = subset * subset_pixel_weighting[:, :, None]
+    subset_weighted = subset * subset_pixel_weighting.to(device).to(dtype)[:, :, None]
 
     if spatial_avg_factor != 1:
         spatial_pooled_subset = spatial_downsample(subset_weighted, spatial_avg_factor)
