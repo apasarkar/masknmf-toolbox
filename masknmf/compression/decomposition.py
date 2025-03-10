@@ -584,7 +584,7 @@ def spatial_downsample(image_stack: torch.Tensor, spatial_avg_factor: int) -> to
     downsampled = torch.nn.functional.avg_pool2d(image_stack, kernel_size=spatial_avg_factor, stride=spatial_avg_factor)  # (T, 1, H//2, W//2)
     return downsampled.squeeze(1).permute(1, 2, 0)
 
-def _blockwise_decomposition_noprune(video_subset: torch.tensor,
+def blockwise_decomposition(video_subset: torch.tensor,
                             full_fov_spatial_basis: torch.tensor,
                             full_fov_temporal_basis: torch.tensor,
                             subset_mean: torch.tensor,
@@ -647,36 +647,36 @@ def _blockwise_decomposition_noprune(video_subset: torch.tensor,
     return local_spatial_basis, local_temporal_basis
 
 
-def blockwise_decomposition(video_subset: torch.tensor,
-                            full_fov_spatial_basis: torch.tensor,
-                            full_fov_temporal_basis: torch.tensor,
-                            subset_mean: torch.tensor,
-                            subset_noise_variance: torch.tensor,
-                            subset_pixel_weighting: torch.tensor,
-                            max_components: int,
-                            max_consecutive_failures: int,
-                            spatial_roughness_threshold: float,
-                            temporal_roughness_threshold: float,
-                            spatial_avg_factor: int,
-                            temporal_avg_factor: int,
-                            dtype: torch.dtype,
-                            spatial_denoiser: Optional[Callable] = None,
-                            temporal_denoiser: Optional[Callable] = None,
-                            device:str = "cpu"):
+def blockwise_decomposition_with_rank_selection(video_subset: torch.tensor,
+                                                full_fov_spatial_basis: torch.tensor,
+                                                full_fov_temporal_basis: torch.tensor,
+                                                subset_mean: torch.tensor,
+                                                subset_noise_variance: torch.tensor,
+                                                subset_pixel_weighting: torch.tensor,
+                                                max_components: int,
+                                                max_consecutive_failures: int,
+                                                spatial_roughness_threshold: float,
+                                                temporal_roughness_threshold: float,
+                                                spatial_avg_factor: int,
+                                                temporal_avg_factor: int,
+                                                dtype: torch.dtype,
+                                                spatial_denoiser: Optional[Callable] = None,
+                                                temporal_denoiser: Optional[Callable] = None,
+                                                device:str = "cpu"):
 
-    local_spatial_basis, local_temporal_basis = _blockwise_decomposition_noprune(video_subset,
-                                     full_fov_spatial_basis,
-                                     full_fov_temporal_basis,
-                                     subset_mean,
-                                     subset_noise_variance,
-                                     subset_pixel_weighting,
-                                     max_components,
-                                     spatial_avg_factor,
-                                     temporal_avg_factor,
-                                     dtype,
-                                     spatial_denoiser = spatial_denoiser,
-                                     temporal_denoiser = temporal_denoiser,
-                                     device = device)
+    local_spatial_basis, local_temporal_basis = blockwise_decomposition(video_subset,
+                                                                        full_fov_spatial_basis,
+                                                                        full_fov_temporal_basis,
+                                                                        subset_mean,
+                                                                        subset_noise_variance,
+                                                                        subset_pixel_weighting,
+                                                                        max_components,
+                                                                        spatial_avg_factor,
+                                                                        temporal_avg_factor,
+                                                                        dtype,
+                                                                        spatial_denoiser = spatial_denoiser,
+                                                                        temporal_denoiser = temporal_denoiser,
+                                                                        device = device)
 
 
     decisions = evaluate_fitness(local_spatial_basis,
@@ -732,19 +732,19 @@ def threshold_heuristic(
     for k in tqdm(range(iters)):
         sim_data = torch.randn(t, d1*d2, device=device, dtype=dtype).reshape((t, d1, d2))
 
-        spatial, temporal = _blockwise_decomposition_noprune(sim_data,
-                                                                full_fov_spatial_basis,
-                                                                full_fov_temporal_basis,
-                                                                sim_mean,
-                                                                sim_noise_normalizer,
-                                                                pixel_weighting,
-                                                                max_components,
-                                                                spatial_avg_factor,
-                                                                temporal_avg_factor,
-                                                                dtype,
-                                                                spatial_denoiser = spatial_denoiser,
-                                                                temporal_denoiser = temporal_denoiser,
-                                                                device = device)
+        spatial, temporal = blockwise_decomposition(sim_data,
+                                                    full_fov_spatial_basis,
+                                                    full_fov_temporal_basis,
+                                                    sim_mean,
+                                                    sim_noise_normalizer,
+                                                    pixel_weighting,
+                                                    max_components,
+                                                    spatial_avg_factor,
+                                                    temporal_avg_factor,
+                                                    dtype,
+                                                    spatial_denoiser = spatial_denoiser,
+                                                    temporal_denoiser = temporal_denoiser,
+                                                    device = device)
 
         spatial_stat = spatial_roughness_statistic(spatial)
         temporal_stat = temporal_roughness_statistic(temporal)
@@ -960,22 +960,22 @@ def pmd_decomposition(
         for j in dim_2_iters:
             slice_dim1 = slice(k, k + block_sizes[0])
             slice_dim2 = slice(j, j + block_sizes[1])
-            unweighted_local_spatial_basis, local_temporal_basis = blockwise_decomposition(data_for_spatial_fit[:, slice_dim1, slice_dim2],
+            unweighted_local_spatial_basis, local_temporal_basis = blockwise_decomposition_with_rank_selection(data_for_spatial_fit[:, slice_dim1, slice_dim2],
                                                                                 full_fov_spatial_basis[slice_dim1,slice_dim2, :],
-                                                                                full_fov_temporal_basis,
-                                                                                dataset_mean[slice_dim1, slice_dim2],
-                                                                                dataset_noise_variance[slice_dim1, slice_dim2],
-                                                                                pixel_weighting[slice_dim1, slice_dim2],
-                                                                                max_components,
-                                                                                max_consecutive_failures,
-                                                                                spatial_roughness_threshold,
-                                                                                temporal_roughness_threshold,
-                                                                                spatial_avg_factor,
-                                                                                temporal_avg_factor,
-                                                                                dtype,
-                                                                                spatial_denoiser=spatial_denoiser,
-                                                                                temporal_denoiser=temporal_denoiser,
-                                                                                device = device)
+                                                                                                               full_fov_temporal_basis,
+                                                                                                               dataset_mean[slice_dim1, slice_dim2],
+                                                                                                               dataset_noise_variance[slice_dim1, slice_dim2],
+                                                                                                               pixel_weighting[slice_dim1, slice_dim2],
+                                                                                                               max_components,
+                                                                                                               max_consecutive_failures,
+                                                                                                               spatial_roughness_threshold,
+                                                                                                               temporal_roughness_threshold,
+                                                                                                               spatial_avg_factor,
+                                                                                                               temporal_avg_factor,
+                                                                                                               dtype,
+                                                                                                               spatial_denoiser=spatial_denoiser,
+                                                                                                               temporal_denoiser=temporal_denoiser,
+                                                                                                               device = device)
 
             total_temporal_fit.append(local_temporal_basis)
 
