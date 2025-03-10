@@ -487,6 +487,38 @@ def compute_lowrank_factorized_svd(
 
 
 
+def regress_onto_spatial_basis_earlier(dataset: masknmf.LazyFrameLoader,
+                               u_aggregated: torch.sparse_coo_tensor,
+                               frame_batch_size: int,
+                               dataset_mean: torch.tensor,
+                               dataset_noise_variance: torch.tensor,
+                               full_fov_spatial_basis: torch.tensor,
+                               dtype: torch.dtype,
+                               device: str = "cpu") -> torch.tensor:
+
+    num_frames, fov_dim1, fov_dim2 = dataset.shape
+    num_iters = math.ceil(dataset.shape[0] / frame_batch_size)
+    dataset_mean = dataset_mean.to(device).to(dtype).reshape((fov_dim1*fov_dim2, 1))
+    dataset_noise_variance = dataset_noise_variance.to(device).to(dtype).reshape((fov_dim1*fov_dim2, 1))
+    full_fov_spatial_basis = full_fov_spatial_basis.to(device).to(dtype).reshape((fov_dim1*fov_dim2, -1))
+
+    spatial_projector = u_aggregated.T
+    temporal_results = []
+    temporal_background_results = []
+    for k in tqdm(range(num_iters)):
+        start_pt = k * frame_batch_size
+        end_pt = min(start_pt + frame_batch_size, num_frames)
+        curr_data = torch.from_numpy(dataset[start_pt:end_pt]).to(device).to(dtype).permute(1, 2, 0).reshape((fov_dim1*fov_dim2, -1))
+        curr_data -= dataset_mean
+        curr_data /= dataset_noise_variance
+        temporal_full_fov_comp = full_fov_spatial_basis.T @ curr_data
+        temporal_background_results.append(temporal_full_fov_comp)
+        curr_data -= full_fov_spatial_basis @ temporal_full_fov_comp
+        projection = torch.sparse.mm(spatial_projector, curr_data)
+        temporal_results.append(projection)
+    return torch.concatenate(temporal_results, dim = 1), torch.concatenate(temporal_background_results, dim = 1)
+
+
 def regress_onto_spatial_basis(dataset: masknmf.LazyFrameLoader,
                                u_aggregated: torch.sparse_coo_tensor,
                                spatial_mixing_matrix: torch.tensor,
@@ -910,6 +942,7 @@ def pmd_decomposition(
     final_row_indices = []
     final_column_indices = []
     spatial_overall_values = []
+    spatial_overall_unweighted_values = []
     cumulative_weights = torch.zeros((fov_dim1, fov_dim2), dtype = dtype, device = device)
     total_temporal_fit = []
 
@@ -929,7 +962,7 @@ def pmd_decomposition(
         for j in dim_2_iters:
             slice_dim1 = slice(k, k + block_sizes[0])
             slice_dim2 = slice(j, j + block_sizes[1])
-            local_spatial_basis, local_temporal_basis = blockwise_decomposition(data_for_spatial_fit[:, slice_dim1, slice_dim2],
+            unweighted_local_spatial_basis, local_temporal_basis = blockwise_decomposition(data_for_spatial_fit[:, slice_dim1, slice_dim2],
                                                                                 full_fov_spatial_basis[slice_dim1,slice_dim2, :],
                                                                                 full_fov_temporal_basis,
                                                                                 dataset_mean[slice_dim1, slice_dim2],
@@ -949,7 +982,8 @@ def pmd_decomposition(
             total_temporal_fit.append(local_temporal_basis)
 
             # Weight the spatial components here
-            local_spatial_basis = local_spatial_basis * block_weights[:, :, None]
+
+            local_spatial_basis = unweighted_local_spatial_basis * block_weights[:, :, None]
             current_cumulative_weight = block_weights
             cumulative_weights[
                 k : k + block_sizes[0], j : j + block_sizes[1]
@@ -975,16 +1009,32 @@ def pmd_decomposition(
             final_row_indices.append(sparse_row_indices_f)
             final_column_indices.append(sparse_col_indices_f)
             spatial_overall_values.append(spatial_values_f)
+            spatial_overall_unweighted_values.append(unweighted_local_spatial_basis.flatten())
             column_number += local_spatial_basis.shape[2]
 
-    #Normalize each pixel by the sum of the weights applied to it (this is patch wise linear interpolation)
+    #Construct the U matrix up to this point
     final_row_indices = torch.concatenate(final_row_indices, dim = 0)
     final_column_indices = torch.concatenate(final_column_indices, dim = 0)
     spatial_overall_values = torch.concatenate(spatial_overall_values, dim = 0)
+    final_indices = torch.stack([final_row_indices, final_column_indices], dim=0)
+
+    if data_for_spatial_fit.shape[0] < dataset.shape[0]:
+        display("Regressing the full dataset onto the learned spatial basis")
+        spatial_overall_unweighted_values = torch.concatenate(spatial_overall_unweighted_values, dim = 0)
+        u_spatial_fit = torch.sparse_coo_tensor(final_indices, spatial_overall_unweighted_values,
+                                                (fov_dim1*fov_dim2, column_number)).coalesce()
+        v_regression, full_dataset_temporal_basis = regress_onto_spatial_basis_earlier(dataset, u_spatial_fit, frame_batch_size, dataset_mean, dataset_noise_variance,
+                                           full_fov_spatial_basis, dtype, device)
+    else:
+        v_regression = torch.concatenate(total_temporal_fit, dim = 0)
+        full_dataset_temporal_basis = full_fov_temporal_basis
+
     interpolation_weightings = torch.reciprocal(cumulative_weights.flatten()[final_row_indices])
     spatial_overall_values *= interpolation_weightings
 
     ## Now add the full FOV spatial background
+    v_aggregated = [v_regression]
+    display(f"v_regression shape {v_regression.shape}")
     if background_rank <= 0:
         num_cols = column_number
         num_rows = fov_dim1 * fov_dim2
@@ -999,27 +1049,16 @@ def pmd_decomposition(
         final_row_indices = torch.concatenate([final_row_indices, background_sparse_row_indices.flatten()], dim = 0)
         final_column_indices = torch.concatenate([final_column_indices, background_sparse_column_indices.flatten()], dim = 0)
         spatial_overall_values = torch.concatenate([spatial_overall_values, full_fov_spatial_basis.flatten()], dim = 0)
-        total_temporal_fit.append(full_fov_temporal_basis)
+        v_aggregated.append(full_dataset_temporal_basis)
 
-
+    display(f"full fov temporal shape {full_fov_temporal_basis.shape}")
     final_indices = torch.stack([final_row_indices, final_column_indices], dim = 0)
     u_aggregated = torch.sparse_coo_tensor(final_indices, spatial_overall_values, (num_rows, num_cols))
-    v_aggregated = torch.concatenate(total_temporal_fit, dim = 0)
+    v_aggregated = torch.concatenate(v_aggregated, dim = 0)
     display(f"Constructed U matrix. Rank of U is {u_aggregated.shape[1]}")
 
-
-
-    if v_aggregated.shape[1] == dataset.shape[0]:
-        r, s, v = compute_lowrank_factorized_svd(u_aggregated, v_aggregated)
-        #We have fit to the full dataset; there is no need to do any further regression; just need to factorize things
-    else:
-        display("running regressions")
-        spatial_mixing_matrix, _, _ = compute_lowrank_factorized_svd(u_aggregated, v_aggregated)
-        v_full_regression = regress_onto_spatial_basis(dataset, u_aggregated, spatial_mixing_matrix, frame_batch_size, dataset_mean,
-                                   dataset_noise_variance, full_fov_spatial_basis, dtype, device=device)
-
-        r, s, v = compute_lowrank_factorized_svd(u_aggregated, spatial_mixing_matrix @ v_full_regression)
-    display("Finished orthogonalizing the data")
+    display("orthogonalizing the final representation")
+    r, s, v = compute_lowrank_factorized_svd(u_aggregated, v_aggregated)
 
     ## TODO: Add the mean/standard deviation image. Add an interface that allows us to say "to".
     final_pmd_arr = PMDArray((num_frames, fov_dim1, fov_dim2),
