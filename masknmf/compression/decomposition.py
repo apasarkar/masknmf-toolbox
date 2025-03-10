@@ -953,7 +953,8 @@ def pmd_decomposition(
                                                                                         dtype,
                                                                                         num_comps=1,
                                                                                         iters=250,
-                                                                                        percentile_threshold=sim_conf)
+                                                                                        percentile_threshold=sim_conf,
+                                                                                        device = device)
 
     display("Running Blockwise Decompositions")
     for k in dim_1_iters:
