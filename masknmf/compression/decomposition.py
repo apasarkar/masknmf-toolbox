@@ -468,16 +468,14 @@ def compute_lowrank_factorized_svd(
 
     ptut_up = (p.T @ ut_u) @ p
 
-    eig_vecs, eig_vals, _ = [i for i in torch.linalg.svd(ptut_up, full_matrices = True)]
+    eig_vals, eig_vecs = [i.float() for i in torch.linalg.eigh(ptut_up.double())]
 
-    # print(f"{torch.allclose(ptut_up, ptut_up.T)}")
-    # print(f"When we ran the eigh routine, the smallest value we saw was {np.amin(eig_vals.cpu().numpy())}")
     good_components = eig_vals > 0
     eig_vals = eig_vals[good_components]
     eig_vecs = eig_vecs[:, good_components]
-    #
-    # eig_vals = torch.flip(eig_vals, dims = [0])
-    # eig_vecs = torch.flip(eig_vecs, dims = [1])
+
+    eig_vals = torch.flip(eig_vals, dims = [0])
+    eig_vecs = torch.flip(eig_vecs, dims = [1])
 
     s = torch.sqrt(eig_vals)
     r = p @ (eig_vecs / s[None, :])
@@ -1012,6 +1010,7 @@ def pmd_decomposition(
             spatial_overall_unweighted_values.append(unweighted_local_spatial_basis.flatten())
             column_number += local_spatial_basis.shape[2]
 
+
     #Construct the U matrix up to this point
     final_row_indices = torch.concatenate(final_row_indices, dim = 0)
     final_column_indices = torch.concatenate(final_column_indices, dim = 0)
@@ -1034,7 +1033,6 @@ def pmd_decomposition(
 
     ## Now add the full FOV spatial background
     v_aggregated = [v_regression]
-    display(f"v_regression shape {v_regression.shape}")
     if background_rank <= 0:
         num_cols = column_number
         num_rows = fov_dim1 * fov_dim2
@@ -1051,7 +1049,6 @@ def pmd_decomposition(
         spatial_overall_values = torch.concatenate([spatial_overall_values, full_fov_spatial_basis.flatten()], dim = 0)
         v_aggregated.append(full_dataset_temporal_basis)
 
-    display(f"full fov temporal shape {full_fov_temporal_basis.shape}")
     final_indices = torch.stack([final_row_indices, final_column_indices], dim = 0)
     u_aggregated = torch.sparse_coo_tensor(final_indices, spatial_overall_values, (num_rows, num_cols))
     v_aggregated = torch.concatenate(v_aggregated, dim = 0)
