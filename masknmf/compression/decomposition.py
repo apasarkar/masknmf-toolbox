@@ -485,7 +485,7 @@ def compute_lowrank_factorized_svd(
 
 
 
-def regress_onto_spatial_basis_earlier(dataset: masknmf.LazyFrameLoader,
+def regress_onto_spatial_basis(dataset: masknmf.LazyFrameLoader,
                                u_aggregated: torch.sparse_coo_tensor,
                                frame_batch_size: int,
                                dataset_mean: torch.tensor,
@@ -551,37 +551,6 @@ def regress_onto_spatial_basis_earlier(dataset: masknmf.LazyFrameLoader,
         temporal_background_results.append(temporal_full_fov_comp)
         temporal_results.append(projection)
     return torch.concatenate(temporal_results, dim = 1), torch.concatenate(temporal_background_results, dim = 1)
-
-
-def regress_onto_spatial_basis(dataset: masknmf.LazyFrameLoader,
-                               u_aggregated: torch.sparse_coo_tensor,
-                               spatial_mixing_matrix: torch.tensor,
-                               frame_batch_size: int,
-                               dataset_mean: torch.tensor,
-                               dataset_noise_variance: torch.tensor,
-                               full_fov_spatial_basis: torch.tensor,
-                               dtype: torch.dtype,
-                               device: str = "cpu") -> torch.tensor:
-    num_frames, fov_dim1, fov_dim2 = dataset.shape
-    num_iters = math.ceil(dataset.shape[0] / frame_batch_size)
-    dataset_mean = dataset_mean.to(device).to(dtype).reshape((fov_dim1*fov_dim2, 1))
-    dataset_noise_variance = dataset_noise_variance.to(device).to(dtype).reshape((fov_dim1*fov_dim2, 1))
-    full_fov_spatial_basis = full_fov_spatial_basis.to(device).to(dtype).reshape((fov_dim1*fov_dim2, -1))
-
-    spatial_projector = u_aggregated.T
-    spatial_mixing_matrix_projector = spatial_mixing_matrix.T
-    temporal_results = []
-    for k in tqdm(range(num_iters)):
-        start_pt = k * frame_batch_size
-        end_pt = min(start_pt + frame_batch_size, num_frames)
-        curr_data = torch.from_numpy(dataset[start_pt:end_pt]).to(device).to(dtype).permute(1, 2, 0).reshape((fov_dim1*fov_dim2, -1))
-        curr_data -= dataset_mean
-        curr_data /= dataset_noise_variance
-        # temporal_full_fov_comp = full_fov_spatial_basis.T @ curr_data
-        # curr_data -= full_fov_spatial_basis @ temporal_full_fov_comp
-        projection = spatial_mixing_matrix_projector @ (torch.sparse.mm(spatial_projector, curr_data))
-        temporal_results.append(projection)
-    return torch.concatenate(temporal_results, dim = 1)
 
 
 def temporal_downsample(tensor: torch.Tensor, temporal_avg_factor: int) -> torch.Tensor:
@@ -1059,7 +1028,7 @@ def pmd_decomposition(
         spatial_overall_unweighted_values = torch.concatenate(spatial_overall_unweighted_values, dim = 0)
         u_spatial_fit = torch.sparse_coo_tensor(final_indices, spatial_overall_unweighted_values,
                                                 (fov_dim1*fov_dim2, column_number)).coalesce()
-        v_regression, full_dataset_temporal_basis = regress_onto_spatial_basis_earlier(dataset, u_spatial_fit, frame_batch_size, dataset_mean, dataset_noise_variance,
+        v_regression, full_dataset_temporal_basis = regress_onto_spatial_basis(dataset, u_spatial_fit, frame_batch_size, dataset_mean, dataset_noise_variance,
                                            full_fov_spatial_basis, dtype, device)
     else:
         v_regression = torch.concatenate(total_temporal_fit, dim = 0)
