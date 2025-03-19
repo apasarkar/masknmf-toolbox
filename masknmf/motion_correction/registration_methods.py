@@ -151,21 +151,23 @@ def subpixel_shift_method(opt_integer_shifts: torch.tensor,
     local_cross_corr = torch.real(local_cross_corr)
     local_cross_corr /= d1 * d2 * upsample_factor ** 2
 
-    max_corr_values, max_indices = torch.max(local_cross_corr.reshape(num_frames, -1), dim=1)
+    max_corr_values, max_indices = torch.max(torch.abs(local_cross_corr.reshape(num_frames, -1)), dim=1)
     max_indices_dim1, max_indices_dim2 = torch.unravel_index(max_indices, (local_cross_corr.shape[1],
                                                                            local_cross_corr.shape[2]))
 
     frame_indexer = torch.arange(local_cross_corr.shape[0], device = device)
     #Decide whether the subpixel shift in dim1 (keeping dim2 fixed at its original integer shift value) improves things
     dim1_subpixel_improvement_indicator = (
-                local_cross_corr[frame_indexer, integer_pixel_indices, max_indices_dim2] < max_corr_values).float()
+                local_cross_corr[frame_indexer, integer_pixel_indices, max_indices_dim2] >= max_corr_values)
+    max_indices_dim1[dim1_subpixel_improvement_indicator] = integer_pixel_indices
     #Decide whether the subpixel shift in dim2 (keeping dim1 fixed at its original integer shift value) improves things
     dim2_subpixel_improvement_indicator = (
-                local_cross_corr[frame_indexer, max_indices_dim1, integer_pixel_indices] < max_corr_values).float()
+                local_cross_corr[frame_indexer, max_indices_dim1, integer_pixel_indices] >= max_corr_values)
+    max_indices_dim2[dim2_subpixel_improvement_indicator] = integer_pixel_indices
 
     #Only incorporate subpixel shifts in each dimension if it actually improves the results
-    shifts_dim1 = opt_integer_shifts[:, 0] + ((max_indices_dim1 / upsample_factor) - offset_value) * dim1_subpixel_improvement_indicator.squeeze()
-    shifts_dim2 = opt_integer_shifts[:, 1] + ((max_indices_dim2 / upsample_factor) - offset_value) * dim2_subpixel_improvement_indicator.squeeze()
+    shifts_dim1 = opt_integer_shifts[:, 0] + ((max_indices_dim1 / upsample_factor) - offset_value)
+    shifts_dim2 = opt_integer_shifts[:, 1] + ((max_indices_dim2 / upsample_factor) - offset_value)
 
     return torch.stack([shifts_dim1, shifts_dim2], dim=1)
 
