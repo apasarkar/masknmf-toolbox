@@ -2,14 +2,17 @@ import torch
 import numpy as np
 from typing import *
 
+
 def apply_rigid_shifts(imgs: torch.tensor,
                        shifts: torch.tensor) -> torch.tensor:
     """
     Applies rigid shifts in dimension 1 (height) and dimension 2 (width) for each image.
     Critical: implementation must use torch.complex128 for numerical precision.
+
     Args:
         imgs (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2). Images to which we apply shifts
         shifts (torch.tensor): Shape (num_frames, 2). Index [i, :] gives the (i-1)-th shift in dim 1 (height) and dim 2 (width).
+
     Returns:
         shifted_imgs (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2).
     """
@@ -22,31 +25,30 @@ def apply_rigid_shifts(imgs: torch.tensor,
             f"Provide same number of images and shifts. You provided {imgs.shape[0]} images and {shifts.shape[0]} shifts")
     if imgs.device != shifts.device:
         raise ValueError(f"images are on {imgs.device} and shifts are on {shifts.device}. Place on same device first")
-    device = imgs.device
 
+    device = imgs.device
     H, W = imgs.shape[1], imgs.shape[2]
 
-    ## Apply the shifts directly in batch
-    freq_imgs = torch.fft.fft2(imgs, norm = "ortho")
+    # Compute FFT of images
+    freq_imgs = torch.fft.fft2(imgs, norm="ortho")
 
-    ## Identify frequency-specific multipliers to generate the appropriate "shifts" in the Fourier Domain
+    # Compute frequency grids using fftfreq
+    dim1_frequency = (-1j * 2 * torch.pi * torch.fft.fftfreq(H, d=1, device=device))[None, :].to(torch.complex128)
+    dim2_frequency = (-1j * 2 * torch.pi * torch.fft.fftfreq(W, d=1, device=device))[None, :].to(torch.complex128)
+
+    # Compute phase shift multipliers
     shift_dim1_terms = shifts[:, [0]].to(torch.complex128)
-    dim1_frequency = (-1 * 1j * (2 * torch.pi / H) * torch.arange(H, device=device))[None, :].to(torch.complex128)
-    term_dim1 = shift_dim1_terms @ dim1_frequency
-    term_dim1 = torch.exp(term_dim1)
+    term_dim1 = torch.exp(shift_dim1_terms @ dim1_frequency)
     freq_imgs *= term_dim1[:, :, None]
 
     shift_dim2_terms = shifts[:, [1]].to(torch.complex128)
-    dim2_frequency = (-1 * 1j * (2 * torch.pi / W) * torch.arange(W, device=device))[None, :].to(torch.complex128)
-    term_dim2 = shift_dim2_terms @ dim2_frequency
-    term_dim2 = torch.exp(term_dim2)
+    term_dim2 = torch.exp(shift_dim2_terms @ dim2_frequency)
     freq_imgs *= term_dim2[:, None, :]
 
-    # Run the inverse transform, with normalization (since the direct transform did not do any normalization)
+    # Inverse FFT
     shifted_imgs = torch.fft.ifft2(freq_imgs, norm="ortho")
 
     return torch.real(shifted_imgs)
-
 
 def estimate_rigid_shifts(image_stack: torch.tensor,
                           template: torch.tensor,
@@ -128,8 +130,8 @@ def subpixel_shift_method(opt_integer_shifts: torch.tensor,
     dim1_subpixel_indices = opt_integer_shifts[:, [0]].float() + dim_spread[None, :]  # Shape (num_frames, spread_dim1)
     dim1_subpixel_indices *= upsample_factor
     print(dim1_subpixel_indices[:10])
-    dim1_multiplier_vector = 1 * 1j * torch.pi * 2 * torch.arange(d1, device=device).to(torch.complex128) / (
-                d1 * upsample_factor)
+    dim1_multiplier_vector = 2 * 1j * torch.pi * torch.fft.fftfreq(d1, d=upsample_factor, device=device).to(
+        torch.complex128)
     print(f"the shape of dim1_multiplier_vector is {dim1_multiplier_vector.shape}")
     # Shape (num_frames, spread_dim1, d1)
     dim1_multiplier_matrix = dim1_subpixel_indices.to(torch.complex128).unsqueeze(2) @ dim1_multiplier_vector[None, :]
@@ -139,8 +141,8 @@ def subpixel_shift_method(opt_integer_shifts: torch.tensor,
     dim2_subpixel_indices *= upsample_factor
     print(f"dim2_subpixel_indices shape is {dim2_subpixel_indices.shape}")
     print(f"dim2_subpixel_indices {dim2_subpixel_indices[:4]}")
-    dim2_multiplier_vector = 1 * 1j * torch.pi * 2 * torch.arange(d2, device=device).to(torch.complex128) / (
-                d2 * upsample_factor)
+    dim2_multiplier_vector = 2 * 1j * torch.pi * torch.fft.fftfreq(d2, d=upsample_factor, device=device).to(
+        torch.complex128)
     dim2_multiplier_matrix = dim2_subpixel_indices.to(torch.complex128).unsqueeze(2) @ dim2_multiplier_vector[None, :]
     dim2_multiplier_matrix = dim2_multiplier_matrix.permute(0, 2, 1)  # Shape (num_frames, d2, spread_dim2)
     torch.exp_(dim2_multiplier_matrix)
