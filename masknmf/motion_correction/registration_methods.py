@@ -93,8 +93,7 @@ def estimate_rigid_shifts(image_stack: torch.tensor,
     shifts_dim1, shifts_dim2 = torch.unravel_index(max_indices, (d1, d2))
 
     shifts = torch.stack([shifts_dim1, shifts_dim2], dim=1)
-    shifts, max_locations, local_cross_corr = subpixel_shift_method(shifts,
-                                                                    fft_cross_correlation)
+    shifts = subpixel_shift_method(shifts, fft_cross_correlation)
     shifts_dim1, shifts_dim2 = shifts[:, 0], shifts[:, 1]
 
     values_to_subtract_dim1 = (torch.abs(d1 - shifts_dim1) <= torch.abs(shifts_dim1)).long()
@@ -145,7 +144,6 @@ def subpixel_shift_method(opt_integer_shifts: torch.tensor,
     local_cross_corr = torch.real(local_cross_corr)
     local_cross_corr /= d1 * d2 * upsample_factor ** 2
 
-    # local_cross_corr = torch.real(local_cross_corr)
     max_indices = torch.argmax(torch.abs(local_cross_corr.reshape(num_frames, -1)), dim=1)
     max_indices_dim1, max_indices_dim2 = torch.unravel_index(max_indices, (local_cross_corr.shape[1],
                                                                            local_cross_corr.shape[2]))
@@ -153,7 +151,7 @@ def subpixel_shift_method(opt_integer_shifts: torch.tensor,
     shifts_dim1 = (max_indices_dim1 / upsample_factor) + (opt_integer_shifts[:, 0] - offset_value)
     shifts_dim2 = (max_indices_dim2 / upsample_factor) + (opt_integer_shifts[:, 1] - offset_value)
 
-    return torch.stack([shifts_dim1, shifts_dim2], dim=1), max_indices, local_cross_corr
+    return torch.stack([shifts_dim1, shifts_dim2], dim=1)
 
 
 def _interpolate_to_border(shifted_imgs: torch.tensor,
