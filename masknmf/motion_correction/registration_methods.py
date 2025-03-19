@@ -92,13 +92,10 @@ def estimate_rigid_shifts(image_stack: torch.tensor,
     max_indices = torch.argmax(cross_correlation_values.reshape((num_frames, -1)), dim=1)
     shifts_dim1, shifts_dim2 = torch.unravel_index(max_indices, (d1, d2))
 
-    # Exerimental:
     shifts = torch.stack([shifts_dim1, shifts_dim2], dim=1)
     shifts, max_locations, local_cross_corr = subpixel_shift_method(shifts,
                                                                     fft_cross_correlation)
     shifts_dim1, shifts_dim2 = shifts[:, 0], shifts[:, 1]
-
-    ## End of expt
 
     values_to_subtract_dim1 = (torch.abs(d1 - shifts_dim1) <= torch.abs(shifts_dim1)).long()
     shifts_dim1 -= values_to_subtract_dim1 * d1
@@ -129,46 +126,32 @@ def subpixel_shift_method(opt_integer_shifts: torch.tensor,
     dim_spread = torch.arange(-1 * offset_value, offset_value, step=division_rate, device=device)
     dim1_subpixel_indices = opt_integer_shifts[:, [0]].float() + dim_spread[None, :]  # Shape (num_frames, spread_dim1)
     dim1_subpixel_indices *= upsample_factor
-    print(dim1_subpixel_indices[:10])
     dim1_multiplier_vector = 2 * 1j * torch.pi * torch.fft.fftfreq(d1, d=upsample_factor, device=device).to(
         torch.complex128)
-    print(f"the shape of dim1_multiplier_vector is {dim1_multiplier_vector.shape}")
     # Shape (num_frames, spread_dim1, d1)
     dim1_multiplier_matrix = dim1_subpixel_indices.to(torch.complex128).unsqueeze(2) @ dim1_multiplier_vector[None, :]
     torch.exp_(dim1_multiplier_matrix)
 
     dim2_subpixel_indices = opt_integer_shifts[:, [1]].float() + dim_spread[None, :]  # Shape (num_frames, spread_dim2)
     dim2_subpixel_indices *= upsample_factor
-    print(f"dim2_subpixel_indices shape is {dim2_subpixel_indices.shape}")
-    print(f"dim2_subpixel_indices {dim2_subpixel_indices[:4]}")
     dim2_multiplier_vector = 2 * 1j * torch.pi * torch.fft.fftfreq(d2, d=upsample_factor, device=device).to(
         torch.complex128)
     dim2_multiplier_matrix = dim2_subpixel_indices.to(torch.complex128).unsqueeze(2) @ dim2_multiplier_vector[None, :]
     dim2_multiplier_matrix = dim2_multiplier_matrix.permute(0, 2, 1)  # Shape (num_frames, d2, spread_dim2)
     torch.exp_(dim2_multiplier_matrix)
 
-    print(dim1_multiplier_matrix.shape)
-    print(fft_cross_correlation.shape)
-    print(dim2_multiplier_matrix.shape)
     local_cross_corr = torch.bmm(dim1_multiplier_matrix, fft_cross_correlation)
     local_cross_corr = torch.bmm(local_cross_corr, dim2_multiplier_matrix)
     local_cross_corr = torch.real(local_cross_corr)
     local_cross_corr /= d1 * d2 * upsample_factor ** 2
 
     # local_cross_corr = torch.real(local_cross_corr)
-    print(local_cross_corr.shape)
-
-    print(local_cross_corr.view(num_frames, -1).shape)
     max_indices = torch.argmax(torch.abs(local_cross_corr.reshape(num_frames, -1)), dim=1)
-    print(f"the max value of indices is {torch.amax(max_indices)} which is smaller than {d1 * d2}")
     max_indices_dim1, max_indices_dim2 = torch.unravel_index(max_indices, (local_cross_corr.shape[1],
                                                                            local_cross_corr.shape[2]))
 
     shifts_dim1 = (max_indices_dim1 / upsample_factor) + (opt_integer_shifts[:, 0] - offset_value)
     shifts_dim2 = (max_indices_dim2 / upsample_factor) + (opt_integer_shifts[:, 1] - offset_value)
-
-    print(
-        f"max differences of shifts are {torch.amax(max_indices_dim1 / upsample_factor)} and {max_indices_dim2 / upsample_factor}")
 
     return torch.stack([shifts_dim1, shifts_dim2], dim=1), max_indices, local_cross_corr
 
