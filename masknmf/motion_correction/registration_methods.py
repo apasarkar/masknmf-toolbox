@@ -151,7 +151,7 @@ def subpixel_shift_method(opt_integer_shifts: torch.tensor,
     local_cross_corr = torch.real(local_cross_corr)
     local_cross_corr /= d1 * d2 * upsample_factor ** 2
 
-    max_corr_values, max_indices = torch.max(torch.abs(local_cross_corr.reshape(num_frames, -1)), dim=1)
+    max_corr_values, max_indices = torch.max(local_cross_corr.reshape(num_frames, -1), dim=1)
     max_indices_dim1, max_indices_dim2 = torch.unravel_index(max_indices, (local_cross_corr.shape[1],
                                                                            local_cross_corr.shape[2]))
 
