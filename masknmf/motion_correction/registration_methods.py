@@ -68,7 +68,7 @@ def estimate_rigid_shifts(image_stack: torch.tensor,
     device = image_stack.device
     fft_image_stack = torch.fft.fft2(image_stack)
     fft_template = torch.conj(torch.fft.fft2(template))
-    max_shifts = torch.tensor(max_shifts).to(device)
+    max_shifts = torch.abs(torch.tensor(max_shifts).to(device))
 
     fft_cross_correlation = fft_image_stack * fft_template[None, :, :]
     spatial_domain_cross_correlation = torch.real(torch.fft.ifft2(fft_cross_correlation, norm="backward"))
@@ -102,10 +102,16 @@ def estimate_rigid_shifts(image_stack: torch.tensor,
     values_to_subtract_dim2 = (torch.abs(d2 - shifts_dim2) <= torch.abs(shifts_dim2)).long()
     shifts_dim2 -= values_to_subtract_dim2 * d2
 
+    #Make sure the final shifts are striclty within the max_shifts interval (we allow the superpixel estimator
+    torch.clip_(shifts_dim1, -1*max_shifts[0], max_shifts[0])
+    torch.clip_(shifts_dim2, -1*max_shifts[1], max_shifts[1])
+
     shifts = torch.stack([shifts_dim1, shifts_dim2], dim=1)
 
     # These shifts keep the image fixed and find the optimal template shift; we want the opposite (shift image --> match to template)
     shifts *= -1
+
+
 
     return shifts
 
@@ -123,6 +129,7 @@ def subpixel_shift_method(opt_integer_shifts: torch.tensor,
     division_rate = 1 / upsample_factor
 
     dim_spread = torch.arange(-1 * offset_value, offset_value, step=division_rate, device=device)
+    integer_pixel_indices = torch.argmin(torch.abs(dim_spread))
     dim1_subpixel_indices = opt_integer_shifts[:, [0]].float() + dim_spread[None, :]  # Shape (num_frames, spread_dim1)
     dim1_subpixel_indices *= upsample_factor
     dim1_multiplier_vector = 2 * 1j * torch.pi * torch.fft.fftfreq(d1, d=upsample_factor, device=device).to(
@@ -144,17 +151,26 @@ def subpixel_shift_method(opt_integer_shifts: torch.tensor,
     local_cross_corr = torch.real(local_cross_corr)
     local_cross_corr /= d1 * d2 * upsample_factor ** 2
 
-    max_indices = torch.argmax(torch.abs(local_cross_corr.reshape(num_frames, -1)), dim=1)
+    max_corr_values, max_indices = torch.max(local_cross_corr.reshape(num_frames, -1), dim=1)
     max_indices_dim1, max_indices_dim2 = torch.unravel_index(max_indices, (local_cross_corr.shape[1],
                                                                            local_cross_corr.shape[2]))
 
-    shifts_dim1 = (max_indices_dim1 / upsample_factor) + (opt_integer_shifts[:, 0] - offset_value)
-    shifts_dim2 = (max_indices_dim2 / upsample_factor) + (opt_integer_shifts[:, 1] - offset_value)
+    frame_indexer = torch.arange(local_cross_corr.shape[0], device = device)
+    #Decide whether the subpixel shift in dim1 (keeping dim2 fixed at its original integer shift value) improves things
+    dim1_subpixel_improvement_indicator = (
+                local_cross_corr[frame_indexer, integer_pixel_indices, max_indices_dim2] < max_corr_values).float()
+    #Decide whether the subpixel shift in dim2 (keeping dim1 fixed at its original integer shift value) improves things
+    dim2_subpixel_improvement_indicator = (
+                local_cross_corr[frame_indexer, max_indices_dim1, integer_pixel_indices] < max_corr_values).float()
+
+    #Only incorporate subpixel shifts in each dimension if it actually improves the results
+    shifts_dim1 = opt_integer_shifts[:, 0] + ((max_indices_dim1 / upsample_factor) - offset_value) * dim1_subpixel_improvement_indicator.squeeze()
+    shifts_dim2 = opt_integer_shifts[:, 1] + ((max_indices_dim2 / upsample_factor) - offset_value) * dim2_subpixel_improvement_indicator.squeeze()
 
     return torch.stack([shifts_dim1, shifts_dim2], dim=1)
 
 
-def _interpolate_to_border(shifted_imgs: torch.tensor,
+def interpolate_to_border(shifted_imgs: torch.tensor,
                            shifts: torch.tensor):
     """
     After applying rigid shifts via FFT methods, the resulting image will have some artifacts at the edges (wrap-around artifacts).
