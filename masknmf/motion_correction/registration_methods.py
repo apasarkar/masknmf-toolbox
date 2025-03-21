@@ -79,7 +79,7 @@ def estimate_rigid_shifts(image_stack: torch.tensor,
     fft_template = torch.conj(torch.fft.fft2(template))
     max_shifts = torch.abs(torch.tensor(max_shifts).to(device))
 
-    fft_cross_correlation = fft_image_stack * fft_template[None, :, :]
+    fft_cross_correlation = fft_image_stack * fft_template
     spatial_domain_cross_correlation = torch.real(torch.fft.ifft2(fft_cross_correlation, norm="backward"))
 
     dim1_valid_shifts = torch.arange(d1, device=device)
