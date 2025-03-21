@@ -54,15 +54,24 @@ def estimate_rigid_shifts(image_stack: torch.tensor,
                           template: torch.tensor,
                           max_shifts: tuple[int, int]) -> torch.tensor:
     """
-    Estimate rigid shifts to apply to a given image stack to best align each frame to a template
+    Estimate rigid shifts to apply to a given image stack to best align each frame to template(s)
 
     Args:
         image_stack (torch.tensor): Shape (num_frames, fov dim1, fov dim2).
-        template (torch.tensor): Shape (fov dim1, fov dim2).
+        template (torch.tensor): Shape (fov dim1, fov dim2) or (num_frames, fov_dim1, fov_dim2).
         max_shifts (tuple[int, int]): Maximum shifts we can apply in each direction
     Returns:
-        corrected_stack (torch.tensor): Shape (num_frames, fov dim1, fov dim2)
+        rigid_shifts (torch.tensor): Shape (num_frames, 2). rigid_shifts[i, :] gives the (fov dim1, fov dim2) shifts,
+            in that order, for frame "i"
     """
+
+    if len(template.shape) == 2: #One template, all frames
+        template = template[None, :, :]
+    elif len(template.shape) == 3:
+        if template.shape[0] == 1:
+            pass
+        elif template.shape[0] != image_stack.shape[0]:
+            raise ValueError(f"The number of templates {template.shape[0]} does not match number of frames {image_stack.shape[0]}")
 
     num_frames, d1, d2 = image_stack.shape
     device = image_stack.device
@@ -102,7 +111,7 @@ def estimate_rigid_shifts(image_stack: torch.tensor,
     values_to_subtract_dim2 = (torch.abs(d2 - shifts_dim2) <= torch.abs(shifts_dim2)).long()
     shifts_dim2 -= values_to_subtract_dim2 * d2
 
-    #Make sure the final shifts are striclty within the max_shifts interval (we allow the superpixel estimator
+    #Make sure the final shifts are strictly within the max_shifts interval (we allow the superpixel estimator
     torch.clip_(shifts_dim1, -1*max_shifts[0], max_shifts[0])
     torch.clip_(shifts_dim2, -1*max_shifts[1], max_shifts[1])
 
@@ -170,7 +179,6 @@ def subpixel_shift_method(opt_integer_shifts: torch.tensor,
     shifts_dim2 = opt_integer_shifts[:, 1] + ((max_indices_dim2 / upsample_factor) - offset_value)
 
     return torch.stack([shifts_dim1, shifts_dim2], dim=1)
-
 
 def interpolate_to_border(shifted_imgs: torch.tensor,
                            shifts: torch.tensor):
