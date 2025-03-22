@@ -2,6 +2,8 @@ import torch
 import numpy as np
 from typing import *
 
+from typing import Tuple
+
 
 def apply_rigid_shifts(imgs: torch.tensor,
                        shifts: torch.tensor) -> torch.tensor:
@@ -235,4 +237,369 @@ def interpolate_to_border(shifted_imgs: torch.tensor,
     return shifted_imgs
 
 
+def extract_patches(img: torch.tensor,
+                    patches: Tuple[int, int],
+                    overlaps: Tuple[int, int]) -> torch.tensor:
+    """
+    Batched routine that extracted a proper "sliding window" of patches for piecewise rigid registration.
+
+    Args:
+        img (torch.Tensor): Shape (num_frames, height, width).
+        patches (tuple[int, int]): The height and width patch dimensions
+        overlaps (tuple[int, int]): The overlap between adjacent patches, in both height and width dimensions.
+        overlap_h (int): Overlap in height.
+        overlap_w (int): Overlap in width.
+
+    Returns:
+        patches (torch.tensor): Extracted patches with shape (num_frames, patch_grid_dim1, patch_grid_dim2, patch_height, patch_width).
+            patch_grid_dim1, patch_grid_dim2 gives the dimensions of the grid of overlapping patches (in the way they tile the actual FOV).
+    """
+    num_frames, h, w = img.shape
+
+    patch_h, patch_w = patches
+    overlap_h, overlap_w = overlaps
+    first_dim, second_dim = get_indices((h, w), patch_h, patch_w, overlap_h, overlap_w)
+
+    # Create all start positions using meshgrid
+    grid_x, grid_y = torch.meshgrid(first_dim, second_dim, indexing="ij")
+    patch_grid_dimensions = grid_x.shape
+
+    start_positions = torch.stack([grid_x.flatten(), grid_y.flatten()], dim=1)
+    num_patches = start_positions.shape[0]
+
+    # Generate patch indices
+    patch_dim1 = torch.arange(patch_h).view(-1, 1) + start_positions[:, 0].view(-1, 1, 1)  # (num_patches, patch_h, 1)
+    patch_dim2 = torch.arange(patch_w).view(1, -1) + start_positions[:, 1].view(-1, 1, 1)  # (num_patches, 1, patch_w)
+
+
+    patches = img[:, patch_dim1, patch_dim2]  # (num_frames, num_patches, patch_h, patch_w)
+    return patches.reshape((num_frames, patch_grid_dimensions[0], patch_grid_dimensions[1], patch_h, patch_w))
+
+def get_indices(img_shape: Tuple[int, int],
+                patch_h: int,
+                patch_w: int,
+                overlap_h: int,
+                overlap_w: int) -> Tuple[torch.tensor, torch.tensor]:
+    """
+    Compute the start indices for extracting patches with given patch sizes and overlaps.
+
+    Args:
+        img_shape (tuple): Shape of the image (height, width).
+        patch_h (int): Patch height.
+        patch_w (int): Patch width.
+        overlap_h (int): Overlap along height.
+        overlap_w (int): Overlap along width.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: Start indices for each patch along height and width.
+    """
+    h, w = img_shape
+
+    # Compute strides from overlaps
+    stride_h = patch_h - overlap_h
+    stride_w = patch_w - overlap_w
+
+    first_dim = torch.arange(0, h - patch_h, stride_h)
+    first_dim = torch.cat([first_dim, torch.tensor([max(h - patch_h, 0)])])
+
+    second_dim = torch.arange(0, w - patch_w, stride_w)
+    second_dim = torch.cat([second_dim, torch.tensor([max(w - patch_w, 0)])])
+
+    return first_dim, second_dim
+
+## TODO: Rename to "displacement vector field"
+def apply_shift_vector_field(imgs: torch.tensor,
+                             shift_vector_field: torch.tensor) -> torch.tensor:
+    """
+    Apply displacements from a given displacement vector field to an image stack.
+
+    Args:
+        imgs (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2). The images stack to which shifts are applied
+        shift_vector_field (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2, 2). For each frame a vector field
+            describing the motion correct shifts at each pixel. shift_vector_field[0, i, j, :] gives (dim1, dim2)
+            coordinates in python indexing.
+
+    Returns:
+        corrected_imgs (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2). The motion corrected images.
+
+    """
+    num_frames, fov_dim1, fov_dim2 = imgs.shape
+    device = imgs.device
+
+    # Generate coordinate grid
+    fovdim1_grid, fovdim2_grid = torch.meshgrid(
+        torch.arange(0.0, fov_dim1, dtype=torch.float32, device=device),
+        torch.arange(0.0, fov_dim2, dtype=torch.float32, device=device),
+        indexing="ij"  # "ij" produces (row, col) ordering
+    )
+    base_grid = torch.stack((fovdim1_grid, fovdim2_grid), dim=-1)  # Shape: (fov_dim1, fov_dim2, 2)
+
+    ## Need to negate the shifts here because the grid_sample routine is really moving the "grid" (not the image)
+    remapped_coords = base_grid.unsqueeze(0) + -1*shift_vector_field
+
+    # Normalize remapped coordinates to [-1, 1]
+    remapped_coords[..., 0] *= (2 / (fov_dim1 - 1))
+    remapped_coords[..., 0] -= 1
+
+    remapped_coords[..., 1] *= (2 / (fov_dim2 - 1))
+    remapped_coords[..., 1] -= 1
+
+    # Swap the coordinate order to match (x, y) expectation of grid_sample
+    remapped_coords = torch.flip(remapped_coords, dims=[-1])
+
+    imgs = imgs.unsqueeze(1)  # Shape (num_frames, 1, H, W)
+
+    corrected_imgs = torch.nn.functional.grid_sample(
+        imgs.double(), remapped_coords.double(), mode="bilinear", padding_mode="border", align_corners=False
+    )
+
+    return corrected_imgs.squeeze(1).float()
+
+
+def generate_motion_field_from_pwrigid_shifts(shifts: torch.Tensor, fov_dim1: int, fov_dim2: int) -> torch.Tensor:
+    """
+    Pwrigid motion correction partitions the FOV into, say, (k1, k2) patches (each with dimension (patch_dimension)),
+    and estimates rigid shifts at each patch.
+
+    The below method uses these rigid shifts to generate a smooth vector field describing the shifts to be applied at each pixel.
+
+    Function is batched over dimension 0 of shifts
+
+    Args:
+        shifts (torch.Tensor): Motion field estimates, shape (batch_size, k1, k2, 2),
+                               where the last dimension contains (dy, dx) shifts.
+        fov_dim1 (int): Height of full field.
+        fov_dim2 (int): Width of full field.
+
+    Returns:
+        torch.Tensor: Remapped coordinate grids, shape (batch_size, fov_dim1, fov_dim2, 2).
+    """
+    device = shifts.device
+    batch_size, k1, k2, _ = shifts.shape
+
+    # Resize motion fields using bicubic interpolation
+    pixelwise_motion_vector = torch.nn.functional.interpolate(
+        shifts.permute(0, 3, 1, 2),  # Move channels to (batch_size, 2, k1, k2)
+        size=(fov_dim1, fov_dim2),
+        mode="bicubic",
+        align_corners=True
+    ).permute(0, 2, 3, 1)  # Restore to (batch_size, fov_dim1, fov_dim2, 2)
+
+    return pixelwise_motion_vector
+
+
+def valid_pixel_identifier(shift_lower_bounds: torch.Tensor,
+                           shift_upper_bounds: torch.Tensor,
+                           fov_dim1: int,
+                           fov_dim2: int):
+    """
+    Given the amounts of "valid" shifts for each frame, this function returns indicators
+    describing which rows/columns in space are valid. This is useful when searching for
+    shifts that maximize the cross-correlation.
+
+    Args:
+        shift_lower_bounds (torch.Tensor): Shape (num_frames, 2). The lower bound shifts
+                                           in spatial dimension 1 and 2 respectively.
+        shift_upper_bounds (torch.Tensor): Shape (num_frames, 2). The upper bound shifts
+                                           in spatial dimension 1 and 2 respectively.
+        fov_dim1 (int): The height of the field of view (FOV).
+        fov_dim2 (int): The width of the field of view (FOV).
+
+    Returns:
+        - valid_rows (torch.Tensor): Shape (num_frames, fov_dim1).
+                                     Indicates valid row indices for each frame.
+        - valid_cols (torch.Tensor): Shape (num_frames, fov_dim2).
+                                     Indicates valid column indices for each frame.
+    """
+    device = shift_lower_bounds.device
+    num_frames = shift_lower_bounds.shape[0]
+
+    # Clone to avoid modifying original tensors
+    shift_lower_bounds_adj = shift_lower_bounds.clone()
+    shift_upper_bounds_adj = shift_upper_bounds.clone()
+
+    # Convert negative indices to valid positive indices using modular wrapping
+    # If the interval is (a, b) with a < 0, then the new interval should be
+    shift_lower_bounds_adj[:, 0] += fov_dim1
+    shift_upper_bounds_adj[:, 0] += fov_dim1  # The interval is now [0, 2*fov_dim1)
+
+    shift_lower_bounds_adj[:, 1] += fov_dim2
+    shift_upper_bounds_adj[:, 1] += fov_dim2
+
+    # Generate row and column indices
+    row_indices = torch.arange(fov_dim1 * 2, device=device).expand(num_frames, -1)
+    col_indices = torch.arange(fov_dim2 * 2, device=device).expand(num_frames, -1)
+
+    # Compute valid row/column masks
+    valid_rows = (row_indices >= shift_lower_bounds_adj[:, 0, None]) & (
+                row_indices <= shift_upper_bounds_adj[:, 0, None])
+    valid_cols = (col_indices >= shift_lower_bounds_adj[:, 1, None]) & (
+                col_indices <= shift_upper_bounds_adj[:, 1, None])
+
+    valid_rows[:, :fov_dim1] += valid_rows[:, fov_dim1:]
+    valid_cols[:, :fov_dim2] += valid_cols[:, fov_dim2:]
+
+    return valid_rows[:, :fov_dim1], valid_cols[:, :fov_dim2]
+
+
+def estimate_patchwise_rigid_shifts(image_stack_patchwise: torch.tensor,
+                                    template_patchwise: torch.tensor,
+                                    shift_lower_bounds: torch.tensor,
+                                    shift_upper_bounds: torch.tensor) -> torch.tensor:
+    """
+    Estimate rigid shifts to apply to a given image stack to best align each frame to template(s)
+
+    Args:
+        image_stack_patchwise (torch.tensor): Shape (num_frames, num_patches, patch_dim1, patch_dim2).
+        template_patchwise (torch.tensor): Shape either (num_frames, num_patches, patch_dim1, patch_dim2) or (num_patches, patch_dim1, patch_dim2).
+            The template to which we align each patch.
+        shift_lower_bounds (torch.tensor): Shape (num_frames, 2). The minimum fov_dim1 and fov_dim2 shifts respectively
+            that we use for aligning patches to their templates.
+        shift_upper_bounds (torch.tensor): Shape (num_frames, 2). The maximum fov_dim1, fov_dim2 shifts respectively
+            that we use for aligning patches to their templates.
+    Returns:
+        patchwise_rigid_shifts (torch.tensor): Shape (num_frames, num_patches, 2). Describes the rigid shift in dim1 and dim2 that needs to be applied
+            at each patch at each frame to optimally align it with the appropriate template.
+    """
+
+    if len(template_patchwise.shape) == 3:  # One set of patchwise templates for all frames
+        template_patchwise = template_patchwise.unsqueeze(0)
+    elif len(template_patchwise.shape) == 4:
+        if template_patchwise.shape[0] == 1:
+            pass
+        elif template_patchwise.shape[0] != image_stack_patchwise.shape[0]:
+            raise ValueError(
+                f"The number of templates {template_patchwise.shape[0]} does not match number of frames {image_stack_patchwise.shape[0]}")
+
+    num_frames, num_patches, patch_dim1, patch_dim2 = image_stack_patchwise.shape
+    device = image_stack_patchwise.device
+    fft_image_stack = torch.fft.fft2(image_stack_patchwise)
+    fft_template = torch.conj(torch.fft.fft2(template_patchwise))
+    # max_shifts = torch.abs(torch.tensor(max_shifts).to(device))
+
+    fft_cross_correlation = fft_image_stack * fft_template
+    spatial_domain_cross_correlation = torch.real(torch.fft.ifft2(fft_cross_correlation, norm="backward"))
+
+    ## For each frame, there is a valid "interval" in dim1 and dim2 of indices we care about. This varies across frames now.
+    shift_lower_bounds = shift_lower_bounds.clone()
+    shift_upper_bounds = shift_upper_bounds.clone()
+
+    valid_rows, valid_cols = valid_pixel_identifier(shift_lower_bounds, shift_upper_bounds, patch_dim1, patch_dim2)
+    valid_locations = torch.bmm(valid_rows.unsqueeze(2).float(),
+                                valid_cols.unsqueeze(1).float())  # Shape (num_frames, patch_dim1, patch_dim2)
+    invalid_locations = (~(valid_locations.bool())).float()
+    cross_correlation_values = spatial_domain_cross_correlation * valid_locations[:, None, :, :]
+    invalid_subtraction = invalid_locations * torch.abs(torch.amax(spatial_domain_cross_correlation))
+
+    print(
+        f"shape invalid subtraction is {invalid_subtraction.shape} while cc values is {cross_correlation_values.shape}")
+    cross_correlation_values -= invalid_subtraction.unsqueeze(
+        1)  # Guarantees that the maximum correlation value is not at an invalid pixel
+
+    ## We can move from num_frames x num_patches x patchdim1 x patchdim2 to (num_frames x num_patches) x patchdim1 x patchdim2
+    cross_correlation_values = cross_correlation_values.reshape((num_frames * num_patches, patch_dim1, patch_dim2))
+    max_indices = torch.argmax(cross_correlation_values.reshape((cross_correlation_values.shape[0], -1)), dim=1)
+    shifts_dim1, shifts_dim2 = torch.unravel_index(max_indices, (patch_dim1, patch_dim2))
+    shifts = torch.stack([shifts_dim1, shifts_dim2], dim=1)
+    print(f"shift upper and lower bds are {shift_lower_bounds} and {shift_upper_bounds} but shifts are {shifts}")
+    shifts = subpixel_shift_method(shifts, fft_cross_correlation.reshape((num_frames * num_patches,
+                                                                          patch_dim1,
+                                                                          patch_dim2)))
+    print(f"after subpixel, shifts are {shifts}")
+    shifts_dim1, shifts_dim2 = shifts[:, 0], shifts[:, 1]
+
+    values_to_subtract_dim1 = (torch.abs(patch_dim1 - shifts_dim1) <= torch.abs(shifts_dim1)).long()
+    shifts_dim1 -= values_to_subtract_dim1 * patch_dim1
+
+    values_to_subtract_dim2 = (torch.abs(patch_dim2 - shifts_dim2) <= torch.abs(shifts_dim2)).long()
+    shifts_dim2 -= values_to_subtract_dim2 * patch_dim2
+
+    print(f"after subtraction, shifts are {shifts_dim1} and {shifts_dim2}")
+    # No need to be strict about max shift here (within fractional pixels)
+    shifts = torch.stack([shifts_dim1, shifts_dim2], dim=1)
+    shifts = shifts.reshape(num_frames, num_patches, 2)
+    shifts *= -1
+
+    return shifts
+
+
+def register_frames_pwrigid(reference_frames: torch.tensor,
+                            template: torch.tensor,
+                            strides: tuple[int, int],
+                            overlaps: tuple[int, int],
+                            max_rigid_shifts: tuple[int, int],
+                            max_deviation_rigid: int,
+                            target_frames: Optional[torch.tensor] = None):
+    """
+    Performs piecewise rigid normcorre registration. Method estimates a motion vector field that quantifies motion of
+    references frames relative to template, and applies relevant transform to correct the motion.
+
+    Args:
+        reference_frames (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2). We estimate shifts that optimally align reference_frames to
+            the template
+        template (torch.tensor): Shape (fov_dim1, fov_dim2)  or (num_frames, fov_dim1, fov_dim2). The template(s) used for alignment.
+        strides (tuple[int, int]): Two integers, used to specify patch dimensions for pwrigid registration
+        overlaps (tuple[int, int]): Two integers, used to specify the degree of overlap between patches.
+            Together, (strides[0] + overlaps[0], strides[1] + overlaps[1]) defines the patch size for pw rigid registration.
+        max_rigid_shifts (tuple[int, int]): The maximum (full-fov) rigid shifts, used to perform rigid motion correction prior to piecewise
+            rigid registration.
+        max_deviation_rigid (tuple[int, int]): The maximum number of pixels (in the height, width directions respectively) that a patch
+            can shift relative to the estimate global rigid shifts of the frame.
+        target_frames (Optional): The relevant shift estimation is computed between the references frames and the template(s). But the shifts can be
+            applied to any other stack. To do this, specify a stack in target_frames.
+    Returns:
+        registered_frames (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2). The motion corrected frames.
+        shift_vector_field (torch.tensor): Shape (num_frames, num_patches_dim1, num_patches_dim2, 2). During piecewise motion correction,
+            we break the field of view into overlapping patches and estimate a 2D rigid shift per patch.
+            The function "generate_motion_field_from_piecewise_rigid_shifts" transforms these patchwise rigid shifts into a (num_frames, fov_dim1, fov_dim2, 2)
+            shaped shift vector field. It is more memory efficient to return the (num_patches_dim1, num_patches_dim2, 2) "lowrank"
+            version of the shift vector field.
+
+    """
+    device = reference_frames.device
+    num_frames, fov_dim1, fov_dim2 = reference_frames.shape
+
+    if target_frames is None:
+        target_frames = reference_frames  # We are not applying shifts to another stack here
+
+    rigid_shifts = masknmf.motion_correction.estimate_rigid_shifts(reference_frames, template, max_rigid_shifts)
+    print(f"rigid shifts are {rigid_shifts}")
+
+    """
+    Do patchwise rigid registration. What does this method need? 
+    For each frame, there is a rigid shift. Given this rigid shift, we can establish an interval (in each dimension) 
+    of patchwise rigid shifts that are tolerable. 
+
+    These patchwise shifts are placed into a final vector, of shape (num_frames, k1, k2, 2)
+    """
+    max_deviation_rigid = torch.tensor([max_deviation_rigid[0], max_deviation_rigid[1]]).to(device)
+    lb_shifts = rigid_shifts - max_deviation_rigid.unsqueeze(0)
+    ub_shifts = rigid_shifts + max_deviation_rigid.unsqueeze(0)
+    print(f"lb shifts is {lb_shifts}")
+    print(f"ub_shifts is {ub_shifts}")
+
+    patches = [strides[0] + overlaps[0], strides[1] + overlaps[1]]
+    patched_data = extract_patches(reference_frames, patches, overlaps)
+    patched_templates = extract_patches(template, patches, overlaps)
+
+    patch_grid_dim1 = patched_data.shape[1]
+    patch_grid_dim2 = patched_data.shape[2]
+
+    lowrank_patchwise_rigid_shifts = estimate_patchwise_rigid_shifts(
+        patched_data.reshape(num_frames, -1, patches[0], patches[1]),
+        patched_templates.reshape(patched_templates.shape[0], -1, patches[0], patches[1]),
+        lb_shifts,
+        ub_shifts)
+    # Reshape to (num_frames, patch_grid_dim1, patch_grid_dim2, 2)
+    lowrank_patchwise_rigid_shifts = lowrank_patchwise_rigid_shifts.reshape(
+        (num_frames, patch_grid_dim1, patch_grid_dim2, 2))
+    """
+    Output: A num_frames x patch_grid_dim1 x patch_grid_dim2 x 2 tensor describing the patchwise estimated rigid shifts in the height and width dimension.
+    From here it is straightforward: (1) go from patch_grid_dim1 x patch_grid_dim2 x 2 --> fov dim 1, fov dim 2 x 2 motion field
+    (2) apply relevant shifts to target img
+    """
+    shift_field_batch = generate_motion_field_from_pwrigid_shifts(lowrank_patchwise_rigid_shifts, fov_dim1, fov_dim2)
+
+    registered_imgs = apply_shift_vector_field(target_frames, shift_field_batch)
+    return registered_imgs, lowrank_patchwise_rigid_shifts
 
