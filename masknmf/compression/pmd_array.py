@@ -1,4 +1,4 @@
-from .array_interfaces import LazyFrameLoader, FactorizedVideo
+from masknmf.array_interfaces import LazyFrameLoader, FactorizedVideo
 import torch
 from typing import *
 import numpy as np
