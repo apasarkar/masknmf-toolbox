@@ -547,6 +547,7 @@ def register_frames_pwrigid(reference_frames: torch.tensor,
             can shift relative to the estimate global rigid shifts of the frame.
         target_frames (Optional): The relevant shift estimation is computed between the references frames and the template(s). But the shifts can be
             applied to any other stack. To do this, specify a stack in target_frames.
+
     Returns:
         registered_frames (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2). The motion corrected frames.
         shift_vector_field (torch.tensor): Shape (num_frames, num_patches_dim1, num_patches_dim2, 2). During piecewise motion correction,
@@ -562,7 +563,7 @@ def register_frames_pwrigid(reference_frames: torch.tensor,
     if target_frames is None:
         target_frames = reference_frames  # We are not applying shifts to another stack here
 
-    rigid_shifts = masknmf.motion_correction.estimate_rigid_shifts(reference_frames, template, max_rigid_shifts)
+    rigid_shifts = estimate_rigid_shifts(reference_frames, template, max_rigid_shifts)
     print(f"rigid shifts are {rigid_shifts}")
 
     """
@@ -578,7 +579,7 @@ def register_frames_pwrigid(reference_frames: torch.tensor,
     print(f"lb shifts is {lb_shifts}")
     print(f"ub_shifts is {ub_shifts}")
 
-    patches = [strides[0] + overlaps[0], strides[1] + overlaps[1]]
+    patches = (strides[0] + overlaps[0], strides[1] + overlaps[1])
     patched_data = extract_patches(reference_frames, patches, overlaps)
     patched_templates = extract_patches(template, patches, overlaps)
 
