@@ -4,24 +4,32 @@ from typing import *
 
 from typing import Tuple
 
-def register_frames_rigid(imgs: torch.tensor,
+def register_frames_rigid(reference_frames: torch.tensor,
                           template: torch.tensor,
-                          max_shifts: Tuple[int, int]):
+                          max_shifts: Tuple[int, int],
+                          target_frames: Optional[torch.tensor]):
     """
     Runs full rigid motion correction pipeline: estimating shifts, applying shifts to the iamge stack, and using a copying scheme
     to deal with edge artifacts.
 
     Args:
-        imgs (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2)
+        reference_frames (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2)
         template (torch.tensor): Shape either (fov_dim1, fov_dim2) or (num_frames, fov_dim1, fov_dim2). The template(s) to which we align the images
         max_shifts (Tuple[int, int]): The max shift in dimension 1 (height) and dimension 2 (width) respectively.
+        target_frames (Optional[torch.tensor]): If specified, we learn the shifts to optimally align reference frames to the template(s) and
+            apply those shifts to this set of target frames. Useful for dual-color imaging settings.
     Returns:
         registered_images (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2).
         estimated_shifts (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2).
     """
+    if target_frames is None:
+        target_frames = reference_frames
 
-    rigid_shifts = estimate_rigid_shifts(imgs, template, max_shifts)
-    updated_stack = apply_rigid_shifts(imgs, rigid_shifts)
+    #Compute shifts to align reference frame to template(s)
+    rigid_shifts = estimate_rigid_shifts(reference_frames, template, max_shifts)
+
+    #Apply these shifts to target frame
+    updated_stack = apply_rigid_shifts(target_frames, rigid_shifts)
     updated_stack = interpolate_to_border(updated_stack, rigid_shifts)
     return updated_stack, rigid_shifts
 
