@@ -4,6 +4,26 @@ from typing import *
 
 from typing import Tuple
 
+def register_frames_rigid(imgs: torch.tensor,
+                          template: torch.tensor,
+                          max_shifts: Tuple[int, int]):
+    """
+    Runs full rigid motion correction pipeline: estimating shifts, applying shifts to the iamge stack, and using a copying scheme
+    to deal with edge artifacts.
+
+    Args:
+        imgs (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2)
+        template (torch.tensor): Shape either (fov_dim1, fov_dim2) or (num_frames, fov_dim1, fov_dim2). The template(s) to which we align the images
+        max_shifts (Tuple[int, int]): The max shift in dimension 1 (height) and dimension 2 (width) respectively.
+    Returns:
+        registered_images (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2).
+        estimated_shifts (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2).
+    """
+
+    rigid_shifts = estimate_rigid_shifts(imgs, template, max_shifts)
+    updated_stack = apply_rigid_shifts(imgs, rigid_shifts)
+    updated_stack = interpolate_to_border(updated_stack, rigid_shifts)
+    return updated_stack, rigid_shifts
 
 def apply_rigid_shifts(imgs: torch.tensor,
                        shifts: torch.tensor) -> torch.tensor:
@@ -54,7 +74,7 @@ def apply_rigid_shifts(imgs: torch.tensor,
 
 def estimate_rigid_shifts(image_stack: torch.tensor,
                           template: torch.tensor,
-                          max_shifts: tuple[int, int]) -> torch.tensor:
+                          max_shifts: Tuple[int, int]) -> torch.tensor:
     """
     Estimate rigid shifts to apply to a given image stack to best align each frame to template(s)
 
@@ -121,9 +141,6 @@ def estimate_rigid_shifts(image_stack: torch.tensor,
 
     # These shifts keep the image fixed and find the optimal template shift; we want the opposite (shift image --> match to template)
     shifts *= -1
-
-
-
     return shifts
 
 
@@ -132,6 +149,14 @@ def subpixel_shift_method(opt_integer_shifts: torch.tensor,
     """
     Use fourier interpolation (up to the "upsample_factor") to find the optimal "subpixel" shift, within 0.1 of a pixel
 
+    Args:
+        opt_integer_shifts (torch.tensor): Shape (num_frames, 2). Tensor describing for each frame the optimal integer
+            dim1 and dim2 shifts. This function searches for subpixel shifts in a local neighborbood of the optimal integer shifts.
+        fft_cross_correlation (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2).
+            The FFT of the spatial cross correlation between each frame and the template
+
+    Returns:
+        subpixel_estimates (torch.tensor): Shape (num_frames, 2). The optimal subpixel shifts
     """
     num_frames, d1, d2 = fft_cross_correlation.shape
     upsample_factor = 10
@@ -187,6 +212,7 @@ def interpolate_to_border(shifted_imgs: torch.tensor,
     """
     After applying rigid shifts via FFT methods, the resulting image will have some artifacts at the edges (wrap-around artifacts).
     This approach overwrites those pixels with the (approximately) nearest "valid" pixel.
+    Note: this is an in-place operation.
 
     Args:
         shifted_imgs (torch.tensor): Shape (num_frames, fov dim1, fov dim2). The images after shifts have been applied
@@ -258,7 +284,7 @@ def extract_patches(img: torch.tensor,
 
     patch_h, patch_w = patches
     overlap_h, overlap_w = overlaps
-    first_dim, second_dim = get_indices((h, w), patch_h, patch_w, overlap_h, overlap_w)
+    first_dim, second_dim = _get_indices((h, w), patch_h, patch_w, overlap_h, overlap_w)
 
     # Create all start positions using meshgrid
     grid_x, grid_y = torch.meshgrid(first_dim, second_dim, indexing="ij")
@@ -275,11 +301,11 @@ def extract_patches(img: torch.tensor,
     patches = img[:, patch_dim1, patch_dim2]  # (num_frames, num_patches, patch_h, patch_w)
     return patches.reshape((num_frames, patch_grid_dimensions[0], patch_grid_dimensions[1], patch_h, patch_w))
 
-def get_indices(img_shape: Tuple[int, int],
-                patch_h: int,
-                patch_w: int,
-                overlap_h: int,
-                overlap_w: int) -> Tuple[torch.tensor, torch.tensor]:
+def _get_indices(img_shape: Tuple[int, int],
+                 patch_h: int,
+                 patch_w: int,
+                 overlap_h: int,
+                 overlap_w: int) -> Tuple[torch.tensor, torch.tensor]:
     """
     Compute the start indices for extracting patches with given patch sizes and overlaps.
 
@@ -307,9 +333,8 @@ def get_indices(img_shape: Tuple[int, int],
 
     return first_dim, second_dim
 
-## TODO: Rename to "displacement vector field"
-def apply_shift_vector_field(imgs: torch.tensor,
-                             shift_vector_field: torch.tensor) -> torch.tensor:
+def apply_displacement_vector_field(imgs: torch.tensor,
+                                    shift_vector_field: torch.tensor) -> torch.tensor:
     """
     Apply displacements from a given displacement vector field to an image stack.
 
@@ -388,10 +413,10 @@ def generate_motion_field_from_pwrigid_shifts(shifts: torch.Tensor, fov_dim1: in
     return pixelwise_motion_vector
 
 
-def valid_pixel_identifier(shift_lower_bounds: torch.Tensor,
-                           shift_upper_bounds: torch.Tensor,
-                           fov_dim1: int,
-                           fov_dim2: int):
+def _valid_pixel_identifier(shift_lower_bounds: torch.Tensor,
+                            shift_upper_bounds: torch.Tensor,
+                            fov_dim1: int,
+                            fov_dim2: int):
     """
     Given the amounts of "valid" shifts for each frame, this function returns indicators
     describing which rows/columns in space are valid. This is useful when searching for
@@ -442,10 +467,10 @@ def valid_pixel_identifier(shift_lower_bounds: torch.Tensor,
     return valid_rows[:, :fov_dim1], valid_cols[:, :fov_dim2]
 
 
-def estimate_patchwise_rigid_shifts(image_stack_patchwise: torch.tensor,
-                                    template_patchwise: torch.tensor,
-                                    shift_lower_bounds: torch.tensor,
-                                    shift_upper_bounds: torch.tensor) -> torch.tensor:
+def _estimate_patchwise_rigid_shifts(image_stack_patchwise: torch.tensor,
+                                     template_patchwise: torch.tensor,
+                                     shift_lower_bounds: torch.tensor,
+                                     shift_upper_bounds: torch.tensor) -> torch.tensor:
     """
     Estimate rigid shifts to apply to a given image stack to best align each frame to template(s)
 
@@ -484,7 +509,7 @@ def estimate_patchwise_rigid_shifts(image_stack_patchwise: torch.tensor,
     shift_lower_bounds = shift_lower_bounds.clone()
     shift_upper_bounds = shift_upper_bounds.clone()
 
-    valid_rows, valid_cols = valid_pixel_identifier(shift_lower_bounds, shift_upper_bounds, patch_dim1, patch_dim2)
+    valid_rows, valid_cols = _valid_pixel_identifier(shift_lower_bounds, shift_upper_bounds, patch_dim1, patch_dim2)
     valid_locations = torch.bmm(valid_rows.unsqueeze(2).float(),
                                 valid_cols.unsqueeze(1).float())  # Shape (num_frames, patch_dim1, patch_dim2)
     invalid_locations = (~(valid_locations.bool())).float()
@@ -586,7 +611,7 @@ def register_frames_pwrigid(reference_frames: torch.tensor,
     patch_grid_dim1 = patched_data.shape[1]
     patch_grid_dim2 = patched_data.shape[2]
 
-    lowrank_patchwise_rigid_shifts = estimate_patchwise_rigid_shifts(
+    lowrank_patchwise_rigid_shifts = _estimate_patchwise_rigid_shifts(
         patched_data.reshape(num_frames, -1, patches[0], patches[1]),
         patched_templates.reshape(patched_templates.shape[0], -1, patches[0], patches[1]),
         lb_shifts,
@@ -601,6 +626,6 @@ def register_frames_pwrigid(reference_frames: torch.tensor,
     """
     shift_field_batch = generate_motion_field_from_pwrigid_shifts(lowrank_patchwise_rigid_shifts, fov_dim1, fov_dim2)
 
-    registered_imgs = apply_shift_vector_field(target_frames, shift_field_batch)
+    registered_imgs = apply_displacement_vector_field(target_frames, shift_field_batch)
     return registered_imgs, lowrank_patchwise_rigid_shifts
 
