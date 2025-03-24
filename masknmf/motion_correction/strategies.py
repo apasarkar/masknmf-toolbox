@@ -20,7 +20,7 @@ class MotionCorrectionStrategy(ABC):
     @abstractmethod
     def correct(self,
                 reference_frames: torch.tensor,
-                target_frames: Optional[torch.tensor]) -> Tuple[torch.Tensor, torch.tensor]:
+                target_frames: Optional[torch.tensor] = None) -> Tuple[torch.Tensor, torch.tensor]:
         """Apply motion correction. Reference frames is the set of frames that we align to the template (to learn
         shifts, motion displacement fields, etc.) and target_frames is the image stack to which we apply the
         motion stabilization transformation. If target_frames is unspecified, the motion correction is applied to
