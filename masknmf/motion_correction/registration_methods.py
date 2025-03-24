@@ -558,9 +558,9 @@ def _estimate_patchwise_rigid_shifts(image_stack_patchwise: torch.tensor,
 
 def register_frames_pwrigid(reference_frames: torch.tensor,
                             template: torch.tensor,
-                            strides: tuple[int, int],
-                            overlaps: tuple[int, int],
-                            max_rigid_shifts: tuple[int, int],
+                            strides: Tuple[int, int],
+                            overlaps: Tuple[int, int],
+                            max_rigid_shifts: Tuple[int, int],
                             max_deviation_rigid: int,
                             target_frames: Optional[torch.tensor] = None):
     """
