@@ -8,8 +8,6 @@ from typing import *
 from masknmf import display
 import random
 
-
-
 def compute_template(frames: LazyFrameLoader,
                      rigid_strategy: MotionCorrectionStrategy,
                      num_splits_per_iteration: 10,
@@ -36,7 +34,7 @@ def compute_template(frames: LazyFrameLoader,
         raise ValueError(f"Must have at least one pass of rigid registration")
 
     # Step 1: Initial Template (Mean Image)
-    frames_loaded = [frames[:500]]
+    frames_loaded = frames[:500]
     template = torch.from_numpy(np.median(frames_loaded, axis=0))
     rigid_strategy.template = template
 
