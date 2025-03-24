@@ -31,8 +31,9 @@ class MotionCorrectionStrategy(ABC):
         pass
 
 class RigidMotionCorrection(MotionCorrectionStrategy):
-    def __init__(self, template: torch.tensor,
-                 max_shifts: Tuple[int, int]):
+    def __init__(self,
+                 max_shifts: Tuple[int, int],
+                 template: Optional[torch.tensor] = None):
         super().__init__(template)
         self._max_shifts = max_shifts
 
@@ -53,11 +54,11 @@ class RigidMotionCorrection(MotionCorrectionStrategy):
 
 class PiecewiseRigidMotionCorrection(MotionCorrectionStrategy):
     def __init__(self,
-                 template: torch.tensor,
                  strides: Tuple[int, int],
                  overlaps: Tuple[int, int],
                  max_rigid_shifts: Tuple[int, int],
-                 max_deviation_rigid: int):
+                 max_deviation_rigid: int,
+                 template: Optional[torch.tensor] = None):
 
         super().__init__(template)
         self._strides = strides
