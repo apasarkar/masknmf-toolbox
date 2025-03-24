@@ -1,12 +1,8 @@
 import torch
-import numpy as np
-
-import torch
-import masknmf
-from masknmf import PMDArray
+from masknmf.compression.pmd_array import PMDArray
+from masknmf.arrays.array_interfaces import LazyFrameLoader
 import math
 import numpy as np
-from torch.multiprocessing import multiprocessing
 
 from tqdm import tqdm
 
@@ -258,7 +254,7 @@ def update_block_sizes(
     return final_blocks
 
 
-def compute_mean_and_normalizer_dataset(dataset: masknmf.LazyFrameLoader,
+def compute_mean_and_normalizer_dataset(dataset: LazyFrameLoader,
                                         compute_normalizer: bool,
                                         frame_batch_size: int,
                                         device: str,
@@ -294,7 +290,7 @@ def compute_mean_and_normalizer_dataset(dataset: masknmf.LazyFrameLoader,
     return curr_sum.cpu(), noise_normalizer.cpu()
 
 
-def compute_full_fov_spatial_basis(dataset: masknmf.LazyFrameLoader,
+def compute_full_fov_spatial_basis(dataset: LazyFrameLoader,
                                    mean_img: torch.tensor,
                                    noise_variance_img: torch.tensor,
                                    background_rank: int,
@@ -485,7 +481,7 @@ def compute_lowrank_factorized_svd(
 
 
 
-def regress_onto_spatial_basis(dataset: masknmf.LazyFrameLoader,
+def regress_onto_spatial_basis(dataset: LazyFrameLoader,
                                u_aggregated: torch.sparse_coo_tensor,
                                frame_batch_size: int,
                                dataset_mean: torch.tensor,
@@ -770,7 +766,7 @@ def threshold_heuristic(
 
 
 def pmd_decomposition(
-    dataset: masknmf.LazyFrameLoader,
+    dataset: LazyFrameLoader,
     block_sizes: tuple[int, int],
     frame_range: int,
     max_components: int = 50,
