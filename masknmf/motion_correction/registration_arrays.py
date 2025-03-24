@@ -97,7 +97,7 @@ class RegistrationArray:
             reference_subset = torch.from_numpy(reference_data_indexed).float().to(self.device)
             target_data_subset = torch.from_numpy(reference_data_indexed).float().to(self.device)
             moco_output = self.strategy.correct(reference_subset,
-                                                target_frames=target_data_subset).cpu()
+                                                target_frames=target_data_subset)[0].cpu()
 
         else:
             num_iters = math.ceil(reference_data_indexed.shape[0])
@@ -110,10 +110,9 @@ class RegistrationArray:
                 target_subset = torch.from_numpy(target_data_indexed[start:end]).float().to(self.device)
 
                 subset_output = self.strategy.correct(reference_subset,
-                                                      target_frames=target_subset).cpu()
+                                                      target_frames=target_subset)[0].cpu()
                 outputs.append(subset_output)
             moco_output = torch.concatenate(outputs, dim=0)
-
         return moco_output
 
 
