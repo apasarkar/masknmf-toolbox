@@ -6,21 +6,28 @@ from typing import *
 class MotionCorrectionStrategy(ABC):
     """Abstract base class for motion correction strategies."""
 
-    def __init__(self, template: torch.Tensor):
+    def __init__(self, template: Optional[torch.tensor] = None):
         self._template = template
 
     @property
-    def template(self) -> torch.tensor:
+    def template(self) -> Optional[torch.tensor]:
         return self._template
+
+    @template.setter
+    def template(self, new_template):
+        self._template = new_template
 
     @abstractmethod
     def correct(self,
                 reference_frames: torch.tensor,
-                target_frames: Optional[torch.tensor]) -> torch.Tensor:
+                target_frames: Optional[torch.tensor]) -> Tuple[torch.Tensor, torch.tensor]:
         """Apply motion correction. Reference frames is the set of frames that we align to the template (to learn
         shifts, motion displacement fields, etc.) and target_frames is the image stack to which we apply the
         motion stabilization transformation. If target_frames is unspecified, the motion correction is applied to
-        reference_frames."""
+        reference_frames.
+
+        Two returned values: (1) the motion corrected data (2) the shift (or displacement field information).
+        The data format for (2) varies based on method used"""
         pass
 
 class RigidMotionCorrection(MotionCorrectionStrategy):
@@ -35,8 +42,10 @@ class RigidMotionCorrection(MotionCorrectionStrategy):
 
     def correct(self,
                 reference_frames: torch.tensor,
-                target_frames: Optional[torch.tensor] = None) -> torch.tensor:
+                target_frames: Optional[torch.tensor] = None) -> Tuple[torch.tensor, torch.tensor]:
 
+        if self.template is None:
+            raise ValueError("Template is uninitialized. Initialize template, either through constructor or setter first")
         return register_frames_rigid(reference_frames,
                                      self.template,
                                      self.max_shifts,
@@ -74,7 +83,10 @@ class PiecewiseRigidMotionCorrection(MotionCorrectionStrategy):
 
     def correct(self,
                 reference_frames: torch.tensor,
-                target_frames: Optional[torch.tensor] = None) -> torch.tensor:
+                target_frames: Optional[torch.tensor] = None) -> Tuple[torch.tensor, torch.tensor]:
+
+        if self.template is None:
+            raise ValueError("Template is uninitialized. Initialize template, either through constructor or setter first")
         return register_frames_pwrigid(reference_frames,
                                        self.template,
                                        self.strides,

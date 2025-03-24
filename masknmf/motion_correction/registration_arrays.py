@@ -10,7 +10,6 @@ class RegistrationArray:
     def __init__(self,
                  reference_dataset: LazyFrameLoader,
                  strategy: MotionCorrectionStrategy,
-                 template: torch.tensor,
                  device: str = "cpu",
                  batch_size: int = 200,
                  target_dataset: Optional[LazyFrameLoader] = None):
@@ -20,7 +19,6 @@ class RegistrationArray:
         Args:
             reference_dataset (LazyFrameLoder): Image stack that we use to compute motion correction transform relative to template
             strategy (masknmf.MotionCorrectionStrategy): The method used to register each frame to the template
-            template (torch.tensor): The template to which we register the data
             device (torch.tensor): The device on which computations are performed (for e.g. 'cuda' or 'cpu')
             batch_size (int): The number of frames we load onto the computation device at a time to do motion correction.
             target_dataset (Optional[LazyFrameLoader]): Once we learn the motion correction transform by aligning reference_dataset
@@ -29,7 +27,7 @@ class RegistrationArray:
         """
         self._reference_dataset = reference_dataset
         self._strategy = strategy
-        self._template = template
+        self._template = strategy.template
         self._device = device
         self._batch_size = batch_size
         if target_dataset is None:
@@ -75,9 +73,17 @@ class RegistrationArray:
     def device(self) -> str:
         return self._device
 
+    @device.setter
+    def device(self, new_device: str):
+        self._device = new_device
+
     @property
     def batch_size(self) -> int:
         return self._batch_size
+
+    @batch_size.setter
+    def batch_size(self, new_batch_size: int):
+        self._batch_size = new_batch_size
 
     def getitem_tensor(self,
                        idx: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> np.ndarray:
