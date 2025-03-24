@@ -32,7 +32,8 @@ def compute_template(frames: LazyFrameLoader,
     # Step 1: Initial Template (Mean Image)
     frames_loaded = torch.from_numpy([frames[:500]])
     template = torch.median(frames_loaded, dim=0)
-
+    rigid_strategy.template = template
+    
     # Step 2: Rigid Motion Correction Stage
     display("Running rigid registration strategy")
     for _ in range(num_iterations_rigid):
