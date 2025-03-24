@@ -13,7 +13,7 @@ def compute_template(frames: LazyFrameLoader,
                      num_splits_per_iteration: int = 10,
                      num_frames_per_split: int = 200,
                      num_iterations_rigid: int = 3,
-                     num_iterations_piecewise: int = 1,
+                     num_iterations_piecewise_rigid: int = 1,
                      pwrigid_strategy: Optional[MotionCorrectionStrategy] = None,
                      device: str = "cpu",
                      batch_size: int = 500) -> MotionCorrectionStrategy:
@@ -64,7 +64,7 @@ def compute_template(frames: LazyFrameLoader,
     # Step 3: Piecewise Rigid Motion Correction Stage
     if pwrigid_strategy is not None:
         pwrigid_strategy.template = rigid_strategy.template
-        for pass_iter_pwrigid in tqdm(range(num_iterations_piecewise)):
+        for pass_iter_pwrigid in tqdm(range(num_iterations_piecewise_rigid)):
             display(f"Running pass iteration {pass_iter_pwrigid} of piecewise rigid registration")
             current_registration_array = RegistrationArray(frames,
                                                            pwrigid_strategy,
