@@ -10,8 +10,8 @@ import random
 
 def compute_template(frames: LazyFrameLoader,
                      rigid_strategy: MotionCorrectionStrategy,
-                     num_splits_per_iteration: 10,
-                     num_frames_per_split: 200,
+                     num_splits_per_iteration: int = 10,
+                     num_frames_per_split: int = 200,
                      num_iterations_rigid: int = 3,
                      num_iterations_piecewise: int = 1,
                      pwrigid_strategy: Optional[MotionCorrectionStrategy] = None,
