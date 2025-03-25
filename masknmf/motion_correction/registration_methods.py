@@ -190,7 +190,7 @@ def subpixel_shift_method(opt_integer_shifts: torch.tensor,
     dim2_multiplier_matrix = dim2_multiplier_matrix.permute(0, 2, 1)  # Shape (num_frames, d2, spread_dim2)
     torch.exp_(dim2_multiplier_matrix)
 
-    local_cross_corr = torch.bmm(dim1_multiplier_matrix, fft_cross_correlation)
+    local_cross_corr = torch.bmm(dim1_multiplier_matrix, fft_cross_correlation.to(torch.complex128))
     local_cross_corr = torch.bmm(local_cross_corr, dim2_multiplier_matrix)
     local_cross_corr = torch.real(local_cross_corr)
     local_cross_corr /= d1 * d2 * upsample_factor ** 2
