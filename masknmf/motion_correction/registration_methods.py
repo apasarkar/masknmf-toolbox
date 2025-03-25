@@ -609,8 +609,14 @@ def register_frames_pwrigid(reference_frames: torch.tensor,
     These patchwise shifts are placed into a final vector, of shape (num_frames, k1, k2, 2)
     """
     max_deviation_rigid = torch.tensor([max_deviation_rigid[0], max_deviation_rigid[1]]).to(device)
-    lb_shifts = rigid_shifts - max_deviation_rigid.unsqueeze(0)
-    ub_shifts = rigid_shifts + max_deviation_rigid.unsqueeze(0)
+
+    """
+    Critical: we negate the rigid shifts, because the all routines to estimate shifts first 
+    find the optimal TEMPLATE --> Frame shift. So if we want to provide bounds, they need to be shifts applied
+    to the template, not the frames.
+    """
+    lb_shifts = -1*rigid_shifts - max_deviation_rigid.unsqueeze(0)
+    ub_shifts = -1*rigid_shifts + max_deviation_rigid.unsqueeze(0)
 
     patches = (strides[0] + overlaps[0], strides[1] + overlaps[1])
     patched_data = extract_patches(reference_frames, patches, overlaps)
