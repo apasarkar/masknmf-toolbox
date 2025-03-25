@@ -30,12 +30,7 @@ class RegistrationArray(LazyFrameLoader):
         self._template = strategy.template
         self._device = device
         self._batch_size = batch_size
-        if target_dataset is None:
-            self._target_dataset = reference_dataset
-            self._same_data = True
-        else:
-            self._target_dataset = target_dataset
-            self._same_data = False
+        self._target_dataset = target_dataset
 
         self._shape = self.reference_dataset.shape
         self._ndim = self.reference_dataset.ndim
@@ -58,7 +53,7 @@ class RegistrationArray(LazyFrameLoader):
         return self._reference_dataset
 
     @property
-    def target_dataset(self) -> LazyFrameLoader:
+    def target_dataset(self) -> Optional[LazyFrameLoader]:
         return self._target_dataset
 
     @property
@@ -102,10 +97,10 @@ class RegistrationArray(LazyFrameLoader):
                             idx: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> torch.tensor:
         """Retrieve motion-corrected frame at index `idx`."""
         reference_data_indexed = self._reference_dataset[idx]
-        if self._same_data is False:
-            target_data_indexed = self._target_dataset
-        else:
+        if self.target_dataset is None:
             target_data_indexed = reference_data_indexed
+        else:
+            target_data_indexed = self.target_dataset[idx]
 
         if reference_data_indexed.ndim == 2:
             reference_data_indexed = reference_data_indexed[None, ...]
@@ -114,7 +109,7 @@ class RegistrationArray(LazyFrameLoader):
         if self.batch_size > reference_data_indexed.shape[0]:
             # Directly motion correct the data
             reference_subset = torch.from_numpy(reference_data_indexed).to(self.device).float()
-            target_data_subset = torch.from_numpy(reference_data_indexed).to(self.device).float()
+            target_data_subset = torch.from_numpy(target_data_indexed).to(self.device).float()
             moco_output = self.strategy.correct(reference_subset,
                                                 target_frames=target_data_subset,
                                                 device=self.device)[0].cpu()
