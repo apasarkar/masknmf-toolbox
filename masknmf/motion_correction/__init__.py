@@ -2,9 +2,12 @@ from .registration_methods import apply_rigid_shifts, estimate_rigid_shifts, int
 from .strategies import RigidMotionCorrection, PiecewiseRigidMotionCorrection, MotionCorrectionStrategy
 from .template_estimation import compute_template
 from .registration_arrays import RegistrationArray
+from .spatial_filters import image_filter, gaussian_kernel, compute_highpass_filter_kernel
 
 __all__ = ["RegistrationArray",
            "compute_template",
            "RigidMotionCorrection",
            "PiecewiseRigidMotionCorrection",
-           "MotionCorrectionStrategy"]
+           "MotionCorrectionStrategy",
+           "register_frames_rigid",
+           "register_frames_pwrigid"]
