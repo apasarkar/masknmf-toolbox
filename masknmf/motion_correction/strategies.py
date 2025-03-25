@@ -20,7 +20,8 @@ class MotionCorrectionStrategy(ABC):
     @abstractmethod
     def correct(self,
                 reference_frames: torch.tensor,
-                target_frames: Optional[torch.tensor] = None) -> Tuple[torch.Tensor, torch.tensor]:
+                target_frames: Optional[torch.tensor] = None,
+                device: str = "cpu") -> Tuple[torch.Tensor, torch.tensor]:
         """Apply motion correction. Reference frames is the set of frames that we align to the template (to learn
         shifts, motion displacement fields, etc.) and target_frames is the image stack to which we apply the
         motion stabilization transformation. If target_frames is unspecified, the motion correction is applied to
@@ -43,14 +44,17 @@ class RigidMotionCorrection(MotionCorrectionStrategy):
 
     def correct(self,
                 reference_frames: torch.tensor,
-                target_frames: Optional[torch.tensor] = None) -> Tuple[torch.tensor, torch.tensor]:
+                target_frames: Optional[torch.tensor] = None,
+                device: str = "cpu") -> Tuple[torch.tensor, torch.tensor]:
 
         if self.template is None:
             raise ValueError("Template is uninitialized. Initialize template, either through constructor or setter first")
-        return register_frames_rigid(reference_frames,
-                                     self.template,
+        if target_frames is not None:
+            target_frames = target_frames.to(device)
+        return register_frames_rigid(reference_frames.to(device),
+                                     self.template.to(device),
                                      self.max_shifts,
-                                     target_frames = target_frames)
+                                     target_frames=target_frames)
 
 class PiecewiseRigidMotionCorrection(MotionCorrectionStrategy):
     def __init__(self,
@@ -84,12 +88,15 @@ class PiecewiseRigidMotionCorrection(MotionCorrectionStrategy):
 
     def correct(self,
                 reference_frames: torch.tensor,
-                target_frames: Optional[torch.tensor] = None) -> Tuple[torch.tensor, torch.tensor]:
+                target_frames: Optional[torch.tensor] = None,
+                device: str = "cpu") -> Tuple[torch.tensor, torch.tensor]:
 
         if self.template is None:
             raise ValueError("Template is uninitialized. Initialize template, either through constructor or setter first")
-        return register_frames_pwrigid(reference_frames,
-                                       self.template,
+        if target_frames is not None:
+            target_frames = target_frames.to(device)
+        return register_frames_pwrigid(reference_frames.to(device),
+                                       self.template.to(device),
                                        self.strides,
                                        self.overlaps,
                                        self.max_rigid_shifts,
