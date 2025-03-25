@@ -61,7 +61,7 @@ class PiecewiseRigidMotionCorrection(MotionCorrectionStrategy):
                  strides: Tuple[int, int],
                  overlaps: Tuple[int, int],
                  max_rigid_shifts: Tuple[int, int],
-                 max_deviation_rigid: int,
+                 max_deviation_rigid: Tuple[int, int],
                  template: Optional[torch.tensor] = None):
 
         super().__init__(template)
@@ -83,7 +83,7 @@ class PiecewiseRigidMotionCorrection(MotionCorrectionStrategy):
         return self._max_rigid_shifts
 
     @property
-    def max_deviation_rigid(self) -> int:
+    def max_deviation_rigid(self) -> Tuple[int, int]:
         return self._max_deviation_rigid
 
     def correct(self,

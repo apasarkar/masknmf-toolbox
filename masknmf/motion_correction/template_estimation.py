@@ -62,7 +62,7 @@ def compute_template(frames: LazyFrameLoader,
     # Step 3: Piecewise Rigid Motion Correction Stage
     if pwrigid_strategy is not None:
         pwrigid_strategy.template = rigid_strategy.template
-        for pass_iter_pwrigid in tqdm(range(num_iterations_piecewise_rigid)):
+        for pass_iter_pwrigid in range(num_iterations_piecewise_rigid):
             current_registration_array = RegistrationArray(frames,
                                                            pwrigid_strategy,
                                                            device = device,
