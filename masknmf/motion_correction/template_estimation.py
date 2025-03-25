@@ -53,7 +53,7 @@ def compute_template(frames: LazyFrameLoader,
         slices_sampled = random.sample(slice_list, num_splits_to_sample)
         template_list = []
         for j in tqdm(range(num_splits_to_sample)):
-            corrected_frames = current_registration_array.getitem_tensor(slices_sampled[j])
+            corrected_frames = current_registration_array.index_frames_tensor(slices_sampled[j])
             template = torch.mean(corrected_frames, dim=0)
             template_list.append(template)
 
@@ -70,7 +70,7 @@ def compute_template(frames: LazyFrameLoader,
             slices_sampled = random.sample(slice_list, num_splits_to_sample)
             template_list = []
             for j in tqdm(range(num_splits_to_sample)):
-                corrected_frames = current_registration_array.getitem_tensor(slices_sampled[j])
+                corrected_frames = current_registration_array.index_frames_tensor(slices_sampled[j])
                 template = torch.mean(corrected_frames, dim=0)
                 template_list.append(template)
 

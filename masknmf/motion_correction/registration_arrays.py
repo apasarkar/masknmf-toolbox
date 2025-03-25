@@ -6,7 +6,7 @@ from .strategies import MotionCorrectionStrategy
 import math
 import numpy as np
 
-class RegistrationArray:
+class RegistrationArray(LazyFrameLoader):
     def __init__(self,
                  reference_dataset: LazyFrameLoader,
                  strategy: MotionCorrectionStrategy,
@@ -85,8 +85,21 @@ class RegistrationArray:
     def batch_size(self, new_batch_size: int):
         self._batch_size = new_batch_size
 
-    def getitem_tensor(self,
-                       idx: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> np.ndarray:
+    def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
+        """
+        Lazy computation logic goes here to return frames. Slices the array over time (dimension 0) at the desired indices.
+
+        Args:
+            indices: Union[list, int, slice] the user's desired way of picking frames, either an int, list of ints, or slice
+                i.e. slice object or int passed from `__getitem__()`
+
+        Returns:
+            np.ndarray: array at the indexed slice
+        """
+        return self.index_frames_tensor(indices).cpu().numpy()
+
+    def index_frames_tensor(self,
+                            idx: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> torch.tensor:
         """Retrieve motion-corrected frame at index `idx`."""
         reference_data_indexed = self._reference_dataset[idx]
         if self._same_data is False:
@@ -125,10 +138,3 @@ class RegistrationArray:
                 outputs.append(subset_output)
             moco_output = torch.concatenate(outputs, dim=0)
         return moco_output
-
-
-    def __getitem__(self,
-                    item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]
-                    ) -> np.ndarray:
-        moco_output = self.getitem_tensor(item)
-        return moco_output.squeeze(0).numpy()
