@@ -45,7 +45,6 @@ def compute_template(frames: LazyFrameLoader,
     # Step 2: Rigid Motion Correction Stage
 
     for pass_iter_rigid in range(num_iterations_rigid):
-        display(f"Running iteration {pass_iter_rigid} of rigid registration")
         current_registration_array = RegistrationArray(frames,
                                                        rigid_strategy,
                                                        device = device,
@@ -58,14 +57,12 @@ def compute_template(frames: LazyFrameLoader,
             template = torch.mean(corrected_frames, dim=0)
             template_list.append(template)
 
-        rigid_strategy.template = torch.median(torch.concatenate(template, dim = 0))
-
+        rigid_strategy.template = torch.median(torch.stack(template_list, dim=0), dim=0)[0]
 
     # Step 3: Piecewise Rigid Motion Correction Stage
     if pwrigid_strategy is not None:
         pwrigid_strategy.template = rigid_strategy.template
         for pass_iter_pwrigid in tqdm(range(num_iterations_piecewise_rigid)):
-            display(f"Running pass iteration {pass_iter_pwrigid} of piecewise rigid registration")
             current_registration_array = RegistrationArray(frames,
                                                            pwrigid_strategy,
                                                            device = device,
@@ -77,7 +74,8 @@ def compute_template(frames: LazyFrameLoader,
                 template = torch.mean(corrected_frames, dim=0)
                 template_list.append(template)
 
-            pwrigid_strategy.template = torch.median(torch.cncatenate(template, dim = 0)) # Update strategy template
+            # Update strategy template
+            pwrigid_strategy.template = torch.median(torch.stack(template_list, dim=0), dim=0)[0]
         return pwrigid_strategy
 
     else:
