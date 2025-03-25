@@ -100,22 +100,25 @@ class RegistrationArray:
 
         if self.batch_size > reference_data_indexed.shape[0]:
             # Directly motion correct the data
-            reference_subset = torch.from_numpy(reference_data_indexed).float().to(self.device)
-            target_data_subset = torch.from_numpy(reference_data_indexed).float().to(self.device)
+            reference_subset = torch.from_numpy(reference_data_indexed).to(self.device).float()
+            target_data_subset = torch.from_numpy(reference_data_indexed).to(self.device).float()
             moco_output = self.strategy.correct(reference_subset,
                                                 target_frames=target_data_subset,
                                                 device=self.device)[0].cpu()
 
         else:
-            num_iters = math.ceil(reference_data_indexed.shape[0])
+            num_iters = math.ceil(reference_data_indexed.shape[0] / self.batch_size)
             outputs = []
             for k in range(num_iters):
                 start = k * self.batch_size
                 end = min(start + self.batch_size, reference_data_indexed.shape[0])
 
-                reference_subset = torch.from_numpy(reference_data_indexed[start:end]).float().to(self.device)
-                target_subset = torch.from_numpy(target_data_indexed[start:end]).float().to(self.device)
+                reference_subset = torch.from_numpy(reference_data_indexed[start:end]).to(self.device).float()
+                target_subset = torch.from_numpy(target_data_indexed[start:end]).to(self.device).float()
 
+                if reference_subset.ndim == 2:
+                    reference_subset = reference_subset.expand(1, -1, -1)
+                    target_subset = target_subset.expand(1, -1, -1)
                 subset_output = self.strategy.correct(reference_subset,
                                                       target_frames=target_subset,
                                                       device=self.device)[0].cpu()
@@ -128,4 +131,4 @@ class RegistrationArray:
                     item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]
                     ) -> np.ndarray:
         moco_output = self.getitem_tensor(item)
-        return moco_output.numpy()
+        return moco_output.squeeze(0).numpy()
