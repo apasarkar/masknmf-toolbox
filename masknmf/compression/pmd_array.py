@@ -96,8 +96,8 @@ class PMDArray(FactorizedVideo):
             raise ValueError(f"Input tensors are not on the same device")
         self._device = self.u.device
         self._shape = fov_shape
-        self.pixel_mat = torch.arange(torch.prod(self.shape[1:]),
-                                      device=self.device, dtype=torch.float32).reshape(self.shape[1], self.shape[2])
+        self.pixel_mat = torch.arange(self.shape[1] * self.shape[2],
+                                      device=self.device).reshape(self.shape[1], self.shape[2])
         self._order = "C"
     @property
     def device(self) -> str:
