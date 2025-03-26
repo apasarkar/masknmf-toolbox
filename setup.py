@@ -3,26 +3,30 @@ from setuptools import setup, find_packages
 setup(
     name='masknmf-toolbox',
     version='0.1.0',
-    description='A toolbox for neuroimaging signal extraction and analysis',
+    description='masknmf pipeline for motion correction, denoising, compression, and demixing of functional neuroimaging data',
     author='Amol Pasarkar',
     url='https://github.com/apasarkar/masknmf-toolbox',
     packages=find_packages(),
     install_requires=[
-        'jax',
-        'jaxlib',
         'torch',  # PyTorch
         'fastplotlib',
-        'hydra-core',
         'future',
         'numpy',
         'scipy',
         'plotly',
         'line-profiler',
         'matplotlib',
-        'jnormcorre @ git+https://github.com/apasarkar/jnormcorre.git@main',
-        'localmd @ git+https://github.com/apasarkar/localmd.git@main',
-        'rlocalnmf @ git+https://github.com/apasarkar/rlocalnmf.git@main'
+        'networkx',
+        'skimage'
+        'oasis-deconv',
+        'tqdm'
     ],
+
+    extras_require={
+        "notebook": [
+            "jupyterlab",
+        ],
+    },
 
     classifiers=[
         'Programming Language :: Python :: 3',
