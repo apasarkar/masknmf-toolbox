@@ -72,8 +72,7 @@ class PMDArray(FactorizedVideo):
 
     def __init__(
         self,
-        fov_shape: tuple[int, int, int],
-        order: str,
+        fov_shape: Tuple[int, int, int],
         u: torch.sparse_coo_tensor,
         r: torch.tensor,
         s: torch.tensor,
@@ -84,7 +83,6 @@ class PMDArray(FactorizedVideo):
         where u, r, s, v are the standard matrices from the pmd decomposition
         Args:
             fov_shape (tuple): (num_frames, fov_dim1, fov_dim2)
-            order (str): Order to reshape arrays from 1D to 2D
             u (torch.sparse_coo_tensor): shape (pixels, rank1)
             r (torch.tensor): shape (rank1, rank2)
             s (torch.tensor): shape (rank 2)
@@ -98,12 +96,9 @@ class PMDArray(FactorizedVideo):
             raise ValueError(f"Input tensors are not on the same device")
         self._device = self.u.device
         self._shape = fov_shape
-        self.pixel_mat = np.arange(np.prod(self.shape[1:])).reshape(
-            [self.shape[1], self.shape[2]], order=order
-        )
-        self.pixel_mat = torch.from_numpy(self.pixel_mat).long().to(self.device)
-        self._order = order
-
+        self.pixel_mat = torch.arange(torch.prod(self.shape[1:]),
+                                      device=self.device, dtype=torch.float32).reshape(self.shape[1], self.shape[2])
+        self._order = "C"
     @property
     def device(self) -> str:
         return self._device
@@ -141,7 +136,8 @@ class PMDArray(FactorizedVideo):
     @property
     def order(self) -> str:
         """
-        The spatial data is "flattened" from 2D into 1D. This specifies the order ("F" for column-major or "C" for row-major) in which reshaping happened.
+        The spatial data is "flattened" from 2D into 1D.
+        This is not user-modifiable; "F" ordering is undesirable in PyTorch
         """
         return self._order
 
@@ -152,7 +148,6 @@ class PMDArray(FactorizedVideo):
         """
         return len(self.shape)
 
-    # @functools.lru_cache(maxsize=global_lru_cache_maxsize)
     def getitem_tensor(
         self,
         item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
@@ -229,11 +224,9 @@ class PMDArray(FactorizedVideo):
             u_indices = pixel_space_crop.flatten()
             u_crop = torch.index_select(self._u, 0, u_indices)
             implied_fov = pixel_space_crop.shape
-            used_order = "C"  # The crop from pixel mat and flattening means we are now using default torch order
         else:
             u_crop = self._u
             implied_fov = self.shape[1], self.shape[2]
-            used_order = self.order
 
         # Temporal term is guaranteed to have nonzero "T" dimension below
         if np.prod(implied_fov) <= v_crop.shape[1]:
@@ -246,12 +239,8 @@ class PMDArray(FactorizedVideo):
             product = torch.matmul(self._r, product)
             product = torch.sparse.mm(u_crop, product)
 
-        if used_order == "F":
-            product = product.T.reshape((-1, implied_fov[1], implied_fov[0]))
-            product = product.permute((0, 2, 1))
-        else:  # order is "C"
-            product = product.reshape((implied_fov[0], implied_fov[1], -1))
-            product = product.permute(2, 0, 1)
+        product = product.reshape((implied_fov[0], implied_fov[1], -1))
+        product = product.permute(2, 0, 1)
 
         return product
 

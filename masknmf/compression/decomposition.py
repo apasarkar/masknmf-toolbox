@@ -1061,7 +1061,6 @@ def pmd_decomposition(
 
     ## TODO: Add the mean/standard deviation image. Add an interface that allows us to say "to".
     final_pmd_arr = PMDArray((num_frames, fov_dim1, fov_dim2),
-                           "C",
                            u_aggregated.cpu(),
                            r.cpu(),
                            s.cpu(),
