@@ -223,7 +223,7 @@ class FilteredArray(LazyFrameLoader):
         np.ndarray
             array at the indexed slice
         """
-        frames = torch.from_numpy(self.raw_data_loader[indices])
+        frames = torch.from_numpy(self.raw_data_loader[indices]).float()
         if frames.ndim == 2:
             frames = frames[None, :, :]
         if frames.shape[0] <= self.batching:
