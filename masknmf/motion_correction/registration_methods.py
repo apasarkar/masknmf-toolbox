@@ -477,8 +477,8 @@ def _valid_pixel_identifier(shift_lower_bounds: torch.Tensor,
 
 def _estimate_patchwise_rigid_shifts(image_stack_patchwise: torch.tensor,
                                      template_patchwise: torch.tensor,
-                                     shift_lower_bounds: torch.tensor,
-                                     shift_upper_bounds: torch.tensor) -> torch.tensor:
+                                     max_deviation_rigid: Tuple[int, int],
+                                     rigid_shifts: torch.tensor) -> torch.tensor:
     """
     Estimate rigid shifts to apply to a given image stack to best align each frame to template(s)
 
@@ -486,10 +486,8 @@ def _estimate_patchwise_rigid_shifts(image_stack_patchwise: torch.tensor,
         image_stack_patchwise (torch.tensor): Shape (num_frames, num_patches, patch_dim1, patch_dim2).
         template_patchwise (torch.tensor): Shape either (num_frames, num_patches, patch_dim1, patch_dim2) or (num_patches, patch_dim1, patch_dim2).
             The template to which we align each patch.
-        shift_lower_bounds (torch.tensor): Shape (num_frames, 2). The minimum fov_dim1 and fov_dim2 shifts respectively
-            that we use for aligning patches to their templates.
-        shift_upper_bounds (torch.tensor): Shape (num_frames, 2). The maximum fov_dim1, fov_dim2 shifts respectively
-            that we use for aligning patches to their templates.
+        max_deviation_rigid (Tuple[int, int]): The maximum deviation of each patch from its optimal integer rigid shift
+        rigid_shifts (torch.tensor): Shape (num_frames, 2)
     Returns:
         patchwise_rigid_shifts (torch.tensor): Shape (num_frames, num_patches, 2). Describes the rigid shift in dim1 and dim2 that needs to be applied
             at each patch at each frame to optimally align it with the appropriate template.
@@ -512,9 +510,15 @@ def _estimate_patchwise_rigid_shifts(image_stack_patchwise: torch.tensor,
     fft_cross_correlation = fft_image_stack * fft_template
     spatial_domain_cross_correlation = torch.real(torch.fft.ifft2(fft_cross_correlation, norm="backward"))
 
-    ## For each frame, there is a valid "interval" in dim1 and dim2 of indices we care about. This varies across frames now.
-    shift_lower_bounds = shift_lower_bounds.clone()
-    shift_upper_bounds = shift_upper_bounds.clone()
+
+    """
+    Critical: we negate the rigid shifts, because the all routines to estimate shifts first 
+    find the optimal TEMPLATE --> Frame shift. So if we want to provide bounds, they need to be shifts applied
+    to the template, not the frames.
+    """
+    max_deviation_rigid = torch.tensor([max_deviation_rigid[0], max_deviation_rigid[1]]).to(device)
+    shift_lower_bounds = -1 * rigid_shifts - max_deviation_rigid.unsqueeze(0)
+    shift_upper_bounds = -1 * rigid_shifts + max_deviation_rigid.unsqueeze(0)
 
     valid_rows, valid_cols = _valid_pixel_identifier(shift_lower_bounds, shift_upper_bounds, patch_dim1, patch_dim2)
     valid_locations = torch.bmm(valid_rows.unsqueeze(2).float(),
@@ -601,23 +605,6 @@ def register_frames_pwrigid(reference_frames: torch.tensor,
 
     rigid_shifts = estimate_rigid_shifts(reference_frames, template, max_rigid_shifts)
 
-    """
-    Do patchwise rigid registration. What does this method need? 
-    For each frame, there is a rigid shift. Given this rigid shift, we can establish an interval (in each dimension) 
-    of patchwise rigid shifts that are tolerable. 
-
-    These patchwise shifts are placed into a final vector, of shape (num_frames, k1, k2, 2)
-    """
-    max_deviation_rigid = torch.tensor([max_deviation_rigid[0], max_deviation_rigid[1]]).to(device)
-
-    """
-    Critical: we negate the rigid shifts, because the all routines to estimate shifts first 
-    find the optimal TEMPLATE --> Frame shift. So if we want to provide bounds, they need to be shifts applied
-    to the template, not the frames.
-    """
-    lb_shifts = -1*rigid_shifts - max_deviation_rigid.unsqueeze(0)
-    ub_shifts = -1*rigid_shifts + max_deviation_rigid.unsqueeze(0)
-
     patches = (strides[0] + overlaps[0], strides[1] + overlaps[1])
     patched_data = extract_patches(reference_frames, patches, overlaps)
     patched_templates = extract_patches(template, patches, overlaps)
@@ -628,8 +615,8 @@ def register_frames_pwrigid(reference_frames: torch.tensor,
     lowrank_patchwise_rigid_shifts = _estimate_patchwise_rigid_shifts(
         patched_data.reshape(num_frames, -1, patches[0], patches[1]),
         patched_templates.reshape(patched_templates.shape[0], -1, patches[0], patches[1]),
-        lb_shifts,
-        ub_shifts)
+        max_deviation_rigid,
+        rigid_shifts)
     # Reshape to (num_frames, patch_grid_dim1, patch_grid_dim2, 2)
     lowrank_patchwise_rigid_shifts = lowrank_patchwise_rigid_shifts.reshape(
         (num_frames, patch_grid_dim1, patch_grid_dim2, 2))
