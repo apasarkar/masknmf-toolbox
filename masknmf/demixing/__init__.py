@@ -3,7 +3,6 @@ from .demixing_arrays import (
     DemixingResults,
     ACArray,
     ColorfulACArray,
-    PMDArray,
     FluctuatingBackgroundArray,
     ResidualArray,
     ResidCorrMode,
