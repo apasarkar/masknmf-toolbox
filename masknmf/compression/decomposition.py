@@ -1059,12 +1059,14 @@ def pmd_decomposition(
     display("orthogonalizing the final representation")
     r, s, v = compute_lowrank_factorized_svd(u_aggregated, v_aggregated)
 
-    ## TODO: Add the mean/standard deviation image. Add an interface that allows us to say "to".
     final_pmd_arr = PMDArray((num_frames, fov_dim1, fov_dim2),
                            u_aggregated.cpu(),
                            r.cpu(),
                            s.cpu(),
-                           v.cpu())
+                           v.cpu(),
+                           dataset_mean,
+                           dataset_noise_variance,
+                           device = "cpu")
     display("PMD Objected constructed")
     return final_pmd_arr
 
