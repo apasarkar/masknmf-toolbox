@@ -17,7 +17,7 @@ setup(
         'line-profiler',
         'matplotlib',
         'networkx',
-        'skimage'
+        'skimage',
         'oasis-deconv',
         'tqdm'
     ],
