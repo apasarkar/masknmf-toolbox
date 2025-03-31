@@ -15,6 +15,7 @@ setup(
         'scipy',
         'plotly',
         'line-profiler',
+        'h5py',
         'matplotlib',
         'networkx',
         'scikit-image',
