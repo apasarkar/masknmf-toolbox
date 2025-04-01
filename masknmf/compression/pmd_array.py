@@ -79,7 +79,8 @@ class PMDArray(FactorizedVideo):
         v: torch.tensor,
         mean_img: torch.tensor,
         var_img: torch.tensor,
-        device: str = "cpu"
+        device: str = "cpu",
+        rescale: bool = True,
     ):
         """
         The background movie can be factorized as the matrix product (u)(r)(s)(v),
@@ -92,6 +93,8 @@ class PMDArray(FactorizedVideo):
             v (torch.tensor): shape (rank2, frames)
             mean_img (torch.tensor): shape (fov_dim1, fov_dim2). The pixelwise mean of the data
             var_img (torch.tensor): shape (fov_dim1, fov_dim2). A pixelwise noise normalizer for the data
+            rescale (bool): True if we rescale the PMD data (i.e. multiply by the pixelwise normalizer
+                and add back the mean) in __getitem__
         """
         self._device = device
         self._u = u.to(self.device)
@@ -104,7 +107,15 @@ class PMDArray(FactorizedVideo):
         self._order = "C"
         self._mean_img = mean_img.to(self.device).float()
         self._var_img = var_img.to(self.device).float()
+        self._rescale = rescale
 
+    @property
+    def rescale(self) -> bool:
+        return self._rescale
+
+    @rescale.setter
+    def rescale(self, new_state: bool):
+        self._rescale = new_state
     @property
     def mean_img(self) -> torch.tensor:
         return self._mean_img
@@ -264,17 +275,21 @@ class PMDArray(FactorizedVideo):
         if np.prod(implied_fov) <= v_crop.shape[1]:
             product = torch.sparse.mm(u_crop, self._r)
             product *= self._s.unsqueeze(0)
-            product = var_img_crop.unsqueeze(1) * product
-            product = torch.matmul(product, v_crop)
-            product += mean_img_crop.unsqueeze(1)
+            if self.rescale:
+                product = var_img_crop.unsqueeze(1) * product
+                product = torch.matmul(product, v_crop)
+                product += mean_img_crop.unsqueeze(1)
+            else:
+                product = torch.matmul(product, v_crop)
 
 
         else:
             product = self._s.unsqueeze(1) * v_crop
             product = torch.matmul(self._r, product)
             product = torch.sparse.mm(u_crop, product)
-            product *= var_img_crop.unsqueeze(1)
-            product += mean_img_crop.unsqueeze(1)
+            if self.rescale:
+                product *= var_img_crop.unsqueeze(1)
+                product += mean_img_crop.unsqueeze(1)
 
         product = product.reshape((implied_fov[0], implied_fov[1], -1))
         product = product.permute(2, 0, 1)
