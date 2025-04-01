@@ -2,6 +2,7 @@ from typing import *
 import numpy as np
 from enum import Enum
 from masknmf.arrays.array_interfaces import FactorizedVideo
+from masknmf.compression import PMDArray
 import torch
 
 
