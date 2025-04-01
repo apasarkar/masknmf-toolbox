@@ -130,9 +130,11 @@ def estimate_rigid_shifts(image_stack: torch.tensor,
 
     max_indices = torch.argmax(cross_correlation_values.reshape((num_frames, -1)), dim=1)
     shifts_dim1, shifts_dim2 = torch.unravel_index(max_indices, (d1, d2))
-
     shifts = torch.stack([shifts_dim1, shifts_dim2], dim=1)
-    shifts = subpixel_shift_method(shifts, fft_cross_correlation)
+
+    for precision in [0.1, 0.01, 0.001]:
+        shifts = subpixel_shift_method(shifts, fft_cross_correlation, precision)
+
     shifts_dim1, shifts_dim2 = shifts[:, 0], shifts[:, 1]
 
     values_to_subtract_dim1 = (torch.abs(d1 - shifts_dim1) <= torch.abs(shifts_dim1)).long()
@@ -152,39 +154,44 @@ def estimate_rigid_shifts(image_stack: torch.tensor,
     return shifts
 
 
-def subpixel_shift_method(opt_integer_shifts: torch.tensor,
-                          fft_cross_correlation: torch.tensor) -> torch.tensor:
+def subpixel_shift_method(opt_shifts: torch.tensor,
+                          fft_cross_correlation: torch.tensor,
+                          precision: float) -> torch.tensor:
     """
     Use fourier interpolation (up to the "upsample_factor") to find the optimal "subpixel" shift, within 0.1 of a pixel
 
     Args:
-        opt_integer_shifts (torch.tensor): Shape (num_frames, 2). Tensor describing for each frame the optimal integer
+        opt_shifts (torch.tensor): Shape (num_frames, 2). Tensor describing for each frame the optimal integer
             dim1 and dim2 shifts. This function searches for subpixel shifts in a local neighborbood of the optimal integer shifts.
         fft_cross_correlation (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2).
             The FFT of the spatial cross correlation between each frame and the template
+        precision (float): Only accepts these values: [0.1, 0.01, 0.001]. The accuracy to which we estimate the subpixel shift, relative to the
+            opt_integer shifts.
 
     Returns:
         subpixel_estimates (torch.tensor): Shape (num_frames, 2). The optimal subpixel shifts
     """
+    if precision not in [0.1, 0.01, 0.001]:
+        raise ValueError(f"Precision can only be 0.1, 0.01, 0.001. Input was {precision}")
+
     num_frames, d1, d2 = fft_cross_correlation.shape
-    upsample_factor = 10
-    offset_value = 0.7
+    division_rate = precision
+    offset_value = 6 * precision # If precision is 0.1, we want to look at a (-0.6, 0.6) interval, etc.
     device = fft_cross_correlation.device
-    division_rate = 1 / upsample_factor
+    upsample_factor = 1 / division_rate
 
     dim_spread = torch.arange(-1 * offset_value, offset_value, step=division_rate, device=device)
     integer_pixel_indices = torch.argmin(torch.abs(dim_spread))
-    dim1_subpixel_indices = opt_integer_shifts[:, [0]].float() + dim_spread[None, :]  # Shape (num_frames, spread_dim1)
-    dim1_subpixel_indices *= upsample_factor
-    dim1_multiplier_vector = 2 * 1j * torch.pi * torch.fft.fftfreq(d1, d=upsample_factor, device=device).to(
+    dim1_subpixel_indices = opt_shifts[:, [0]].float() + dim_spread[None, :]  # Shape (num_frames, spread_dim1)
+    # dim1_subpixel_indices = upsample_factor
+    dim1_multiplier_vector = 2 * 1j * torch.pi * torch.fft.fftfreq(d1, d=1.0, device=device).to(
         torch.complex128)
     # Shape (num_frames, spread_dim1, d1)
     dim1_multiplier_matrix = dim1_subpixel_indices.to(torch.complex128).unsqueeze(2) @ dim1_multiplier_vector[None, :]
     torch.exp_(dim1_multiplier_matrix)
 
-    dim2_subpixel_indices = opt_integer_shifts[:, [1]].float() + dim_spread[None, :]  # Shape (num_frames, spread_dim2)
-    dim2_subpixel_indices *= upsample_factor
-    dim2_multiplier_vector = 2 * 1j * torch.pi * torch.fft.fftfreq(d2, d=upsample_factor, device=device).to(
+    dim2_subpixel_indices = opt_shifts[:, [1]].float() + dim_spread[None, :]  # Shape (num_frames, spread_dim2)
+    dim2_multiplier_vector = 2 * 1j * torch.pi * torch.fft.fftfreq(d2, d=1.0, device=device).to(
         torch.complex128)
     dim2_multiplier_matrix = dim2_subpixel_indices.to(torch.complex128).unsqueeze(2) @ dim2_multiplier_vector[None, :]
     dim2_multiplier_matrix = dim2_multiplier_matrix.permute(0, 2, 1)  # Shape (num_frames, d2, spread_dim2)
@@ -210,8 +217,10 @@ def subpixel_shift_method(opt_integer_shifts: torch.tensor,
     max_indices_dim2[dim2_subpixel_improvement_indicator] = integer_pixel_indices
 
     #Only incorporate subpixel shifts in each dimension if it actually improves the results
-    shifts_dim1 = opt_integer_shifts[:, 0] + ((max_indices_dim1 / upsample_factor) - offset_value)
-    shifts_dim2 = opt_integer_shifts[:, 1] + ((max_indices_dim2 / upsample_factor) - offset_value)
+    shifts_dim1 = opt_shifts[:, 0] + dim_spread[max_indices_dim1]
+    shifts_dim2 = opt_shifts[:, 1] + dim_spread[max_indices_dim2]
+    # shifts_dim1 = opt_shifts[:, 0] + ((max_indices_dim1 / upsample_factor) - offset_value)
+    # shifts_dim2 = opt_shifts[:, 1] + ((max_indices_dim2 / upsample_factor) - offset_value)
 
     return torch.stack([shifts_dim1, shifts_dim2], dim=1)
 
@@ -535,9 +544,14 @@ def _estimate_patchwise_rigid_shifts(image_stack_patchwise: torch.tensor,
     max_indices = torch.argmax(cross_correlation_values.reshape((cross_correlation_values.shape[0], -1)), dim=1)
     shifts_dim1, shifts_dim2 = torch.unravel_index(max_indices, (patch_dim1, patch_dim2))
     shifts = torch.stack([shifts_dim1, shifts_dim2], dim=1)
-    shifts = subpixel_shift_method(shifts, fft_cross_correlation.reshape((num_frames * num_patches,
+
+    fft_corr_reshape = fft_cross_correlation.reshape((num_frames * num_patches,
                                                                           patch_dim1,
-                                                                          patch_dim2)))
+                                                                          patch_dim2))
+
+    for precision in [0.1, 0.01, 0.001]:
+        shifts = subpixel_shift_method(shifts, fft_corr_reshape, precision)
+
     shifts_dim1, shifts_dim2 = shifts[:, 0], shifts[:, 1]
 
     values_to_subtract_dim1 = (torch.abs(patch_dim1 - shifts_dim1) <= torch.abs(shifts_dim1)).long()

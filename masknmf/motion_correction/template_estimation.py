@@ -34,9 +34,10 @@ def compute_template(frames: LazyFrameLoader,
         raise ValueError(f"Must have at least one pass of rigid registration")
 
     # Step 1: Initial Template (Mean Image)
-    frames_loaded = frames[:500]
-    template = torch.from_numpy(np.median(frames_loaded, axis=0))
-    rigid_strategy.template = template
+    if rigid_strategy.template is None:
+        frames_loaded = frames[:500]
+        template = torch.from_numpy(np.median(frames_loaded, axis=0))
+        rigid_strategy.template = template
 
     ## Prepare the template estimation pipeline by establishing the chunks of data to sample
     slice_list = compute_frame_chunks(frames.shape[0], num_frames_per_split)
