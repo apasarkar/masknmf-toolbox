@@ -2236,7 +2236,7 @@ class InitializingState(SignalProcessingState):
         s: torch.tensor,
         v: torch.tensor,
         dimensions: tuple[int, int, int],
-        data_order: str = "F",
+        data_order: str = "C",
         device: str = "cpu",
         a: Optional[torch.sparse_coo_tensor] = None,
         c: Optional[torch.tensor] = None,
@@ -2543,7 +2543,7 @@ class DemixingState(SignalProcessingState):
         mask_init,
         dimensions: tuple[int, int, int],
         factorized_ring_term: Optional[torch.tensor] = None,
-        data_order: str = "F",
+        data_order: str = "C",
         device: str = "cpu",
         pixel_batch_size: int = 10000,
         frame_batch_size: int = 10000,
@@ -2941,7 +2941,8 @@ class DemixingState(SignalProcessingState):
                 new_masks = new_masks.permute(
                     2, 1, 0
                 )  # This is now d2 x d1 x frames to account for C vs F reshape
-
+            else: #order is C
+                new_masks = new_masks.permute(1,2,0)
             new_masks = new_masks.reshape((self.shape[0] * self.shape[1], -1))
 
             a_crop = torch.index_select(spatial_comps, 1, neuron_indices).coalesce()
