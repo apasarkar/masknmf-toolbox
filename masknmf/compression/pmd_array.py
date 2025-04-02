@@ -65,6 +65,66 @@ def test_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
                 return True
     return False
 
+
+def _construct_identity_torch_sparse_tensor(dimsize: int,
+                                            device: str = "cpu"):
+    """
+    Constructs an identity torch.sparse_coo_tensor on the specified device.
+
+    Args:
+        dimsize (int): The number of rows (or equivalently columns) of the torch.sparse_coo_tensor.
+        device (str): 'cpu' or 'cuda'. The device on which the sparse tensor is constructed
+
+    Returns:
+        - (torch.sparse_coo_tensor): A (dimsize, dimsize) torch.sparse_coo_tensor.
+    """
+    # Indices for diagonal elements (rows and cols are the same for diagonal)
+    row_col = torch.arange(dimsize, device=device)
+    indices = torch.stack([row_col, row_col], dim=0)
+
+    # Values (all ones)
+    values = torch.ones(dimsize, device=device)
+
+    sparse_tensor = torch.sparse_coo_tensor(indices, values, (dimsize, dimsize))
+    return sparse_tensor
+def convert_dense_image_stack_to_pmd_format(img_stack: Union[torch.tensor, np.ndarray]):
+    """
+    Adapter for converting a dense np.ndarray image stack into a pmd_array. Note that this does not
+    run PMD compression; it simply reformats the data into the SVD format needed to construct a PMDArray object.
+    The resulting PMDArray should contain identical data to img_stack (up to numerical precision errors).
+    All computations are done in numpy on CPU here because that is the only approach that produces an SVD of the
+    raw data that is exactly equal to img_stack.
+
+    Args:
+        img_stack (Union[np.ndarray, torch.tensor]): A (frames, fov_dim1, fov_dim2) shaped image stack
+    Returns:
+        pmd_array (masknmf.compression.PMDArray): img_stack expressed in the pmd_array format. pmd_array contains the
+            same data as img_stack.
+    """
+
+    if isinstance(img_stack, torch.Tensor):
+        img_stack = img_stack.cpu().numpy()
+
+    if isinstance(img_stack, np.ndarray):
+        num_frames, fov_dim1, fov_dim2 = img_stack.shape
+        img_stack_t = img_stack.transpose(1, 2, 0).reshape((fov_dim1 * fov_dim2, num_frames))
+        r, s, v = [torch.tensor(k).float() for k in np.linalg.svd(img_stack_t, full_matrices=False)]
+        u = _construct_identity_torch_sparse_tensor(fov_dim1 * fov_dim2, device="cpu")
+        mean_img = torch.zeros(fov_dim1, fov_dim2, device="cpu", dtype=torch.float32)
+        var_img = torch.ones(fov_dim1, fov_dim2, device="cpu", dtype=torch.float32)
+
+        return PMDArray(img_stack.shape,
+                            u,
+                            r,
+                            s,
+                            v,
+                            mean_img,
+                            var_img,
+                            device="cpu")
+
+    else:
+        raise ValueError(f"{type(img_stack)} not a supported type")
+
 class PMDArray(FactorizedVideo):
     """
     Factorized demixing array for PMD movie
@@ -96,11 +156,11 @@ class PMDArray(FactorizedVideo):
             rescale (bool): True if we rescale the PMD data (i.e. multiply by the pixelwise normalizer
                 and add back the mean) in __getitem__
         """
-        self._device = device
-        self._u = u.to(self.device)
-        self._r = r.to(self.device)
-        self._s = s.to(self.device)
-        self._v = v.to(self.device)
+        self._u = u.to(device)
+        self._r = r.to(device)
+        self._s = s.to(device)
+        self._v = v.to(device)
+        self._device = self._u.device
         self._shape = fov_shape
         self.pixel_mat = torch.arange(self.shape[1] * self.shape[2],
                                       device=self.device).reshape(self.shape[1], self.shape[2])
@@ -125,22 +185,18 @@ class PMDArray(FactorizedVideo):
         return self._var_img
 
     @property
-    def device(self) -> str:
+    def device(self) -> torch.device:
         return self._device
 
-    @device.setter
-    def device(self, device: str):
-        self._device = device
-
     def to(self, device: str):
-        self.device = device
-        self._u = self._u.to(self.device)
-        self._r = self._r.to(self.device)
-        self._s = self._s.to(self.device)
-        self._v = self._v.to(self.device)
-        self._mean_img = self._mean_img.to(self.device)
-        self._var_img = self._var_img.to(self.device)
-        self.pixel_mat = self.pixel_mat.to(self.device)
+        self._u = self._u.to(device)
+        self._r = self._r.to(device)
+        self._s = self._s.to(device)
+        self._v = self._v.to(device)
+        self._mean_img = self._mean_img.to(device)
+        self._var_img = self._var_img.to(device)
+        self.pixel_mat = self.pixel_mat.to(device)
+        self._device = self._u.device
 
     @property
     def u(self) -> torch.sparse_coo_tensor:

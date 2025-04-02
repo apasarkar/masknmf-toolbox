@@ -11,7 +11,6 @@ import scipy
 from typing import *
 import networkx as nx
 from tqdm import tqdm
-
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from .demixing_arrays import (
@@ -31,7 +30,7 @@ from .demixing_utils import (
 )
 from . import regression_update
 from .background_estimation import RingModel
-
+from masknmf.compression import PMDArray
 
 def make_mask_dynamic(
     corr_img_all_r: np.ndarray,
@@ -2152,12 +2151,7 @@ class SignalDemixer:
 
     def __init__(
         self,
-        u_sparse: scipy.sparse.coo_matrix,
-        r: np.ndarray,
-        s: np.ndarray,
-        v: np.ndarray,
-        dimensions: tuple[int, int, int],
-        data_order: str = "F",
+        pmd_array: PMDArray,
         device: str = "cpu",
         frame_batch_size: int = 5000,
         pixel_batch_size: int = 10000,
@@ -2171,39 +2165,27 @@ class SignalDemixer:
         facilitate interactive usage, enabling users to iteratively refine the demixing results.
 
         Args:
-            u_sparse (scipy.sparse.coo_matrix): Shape (pixels, PMD Rank1).
-            r (numpy.ndarray): Shape (PMD rank1, PMD rank 2). Together, (u_sparse)(r) give left singular vectors for pmd.
-            s (numpy.ndarray): Shape (PMD rank 2). Singular values for the pmd decomposition
-            v (numpy.ndarray): Shape (pmd rank2, frames). Orthogonal temporal basis vectors for PMD rank.
-            dimensions (tuple): (frames, fov dimension 1, fov dimension 2).
-            data_order (str): The order in which n-dimensional vectors are flattened to 1D
+            pmd_array (masknmf.compression.PMDArray): A PMD-like representation of an input image stack.
             device (str): Indicator for pytorch for which device to use ("cpu" or "cuda")
             frame_batch_size (int): Number of full frames of data we load onto the GPU at a time
             pixel_batch_size (int): Number of full pixels of data we load onto the GPU at a time
         """
         self.device = device
-        self.data_order = data_order
-        self.shape = dimensions
-        self.r = torch.Tensor(r).float().to(self.device)
-        self.s = torch.from_numpy(s).float().to(self.device)
-        self.u_sparse = (
-            torch.sparse_coo_tensor(
-                np.array(u_sparse.nonzero()), u_sparse.data, u_sparse.shape
-            )
-            .coalesce()
-            .float()
-            .to(self.device)
-        )
-        self.v = torch.Tensor(v).float().to(self.device)
-        self.d1 = dimensions[0]
-        self.d2 = dimensions[1]
-        self.T = dimensions[2]
+        self.data_order = pmd_array.order
+        self.shape = pmd_array.shape
+
+        self.u_sparse = pmd_array.u.float().to(self.device)
+        self.r = pmd_array.r.float().to(self.device)
+        self.s = pmd_array.s.float().to(self.device)
+        self.v = pmd_array.v.float().to(self.device)
+
+        self.d1 = self.shape[1]
+        self.d2 = self.shape[2]
+        self.T = self.shape[0]
 
         self.u_sparse, self.r, self.s, self.v = PMD_setup_routine(
             self.u_sparse, self.r, self.s, self.v
         )
-
-        self._num_transitions = 0
 
         # Start with an initialization state
         self._state = InitializingState(
@@ -2254,7 +2236,7 @@ class InitializingState(SignalProcessingState):
         s: torch.tensor,
         v: torch.tensor,
         dimensions: tuple[int, int, int],
-        data_order: str = "F",
+        data_order: str = "C",
         device: str = "cpu",
         a: Optional[torch.sparse_coo_tensor] = None,
         c: Optional[torch.tensor] = None,
@@ -2561,7 +2543,7 @@ class DemixingState(SignalProcessingState):
         mask_init,
         dimensions: tuple[int, int, int],
         factorized_ring_term: Optional[torch.tensor] = None,
-        data_order: str = "F",
+        data_order: str = "C",
         device: str = "cpu",
         pixel_batch_size: int = 10000,
         frame_batch_size: int = 10000,
@@ -2959,7 +2941,8 @@ class DemixingState(SignalProcessingState):
                 new_masks = new_masks.permute(
                     2, 1, 0
                 )  # This is now d2 x d1 x frames to account for C vs F reshape
-
+            else: #order is C
+                new_masks = new_masks.permute(1,2,0)
             new_masks = new_masks.reshape((self.shape[0] * self.shape[1], -1))
 
             a_crop = torch.index_select(spatial_comps, 1, neuron_indices).coalesce()

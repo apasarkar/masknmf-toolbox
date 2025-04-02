@@ -2,6 +2,7 @@ from typing import *
 import numpy as np
 from enum import Enum
 from masknmf.arrays.array_interfaces import FactorizedVideo
+from masknmf.compression import PMDArray
 import torch
 
 
@@ -1364,7 +1365,7 @@ class DemixingResults:
         self._baseline = self.baseline.to(self.device)
 
     @property
-    def fov_shape(self) -> tuple[int, int]:
+    def fov_shape(self) -> Tuple[int, int]:
         return self.shape[1:3]
 
     @property
@@ -1415,7 +1416,17 @@ class DemixingResults:
         """
         Returns a PMDArray using the tensors stored in this object
         """
-        return PMDArray(self.fov_shape, self.order, self.u, self.r, self.s, self.v)
+        mean_img = torch.zeros(self.shape[1], self.shape[2], device = self.device)
+        var_img = torch.ones(self.shape[1], self.shape[2], device = self.device)
+        return PMDArray(self.shape,
+                           self.u,
+                           self.r,
+                           self.s,
+                           self.v,
+                           mean_img,
+                           var_img,
+                           device=self.device,
+                           rescale=True)
 
     @property
     def fluctuating_background_array(self) -> FluctuatingBackgroundArray:
