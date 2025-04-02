@@ -156,11 +156,11 @@ class PMDArray(FactorizedVideo):
             rescale (bool): True if we rescale the PMD data (i.e. multiply by the pixelwise normalizer
                 and add back the mean) in __getitem__
         """
-        self._device = device
-        self._u = u.to(self.device)
-        self._r = r.to(self.device)
-        self._s = s.to(self.device)
-        self._v = v.to(self.device)
+        self._u = u.to(device)
+        self._r = r.to(device)
+        self._s = s.to(device)
+        self._v = v.to(device)
+        self._device = self._u.device
         self._shape = fov_shape
         self.pixel_mat = torch.arange(self.shape[1] * self.shape[2],
                                       device=self.device).reshape(self.shape[1], self.shape[2])
@@ -185,22 +185,18 @@ class PMDArray(FactorizedVideo):
         return self._var_img
 
     @property
-    def device(self) -> str:
+    def device(self) -> torch.device:
         return self._device
 
-    @device.setter
-    def device(self, device: str):
-        self._device = device
-
     def to(self, device: str):
-        self.device = device
-        self._u = self._u.to(self.device)
-        self._r = self._r.to(self.device)
-        self._s = self._s.to(self.device)
-        self._v = self._v.to(self.device)
-        self._mean_img = self._mean_img.to(self.device)
-        self._var_img = self._var_img.to(self.device)
-        self.pixel_mat = self.pixel_mat.to(self.device)
+        self._u = self._u.to(device)
+        self._r = self._r.to(device)
+        self._s = self._s.to(device)
+        self._v = self._v.to(device)
+        self._mean_img = self._mean_img.to(device)
+        self._var_img = self._var_img.to(device)
+        self.pixel_mat = self.pixel_mat.to(device)
+        self._device = self._u.device
 
     @property
     def u(self) -> torch.sparse_coo_tensor:
