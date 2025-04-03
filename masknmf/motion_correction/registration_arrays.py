@@ -151,8 +151,8 @@ class FilteredArray(LazyFrameLoader):
                     or anything else
 
                 filter_function (Callable): A function that applies a spatial filter to every frame of a data array. It takes
-                    an input movie of shape (frames, fov dim 1, fov dim 2) and returns a
-                    filtered movie of the same shape. The type of the output is cast to numpy array in this function.
+                    an input movie of type torch.Tensor with shape (frames, fov dim 1, fov dim 2) and returns a
+                    filtered movie of type torch.Tensor with the same shape.
 
                 batching (int): Max number of frames we process on GPU at a time, used to avoid OOM errors.
 

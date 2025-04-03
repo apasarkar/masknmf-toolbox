@@ -5,6 +5,7 @@ from .registration_arrays import RegistrationArray, FilteredArray
 from .spatial_filters import image_filter, gaussian_kernel, compute_highpass_filter_kernel
 
 __all__ = ["RegistrationArray",
+           "FilteredArray",
            "compute_template",
            "RigidMotionCorrection",
            "PiecewiseRigidMotionCorrection",
