@@ -469,7 +469,7 @@ def process_custom_signals(
     )
 
     c_norm = torch.linalg.norm(c, dim=0)
-    nonzero_dim1 = torch.nonzero(c_norm).squeeze()
+    nonzero_dim1 = torch.nonzero(c_norm).squeeze(1)
 
     # Only keep the good indices, based on nonzero_dim1
     c_torch = torch.index_select(c, 1, nonzero_dim1)
@@ -2174,7 +2174,7 @@ class SignalDemixer:
         self.data_order = pmd_array.order
         self.shape = pmd_array.shape
 
-        self.u_sparse = pmd_array.u.float().to(self.device)
+        self.u_sparse = pmd_array.u.float().to(self.device).coalesce()
         self.r = pmd_array.r.float().to(self.device)
         self.s = pmd_array.s.float().to(self.device)
         self.v = pmd_array.v.float().to(self.device)

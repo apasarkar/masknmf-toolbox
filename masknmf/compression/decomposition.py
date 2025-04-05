@@ -211,7 +211,7 @@ def check_fov_size(fov_dims: Tuple[int, int],
 
 
 def update_block_sizes(
-    blocks: tuple, fov_shape: tuple, min_block_value: int = 10
+    blocks: tuple, fov_shape: tuple, min_block_value: int = 4,
 ) -> list:
     """
     If user specifies block sizes that are too large, this approach truncates the blocksizes appropriately
