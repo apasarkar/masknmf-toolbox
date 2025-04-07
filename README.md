@@ -2,6 +2,7 @@
 
 
 [**Installation**](https://github.com/apasarkar/masknmf-toolbox#Installation) |
+[**API**](https://github.com/apasarkar/masknmf-toolbox#API) |
 [**Data Formats**](https://github.com/apasarkar/masknmf-toolbox#examples) |
 [**Paper**](https://github.com/apasarkar/masknmf-toolbox#Paper) |
 
@@ -23,6 +24,9 @@ In a conda or python venv, do the following:
 git clone https://github.com/apasarkar/masknmf-toolbox.git
 pip install -e ".[notebook]"
 ```
+
+# API
+See the notebooks folder for demos on how to use the motion correction, compression, and demixing APIs.
 
 # Data Formats
 Support currently provided for 
