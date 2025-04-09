@@ -20,7 +20,8 @@ setup(
         'networkx',
         'scikit-image',
         'oasis-deconv',
-        'tqdm'
+        'tqdm',
+        'hydra-core'
     ],
 
     extras_require={
