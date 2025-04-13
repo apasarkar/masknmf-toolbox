@@ -34,13 +34,19 @@ class MotionCorrectionStrategy(ABC):
 class RigidMotionCorrection(MotionCorrectionStrategy):
     def __init__(self,
                  max_shifts: Tuple[int, int],
-                 template: Optional[torch.tensor] = None):
+                 template: Optional[torch.tensor] = None,
+                 pixel_weighting: Optional[torch.tensor] = None):
         super().__init__(template)
         self._max_shifts = max_shifts
+        self._pixel_weighting = pixel_weighting
 
     @property
     def max_shifts(self) -> Tuple[int, int]:
         return self._max_shifts
+
+    @property
+    def pixel_weighting(self) -> Optional[torch.tensor]:
+        return self._pixel_weighting
 
     def correct(self,
                 reference_frames: torch.tensor,
@@ -51,10 +57,18 @@ class RigidMotionCorrection(MotionCorrectionStrategy):
             raise ValueError("Template is uninitialized. Initialize template, either through constructor or setter first")
         if target_frames is not None:
             target_frames = target_frames.to(device)
-        return register_frames_rigid(reference_frames.to(device),
-                                     self.template.to(device),
-                                     self.max_shifts,
-                                     target_frames=target_frames)
+
+        if self.pixel_weighting is not None:
+            return register_frames_rigid(reference_frames.to(device),
+                                         self.template.to(device),
+                                         self.max_shifts,
+                                         target_frames=target_frames,
+                                         pixel_weighting=self.pixel_weighting.to(device))
+        else:
+            return register_frames_rigid(reference_frames.to(device),
+                                         self.template.to(device),
+                                         self.max_shifts,
+                                         target_frames=target_frames)
 
 class PiecewiseRigidMotionCorrection(MotionCorrectionStrategy):
     def __init__(self,
