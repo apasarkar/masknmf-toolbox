@@ -157,14 +157,14 @@ class PMDArray(FactorizedVideo):
             rescale (bool): True if we rescale the PMD data (i.e. multiply by the pixelwise normalizer
                 and add back the mean) in __getitem__
         """
-        self._u = u.to(device)
+        self._u = u.to(device).coalesce()
         self._v = v.to(device)
         if u_local_projector is not None:
-            self._u_local_projector = u_local_projector.to(device)
+            self._u_local_projector = u_local_projector.to(device).coalesce()
         else:
             self._u_projector = None
         if u_global_projector is not None:
-            self._u_global_projector = u_global_projector.to(device)
+            self._u_global_projector = u_global_projector.to(device).coalesce()
         else:
             self._u_global_projector = None
         self._device = self._u.device
@@ -365,7 +365,7 @@ class PMDArray(FactorizedVideo):
 
         product = torch.sparse.mm(u_crop, v_crop)
         if self.rescale:
-            product = (product * var_img_crop) + mean_img_crop
+            product = (product * var_img_crop.unsqueeze(1)) + mean_img_crop.unsqueeze(1)
 
         product = product.reshape((implied_fov[0], implied_fov[1], -1))
         product = product.permute(2, 0, 1)

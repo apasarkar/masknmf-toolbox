@@ -1116,7 +1116,7 @@ def pmd_batch(dataset: LazyFrameLoader,
               spatial_denoiser: Optional[Callable] = None,
               temporal_denoiser: Optional[Callable] = None,
               device: str = "cpu"
-              ) -> List[PMDArray]:
+              ) -> PMDArray:
     """
     Method for running PMD across huge fields of view. This method breaks the large FOV into smaller regions (say, 300 x 300 pixels),
     runs PMD on each smaller region, and pieces the results together to get a fullFOV decomposition.
@@ -1145,7 +1145,7 @@ def pmd_batch(dataset: LazyFrameLoader,
         device (str): Which device the computations should be performed on. Options: "cuda" or "cpu".
 
     Returns:
-        pmd_arr (List[PMDArray]): A list of PMD Arrays capturing the compression results
+        pmd_arr (PMDArray): A PMDArray capturing the compression results across the full FOV.
     """
 
     """
@@ -1168,7 +1168,7 @@ def pmd_batch(dataset: LazyFrameLoader,
         Make sure the dataloader is being told to read the right stuff
         The blockwise iteration scheme creates a lot of redundancy at the boundaries right now. Should improve that. 
     """
-    results_list = []
+    num_frames, fov_dim1, fov_dim2 = dataset.shape
 
     spatial_dim1_start_pts = list(
         range(0, dataset.shape[1] - batch_dimensions[0] + 1, batch_dimensions[0] - batch_overlaps[0])
@@ -1188,6 +1188,26 @@ def pmd_batch(dataset: LazyFrameLoader,
     ):
         spatial_dim2_start_pts.append(dataset.shape[2] - batch_dimensions[1])
 
+    #Collect all the spatial information into the following lists
+    #First pass: don't worry at all about
+    u_row_indices = []
+    u_col_indices = []
+    u_values = []
+    u_local_projector_row_indices = []
+    u_local_projector_col_indices = []
+    u_local_projector_values = []
+    u_global_projector_row_indices = [] if background_rank > 0 else None
+    u_global_projector_col_indices = [] if background_rank > 0 else None
+    u_global_projector_values = [] if background_rank > 0 else None
+
+    v_aggregate = []
+
+    dataset_mean_img = torch.zeros(fov_dim1, fov_dim2, device="cpu", dtype=torch.float)
+    dataset_variance_img = torch.zeros(fov_dim1, fov_dim2, device="cpu", dtype=torch.float)
+    pixel_mat = torch.arange(dataset.shape[1] * dataset.shape[2],
+                             device="cpu", dtype=torch.long).reshape(dataset.shape[1], dataset.shape[2])
+
+    rank_tracker = 0
     for i in range(len(spatial_dim1_start_pts)):
         for j in range(len(spatial_dim2_start_pts)):
             curr_dim1_start_pt = spatial_dim1_start_pts[i]
@@ -1201,6 +1221,10 @@ def pmd_batch(dataset: LazyFrameLoader,
             dataset_crop = dataset[:,
                            curr_dim1_start_pt:curr_dim1_end_pt,
                            curr_dim2_start_pt:curr_dim2_end_pt]
+
+            current_row_map = pixel_mat[curr_dim1_start_pt:curr_dim1_end_pt,
+                              curr_dim2_start_pt:curr_dim2_end_pt].flatten()
+
             curr_pmd_array = pmd_decomposition(dataset_crop,
                                                block_sizes,
                                                frame_range,
@@ -1217,5 +1241,84 @@ def pmd_batch(dataset: LazyFrameLoader,
                                                spatial_denoiser=spatial_denoiser,
                                                temporal_denoiser=temporal_denoiser,
                                                device=device)
-            results_list.append(curr_pmd_array)
-            return results_list
+
+            #Update the dataset mean/variance in this region:
+            dataset_mean_img[curr_dim1_start_pt:curr_dim1_end_pt, curr_dim2_start_pt:curr_dim2_end_pt] = curr_pmd_array.mean_img
+            dataset_variance_img[curr_dim1_start_pt:curr_dim1_end_pt, curr_dim2_start_pt:curr_dim2_end_pt] = curr_pmd_array.var_img
+
+            computed_rank = curr_pmd_array.u.shape[1]
+            v_aggregate.append(curr_pmd_array.v)
+
+            #Process the indices/values of u
+            curr_u = curr_pmd_array.u
+            curr_u_indices = curr_u.indices()
+            curr_u_rows, curr_u_cols = curr_u_indices[0], curr_u_indices[1]
+            curr_u_rows = current_row_map[curr_u_rows]
+            curr_u_cols += rank_tracker
+            u_row_indices.append(curr_u_rows)
+            u_col_indices.append(curr_u_cols)
+            u_values.append(curr_u.values())
+
+            #Process the indices/values of u_local_proj
+            curr_u_local_proj = curr_pmd_array.u_local_projector
+            curr_u_local_proj_indices = curr_u_local_proj.indices()
+            curr_u_local_proj_rows, curr_u_local_proj_cols = curr_u_local_proj_indices[0], curr_u_local_proj_indices[1]
+            curr_u_local_proj_rows = current_row_map[curr_u_local_proj_rows]
+            curr_u_local_proj_cols += rank_tracker
+            u_local_projector_row_indices.append(curr_u_local_proj_rows)
+            u_local_projector_col_indices.append(curr_u_local_proj_cols)
+            u_local_projector_values.append(curr_u_local_proj.values())
+
+            if background_rank > 0:
+                curr_u_global_proj = curr_pmd_array.u_global_projector
+                curr_u_global_proj_indices = curr_u_global_proj.indices()
+                curr_u_global_proj_rows, curr_u_global_proj_cols = curr_u_global_proj_indices[0], \
+                curr_u_global_proj_indices[1]
+                curr_u_global_proj_rows = current_row_map[curr_u_global_proj_rows]
+                curr_u_global_proj_cols += rank_tracker
+                u_global_projector_row_indices.append(curr_u_global_proj_rows)
+                u_global_projector_col_indices.append(curr_u_global_proj_cols)
+                u_global_projector_values.append(curr_u_global_proj.values())
+
+            rank_tracker += computed_rank
+
+    v_aggregate = torch.concatenate(v_aggregate, dim = 0)
+
+    u_final_rows = torch.concatenate(u_row_indices, dim = 0)
+    u_final_cols = torch.concatenate(u_col_indices, dim = 0)
+    u_final_values = torch.concatenate(u_values, dim = 0)
+
+    u_final = torch.sparse_coo_tensor(torch.stack([u_final_rows, u_final_cols], dim = 0),
+                                      u_final_values,
+                                      (dataset.shape[1] * dataset.shape[2], rank_tracker))
+
+    u_final_local_projector_rows = torch.concatenate(u_local_projector_row_indices, dim = 0)
+    u_final_local_projector_cols = torch.concatenate(u_local_projector_col_indices, dim = 0)
+    u_final_local_projector_values = torch.concatenate(u_local_projector_values, dim = 0)
+    u_local_projector = torch.sparse_coo_tensor(torch.stack([u_final_local_projector_rows, u_final_local_projector_cols], dim=0),
+                                                u_final_local_projector_values,
+                                                (dataset.shape[1] * dataset.shape[2], rank_tracker))
+
+    if background_rank > 0:
+        u_final_global_projector_rows = torch.concatenate(u_global_projector_row_indices, dim=0)
+        u_final_global_projector_cols = torch.concatenate(u_global_projector_col_indices, dim=0)
+        u_final_global_projector_values = torch.concatenate(u_global_projector_values, dim=0)
+        u_global_projector = torch.sparse_coo_tensor(
+            torch.stack([u_final_global_projector_rows, u_final_global_projector_cols], dim=0),
+            u_final_global_projector_values,
+            (dataset.shape[1] * dataset.shape[2], rank_tracker))
+
+    else:
+        u_global_projector = None
+
+
+    return PMDArray((num_frames, fov_dim1, fov_dim2),
+                             u_final.cpu(),
+                             v_aggregate.cpu(),
+                             dataset_mean_img,
+                             dataset_variance_img,
+                             u_local_projector=u_local_projector.cpu(),
+                             u_global_projector=u_global_projector.cpu() if u_global_projector is not None else None,
+                             device="cpu")
+
+
