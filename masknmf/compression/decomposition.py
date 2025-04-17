@@ -1,4 +1,7 @@
 import torch
+from typing import List
+
+import masknmf
 from masknmf.compression.pmd_array import PMDArray
 from masknmf.arrays.array_interfaces import LazyFrameLoader
 import math
@@ -789,7 +792,7 @@ def pmd_decomposition(
         spatial_denoiser: Optional[Callable] = None,
         temporal_denoiser: Optional[Callable] = None,
         device: str = "cpu"
-):
+) -> PMDArray:
     """
     General PMD Compression method
     Args:
@@ -1061,7 +1064,8 @@ def pmd_decomposition(
         background_sparse_column_indices_standalone = background_sparse_column_indices - column_number
 
         u_global_projector = torch.sparse_coo_tensor(torch.stack([background_sparse_row_indices.flatten(),
-                                                                  background_sparse_column_indices_standalone.flatten()], dim=0),
+                                                                  background_sparse_column_indices_standalone.flatten()],
+                                                                 dim=0),
                                                      full_fov_spatial_basis.flatten(),
                                                      (num_rows, background_rank))
 
@@ -1092,3 +1096,126 @@ def pmd_decomposition(
                              device="cpu")
     display("PMD Objected constructed")
     return final_pmd_arr
+
+
+def pmd_batch(dataset: LazyFrameLoader,
+              batch_dimensions: tuple[int, int],
+              batch_overlaps: tuple[int, int],
+              block_sizes: tuple[int, int],
+              frame_range: int,
+              max_components: int = 50,
+              background_rank: int = 15,
+              sim_conf: int = 5,
+              frame_batch_size: int = 10000,
+              max_consecutive_failures=1,
+              spatial_avg_factor: int = 1,
+              temporal_avg_factor: int = 1,
+              window_chunks: Optional[int] = None,
+              compute_normalizer: bool = True,
+              pixel_weighting: Optional[np.ndarray] = None,
+              spatial_denoiser: Optional[Callable] = None,
+              temporal_denoiser: Optional[Callable] = None,
+              device: str = "cpu"
+              ) -> List[PMDArray]:
+    """
+    Method for running PMD across huge fields of view. This method breaks the large FOV into smaller regions (say, 300 x 300 pixels),
+    runs PMD on each smaller region, and pieces the results together to get a fullFOV decomposition.
+
+    Args:
+        dataset (masknmf.LazyFrameLoader): An array-like object with shape (frames, fov_dim1, fov_dim2) that loads frames of raw data
+        block_sizes (tuple[int, int]): The block sizes of the compression. Cannot be smaller than 10 in each dimension.
+        frame_range (int): Number of frames or raw data used to fit the spatial basis.
+            KEY: We assume that your system can store this many frames of raw data in RAM.
+        max_components (int): Max number of components we use to decompose any individual spatial block of the raw data.
+        background_rank (int): Before doing spatial blockwise decompositions, we estimate a full FOV truncated SVD; this often helps estimate global background trends
+            before blockwise decompositions; leading to better compression.
+        sim_conf (int): The percentile value used to define spatial and temporal roughness thresholds for rejecting/keeping SVD components
+        frame_batch_size (int): The maximum number of frames we load onto the computational device (CPU or GPU) at any point in time.
+        max_consecutive_failures (int): In each blockwise decomposition, we stop accepting SVD components after we see this many "bad" components.
+        spatial_avg_factor (int): In the blockwise decompositions, we can spatially downsample the data to estimate a cleaner temporal basis. We can use this to iteratively estimate a better
+            full-resolution basis for the data. If signal sits on only a few pixels, keep this parameter at 1 (spatially downsampling is undesirable in this case).
+        temporaL_avg_factor (int): In the blockwise decompositions, we can temporally downsample the data to estimate a cleaner spatial basis. We can use this to iteratively estimate a better
+            full-resolution basis for the data. If your signal "events" are very sparse (i.e. every event appears for only 1 frame) keep this parameter at 1 (temporal downsampling is undesirable in this case).
+         window_chunks (int): To be removed
+         compute_normalizer (bool): Whether or not we estimate a pixelwise noise variance. If False, the normalizer is set to 1 (no normalization).
+         pixel_weighting (Optional[np.ndarray]): Shape (fov_dim1, fov_dim2). We weight the data by this value to estimate a cleaner spatial basis. The pixel_weighting
+            should intuitively boost the relative variance of pixels containing signal to those that do not contain signal.
+        spatial_denoiser (Optional[Callable]): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
+        temporal_denoiser (Optional[Callable]): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
+        device (str): Which device the computations should be performed on. Options: "cuda" or "cpu".
+
+    Returns:
+        pmd_arr (List[PMDArray]): A list of PMD Arrays capturing the compression results
+    """
+
+    """
+    How do we interpolate and stitch together the PMD patches? 
+    (1) The u_local_projector and u_global_projector terms need to have their row indices modified. All other
+    concatenation follows easily
+    (2) We should "globally" weight each 300 x 300 patch with an interpolation function. This is important for
+    stitching together actual U matrices. 
+    (3) Stacking V is easy. 
+    
+    Workflow:
+    (1) Just run PMD across all the sub-patches of the data. Return a list of PMD objects. 
+    (2) Once that works, add the weighting functions, combine everything into one file. 
+    (3) Once that works, think about the optimal way to do dataloading. 
+    
+    
+    Design decision: if you have a huge FOV, it does not make sense to keep all of U on the GPU. So moving off GPU is good.
+    
+    Things to circle back on: 
+        Make sure the dataloader is being told to read the right stuff
+        The blockwise iteration scheme creates a lot of redundancy at the boundaries right now. Should improve that. 
+    """
+    results_list = []
+
+    spatial_dim1_start_pts = list(
+        range(0, dataset.shape[1] - batch_dimensions[0] + 1, batch_dimensions[0] - batch_overlaps[0])
+    )
+    if (
+            spatial_dim1_start_pts[-1] != dataset.shape[1] - batch_dimensions[0]
+            and dataset.shape[1] - batch_dimensions[0] > 0
+    ):
+        spatial_dim1_start_pts.append(dataset.shape[1] - batch_dimensions[0])
+
+    spatial_dim2_start_pts = list(
+        range(0, dataset.shape[2] - batch_dimensions[1] + 1, batch_dimensions[1] - batch_overlaps[1])
+    )
+    if (
+            spatial_dim2_start_pts[-1] != dataset.shape[2] - batch_dimensions[1]
+            and dataset.shape[2] - batch_dimensions[1] > 0
+    ):
+        spatial_dim2_start_pts.append(dataset.shape[2] - batch_dimensions[1])
+
+    for i in range(len(spatial_dim1_start_pts)):
+        for j in range(len(spatial_dim2_start_pts)):
+            curr_dim1_start_pt = spatial_dim1_start_pts[i]
+            curr_dim1_end_pt = spatial_dim1_start_pts[i] + batch_dimensions[0]
+
+            curr_dim2_start_pt = spatial_dim2_start_pts[j]
+            curr_dim2_end_pt = spatial_dim2_start_pts[j] + batch_dimensions[1]
+
+            display(f"Processing {curr_dim1_start_pt}:{curr_dim1_end_pt} "
+                    f"to {curr_dim2_start_pt}:{curr_dim2_end_pt}")
+            dataset_crop = dataset[:,
+                           curr_dim1_start_pt:curr_dim1_end_pt,
+                           curr_dim2_start_pt:curr_dim2_end_pt]
+            curr_pmd_array = pmd_decomposition(dataset_crop,
+                                               block_sizes,
+                                               frame_range,
+                                               max_components,
+                                               background_rank,
+                                               sim_conf,
+                                               frame_batch_size,
+                                               max_consecutive_failures,
+                                               spatial_avg_factor,
+                                               temporal_avg_factor,
+                                               window_chunks=window_chunks,
+                                               compute_normalizer=compute_normalizer,
+                                               pixel_weighting=pixel_weighting,
+                                               spatial_denoiser=spatial_denoiser,
+                                               temporal_denoiser=temporal_denoiser,
+                                               device=device)
+            results_list.append(curr_pmd_array)
+            return results_list
