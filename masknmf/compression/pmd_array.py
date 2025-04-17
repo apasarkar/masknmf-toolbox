@@ -137,7 +137,8 @@ class PMDArray(FactorizedVideo):
         v: torch.tensor,
         mean_img: torch.tensor,
         var_img: torch.tensor,
-        u_projector: Optional[torch.sparse_coo_tensor]=None,
+        u_local_projector: Optional[torch.sparse_coo_tensor]=None,
+        u_global_projector: Optional[torch.sparse_coo_tensor]=None,
         device: str = "cpu",
         rescale: bool = True,
     ):
@@ -150,17 +151,22 @@ class PMDArray(FactorizedVideo):
             v (torch.tensor): shape (rank, frames)
             mean_img (torch.tensor): shape (fov_dim1, fov_dim2). The pixelwise mean of the data
             var_img (torch.tensor): shape (fov_dim1, fov_dim2). A pixelwise noise normalizer for the data
-            u_projector (Optional[torch.sparse_coo_tensor]): shape (pixels, rank)
+            u_local_projector (Optional[torch.sparse_coo_tensor]): shape (pixels, rank)
+            u_global_projector  (Optional[torch.sparse_coo_tensor]): shape (pixels, background_rank).
             device (str): The device on which computations occur/data is stored
             rescale (bool): True if we rescale the PMD data (i.e. multiply by the pixelwise normalizer
                 and add back the mean) in __getitem__
         """
         self._u = u.to(device)
         self._v = v.to(device)
-        if u_projector is not None:
-            self._u_projector = u_projector.to(device)
+        if u_local_projector is not None:
+            self._u_local_projector = u_local_projector.to(device)
         else:
             self._u_projector = None
+        if u_global_projector is not None:
+            self._u_global_projector = u_global_projector.to(device)
+        else:
+            self._u_global_projector = None
         self._device = self._u.device
         self._shape = fov_shape
 
@@ -197,16 +203,22 @@ class PMDArray(FactorizedVideo):
         self._var_img = self._var_img.to(device)
         self.pixel_mat = self.pixel_mat.to(device)
         self._device = self._u.device
-        if self.u_projector is not None:
-            self._u_projector = self.u_projector.to(device)
+        if self.u_local_projector is not None:
+            self._u_local_projector = self.u_local_projector.to(device)
+        if self.u_global_projector is not None:
+            self._u_global_projector = self.u_global_projector.to(device)
 
     @property
     def u(self) -> torch.sparse_coo_tensor:
         return self._u
 
     @property
-    def u_projector(self) -> Optional[torch.sparse_coo_tensor]:
-        return self._u_projector
+    def u_local_projector(self) -> Optional[torch.sparse_coo_tensor]:
+        return self._u_local_projector
+
+    @property
+    def u_global_projector(self) -> Optional[torch.sparse_coo_tensor]:
+        return self._u_global_projector
 
     @property
     def v(self) -> torch.tensor:
@@ -251,13 +263,19 @@ class PMDArray(FactorizedVideo):
         Returns:
             projected_frames (torch.tensor). Shape (fov_dim1, fov_dim2, num_frames).
         """
-        if self.u_projector is None:
+        if self.u_local_projector is None:
             raise ValueError("u_projector must be defined to project frames onto spatial basis")
         orig_device = frames.device
         frames = frames.to(self.device).float()
         frames = (frames - self.mean_img[..., None]) / self.var_img[..., None] #Normalize the frames
         frames = frames.reshape(self.shape[1] * self.shape[2], -1)
-        projection = torch.sparse.mm(self.u_projector.T, frames)
+        if self.u_global_projector is not None:
+            projection_global = torch.sparse.mm(self.u_global_projector.T, frames)
+            frames -= torch.sparse.mm(self.u_global_projector, projection_global)
+            projection_local = torch.sparse.mm(self.u_local_projector.T, frames)
+            projection = torch.concatenate([projection_local, projection_global], dim = 0)
+        else:
+            projection = torch.sparse.mm(self.u_local_projector.T, frames)
         return projection.to(orig_device)
 
 

@@ -1044,6 +1044,10 @@ def pmd_decomposition(
     if background_rank <= 0:
         num_cols = column_number
         num_rows = fov_dim1 * fov_dim2
+        u_global_projector = None
+        u_local_projector = torch.sparse_coo_tensor(final_indices,
+                                                    spatial_overall_unweighted_values,
+                                                    (num_rows, num_cols))
     else:
         background_sparse_row_indices = sparse_indices[:, :, None] + torch.zeros_like(full_fov_spatial_basis,
                                                                                       device=device, dtype=torch.long)
@@ -1054,17 +1058,27 @@ def pmd_decomposition(
         background_sparse_column_indices = torch.zeros((sparse_indices.shape[0], sparse_indices.shape[1], 1),
                                                        device=device, dtype=torch.long) + column_range
 
+        background_sparse_column_indices_standalone = background_sparse_column_indices - column_number
+
+        u_global_projector = torch.sparse_coo_tensor(torch.stack([background_sparse_row_indices.flatten(),
+                                                                  background_sparse_column_indices_standalone.flatten()], dim=0),
+                                                     full_fov_spatial_basis.flatten(),
+                                                     (num_rows, background_rank))
+
+        u_local_projector = torch.sparse_coo_tensor(torch.stack([final_row_indices,
+                                                                 final_column_indices], dim=0),
+                                                    spatial_overall_unweighted_values,
+                                                    (num_rows, column_number))
+
         final_row_indices = torch.concatenate([final_row_indices, background_sparse_row_indices.flatten()], dim=0)
         final_column_indices = torch.concatenate([final_column_indices, background_sparse_column_indices.flatten()],
                                                  dim=0)
         spatial_overall_values = torch.concatenate([spatial_overall_values, full_fov_spatial_basis.flatten()], dim=0)
-        spatial_overall_unweighted_values = torch.concatenate(
-            [spatial_overall_unweighted_values, full_fov_spatial_basis.flatten()], dim=0)
+
         v_aggregated.append(full_dataset_temporal_basis)
 
     final_indices = torch.stack([final_row_indices, final_column_indices], dim=0)
     u_aggregated = torch.sparse_coo_tensor(final_indices, spatial_overall_values, (num_rows, num_cols))
-    u_projector = torch.sparse_coo_tensor(final_indices, spatial_overall_unweighted_values, (num_rows, num_cols))
     v_aggregated = torch.concatenate(v_aggregated, dim=0)
     display(f"Constructed U matrix. Rank of U is {u_aggregated.shape[1]}")
 
@@ -1073,7 +1087,8 @@ def pmd_decomposition(
                              v_aggregated.cpu(),
                              dataset_mean,
                              dataset_noise_variance,
-                             u_projector=u_projector.cpu(),
+                             u_local_projector=u_local_projector.cpu() if u_local_projector is not None else None,
+                             u_global_projector=u_global_projector.cpu() if u_global_projector is not None else None,
                              device="cpu")
     display("PMD Objected constructed")
     return final_pmd_arr
