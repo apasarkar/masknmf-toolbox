@@ -2151,7 +2151,11 @@ class SignalDemixer:
 
     def __init__(
         self,
-        pmd_array: PMDArray,
+        pmd_array,
+        u,
+        r,
+        s,
+        v,
         device: str = "cpu",
         frame_batch_size: int = 5000,
         pixel_batch_size: int = 10000,
@@ -2174,10 +2178,10 @@ class SignalDemixer:
         self.data_order = pmd_array.order
         self.shape = pmd_array.shape
 
-        self.u_sparse = pmd_array.u.float().to(self.device).coalesce()
-        self.r = pmd_array.r.float().to(self.device)
-        self.s = pmd_array.s.float().to(self.device)
-        self.v = pmd_array.v.float().to(self.device)
+        self.u_sparse = u.float().to(self.device).coalesce()
+        self.r = r.float().to(self.device)
+        self.s = s.float().to(self.device)
+        self.v = v.float().to(self.device)
 
         self.d1 = self.shape[1]
         self.d2 = self.shape[2]
