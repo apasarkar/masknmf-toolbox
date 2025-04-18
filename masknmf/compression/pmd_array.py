@@ -247,7 +247,6 @@ class PMDArray(FactorizedVideo):
     def local_basis_rank(self) -> int:
         return self.u.shape[1] - self.global_basis_rank
 
-
     @property
     def local_temporal_basis(self) -> torch.tensor:
         return self.v[:self.local_basis_rank]
