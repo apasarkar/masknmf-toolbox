@@ -1068,13 +1068,11 @@ class StandardCorrelationImages(FactorizedVideo):
     def __init__(
             self,
             u_sparse: torch.sparse_coo_tensor,
-            r: torch.tensor,
-            s: torch.tensor,
             v: torch.tensor,
             c: torch.tensor,
             movie_mean: torch.tensor,
             movie_normalizer: torch.tensor,
-            fov_dims: tuple[int, int],
+            fov_dims: Tuple[int, int],
             order: str = "F",
     ):
         """
@@ -1082,23 +1080,19 @@ class StandardCorrelationImages(FactorizedVideo):
         correlation images in a factorized form and
 
         Args:
-            u_sparse (torch.sparse_coo_tensor): shape (pixels, rank 1)
-            r (torch.tensor): shape (rank 1, rank 2)
-            s (torch.tensor): shape (rank 2)
-            v (torch.tensor): shape (rank 2, frames)
+            u_sparse (torch.sparse_coo_tensor): shape (pixels, rank)
+            v (torch.tensor): shape (rank, frames)
             c (torch.tensor): shape (frames, number of neural signals). This is the temporal traces matrix, where every
                 column has mean 0 and Frobenius norm 1.
-            movie_mean (torch.tensor): shape (pixels)
-            movie_normalizer (torch.tensor): shape (pixels)
+            movie_mean (torch.tensor): shape (pixels), the mean of u_sparse times v
+            movie_normalizer (torch.tensor): shape (pixels), the pixelwise l2 norm of (u_sparse times v) - movie_mean
         """
 
-        if not (u_sparse.device == r.device == s.device == v.device == c.device):
+        if not (u_sparse.device == v.device == c.device):
             raise ValueError("Not all tensors are on same device")
 
         self._device = u_sparse.device
         self._u = u_sparse
-        self._r = r
-        self._s = s
         self._v = v
         self._c = c
         self._movie_mean = movie_mean
@@ -1106,13 +1100,12 @@ class StandardCorrelationImages(FactorizedVideo):
         self._fov_dims = (fov_dims[0], fov_dims[1])
         self._order = order
 
-        self._ones_basis = (
-                torch.ones([1, self._v.shape[1]], device=self.device) @ self._v.T
-        )
-
         self.pixel_mat = np.arange(np.prod(self.shape[1:])).reshape(
             [self.shape[1], self.shape[2]], order=order
         )
+
+        self._ones_frames = torch.ones((1, self._v.shape[1]), device=self.device, dtype=torch.float)
+
         self.pixel_mat = torch.from_numpy(self.pixel_mat).long().to(self.device)
 
     @property
@@ -1139,8 +1132,8 @@ class StandardCorrelationImages(FactorizedVideo):
         self._c = mean_zero
 
     @property
-    def shape(self) -> tuple[int, int, int]:
-        return (self.c.shape[1], self._fov_dims[0], self._fov_dims[1])
+    def shape(self) -> Tuple[int, int, int]:
+        return self.c.shape[1], self._fov_dims[0], self._fov_dims[1]
 
     @property
     def order(self) -> str:
@@ -1224,6 +1217,7 @@ class StandardCorrelationImages(FactorizedVideo):
             c_crop = c_crop.unsqueeze(1)
 
         v_crop = self._v @ c_crop
+        ones_crop = self._ones_frames @ c_crop
 
         # Step 4: Deal with remaining indices after lazy computing the frame(s)
         if isinstance(item, tuple) and test_spatial_crop_effect(
@@ -1245,22 +1239,7 @@ class StandardCorrelationImages(FactorizedVideo):
             implied_fov = self.shape[1], self.shape[2]
             used_order = self.order
 
-        # Temporal term is guaranteed to have nonzero "T" dimension below
-        if np.prod(implied_fov) <= v_crop.shape[1]:
-            product = torch.sparse.mm(u_crop, self._r)
-            product *= self._s.unsqueeze(0)
-            product = torch.matmul(product, v_crop)
-            product -= (mean_crop.unsqueeze(1) @ self._ones_basis) @ v_crop
-            product /= movie_normalizer_crop.unsqueeze(1)
-
-        else:
-            product = self._s.unsqueeze(1) * v_crop
-            product = torch.matmul(self._r, product)
-            product = torch.sparse.mm(u_crop, product)
-
-            product -= mean_crop.unsqueeze(1) @ (self._ones_basis @ v_crop)
-
-            product /= movie_normalizer_crop.unsqueeze(1)
+        product = (torch.sparse.mm(u_crop, v_crop) - mean_crop.unsqueeze(1) @ ones_crop) / movie_normalizer_crop.unsqueeze(1)
 
         if used_order == "F":
             product = product.T.reshape((-1, implied_fov[1], implied_fov[0]))

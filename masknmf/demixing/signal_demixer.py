@@ -235,8 +235,6 @@ def _compute_residual_correlation_image(
 
 def _compute_standard_correlation_image(
     u_sparse: torch.sparse_coo_tensor,
-    r: torch.tensor,
-    s: torch.tensor,
     v: torch.tensor,
     temporal_traces: torch.tensor,
     fov_dims: tuple[int, int],
@@ -249,9 +247,6 @@ def _compute_standard_correlation_image(
 
     Args:
         u_sparse (torch.sparse_coo_tensor): dims (d x r), where the FOV has d pixels
-        r (torch.tensor) dims (rank1 x rank2), where rank1 is the (overall) rank of the PMD decomposition and rank2 is the
-            pruned rank
-        s (torch.tensor): dims (rank 2). Singular values of the PMD decomposition
         v (torch.tensor): dims (rank 2, number of frames): The temporal basis (right singular vectors of the PMD
             decomposition.
         temporal_traces (torch.tensor): shape (number of frames, number of neural signals). Temporal traces currently
@@ -269,36 +264,36 @@ def _compute_standard_correlation_image(
     c_norm = torch.sqrt(torch.sum(c * c, dim=0, keepdim=True))
     c /= c_norm
 
-    ##Step 2:
+    ##Step 2: Compute the mean of the UV video
     v_mean = torch.mean(v, dim=1, keepdim=True)
-    rv_mean = torch.matmul(r, s.unsqueeze(1) * v_mean)
-    m = torch.sparse.mm(u_sparse, rv_mean)  # Dims: d x 1
-
-    ##Step 3:
-    e = torch.matmul(torch.ones([1, v.shape[1]], device=device), v.t())
+    uv_mean = torch.sparse.mm(u_sparse, v_mean)  # Dims: d x 1
 
     """
-    Step 4: Get the pixelwise norm of (UR - me)V. Since V has orthonormal rows, this amounts to finding the row-wise
-    norm of (UR - me)
+    Step 3: Compute the pixelwise norm of the mean-subtracted PMD data. Exploit low-rank of PMD here.
+    We want to find diag([UV - m1^T][V^TU^T - 1m^T]) here.
     """
+    uv_meanzero_norm = torch.zeros((u_sparse.shape[0], 1), device=u_sparse.device, dtype=u_sparse.dtype)
+    v_sum = torch.sum(v, dim=1, keepdim=True)
+    uv_sum = torch.sparse.mm(u_sparse, v_sum)
+    uv_meanzero_norm += (-2)*uv_sum * uv_mean
+    uv_meanzero_norm += uv_mean*uv_mean
 
-    ## Step 4c: Get diag(U*R*R^t*U^t)
-    data_norms = torch.zeros([u_sparse.shape[0], 1], device=device)
-
-    batch_iters = math.ceil(r.shape[1] / frame_batch_size)
+    #To finish norm computation, need to compute diag(UVV^TU). This is rowsum(UVV^T (hadamard) U).
+    batch_iters = math.ceil(u_sparse.shape[1] / frame_batch_size)
     for k in range(batch_iters):
         start = frame_batch_size * k
-        end = min(start + frame_batch_size, u_sparse.shape[0])
-        data_chunk = (
-            torch.sparse.mm(u_sparse, r[:, start:end]) * s[start:end].unsqueeze(0)
-            - m @ e[:, start:end]
-        )
-        data_norms += torch.square(torch.linalg.norm(data_chunk, dim=1, keepdim=True))
-    data_norms = torch.sqrt(data_norms)
+        end = min(start + frame_batch_size, u_sparse.shape[1])
+        curr_vvt = v @ v.T[:, start:end]
+        curr_uvvt = torch.sparse.mm(u_sparse, curr_vvt)
+        inds = torch.arange(start, end, device=u_sparse.device, dtype=torch.long)
+        curr_u_dense = torch.index_select(u_sparse, 1, inds).to_dense()
+        uv_meanzero_norm += torch.sum(curr_uvvt * curr_u_dense, dim=1, keepdim=True)
 
+    uv_meanzero_norm = torch.sqrt(uv_meanzero_norm)
     corr_array = StandardCorrelationImages(
-        u_sparse, r, s, v, c, m.squeeze(), data_norms.squeeze(), fov_dims, data_order
+        u_sparse, v, c, uv_mean.squeeze(), uv_meanzero_norm.squeeze(), fov_dims, data_order
     )
+
     return corr_array
 
 
@@ -1832,7 +1827,7 @@ def merge_components(
     merge_overlap_thr=0.6,
     plot_en=False,
     data_order="C",
-) -> tuple[
+) -> Tuple[
     torch.sparse_coo_tensor,
     torch.tensor,
     torch.sparse_coo_tensor,
@@ -2667,9 +2662,7 @@ class DemixingState(SignalProcessingState):
     def initialize_standard_correlation_image(self):
         self.standard_correlation_image = _compute_standard_correlation_image(
             self.u_sparse,
-            self.r,
-            self.s,
-            self.v,
+            self.r @ (self.s[:, None] * self.v),
             self.c,
             (self.shape[0], self.shape[1]),
             self.data_order,
