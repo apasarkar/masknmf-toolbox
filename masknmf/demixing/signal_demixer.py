@@ -2675,6 +2675,74 @@ class DemixingState(SignalProcessingState):
         self.W.weights = torch.ones(
             (self.shape[0] * self.shape[1]), device=self.device
         ).float()
+        num_frames = self.v.shape[1]
+
+        #Precompute some key quantities
+        wb = self.W.forward(self.b)
+        uv_one = torch.sparse.mm(self.u_sparse, torch.sum(self.v, dim=1, keepdim=True))
+        wuv_one = self.W.forward(uv_one)
+        vc = self.v @ self.c
+        vvt = self.v @ self.v.T
+
+        #Knock out the easy terms first
+        denominator = -2 * wb * wuv_one
+        denominator += wb * wb * num_frames
+
+        numerator = -1 * wuv_one * self.b
+        numerator -= wb * uv_one
+        numerator += wb * self.b * num_frames
+        numerator += wb * torch.sparse.mm(self.a, torch.sum(self.c, dim=1, keepdim=True))
+
+        max_frames = max(self.u_sparse.shape[1], self.c.shape[1])
+        max_iters = math.ceil(max_frames / self.frame_batch_size)
+        for k in range(max_iters):
+            start = k * self.frame_batch_size
+            end = start + self.frame_batch_size
+
+            if start < self.u_sparse.shape[1]:
+                min_pmd = min(end, self.u_sparse.shape[1])
+                inds = torch.arange(start, min_pmd, device=self.device, dtype=torch.long)
+                curr_u_dense = torch.index_select(self.u_sparse, 1, inds).to_dense()
+                wu = self.W.forward(curr_u_dense)
+                wuvvt = wu @ vvt
+                denominator += torch.sum(wuvvt * wu, dim=1, keepdim=True)
+                numerator += torch.sum(wuvvt * curr_u_dense, dim=1, keepim=True)
+
+            if start < self.c.shape[1]:
+                min_neural_signals = min(end, self.c.shape[1])
+                vc_crop = vc[:, start:min_neural_signals]
+                uvc_crop = torch.sparse.mm(self.u_sparse, vc_crop)
+                wuvc_crop = self.W.forward(uvc_crop)
+                inds = torch.arange(start, min_neural_signals, device=self.device, dtype=torch.long)
+                a_dense_curr = torch.index_select(self.a, 1, inds).to_dense()
+                denominator += torch.sum(wuvc_crop * a_dense_curr, dim=1, keepdim=True)
+
+        weights = torch.nan_to_num(numerator / denominator, nan=0.0)
+        threshold_function = torch.nn.ReLU()
+        weights = threshold_function(weights)
+
+        #Finally, we export the ring model to a factorized format: UQV, where Q describes the fluctuating component
+        #The static component gets added to the static background
+        static_projection = self.pmd_obj.project(wb, standardize=False)
+        static_projection = torch.sparse.mm(self.u_sparse, static_projection)
+        self.b += static_projection
+
+        q_list = []
+        for k in range(max_iters):
+            start = k * self.frame_batch_size
+            end = start + self.frame_batch_size
+            if start < self.u_sparse.shape[1]:
+                inds = torch.arange(start, min_pmd, device=self.device, dtype=torch.long)
+                curr_u_dense = torch.index_select(self.u_sparse, 1, inds).to_dense()
+                wu = self.W.forward(curr_u_dense)
+                projected_wu = self.pmd_obj.project(weights.unsqueeze(1) * wu, standardize=False)
+                q_list.append(projected_wu)
+        self.factorized_ring_term = torch.concatenate(q_list, dim=1)
+
+    def ring_model_weight_update_old(self):
+        self.W.weights = torch.ones(
+            (self.shape[0] * self.shape[1]), device=self.device
+        ).float()
         ur = torch.sparse.mm(self.u_sparse, self.r)
         e = torch.matmul(
             torch.ones([1, self.v.shape[1]], device=self.device), self.v.t()
