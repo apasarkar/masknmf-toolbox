@@ -151,6 +151,9 @@ class RingModel:
             images_masked_3_d, kernel, stride=1, padding=padding
         ).squeeze()
 
+        if len(convolved_stack.shape) == 2:
+            convolved_stack = convolved_stack.unsqueeze(0)
+
         # Reshape (frames, d1, d2) to (d1*d2, frames)
         if self.order == "F":
             convolved_stack = torch.permute(

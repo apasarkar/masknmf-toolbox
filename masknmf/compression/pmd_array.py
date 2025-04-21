@@ -298,11 +298,12 @@ class PMDArray(FactorizedVideo):
         return len(self.shape)
 
     def project_frames(self,
-                       frames: torch.tensor) -> torch.tensor:
+                       frames: torch.tensor,
+                       standardize: Optional[bool]=True) -> torch.tensor:
         """
         Projects frames onto the spatial basis, using the u_projector property. u_projector must be defined.
         Args:
-            frames (torch.tensor). Shape (fov_dim1, fov_dim2, num_frames).
+            frames (torch.tensor). Shape (fov_dim1, fov_dim2, num_frames) or (fov_dim1*fov_dim2, num_frames).
                 Frames which we want to project onto the spatial basis.
         Returns:
             projected_frames (torch.tensor). Shape (fov_dim1, fov_dim2, num_frames).
@@ -311,8 +312,15 @@ class PMDArray(FactorizedVideo):
             raise ValueError("u_projector must be defined to project frames onto spatial basis")
         orig_device = frames.device
         frames = frames.to(self.device).float()
-        frames = (frames - self.mean_img[..., None]) / self.var_img[..., None]  #Normalize the frames
-        frames = frames.reshape(self.shape[1] * self.shape[2], -1)
+        if len(frames.shape) == 3:
+            if standardize:
+                frames = (frames - self.mean_img[..., None]) / self.var_img[..., None]  #Normalize the frames
+                frames = torch.nan_to_num(frames, nan=0.0)
+            frames = frames.reshape(self.shape[1] * self.shape[2], -1)
+        else:
+            if standardize:
+                frames = (frames - self.mean_img.flatten()[..., None]) / self.var_img.flatten()[..., None]
+                frames = torch.nan_to_num(frames, nan=0.0)
         if self.u_global_projector is not None:
             projection_global = torch.sparse.mm(self.u_global_projector.T, frames)
             frames -= torch.sparse.mm(self.u_global_basis, projection_global)

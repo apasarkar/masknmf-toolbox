@@ -3,12 +3,6 @@ import torch
 from typing import *
 
 
-def fast_matmul(a, b, device="cuda"):
-    a_torch = torch.from_numpy(a).float().to(device)
-    b_torch = torch.from_numpy(b).float().to(device)
-    return torch.mm(a_torch, b_torch).cpu().numpy()
-
-
 def baseline_update(uv_mean, a, c, to_torch=False):
     """
     Calculates baseline. Inputs:
@@ -35,8 +29,6 @@ def baseline_update(uv_mean, a, c, to_torch=False):
 
 def spatial_update_hals(
         u_sparse: torch.tensor,
-        r: torch.tensor,
-        s: torch.tensor,
         v: torch.tensor,
         a_sparse: torch.sparse_coo_tensor,
         c: torch.tensor,
@@ -51,9 +43,7 @@ def spatial_update_hals(
 
         Note: The first four parameters are the "PMD" representation of the data: it is given in a traditional SVD form: URsV, where UR is the left orthogonal basis, 's' represents the diagonal matrix, and V is the right orthogonal basis.
         u_sparse (torch.sparse_coo_tensor): Sparse matrix, with dimensions (d x R)
-        r (torch.Tensor): Dimensions (R, R') where R' is roughly equal to R (it may be equal to R+1)
-        s (torch.Tensor): This is the diagonal of a R' x R' matrix (so it is represented by a R' shaped tensor)
-        v (torch.Tensor): Dimensions R' x T. Dimensions R' x T, where T is the number of frames, where all rows are orthonormal.
+        v (torch.Tensor): Dimensions R x T. Dimensions R x T, where T is the number of frames, where all rows are orthonormal.
             Note:  V must contain the 1 x T vector of all 1's in its rowspan.
         a_sparse (torch.sparse_coo_tensor): dimensions d x k, where k represents the number of neural signals.
         c (torch.Tensor): Dimensions T x k
@@ -80,8 +70,6 @@ def spatial_update_hals(
     Vc = torch.matmul(v, c)
     a_dense = torch.index_select(a_sparse, 0, nonzero_row_indices).to_dense()
 
-    # Find the tensor, e, (a 1 x R' shaped tensor) such that eV gives a 1 x T tensor consisting of all 1's
-    e = torch.matmul(torch.ones([1, v.shape[1]], device=device), v.t())
 
     C_prime = torch.matmul(c.t(), c)
     C_prime_diag = torch.diag(C_prime)
@@ -97,16 +85,13 @@ def spatial_update_hals(
     u_subset = torch.index_select(u_sparse, 0, nonzero_row_indices)
 
     if q is not None:
-        background_subtracted_projection = torch.sparse.mm(
-            u_subset, torch.matmul(r, torch.matmul((torch.diag(s) - q), Vc))
-        )
+        eye_elt = torch.eye(u_sparse.shape[1], device=device, dtype=u_sparse.dtype)
+        background_subtracted_projection = torch.sparse.mm(u_subset, torch.matmul((eye_elt - q), Vc))
     else:
-        background_subtracted_projection = torch.sparse.mm(
-            u_subset, torch.matmul(r * s.unsqueeze(0), Vc)
-        )
+        eye_elt = torch.eye(u_sparse.shape[1], device=device, dtype=u_sparse.dtype)
+        background_subtracted_projection = torch.sparse.mm(u_subset, Vc)
     baseline_projection = torch.matmul(
-        torch.index_select(b, 0, nonzero_row_indices), torch.matmul(e, Vc)
-    )
+        torch.index_select(b, 0, nonzero_row_indices), torch.sum(c, dim=0, keepdim=True))
 
     cumulator = background_subtracted_projection - baseline_projection
 
@@ -139,8 +124,6 @@ def spatial_update_hals(
 
 def temporal_update_hals(
         u_sparse: torch.sparse_coo_tensor,
-        r: torch.tensor,
-        s: torch.tensor,
         v: torch.tensor,
         a_sparse: torch.sparse_coo_tensor,
         c: torch.tensor,
@@ -153,8 +136,6 @@ def temporal_update_hals(
     Inputs:
          Note: The first four parameters are the "PMD" representation of the data: it is given in a traditional SVD form: URsV, where UR is the left orthogonal basis, 's' represents the diagonal matrix, and V is the right orthogonal basis.
         u_sparse: torch.sparse_coo_tensor. Sparse matrix, with dimensions (d x R)
-        r: torch.Tensor. Dimensions (R, R') where R' is roughly equal to R (it may be equal to R+1)
-        s: torch.Tensor. This is the diagonal of R' x R' matrix (so it is represented by a R' shaped tensor)
         v: torch.Tensor. Dimensions R' x T. Dimensions R' x T, where T is the number of frames, where all rows are orthonormal.
             Note:  V must contain the 1 x T vector of all 1's in its rowspan.
         a: (d1*d2, k)-shaped torch.sparse_coo_tensor
@@ -172,26 +153,28 @@ def temporal_update_hals(
     ##Precompute quantities used throughout all iterations
 
     # Find the tensor, e, (a 1 x R' shaped tensor) such that eV gives a 1 x T tensor consisting of all 1's
-    e = torch.matmul(torch.ones([1, v.shape[1]], device=device), v.t())
+    # e = torch.matmul(torch.ones([1, v.shape[1]], device=device), v.t())
 
     # Step 1: Get aTURs
     aTU = torch.sparse.mm(a_sparse.t(), u_sparse)
-    aTUR = torch.sparse.mm(aTU, r)
+    # aTUR = torch.sparse.mm(aTU, r)
     if q is not None:
-        fluctuating_background_subtracted_projection = aTUR @ (torch.diag(s) - q)
+        fluctuating_background_subtracted_projection = torch.sparse.mm(aTU,  torch.eye(u_sparse.shape[1], device=device, dtype=u_sparse.dtype) - q)
     else:
-        fluctuating_background_subtracted_projection = aTUR * s.unsqueeze(0)
+        fluctuating_background_subtracted_projection = torch.sparse.mm(aTU,  torch.eye(u_sparse.shape[1], device=device, dtype=u_sparse.dtype))
+    fluctuating_background_subtracted_projection = fluctuating_background_subtracted_projection @ v
 
     # Step 2: Get aTbe
     aTb = torch.matmul(a_sparse.t(), b)
-    static_background_projection = torch.matmul(aTb, e)
+    # static_background_projection = torch.matmul(aTb, e)
+    static_background_projection = aTb
 
     # Step 3:
     cumulator = (
             fluctuating_background_subtracted_projection - static_background_projection
     )
 
-    cumulator = torch.matmul(cumulator, v)
+    # cumulator = torch.matmul(cumulator, v)
 
     ata = torch.sparse.mm(a_sparse.t(), a_sparse)
     ata = ata.to_dense()

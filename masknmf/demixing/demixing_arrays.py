@@ -273,7 +273,6 @@ class FluctuatingBackgroundArray(FactorizedVideo):
             fov_shape: tuple[int, int],
             order: str,
             u: torch.sparse_coo_tensor,
-            r: torch.tensor,
             q: torch.tensor,
             v: torch.tensor,
     ):
@@ -293,10 +292,9 @@ class FluctuatingBackgroundArray(FactorizedVideo):
 
         self._u = u
         self._v = v
-        self._r = r
         self._q = q
 
-        if not (self.u.device == self.v.device == self.r.device == self.q.device):
+        if not (self.u.device == self.v.device == self.q.device):
             raise ValueError(f"Some input tensors are not on the same device")
         self._device = self.u.device
         self.pixel_mat = np.arange(np.prod(self.shape[1:])).reshape(
@@ -312,10 +310,6 @@ class FluctuatingBackgroundArray(FactorizedVideo):
     @property
     def u(self) -> torch.sparse_coo_tensor:
         return self._u
-
-    @property
-    def r(self) -> torch.tensor:
-        return self._r
 
     @property
     def q(self) -> torch.tensor:
@@ -439,13 +433,11 @@ class FluctuatingBackgroundArray(FactorizedVideo):
 
         # Temporal term is guaranteed to have nonzero "T" dimension below
         if np.prod(implied_fov) <= v_crop.shape[1]:
-            product = torch.sparse.mm(u_crop, self._r)
-            product = torch.matmul(product, self._q)
+            product = torch.sparse.mm(u_crop, self._q)
             product = torch.matmul(product, v_crop)
 
         else:
             product = torch.matmul(self._q, v_crop)
-            product = torch.matmul(self._r, product)
             product = torch.sparse.mm(u_crop, product)
 
         if used_order == "F":
@@ -558,7 +550,7 @@ class ColorfulACArray(FactorizedVideo):
 
     def __init__(
             self,
-            fov_shape: tuple[int, int],
+            fov_shape: Tuple[int, int],
             order: str,
             a: torch.sparse_coo_tensor,
             c: torch.tensor,
@@ -1255,8 +1247,6 @@ class DemixingResults:
     def __init__(
             self,
             u_sparse: torch.sparse_coo_tensor,
-            r: torch.tensor,
-            s: torch.tensor,
             q: torch.tensor,
             v: torch.tensor,
             a: torch.sparse_coo_tensor,
@@ -1289,8 +1279,6 @@ class DemixingResults:
         self._order = order
         self._shape = data_shape
         self._u_sparse = u_sparse.to(device)
-        self._r = r.to(device)
-        self._s = s.to(device)
         self._q = q.to(device)
         self._v = v.to(device)
         self._a = a.to(device)
@@ -1326,8 +1314,6 @@ class DemixingResults:
     def to(self, new_device):
         self._device = new_device
         self._u_sparse = self._u_sparse.to(self.device)
-        self._r = self._r.to(self.device)
-        self._s = self._s.to(self.device)
         self._q = self._q.to(self.device)
         self._v = self._v.to(self.device)
         self._a = self._a.to(self.device)
@@ -1347,16 +1333,8 @@ class DemixingResults:
         return self._u_sparse
 
     @property
-    def r(self) -> torch.tensor:
-        return self._r
-
-    @property
     def baseline(self) -> torch.tensor:
         return self._baseline
-
-    @property
-    def s(self) -> torch.tensor:
-        return self._s
 
     @property
     def q(self) -> torch.tensor:
@@ -1390,7 +1368,7 @@ class DemixingResults:
         var_img = torch.ones(self.shape[1], self.shape[2], device=self.device)
         return PMDArray(self.shape,
                         self.u,
-                        (self.r * self.s[None, :]) @ self.v,
+                        self.v,
                         mean_img,
                         var_img,
                         device=self.device,
@@ -1402,7 +1380,7 @@ class DemixingResults:
         Returns a FluctuatingBackgroundArray using the tensors stored in this object
         """
         return FluctuatingBackgroundArray(
-            self.fov_shape, self.order, self.u, self.r, self.q, self.v
+            self.fov_shape, self.order, self.u, self.q, self.v
         )
 
     @property
