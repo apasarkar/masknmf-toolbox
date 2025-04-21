@@ -64,84 +64,79 @@ def make_mask_dynamic(
 
 
 def _compute_residual_correlation_image(
-    u_sparse: torch.sparse_coo_tensor,
-    r: torch.tensor,
-    s: torch.tensor,
-    v: torch.tensor,
-    factorized_ring_term: torch.tensor,
-    spatial_comps: torch.sparse_coo_tensor,
-    temporal_comps: torch.tensor,
-    fov_dims: tuple[int, int],
-    blocks: Optional[Union[torch.tensor, list]] = None,
-    data_order: str = "F",
-    batch_size: int = 1000,
-    device: str = "cpu",
+        u_sparse: torch.sparse_coo_tensor,
+        v: torch.tensor,
+        factorized_ring_term: torch.tensor,
+        spatial_comps: torch.sparse_coo_tensor,
+        temporal_comps: torch.tensor,
+        fov_dims: Tuple[int, int],
+        blocks: Optional[Union[torch.tensor, list]]=None,
+        data_order: str="F",
+        batch_size: int=1000,
+        device: str="cpu",
 ) -> ResidualCorrelationImages:
     """
-    The residual correlation image for each neuron "i" can be broken up into two parts: the pixels that do
-    not currently belong to the spatial support of neuron "i" and the pixels that do. For the former, we can compute
-    the correlation image via ((UR(s - q) - AX^T)Vc_norm) and then divide each pixel by the norm of URs - AX^T
-
-    For the latter, we need to compute (UR(s - q) - AX + A_iX_i^T)(Vc_norm) and then divide each pixel by the norm of
-    URs - AX^T. Note that here we are only interested in the correlation values on the pixels belonging to support
-    of A_i.
+    Insert docs here
     """
+
+    """
+    Want to subtract the background first: 
+    UV - UQV = U(I - Q)V. Moving forward, we define V_new = (I - Q)V and use UV_new. 
+    """
+    v_new = (torch.eye(v.shape[0], device=device, dtype=torch.float) - factorized_ring_term) @ v
+
     residual_movie_norms = torch.zeros(
         (u_sparse.shape[0], 1), device=device, dtype=torch.float32
     )
 
-    c = temporal_comps - torch.mean(temporal_comps, dim=0, keepdim=True)
-    c /= torch.linalg.norm(c, dim=0, keepdim=True)
+    # c = temporal_comps - torch.mean(temporal_comps, dim=0, keepdim=True)
+    c_meanzero = temporal_comps - torch.mean(temporal_comps, dim=0, keepdim=True)
+    c_meanzero_norms = torch.linalg.norm(c_meanzero, dim=0, keepdim=True) #This is reused below
+    c = c_meanzero / c_meanzero_norms
     c = torch.nan_to_num(c, nan=0, posinf=0, neginf=0)
 
-    v_mean = torch.mean(v, dim=1, keepdim=True)
-    c_mean = torch.mean(temporal_comps.T, dim=1, keepdim=True)
-    e = torch.ones((1, v.shape[1]), device=device, dtype=torch.float32) @ v.T
+    ## Step 1: Compute the mean and pixelwise normalizer for (U(I - Q)V - ac)
+    residual_mean = torch.sparse.mm(u_sparse, torch.mean(v_new, dim=1, keepdim=True))
+    residual_mean -= torch.sparse.mm(spatial_comps, torch.mean(temporal_comps.T, dim=1, keepdim=True))
 
-    x = temporal_comps.T @ v.T
-    c_orth_v = temporal_comps.T - x @ v
-    c_U, c_s, Z = torch.linalg.svd(c_orth_v, full_matrices=False)
-    y = c_U @ torch.diag_embed(c_s)
+    num_neural_signals = c.shape[1]
+    pmd_rank = v_new.shape[0]
+    max_value = max(num_neural_signals, pmd_rank)
+    num_batches = math.ceil(max_value / batch_size)
 
-    """
-    So now ac^T has been divided into two components; one that fits into the V basis, and another that is orth:
-    axV and ayZ
-    """
+    residual_movie_norms += -2 * (torch.sparse.mm(u_sparse, torch.sum(v_new, dim=1, keepdim=True)) * residual_mean)
+    residual_movie_norms += 2 * (torch.sparse.mm(spatial_comps, torch.sum(temporal_comps.T, dim=1, keepdim=True)) * residual_mean)
+    residual_movie_norms += v_new.shape[1] * torch.square(residual_mean)
 
-    fluctuating_baseline_subtracted_term = torch.diag(s) - factorized_ring_term
-
-    m_baseline = torch.sparse.mm(
-        u_sparse, (r @ (fluctuating_baseline_subtracted_term @ v_mean))
-    ) - torch.sparse.mm(spatial_comps, c_mean)
-
-    num_iters = math.ceil(r.shape[1] / batch_size)
-    for k in range(num_iters):
+    #Compute remaining norm terms in batch
+    for k in range(num_batches):
         start = k * batch_size
-        end = min(start + batch_size, r.shape[1])
-        temp = (
-            torch.sparse.mm(u_sparse, (r @ fluctuating_baseline_subtracted_term[:, start:end]))
-            - torch.matmul(spatial_comps, x[:, start:end])
-            - m_baseline @ e[:, start:end]
-        )
-        residual_movie_norms += torch.square(
-            torch.linalg.norm(temp, dim=1, keepdim=True)
-        )
+        end = start + batch_size
 
-    num_iters = math.ceil(y.shape[1] / batch_size)
-    for k in range(num_iters):
-        start = k * batch_size
-        end = min(start + batch_size, y.shape[1])
-        temp = torch.sparse.mm(spatial_comps, y[:, start:end])
-        residual_movie_norms += torch.square(
-            torch.linalg.norm(temp, dim=1, keepdim=True)
-        )
+        if start < pmd_rank:
+            pmd_end = min(end, pmd_rank)
+            curr_vvt = v_new @ v_new.T[:, start:pmd_end]
+            curr_uvvt = torch.sparse.mm(u_sparse, curr_vvt)
+            inds = torch.arange(start, pmd_end, device=device, dtype=torch.long)
+            curr_u_dense = torch.index_select(u_sparse, 1, inds).to_dense()
+            residual_movie_norms += torch.sum(curr_uvvt * curr_u_dense, dim=1, keepdim=True)
+        if start < num_neural_signals:
+            c_end = min(end, num_neural_signals)
+            curr_vc = v_new @ temporal_comps[:, start:c_end]
+            curr_ctc = temporal_comps.T @ temporal_comps[:, start:c_end]
+            inds = torch.arange(start, c_end, device=device, dtype=torch.long)
+
+            curr_uvc = torch.sparse.mm(u_sparse, curr_vc)
+            curr_actc = torch.sparse.mm(spatial_comps, curr_ctc)
+
+            curr_a_dense = torch.index_select(spatial_comps, 1, inds).to_dense()
+
+            residual_movie_norms += -2 * torch.sum(curr_uvc * curr_a_dense, dim=1, keepdim=True)
+            residual_movie_norms += torch.sum(curr_actc * curr_a_dense, dim=1, keepdim=True)
 
     residual_movie_norms = torch.sqrt(residual_movie_norms)
 
-    """
-    Now we compute a matrix with the same sparsity as "spatial_comps" describing the residual corr image for each 
-    neuron on its support
-    """
+    #Now construct the resid corr image
     final_rows = []
     final_cols = []
     final_values = []
@@ -149,82 +144,59 @@ def _compute_residual_correlation_image(
     if blocks is None:
         blocks = torch.arange(c.shape[1], device=device).unsqueeze(1)
     for index_select_tensor_net in blocks:
-        # print(f"index select tensor net {index_select_tensor_net}")
-        num_batches = math.ceil(index_select_tensor_net.shape[0] / batch_size)
-        for batch_index in range(num_batches):
+        a_curr = torch.index_select(spatial_comps, 1, index_select_tensor_net).coalesce()
 
-            start_batch = batch_index * batch_size
-            end_batch = min(start_batch + batch_size, index_select_tensor_net.shape[0])
-            index_select_tensor = index_select_tensor_net[start_batch:end_batch]
-            # print(f"index select tensor here is {index_select_tensor}")
-            a_subset = torch.index_select(spatial_comps, 1, index_select_tensor).coalesce().to_dense()
-            c_mean_subset = torch.index_select(c_mean, 0, index_select_tensor)
-            c_select = torch.index_select(c, 1, index_select_tensor)
-            rows_to_keep = (
-                torch.matmul(a_subset, torch.ones((a_subset.shape[1], 1), device=device))
-                .squeeze()
-                .nonzero()
-                .squeeze()
-            )
-            a_subset_rowcrop = torch.index_select(a_subset, 0, rows_to_keep)
-            a_rowcrop = torch.index_select(spatial_comps, 0, rows_to_keep).coalesce()
+        curr_rows, curr_cols = [a_curr.indices()[i] for i in [0, 1]]
+        curr_values = a_curr.values()
 
-            x_crop = torch.index_select(x, 0, index_select_tensor)
-            y_crop = torch.index_select(y, 0, index_select_tensor)
-            u_rowcrop = torch.index_select(u_sparse, 0, rows_to_keep).coalesce()
-            m_rowcrop = torch.index_select(m_baseline, 0, rows_to_keep) + torch.mm(
-                a_subset_rowcrop, c_mean_subset
-            )
+        #Need to compute the appropriate pixelwise norms for these sources. Can reuse many previous computations
+        #Step 1: Compute pixewise norm of (UV - ac - mean_resid). This is easy - already computed above.
+        curr_resid_norms = torch.square(residual_movie_norms[curr_rows, :])
 
-            urs_term = torch.sparse.mm(u_rowcrop, r) @ fluctuating_baseline_subtracted_term
-            ax_term = torch.sparse.mm(a_rowcrop, x)
-            ax_keep_term = torch.matmul(a_subset_rowcrop, x_crop)
-            mean_sub_term = m_rowcrop @ e
-            net_spatial_basis_V = urs_term - ax_term + ax_keep_term - mean_sub_term
-            curr_norm_V = torch.square(
-                torch.linalg.norm(net_spatial_basis_V, dim=1, keepdim=True)
-            )
-
-            ay_term = torch.sparse.mm(a_rowcrop, y)
-            ay_keep_term = torch.mm(a_subset_rowcrop, y_crop)
-            net_spatial_basis_Z = -1 * ay_term + ay_keep_term
-            curr_norm_Z = torch.square(
-                torch.linalg.norm(net_spatial_basis_Z, dim=1, keepdim=True)
-            )
+        #Step 2: Compute pixelwise norm of (a_zc_z^T - mean_z)
+        curr_c_meansub_norms = c_meanzero_norms[:, index_select_tensor_net][:, curr_cols].T
+        curr_resid_norms += (curr_values**2)[:, None]*curr_c_meansub_norms**2
 
 
-            curr_norm = torch.sqrt(curr_norm_V + curr_norm_Z)
+        #Step 3: Compute diag (UV - ac - mean_resid)(a_zc_z^T - mean_z)^T. Exploit spatial disjointedness of a_z/c_z signals
+        curr_c = c[:, index_select_tensor_net] * c_meanzero_norms[:, index_select_tensor_net]
+        resid_image_cumulator = torch.sparse.mm(u_sparse, v_new @ curr_c)
+        resid_image_cumulator -= torch.sparse.mm(spatial_comps, temporal_comps.T @ curr_c)
+        resid_image_cumulator -= residual_mean @ torch.sum(curr_c, dim=0, keepdim=True)
+        #This is used below
 
-            corr_img = (
-                net_spatial_basis_V @ v @ c_select + net_spatial_basis_Z @ Z @ c_select
-            )
-            corr_img /= curr_norm
-            corr_img = torch.nan_to_num(corr_img, nan=0.0, posinf=0.0, neginf=0.0)
-            local_rows, local_cols = a_subset_rowcrop.nonzero(as_tuple=True)
-            local_values = corr_img[(local_rows, local_cols)]
-            real_rows = rows_to_keep[local_rows]
-            real_cols = index_select_tensor[local_cols]
-            final_rows.append(real_rows)
-            final_cols.append(real_cols)
-            final_values.append(local_values)
+        curr_resid_norms += 2*(resid_image_cumulator[curr_rows, curr_cols] * curr_values)[:, None]
+        curr_resid_norms = torch.sqrt(curr_resid_norms)
+
+        corr_term = (resid_image_cumulator / c_meanzero_norms[:, index_select_tensor_net])[curr_rows, curr_cols][:, None]
+        corr_term = torch.nan_to_num(corr_term, nan=0.0)
+        cc_term = curr_c.T @ c[:, index_select_tensor_net]
+        acc_term = torch.sparse.mm(a_curr, cc_term)
+        corr_term += acc_term[curr_rows, curr_cols][:, None]
+
+        corr_term /= curr_resid_norms
+        corr_term = torch.nan_to_num(corr_term, nan=0.0)
+
+        final_values.append(corr_term.squeeze())
+        final_rows.append(curr_rows)
+        final_cols.append(index_select_tensor_net[curr_cols])
 
     final_rows = torch.cat(final_rows, 0)
     final_cols = torch.cat(final_cols, 0)
-    final_values = torch.cat(final_values, 0).to(device)
-    resid_corr_indices = torch.stack([final_rows, final_cols]).to(device)
+    final_values = torch.cat(final_values, 0)
+    resid_corr_indices = torch.stack([final_rows, final_cols])
     resid_corr_on_support = torch.sparse_coo_tensor(
         resid_corr_indices, final_values, spatial_comps.size()
     ).coalesce()
+
     residual_array = ResidualCorrelationImages(
         u_sparse,
-        r,
-        s,
         v,
         factorized_ring_term,
         spatial_comps,
         temporal_comps,
         resid_corr_on_support,
-        m_baseline.squeeze(),
+        residual_mean.squeeze(),
         residual_movie_norms.squeeze(),
         fov_dims,
         mode=ResidCorrMode.DEFAULT,
@@ -272,7 +244,7 @@ def _compute_standard_correlation_image(
     Step 3: Compute the pixelwise norm of the mean-subtracted PMD data. Exploit low-rank of PMD here.
     We want to find diag([UV - m1^T][V^TU^T - 1m^T]) here.
     """
-    uv_meanzero_norm = torch.zeros((u_sparse.shape[0], 1), device=u_sparse.device, dtype=u_sparse.dtype)
+    uv_meanzero_norm = torch.zeros((u_sparse.shape[0], 1), device=device, dtype=u_sparse.dtype)
     v_sum = torch.sum(v, dim=1, keepdim=True)
     uv_sum = torch.sparse.mm(u_sparse, v_sum)
     uv_meanzero_norm += (-2)*uv_sum * uv_mean
@@ -285,7 +257,7 @@ def _compute_standard_correlation_image(
         end = min(start + frame_batch_size, u_sparse.shape[1])
         curr_vvt = v @ v.T[:, start:end]
         curr_uvvt = torch.sparse.mm(u_sparse, curr_vvt)
-        inds = torch.arange(start, end, device=u_sparse.device, dtype=torch.long)
+        inds = torch.arange(start, end, device=device, dtype=torch.long)
         curr_u_dense = torch.index_select(u_sparse, 1, inds).to_dense()
         uv_meanzero_norm += torch.sum(curr_uvvt * curr_u_dense, dim=1, keepdim=True)
 
@@ -2673,9 +2645,9 @@ class DemixingState(SignalProcessingState):
     def compute_residual_correlation_image(self):
         self.residual_correlation_image = _compute_residual_correlation_image(
             self.u_sparse,
-            self.r,
-            self.s,
-            self.v,
+            # self.r,
+            # self.s,
+            self.r @ (self.s[:, None]*self.v),
             self.factorized_ring_term,
             self.a,
             self.c,
@@ -2690,7 +2662,7 @@ class DemixingState(SignalProcessingState):
         """
         Lots of HALS updates can be done in parallel because the underlying signals don't overlap
         """
-        adjacency_mat = torch.sparse.mm(self.a.t(), self.a)
+        adjacency_mat = torch.sparse.mm(self.mask_ab.float().t(), self.mask_ab.float())
         graph = construct_graph_from_sparse_tensor(adjacency_mat)
         self.blocks = color_and_get_tensors(graph, self.device)
 

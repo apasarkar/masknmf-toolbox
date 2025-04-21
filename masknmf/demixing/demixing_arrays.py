@@ -786,8 +786,6 @@ class ResidualCorrelationImages(FactorizedVideo):
     def __init__(
             self,
             u_sparse: torch.sparse_coo_tensor,
-            r: torch.tensor,
-            s: torch.tensor,
             v: torch.tensor,
             factorized_ring_term: torch.tensor,
             a: torch.sparse_coo_tensor,
@@ -795,7 +793,7 @@ class ResidualCorrelationImages(FactorizedVideo):
             support_correlation_values: torch.sparse_coo_tensor,
             residual_movie_mean: torch.tensor,
             residual_movie_normalizer: torch.tensor,
-            fov_dims: tuple[int, int],
+            fov_dims: Tuple[int, int],
             mode: ResidCorrMode = ResidCorrMode.DEFAULT,
             order: str = "F",
     ):
@@ -811,8 +809,6 @@ class ResidualCorrelationImages(FactorizedVideo):
 
         Args:
             u_sparse (torch.sparse_coo_tensor): shape (pixels, rank 1)
-            r (torch.tensor): shape (rank 1, rank 2)
-            s (torch.tensor): shape (rank 2)
             v (torch.tensor): shape (rank 2, frames)
             a (torch.sparse_coo_tensor): shape (pixels, number of neural signals). Spatial components
             c (torch.tensor): shape (frames, number of neural signals). This is the temporal traces matrix
@@ -827,8 +823,6 @@ class ResidualCorrelationImages(FactorizedVideo):
 
         if not (
                 u_sparse.device
-                == r.device
-                == s.device
                 == v.device
                 == c.device
                 == a.device
@@ -841,18 +835,18 @@ class ResidualCorrelationImages(FactorizedVideo):
 
         self._device = u_sparse.device
         self._u = u_sparse
-        self._r = r
-        self._s = s
         self._v = v
         self._factorized_ring_term = factorized_ring_term
         self._background_subtracted_term = (
-                torch.diag(self._s) - self._factorized_ring_term
+            torch.eye(self._u.shape[1], device=self.device, dtype=torch.float) - self._factorized_ring_term
         )
         self._c = c
         self._c_norm = self._c - torch.mean(self._c, dim=0, keepdim=True)
         self._c_norm = self._c_norm / torch.linalg.norm(
             self._c_norm, dim=0, keepdim=True
         )
+        self._c_norm = torch.nan_to_num(self._c_norm, nan=0.0)
+
         self._a = a
         self._residual_movie_mean = residual_movie_mean
         self._support_correlation_values = support_correlation_values
@@ -895,8 +889,8 @@ class ResidualCorrelationImages(FactorizedVideo):
         return self._device
 
     @property
-    def shape(self) -> tuple[int, int, int]:
-        return (self._c.shape[1], self._fov_dims[0], self._fov_dims[1])
+    def shape(self) -> Tuple[int, int, int]:
+        return self._c.shape[1], self._fov_dims[0], self._fov_dims[1]
 
     @property
     def support_correlation_values(self) -> torch.sparse_coo_tensor:
@@ -1019,20 +1013,17 @@ class ResidualCorrelationImages(FactorizedVideo):
 
         # Temporal term is guaranteed to have nonzero "T" dimension below
         if np.prod(implied_fov) <= v_crop.shape[1]:
-            product = (
-                    torch.sparse.mm(u_crop, self._r) @ self._background_subtracted_term
-            )
+            product = torch.sparse.mm(u_crop, self._background_subtracted_term)
             product = torch.matmul(product, v_crop)
-            product -= (mean_crop.unsqueeze(1) @ self._ones_basis) @ v_crop
+            product -= mean_crop.unsqueeze(1) @ torch.sum(c_crop, dim=0, keepdim=True)
             product -= torch.sparse.mm(a_crop, cc_crop)
             product /= movie_normalizer_crop.unsqueeze(1)
 
         else:
             product = self._background_subtracted_term @ v_crop
-            product = torch.matmul(self._r, product)
             product = torch.sparse.mm(u_crop, product)
             product -= torch.sparse.mm(a_crop, cc_crop)
-            product -= mean_crop.unsqueeze(1) @ (self._ones_basis @ v_crop)
+            product -= mean_crop.unsqueeze(1) @ torch.sum(c_crop, dim=0, keepdim=True)
 
             product /= movie_normalizer_crop.unsqueeze(1)
 
