@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "masknmf pipeline for motion correction, denoising, compression, and demixing of functional neuroimaging data"
 readme = "README.md"
 license = "MIT"
-# install takes ~3x longer on py310 due to lack of imguiwheels
+
 requires-python = ">=3.11, <3.13"  # ">=3.10"
 authors = [
     { name = "Amol Pasarkar" },
@@ -59,7 +59,6 @@ all = [
 	"sidecar",
 	"ipykernel",
 	"ipywidgets>=8.0.0,<9",
-	"anywidget",
 	"napari",
 ]
 dev = ["masknmf_toolbox[all]"]
