@@ -29,6 +29,7 @@ dependencies = [
     "oasis-deconv",
     "tqdm",
     "hydra-core",
+    "cvxpy>=1.6.5",
 ]
 
 [project.optional-dependencies]
