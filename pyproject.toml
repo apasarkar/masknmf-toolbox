@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "masknmf-toolbox"
+version = "0.1.0"
+description = "masknmf pipeline for motion correction, denoising, compression, and demixing of functional neuroimaging data"
+readme = "README.md"
+license = "MIT"
+# install takes ~3x longer on py310 due to lack of imguiwheels
+requires-python = ">=3.11, <3.13"  # ">=3.10"
+authors = [
+    { name = "Amol Pasarkar" },
+]
+keywords = ["neuroimaging", "motion correction", "demixing", "calcium imaging"]
+dependencies = [
+    "torch",
+    "fastplotlib",
+    "future",
+    "numpy",
+    "scipy",
+    "plotly",
+    "line-profiler",
+    "h5py",
+    "matplotlib",
+    "networkx",
+    "scikit-image",
+    "oasis-deconv",
+    "tqdm",
+    "hydra-core",
+]
+
+[project.optional-dependencies]
+gui = [
+	# "cmake",  # needed on py310, i think pip is fine
+	"imgui-bundle",
+	"pyqt5==5.15.11",
+	"pyqt5-qt5==5.15.2",
+	"glfw",
+] 
+notebook = [
+    "imgui-bundle",
+	"jupyter_rfb>=0.5.1",
+	"jupyterlab",
+	"sidecar",
+	"ipykernel",
+	"ipywidgets>=8.0.0,<9",
+]
+napari = ["napari"]
+all = [
+	"imgui-bundle",
+	"pyqt5==5.15.11",
+	"pyqt5-qt5==5.15.2",
+	"glfw",
+	"jupyter_rfb>=0.5.1",
+	"jupyterlab",
+	"sidecar",
+	"ipykernel",
+	"ipywidgets>=8.0.0,<9",
+	"anywidget",
+	"napari",
+]
+dev = ["masknmf_toolbox[all]"]
+
+[project.urls]
+Homepage = "https://github.com/apasarkar/masknmf-toolbox"
+Repository = "https://github.com/apasarkar/masknmf-toolbox"
+Issues = "https://github.com/apasarkar/masknmf-toolbox/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["masknmf_toolbox*"]
