@@ -30,6 +30,8 @@ dependencies = [
     "tqdm",
     "hydra-core",
     "cvxpy>=1.6.5",
+    "jupyter-rfb>=0.5.1",
+    "simplejpeg"
 ]
 
 [project.optional-dependencies]
