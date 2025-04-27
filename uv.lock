@@ -45,20 +45,6 @@ wheels = [
 ]
 
 [[package]]
-name = "anywidget"
-version = "0.9.18"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "ipywidgets" },
-    { name = "psygnal" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ed/69/20423d6abd2a57d767d20a9dcf3f816bd4cbbe4813ac7c7158ba16e44c3f/anywidget-0.9.18.tar.gz", hash = "sha256:262cf459b517a7d044d6fbc84b953e9c83f026790b2dd3ce90f21a7f8eded00f", size = 9808509 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/2b/f0/09a30ca0551af20c7cefa7464b7ccb6f5407a550b83c4dcb15c410814849/anywidget-0.9.18-py3-none-any.whl", hash = "sha256:944b82ef1dd17b8ff0fb6d1f199f613caf9111338e6e2857da478f6e73770cb8", size = 220671 },
-]
-
-[[package]]
 name = "app-model"
 version = "0.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1368,6 +1354,7 @@ dependencies = [
     { name = "future" },
     { name = "h5py" },
     { name = "hydra-core" },
+    { name = "jupyter-rfb" },
     { name = "line-profiler" },
     { name = "matplotlib" },
     { name = "networkx" },
@@ -1376,13 +1363,13 @@ dependencies = [
     { name = "plotly" },
     { name = "scikit-image" },
     { name = "scipy" },
+    { name = "simplejpeg" },
     { name = "torch" },
     { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
 all = [
-    { name = "anywidget" },
     { name = "glfw" },
     { name = "imgui-bundle" },
     { name = "ipykernel" },
@@ -1395,7 +1382,6 @@ all = [
     { name = "sidecar" },
 ]
 dev = [
-    { name = "anywidget" },
     { name = "glfw" },
     { name = "imgui-bundle" },
     { name = "ipykernel" },
@@ -1427,7 +1413,6 @@ notebook = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anywidget", marker = "extra == 'all'" },
     { name = "cvxpy", specifier = ">=1.6.5" },
     { name = "fastplotlib" },
     { name = "future" },
@@ -1442,6 +1427,7 @@ requires-dist = [
     { name = "ipykernel", marker = "extra == 'notebook'" },
     { name = "ipywidgets", marker = "extra == 'all'", specifier = ">=8.0.0,<9" },
     { name = "ipywidgets", marker = "extra == 'notebook'", specifier = ">=8.0.0,<9" },
+    { name = "jupyter-rfb", specifier = ">=0.5.1" },
     { name = "jupyter-rfb", marker = "extra == 'all'", specifier = ">=0.5.1" },
     { name = "jupyter-rfb", marker = "extra == 'notebook'", specifier = ">=0.5.1" },
     { name = "jupyterlab", marker = "extra == 'all'" },
@@ -1463,6 +1449,7 @@ requires-dist = [
     { name = "scipy" },
     { name = "sidecar", marker = "extra == 'all'" },
     { name = "sidecar", marker = "extra == 'notebook'" },
+    { name = "simplejpeg" },
     { name = "torch" },
     { name = "tqdm" },
 ]
@@ -2835,6 +2822,27 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/23/8c/1143344be27a8c72ab8f02e6b55270e89eca6387bae542f958b056a18764/sidecar-0.7.0.tar.gz", hash = "sha256:c3fa1694b5611c1fab9d7a96c07577ba0764068a89b7b39be9b9ce9770e9d363", size = 3333537 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c5/8e/3a325661f42c7d7aa246b16cbf1113caf94d418e5c367a2483ee1e1f9603/sidecar-0.7.0-py3-none-any.whl", hash = "sha256:a18e5972b45f5b6a81d6738a223471b3e1627bff1e26053834fd843006e67446", size = 17821 },
+]
+
+[[package]]
+name = "simplejpeg"
+version = "1.8.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/45/f0/c63f8be025a809ccb7383dff65f5b195ba14d5eb30a52cfaa3fd18f88536/simplejpeg-1.8.2.tar.gz", hash = "sha256:b06e253a896c7fc4f257e11baf96d783817cea41360d0962a70c2743ba57bc30", size = 5485180 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2a/8d/49d2f73df000116ae00c2b32e83b11daee76bd026c71654ccc7346573a56/simplejpeg-1.8.2-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:2a4c075ce3cabff2e2da9833ac30c33dbefbde6c2bf44c85b04427cccdaa71d9", size = 492226 },
+    { url = "https://files.pythonhosted.org/packages/5d/a1/5ed898d1c4609b485f801779aac2e4d9117aeceeb02918214c00b8f49998/simplejpeg-1.8.2-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:8ab277564272aae211ec5b6a9466b2070d827eaafdae85c507b16970e8787256", size = 442903 },
+    { url = "https://files.pythonhosted.org/packages/8a/d9/a93b79e5bd6643229723b982892167b0011f724614854ed75bc64c9939b7/simplejpeg-1.8.2-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:6d64c0255db3dc5f7f6f61091ae9266fe2526c97160fd35025ee94d4d17dfc18", size = 446575 },
+    { url = "https://files.pythonhosted.org/packages/83/0c/793d8741f172229de704474f36dba20afcdd402aa49e5253733ca260a0e3/simplejpeg-1.8.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:064c583e7e33689d14a4621e2e9a330694b62e503961162bb897dccba446b52b", size = 427411 },
+    { url = "https://files.pythonhosted.org/packages/7b/e1/369157bb22c0c146608b90a2b97a2f0e7bd91a6cb59cae7363998a87de10/simplejpeg-1.8.2-cp311-cp311-win_amd64.whl", hash = "sha256:9f99156bfd211b4d2298ad5188173aca4a8ff6c7dc75695cba34df8442b7ec3b", size = 306645 },
+    { url = "https://files.pythonhosted.org/packages/84/4c/3bd332dd3af05a18d48fe114e5c32876c85fadea8e521b06e5f93306ac8f/simplejpeg-1.8.2-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:6185d3dbaac759f94663ad1b119f115e54fd472082d5ab0247292c06dfc4e8e0", size = 492706 },
+    { url = "https://files.pythonhosted.org/packages/18/46/d215d05d4302cde2f37c4d131a5cce96430d81543c024c0ce39e4b29df45/simplejpeg-1.8.2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:b9feef167f7b6d77a1e00a3f08026876d9776c8b94b7f68b1ebe66c11270a486", size = 443258 },
+    { url = "https://files.pythonhosted.org/packages/8e/db/e00b23fd3db37d90f8c0ada5484e800d56d76123e647cdb365e75f4aa905/simplejpeg-1.8.2-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:70ea3ba9930ea991fa2a464efdcdd9c9db7e7f717949f4d291a87bdfbfc966a5", size = 445395 },
+    { url = "https://files.pythonhosted.org/packages/d8/7f/f75153b2323d9bbb5eb4a4ff68f0c74bc5bfe5cf259d6b56a168847e24ce/simplejpeg-1.8.2-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3e0217d767e0ecf7add67a41b9a368741dcc8e36ff89c1fc0a445cabc23f41b0", size = 425841 },
+    { url = "https://files.pythonhosted.org/packages/62/65/d78d840b9d9e923f85df27897308bd570ab51eae4221125bd0a337b3e73a/simplejpeg-1.8.2-cp312-cp312-win_amd64.whl", hash = "sha256:098cf1eb0ab5c26c94793e190bb8abd4439536b271b865ad37f594b1c9bb8d8f", size = 306992 },
 ]
 
 [[package]]
