@@ -21,7 +21,6 @@ from .demixing_arrays import (
 )
 
 from .demixing_utils import (
-    add_1s_to_rowspan,
     construct_graph_from_sparse_tensor,
     color_and_get_tensors,
     ndarray_to_torch_sparse_coo,
