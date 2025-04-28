@@ -1,6 +1,7 @@
 import datetime
 import sys
 
+
 def display(msg):
     """
     Printing utility that logs time and flushes.

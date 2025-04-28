@@ -15,7 +15,9 @@ def compute_highpass_filter_kernel(gaussian_sigma: list[int]) -> torch.tensor:
     """
     # Validate input
     if not isinstance(gaussian_sigma[0], int):
-        raise TypeError(f"gaussian_sigma must be a list containing an integer, but got {type(gaussian_sigma[0])}")
+        raise TypeError(
+            f"gaussian_sigma must be a list containing an integer, but got {type(gaussian_sigma[0])}"
+        )
     if gaussian_sigma[0] < 1:
         raise ValueError("gaussian_sigma must contain a positive integer")
 
@@ -40,20 +42,19 @@ def compute_highpass_filter_kernel(gaussian_sigma: list[int]) -> torch.tensor:
 
     return ker2D
 
-def gaussian_kernel(kernel_size: int=3,
-                    sigma: float=1.0) -> torch.tensor:
+
+def gaussian_kernel(kernel_size: int = 3, sigma: float = 1.0) -> torch.tensor:
     """Generates a 2D Gaussian kernel."""
     x = torch.arange(kernel_size) - kernel_size // 2
     y = torch.arange(kernel_size) - kernel_size // 2
-    xx, yy = torch.meshgrid(x, y, indexing='ij')
+    xx, yy = torch.meshgrid(x, y, indexing="ij")
 
     kernel = torch.exp(-(xx**2 + yy**2) / (2 * sigma**2))
     kernel /= kernel.sum()  # Normalize to sum to 1
     return kernel
 
 
-def image_filter(frames: torch.tensor,
-                kernel: torch.tensor) -> torch.tensor:
+def image_filter(frames: torch.tensor, kernel: torch.tensor) -> torch.tensor:
     """
     Generic Image filter function; given a kernel an image stack, convolve every image with the kernel.
 
@@ -75,7 +76,9 @@ def image_filter(frames: torch.tensor,
     kernel = kernel.unsqueeze(0).unsqueeze(0)  # Shape: (1, 1, kH, kW)
 
     # Apply convolution (padding='same' ensures output size matches input size)
-    convolved_frames = torch.nn.functional.conv2d(frames, kernel, padding="same")  # Shape: (num_frames, 1, fov_dim1, fov_dim2)
+    convolved_frames = torch.nn.functional.conv2d(
+        frames, kernel, padding="same"
+    )  # Shape: (num_frames, 1, fov_dim1, fov_dim2)
 
     # Remove channel dimension
     return convolved_frames.squeeze(1)  # Shape: (num_frames, fov_dim1, fov_dim2)
