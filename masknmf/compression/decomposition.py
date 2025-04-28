@@ -1331,6 +1331,9 @@ def pmd_batch(
     """
     num_frames, fov_dim1, fov_dim2 = dataset.shape
 
+    if batch_dimensions[0] < block_sizes[0] or batch_dimensions[1] < block_sizes[1]:
+        raise ValueError(f"Batch dimensions must be larger than the block size used in the PMD algorithm")
+
     spatial_dim1_start_pts = list(
         range(
             0,
@@ -1342,7 +1345,9 @@ def pmd_batch(
         spatial_dim1_start_pts[-1] != dataset.shape[1] - batch_dimensions[0]
         and dataset.shape[1] - batch_dimensions[0] > 0
     ):
-        spatial_dim1_start_pts.append(dataset.shape[1] - batch_dimensions[0])
+        last_index = spatial_dim1_start_pts[-1] + batch_dimensions[0]
+        updated_index = last_index - block_sizes[0]
+        spatial_dim1_start_pts.append(updated_index)
 
     spatial_dim2_start_pts = list(
         range(
@@ -1355,17 +1360,19 @@ def pmd_batch(
         spatial_dim2_start_pts[-1] != dataset.shape[2] - batch_dimensions[1]
         and dataset.shape[2] - batch_dimensions[1] > 0
     ):
-        spatial_dim2_start_pts.append(dataset.shape[2] - batch_dimensions[1])
+        last_index = spatial_dim2_start_pts[-1] + batch_dimensions[1]
+        updated_index = last_index - block_sizes[1]
+        spatial_dim2_start_pts.append(updated_index)
 
     pmd_array_list = []
     fov_list = []
     for i in range(len(spatial_dim1_start_pts)):
         for j in range(len(spatial_dim2_start_pts)):
             curr_dim1_start_pt = spatial_dim1_start_pts[i]
-            curr_dim1_end_pt = spatial_dim1_start_pts[i] + batch_dimensions[0]
+            curr_dim1_end_pt = min(spatial_dim1_start_pts[i] + batch_dimensions[0], dataset.shape[1])
 
             curr_dim2_start_pt = spatial_dim2_start_pts[j]
-            curr_dim2_end_pt = spatial_dim2_start_pts[j] + batch_dimensions[1]
+            curr_dim2_end_pt = min(spatial_dim2_start_pts[j] + batch_dimensions[1], dataset.shape[2])
 
             slice1 = slice(curr_dim1_start_pt, curr_dim1_end_pt)
             slice2 = slice(curr_dim2_start_pt, curr_dim2_end_pt)
