@@ -6,13 +6,16 @@ from .strategies import MotionCorrectionStrategy
 import math
 import numpy as np
 
+
 class RegistrationArray(LazyFrameLoader):
-    def __init__(self,
-                 reference_dataset: LazyFrameLoader,
-                 strategy: MotionCorrectionStrategy,
-                 device: str = "cpu",
-                 batch_size: int = 200,
-                 target_dataset: Optional[LazyFrameLoader] = None):
+    def __init__(
+        self,
+        reference_dataset: LazyFrameLoader,
+        strategy: MotionCorrectionStrategy,
+        device: str = "cpu",
+        batch_size: int = 200,
+        target_dataset: Optional[LazyFrameLoader] = None,
+    ):
         """
         Array-like motion correction representation that support on-the-fly motion correction
 
@@ -34,7 +37,6 @@ class RegistrationArray(LazyFrameLoader):
 
         self._shape = self.reference_dataset.shape
         self._ndim = self.reference_dataset.ndim
-
 
     @property
     def ndim(self) -> int:
@@ -93,8 +95,10 @@ class RegistrationArray(LazyFrameLoader):
         """
         return self.index_frames_tensor(indices).cpu().numpy()
 
-    def index_frames_tensor(self,
-                            idx: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> torch.tensor:
+    def index_frames_tensor(
+        self,
+        idx: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+    ) -> torch.tensor:
         """Retrieve motion-corrected frame at index `idx`."""
         reference_data_indexed = self._reference_dataset[idx]
         if self.target_dataset is None:
@@ -108,11 +112,15 @@ class RegistrationArray(LazyFrameLoader):
 
         if self.batch_size > reference_data_indexed.shape[0]:
             # Directly motion correct the data
-            reference_subset = torch.from_numpy(reference_data_indexed).to(self.device).float()
-            target_data_subset = torch.from_numpy(target_data_indexed).to(self.device).float()
-            moco_output = self.strategy.correct(reference_subset,
-                                                target_frames=target_data_subset,
-                                                device=self.device)[0].cpu()
+            reference_subset = (
+                torch.from_numpy(reference_data_indexed).to(self.device).float()
+            )
+            target_data_subset = (
+                torch.from_numpy(target_data_indexed).to(self.device).float()
+            )
+            moco_output = self.strategy.correct(
+                reference_subset, target_frames=target_data_subset, device=self.device
+            )[0].cpu()
 
         else:
             num_iters = math.ceil(reference_data_indexed.shape[0] / self.batch_size)
@@ -121,18 +129,27 @@ class RegistrationArray(LazyFrameLoader):
                 start = k * self.batch_size
                 end = min(start + self.batch_size, reference_data_indexed.shape[0])
 
-                reference_subset = torch.from_numpy(reference_data_indexed[start:end]).to(self.device).float()
-                target_subset = torch.from_numpy(target_data_indexed[start:end]).to(self.device).float()
+                reference_subset = (
+                    torch.from_numpy(reference_data_indexed[start:end])
+                    .to(self.device)
+                    .float()
+                )
+                target_subset = (
+                    torch.from_numpy(target_data_indexed[start:end])
+                    .to(self.device)
+                    .float()
+                )
 
                 if reference_subset.ndim == 2:
                     reference_subset = reference_subset.expand(1, -1, -1)
                     target_subset = target_subset.expand(1, -1, -1)
-                subset_output = self.strategy.correct(reference_subset,
-                                                      target_frames=target_subset,
-                                                      device=self.device)[0].cpu()
+                subset_output = self.strategy.correct(
+                    reference_subset, target_frames=target_subset, device=self.device
+                )[0].cpu()
                 outputs.append(subset_output)
             moco_output = torch.concatenate(outputs, dim=0)
         return moco_output
+
 
 class FilteredArray(LazyFrameLoader):
     def __init__(
@@ -140,7 +157,7 @@ class FilteredArray(LazyFrameLoader):
         raw_data_loader: LazyFrameLoader,
         filter_function: Callable,
         batching: int = 100,
-        device: str = "cpu"
+        device: str = "cpu",
     ):
         """
         Class for loading and filtering data; this is broadly useful because we often want to spatially filter
@@ -175,6 +192,7 @@ class FilteredArray(LazyFrameLoader):
     @device.setter
     def device(self, new_device: str):
         self._device = new_device
+
     @property
     def filter_function(self) -> Callable:
         return self._filter

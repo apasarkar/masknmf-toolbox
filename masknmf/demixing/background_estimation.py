@@ -1,7 +1,7 @@
 import torch
 
-class RingModel:
 
+class RingModel:
     def __init__(
         self, d1: int, d2: int, radius: int, device: str = "cpu", order: str = "F"
     ):

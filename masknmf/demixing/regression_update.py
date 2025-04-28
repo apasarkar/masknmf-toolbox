@@ -28,14 +28,14 @@ def baseline_update(uv_mean, a, c, to_torch=False):
 
 
 def spatial_update_hals(
-        u_sparse: torch.tensor,
-        v: torch.tensor,
-        a_sparse: torch.sparse_coo_tensor,
-        c: torch.tensor,
-        b: torch.tensor,
-        q: Optional[torch.tensor] = None,
-        blocks: Optional[Union[torch.tensor, list]] = None,
-        mask_ab: Optional[torch.sparse_coo_tensor] = None,
+    u_sparse: torch.tensor,
+    v: torch.tensor,
+    a_sparse: torch.sparse_coo_tensor,
+    c: torch.tensor,
+    b: torch.tensor,
+    q: Optional[torch.tensor] = None,
+    blocks: Optional[Union[torch.tensor, list]] = None,
+    mask_ab: Optional[torch.sparse_coo_tensor] = None,
 ):
     """
     Computes a spatial HALS updates:
@@ -70,7 +70,6 @@ def spatial_update_hals(
     Vc = torch.matmul(v, c)
     a_dense = torch.index_select(a_sparse, 0, nonzero_row_indices).to_dense()
 
-
     C_prime = torch.matmul(c.t(), c)
     C_prime_diag = torch.diag(C_prime)
     C_prime_diag[C_prime_diag == 0] = 1  # For division safety
@@ -86,12 +85,15 @@ def spatial_update_hals(
 
     if q is not None:
         eye_elt = torch.eye(u_sparse.shape[1], device=device, dtype=u_sparse.dtype)
-        background_subtracted_projection = torch.sparse.mm(u_subset, torch.matmul((eye_elt - q), Vc))
+        background_subtracted_projection = torch.sparse.mm(
+            u_subset, torch.matmul((eye_elt - q), Vc)
+        )
     else:
         eye_elt = torch.eye(u_sparse.shape[1], device=device, dtype=u_sparse.dtype)
         background_subtracted_projection = torch.sparse.mm(u_subset, Vc)
     baseline_projection = torch.matmul(
-        torch.index_select(b, 0, nonzero_row_indices), torch.sum(c, dim=0, keepdim=True))
+        torch.index_select(b, 0, nonzero_row_indices), torch.sum(c, dim=0, keepdim=True)
+    )
 
     cumulator = background_subtracted_projection - baseline_projection
 
@@ -123,14 +125,14 @@ def spatial_update_hals(
 
 
 def temporal_update_hals(
-        u_sparse: torch.sparse_coo_tensor,
-        v: torch.tensor,
-        a_sparse: torch.sparse_coo_tensor,
-        c: torch.tensor,
-        b: torch.tensor,
-        q: Optional[torch.tensor] = None,
-        c_nonneg: bool = True,
-        blocks: Optional[Union[torch.tensor, list]] = None,
+    u_sparse: torch.sparse_coo_tensor,
+    v: torch.tensor,
+    a_sparse: torch.sparse_coo_tensor,
+    c: torch.tensor,
+    b: torch.tensor,
+    q: Optional[torch.tensor] = None,
+    c_nonneg: bool = True,
+    blocks: Optional[Union[torch.tensor, list]] = None,
 ):
     """
     Inputs:
@@ -159,10 +161,16 @@ def temporal_update_hals(
     aTU = torch.sparse.mm(a_sparse.t(), u_sparse)
     # aTUR = torch.sparse.mm(aTU, r)
     if q is not None:
-        fluctuating_background_subtracted_projection = torch.sparse.mm(aTU,  torch.eye(u_sparse.shape[1], device=device, dtype=u_sparse.dtype) - q)
+        fluctuating_background_subtracted_projection = torch.sparse.mm(
+            aTU, torch.eye(u_sparse.shape[1], device=device, dtype=u_sparse.dtype) - q
+        )
     else:
-        fluctuating_background_subtracted_projection = torch.sparse.mm(aTU,  torch.eye(u_sparse.shape[1], device=device, dtype=u_sparse.dtype))
-    fluctuating_background_subtracted_projection = fluctuating_background_subtracted_projection @ v
+        fluctuating_background_subtracted_projection = torch.sparse.mm(
+            aTU, torch.eye(u_sparse.shape[1], device=device, dtype=u_sparse.dtype)
+        )
+    fluctuating_background_subtracted_projection = (
+        fluctuating_background_subtracted_projection @ v
+    )
 
     # Step 2: Get aTbe
     aTb = torch.matmul(a_sparse.t(), b)
@@ -171,7 +179,7 @@ def temporal_update_hals(
 
     # Step 3:
     cumulator = (
-            fluctuating_background_subtracted_projection - static_background_projection
+        fluctuating_background_subtracted_projection - static_background_projection
     )
 
     # cumulator = torch.matmul(cumulator, v)
@@ -193,8 +201,8 @@ def temporal_update_hals(
 
         curr_trace = torch.index_select(c, 1, index_to_select)
         curr_trace += (
-                (torch.index_select(cumulator, 0, index_to_select) - a_iaC)
-                / torch.unsqueeze(diagonals[index_to_select], -1)
+            (torch.index_select(cumulator, 0, index_to_select) - a_iaC)
+            / torch.unsqueeze(diagonals[index_to_select], -1)
         ).t()
         curr_trace = threshold_function(curr_trace)
         c[:, index_to_select] = curr_trace
