@@ -2646,7 +2646,8 @@ class DemixingState(SignalProcessingState):
                 inds = torch.arange(start, min_pmd, device=self.device, dtype=torch.long)
                 curr_u_dense = torch.index_select(self.u_sparse, 1, inds).to_dense()
                 wu = self.W.forward(curr_u_dense)
-                wuvvt = wu @ vvt
+                uvvt = torch.sparse.mm(self.u_sparse, vvt[:, inds])
+                wuvvt = self.W.forward(uvvt) # wu @ vvt
                 denominator += torch.sum(wuvvt * wu, dim=1, keepdim=True)
                 numerator += torch.sum(wuvvt * curr_u_dense, dim=1, keepdim=True)
 
