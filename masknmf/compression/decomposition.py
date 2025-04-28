@@ -1332,7 +1332,7 @@ def stitch_pmd_arrays(pmd_list: List[PMDArray],
             curr_u_global = curr_pmd.u_global_basis
             curr_u_global_indices = curr_u_global.indices()
             curr_u_global_rows, curr_u_global_cols = curr_u_global_indices[0], curr_u_global_indices[1]
-            curr_u_global_values = curr_u_global_indices.values()
+            curr_u_global_values = curr_u_global.values()
 
             # First apply the interpolation scheme:
             curr_u_global_values *= weighting_function.flatten()[curr_u_global_rows]
