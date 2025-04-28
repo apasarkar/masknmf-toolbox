@@ -60,8 +60,6 @@ class TiffArray(LazyFrameLoader):
         return data.astype(self.dtype)
 
 
-
-
 class Hdf5Array(LazyFrameLoader):
     def __init__(self, filename: str, field: str) -> None:
         """

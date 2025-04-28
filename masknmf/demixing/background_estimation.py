@@ -1,7 +1,7 @@
 import torch
 
-class RingModel:
 
+class RingModel:
     def __init__(
         self, d1: int, d2: int, radius: int, device: str = "cpu", order: str = "F"
     ):
@@ -150,6 +150,9 @@ class RingModel:
         convolved_stack = torch.nn.functional.conv2d(
             images_masked_3_d, kernel, stride=1, padding=padding
         ).squeeze()
+
+        if len(convolved_stack.shape) == 2:
+            convolved_stack = convolved_stack.unsqueeze(0)
 
         # Reshape (frames, d1, d2) to (d1*d2, frames)
         if self.order == "F":

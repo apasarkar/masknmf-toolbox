@@ -1,4 +1,7 @@
 import torch
+from typing import List
+
+import masknmf
 from masknmf.compression.pmd_array import PMDArray
 from masknmf.arrays.array_interfaces import LazyFrameLoader
 import math
@@ -11,10 +14,7 @@ from typing import *
 
 
 def truncated_random_svd(
-    input_matrix: torch.tensor,
-    rank: int,
-    num_oversamples: int = 5,
-    device: str = "cpu"
+    input_matrix: torch.tensor, rank: int, num_oversamples: int = 5, device: str = "cpu"
 ) -> Tuple[torch.tensor, torch.tensor, torch.tensor]:
     """
     Assumptions:
@@ -25,9 +25,9 @@ def truncated_random_svd(
     input_matrix = input_matrix.to(device)
     random_data = torch.randn(num_frames, rank + num_oversamples, device=device)
     projected = input_matrix @ random_data
-    q, r = torch.linalg.qr(projected, mode = "reduced")
+    q, r = torch.linalg.qr(projected, mode="reduced")
     b = q.T @ input_matrix
-    u, s, v = torch.linalg.svd(b, full_matrices = False)
+    u, s, v = torch.linalg.svd(b, full_matrices=False)
     u_final = q @ u
     v_final = s[:, None] * v
     return u_final[:, :rank], s[:rank], v_final[:rank, :]
@@ -36,6 +36,8 @@ def truncated_random_svd(
 """
 The below functions are for spatial and temporal roughness penalties
 """
+
+
 def temporal_roughness_statistic(temporal_traces: torch.tensor) -> torch.tensor:
     """
     Computes the temporal roughness statistics, batched over all the traces of interest
@@ -48,10 +50,11 @@ def temporal_roughness_statistic(temporal_traces: torch.tensor) -> torch.tensor:
     right_term = temporal_traces[:, 2:]
     center_term = temporal_traces[:, 1:-1]
 
-    numerator = torch.mean(torch.abs(left_term + right_term - 2*center_term), dim = 1)
-    denominator = torch.mean(torch.abs(temporal_traces), dim = 1)
+    numerator = torch.mean(torch.abs(left_term + right_term - 2 * center_term), dim=1)
+    denominator = torch.mean(torch.abs(temporal_traces), dim=1)
     denominator[denominator == 0] = 1.0
     return numerator / denominator
+
 
 def spatial_roughness_statistic(spatial_comps: torch.tensor) -> torch.tensor:
     """
@@ -62,39 +65,50 @@ def spatial_roughness_statistic(spatial_comps: torch.tensor) -> torch.tensor:
         stats (torch.tensor): shape (num_components)
     """
     d1, d2 = spatial_comps.shape[0], spatial_comps.shape[1]
-    #Compute abs(vertical differences) :
+    # Compute abs(vertical differences) :
     top_vertical = spatial_comps[:-1, :, :]
     bottom_vertical = spatial_comps[1:, :, :]
     vertical_diffs = torch.abs(top_vertical - bottom_vertical)
 
-    #Compute abs(horizontal differences)
+    # Compute abs(horizontal differences)
     left_horizontal = spatial_comps[:, :-1, :]
     right_horizontal = spatial_comps[:, 1:, :]
     horizontal_diffs = torch.abs(left_horizontal - right_horizontal)
 
-    #Compute abs(top left --> bottom right differences)
+    # Compute abs(top left --> bottom right differences)
     top_left = spatial_comps[:-1, :-1, :]
     bottom_right = spatial_comps[1:, 1:, :]
     top_bottom_diag_diffs = torch.abs(top_left - bottom_right)
 
-    #Compute abs(bottomleft --> topright differences)
+    # Compute abs(bottomleft --> topright differences)
     top_right = spatial_comps[1:, 1:, :]
     bottom_left = spatial_comps[:-1, :-1, :]
     bottom_top_diag_diffs = torch.abs(top_right - bottom_left)
 
-    total_terms = (torch.prod(torch.tensor(vertical_diffs.shape[:2])) + torch.prod(torch.tensor(horizontal_diffs.shape[:2])) +
-                   torch.prod(torch.tensor(top_bottom_diag_diffs.shape[:2])) + torch.prod(torch.tensor(bottom_top_diag_diffs.shape[:2])))
+    total_terms = (
+        torch.prod(torch.tensor(vertical_diffs.shape[:2]))
+        + torch.prod(torch.tensor(horizontal_diffs.shape[:2]))
+        + torch.prod(torch.tensor(top_bottom_diag_diffs.shape[:2]))
+        + torch.prod(torch.tensor(bottom_top_diag_diffs.shape[:2]))
+    )
 
-    avg_diff = (torch.sum(vertical_diffs, dim = (0, 1)) + torch.sum(horizontal_diffs, dim = (0, 1))
-                + torch.sum(top_bottom_diag_diffs, dim = (0, 1)) + torch.sum(top_bottom_diag_diffs, dim = (0, 1)))
+    avg_diff = (
+        torch.sum(vertical_diffs, dim=(0, 1))
+        + torch.sum(horizontal_diffs, dim=(0, 1))
+        + torch.sum(top_bottom_diag_diffs, dim=(0, 1))
+        + torch.sum(top_bottom_diag_diffs, dim=(0, 1))
+    )
     avg_diff /= total_terms
 
-    return avg_diff / torch.mean(torch.abs(spatial_comps), dim = (0, 1))
+    return avg_diff / torch.mean(torch.abs(spatial_comps), dim=(0, 1))
 
-def evaluate_fitness(spatial_comps: torch.tensor,
-                     temporal_traces: torch.tensor,
-                     spatial_statistic_threshold: float,
-                     temporal_statistic_threshold: float) -> torch.tensor:
+
+def evaluate_fitness(
+    spatial_comps: torch.tensor,
+    temporal_traces: torch.tensor,
+    spatial_statistic_threshold: float,
+    temporal_statistic_threshold: float,
+) -> torch.tensor:
     """
     Args:
         spatial_comps (torch.tensor): shape (fov dim1, fov dim2, num_components)
@@ -112,6 +126,7 @@ def evaluate_fitness(spatial_comps: torch.tensor,
 
     return torch.logical_and(spatial_decisions, temporal_decisions)
 
+
 def filter_by_failures(
     decisions: torch.tensor, max_consecutive_failures: int
 ) -> torch.tensor:
@@ -127,20 +142,24 @@ def filter_by_failures(
     """
 
     false_tensor = (~decisions).to(dtype=torch.float32)
-    kernel = torch.ones(max_consecutive_failures, device=false_tensor.device, dtype=torch.float32)[None, None,
-             :]  # Shape (1,1,n)
+    kernel = torch.ones(
+        max_consecutive_failures, device=false_tensor.device, dtype=torch.float32
+    )[
+        None, None, :
+    ]  # Shape (1,1,n)
     seq = false_tensor.to(torch.float32)[None, None, :]
 
     # Convolve to find runs of n consecutive False values
-    conv_result = torch.nn.functional.conv1d(seq, kernel, stride=1, padding=max_consecutive_failures - 1).squeeze()[
-                  :false_tensor.shape[0]]
+    conv_result = torch.nn.functional.conv1d(
+        seq, kernel, stride=1, padding=max_consecutive_failures - 1
+    ).squeeze()[: false_tensor.shape[0]]
 
     over_threshold = (conv_result >= max_consecutive_failures).to(torch.float32)
-    keep_comps = torch.cumsum(torch.cumsum(over_threshold, dim=0), dim=0) <= 1 ##Two cumulative sums guarantee we pick the last element properly
+    keep_comps = (
+        torch.cumsum(torch.cumsum(over_threshold, dim=0), dim=0) <= 1
+    )  ##Two cumulative sums guarantee we pick the last element properly
 
     return keep_comps
-
-
 
 
 def identify_window_chunks(
@@ -186,8 +205,8 @@ def identify_window_chunks(
         net_frames.extend(curr_frame_list)
     return net_frames
 
-def check_fov_size(fov_dims: Tuple[int, int],
-                   min_allowed_value: int = 10) -> None:
+
+def check_fov_size(fov_dims: Tuple[int, int], min_allowed_value: int = 10) -> None:
     """
     Checks if the field of view (FOV) dimensions are too small.
 
@@ -209,9 +228,10 @@ def check_fov_size(fov_dims: Tuple[int, int],
             )
 
 
-
 def update_block_sizes(
-    blocks: tuple, fov_shape: tuple, min_block_value: int = 4,
+    blocks: tuple,
+    fov_shape: tuple,
+    min_block_value: int = 4,
 ) -> list:
     """
     If user specifies block sizes that are too large, this approach truncates the blocksizes appropriately
@@ -254,12 +274,13 @@ def update_block_sizes(
     return final_blocks
 
 
-def compute_mean_and_normalizer_dataset(dataset: LazyFrameLoader,
-                                        compute_normalizer: bool,
-                                        frame_batch_size: int,
-                                        device: str,
-                                        dtype: torch.dtype
-                                        ) -> Tuple[torch.tensor, torch.tensor]:
+def compute_mean_and_normalizer_dataset(
+    dataset: LazyFrameLoader,
+    compute_normalizer: bool,
+    frame_batch_size: int,
+    device: str,
+    dtype: torch.dtype,
+) -> Tuple[torch.tensor, torch.tensor]:
     """
     Computes a pixelwise mean and a noise variance estimate. For now, the noise var estimate is turned off
     Args:
@@ -276,7 +297,7 @@ def compute_mean_and_normalizer_dataset(dataset: LazyFrameLoader,
         var_img (torch.tensor): The (fvo dim1, fov dim2) noise variance image.
     """
     num_frames, fov_dim1, fov_dim2 = dataset.shape
-    noise_normalizer = torch.ones((fov_dim1, fov_dim2), dtype = dtype)
+    noise_normalizer = torch.ones((fov_dim1, fov_dim2), dtype=dtype)
 
     num_batches = math.ceil(num_frames / frame_batch_size)
     curr_sum = torch.zeros((fov_dim1, fov_dim2), dtype=dtype, device=device)
@@ -285,18 +306,20 @@ def compute_mean_and_normalizer_dataset(dataset: LazyFrameLoader,
         end_pt = min(start_pt + frame_batch_size, num_frames)
         curr_data = dataset[start_pt:end_pt]
         curr_tensor = torch.from_numpy(curr_data).to(device).to(dtype)
-        curr_sum += torch.sum(curr_tensor / num_frames, dim = 0)
+        curr_sum += torch.sum(curr_tensor / num_frames, dim=0)
 
     return curr_sum.cpu(), noise_normalizer.cpu()
 
 
-def compute_full_fov_spatial_basis(dataset: LazyFrameLoader,
-                                   mean_img: torch.tensor,
-                                   noise_variance_img: torch.tensor,
-                                   background_rank: int,
-                                   dtype: torch.dtype = torch.float32,
-                                   device: str = "cpu",
-                                   num_samples: int = 1000):
+def compute_full_fov_spatial_basis(
+    dataset: LazyFrameLoader,
+    mean_img: torch.tensor,
+    noise_variance_img: torch.tensor,
+    background_rank: int,
+    dtype: torch.dtype = torch.float32,
+    device: str = "cpu",
+    num_samples: int = 1000,
+):
     """
     Routine for approximating a full FOV low-rank spatial basis; useful for estimating full FOV trends
 
@@ -327,22 +350,23 @@ def compute_full_fov_spatial_basis(dataset: LazyFrameLoader,
     noise_variance_img = noise_variance_img.to(device).to(dtype)
     my_data = torch.tensor(dataset[random_data]).to(device).to(dtype)
     my_data = (my_data - mean_img[None, :, :]) / noise_variance_img[None, :, :]
-    my_data = my_data.permute(1, 2, 0).reshape((fov_dim1*fov_dim2, -1))
+    my_data = my_data.permute(1, 2, 0).reshape((fov_dim1 * fov_dim2, -1))
 
     my_data = my_data.to(device).to(dtype)
-    spatial_basis, _, _ = truncated_random_svd(my_data,
-                                         background_rank,
-                                         device = device)
+    spatial_basis, _, _ = truncated_random_svd(my_data, background_rank, device=device)
 
     return spatial_basis.cpu().reshape((fov_dim1, fov_dim2, -1))
 
-def compute_full_fov_temporal_basis(dataset: torch.tensor,
-                                    mean_img: torch.tensor,
-                                    noise_variance_img: torch.tensor,
-                                    full_fov_spatial_basis: torch.tensor,
-                                    dtype: torch.dtype,
-                                    frame_batch_size: int,
-                                    device: str = "cpu") -> torch.tensor:
+
+def compute_full_fov_temporal_basis(
+    dataset: torch.tensor,
+    mean_img: torch.tensor,
+    noise_variance_img: torch.tensor,
+    full_fov_spatial_basis: torch.tensor,
+    dtype: torch.dtype,
+    frame_batch_size: int,
+    device: str = "cpu",
+) -> torch.tensor:
     """
     Regress some portion of the data onto the spatial basis.
     Args:
@@ -362,10 +386,14 @@ def compute_full_fov_temporal_basis(dataset: torch.tensor,
     num_iters = math.ceil(dataset.shape[0] / frame_batch_size)
     final_results = []
 
-    mean_img_r = mean_img.reshape((fov_dim1*fov_dim2, 1)).T
-    noise_variance_img_r = noise_variance_img.reshape((fov_dim1*fov_dim2, 1))
-    spatial_basis_r = full_fov_spatial_basis.to(device).to(dtype).reshape((fov_dim1 * fov_dim2, -1))
-    spatial_basis_r_weighted_by_variance = (spatial_basis_r * torch.reciprocal(noise_variance_img_r))
+    mean_img_r = mean_img.reshape((fov_dim1 * fov_dim2, 1)).T
+    noise_variance_img_r = noise_variance_img.reshape((fov_dim1 * fov_dim2, 1))
+    spatial_basis_r = (
+        full_fov_spatial_basis.to(device).to(dtype).reshape((fov_dim1 * fov_dim2, -1))
+    )
+    spatial_basis_r_weighted_by_variance = spatial_basis_r * torch.reciprocal(
+        noise_variance_img_r
+    )
     for k in range(num_iters):
         if frame_batch_size >= dataset.shape[0]:
             curr_dataset = dataset.to(device).to(dtype)
@@ -373,16 +401,20 @@ def compute_full_fov_temporal_basis(dataset: torch.tensor,
             start_pt = k * frame_batch_size
             end_pt = min(dataset.shape[0], start_pt + frame_batch_size)
             curr_dataset = dataset[start_pt:end_pt].to(device).to(dtype)
-        curr_dataset_r = curr_dataset.reshape((-1, fov_dim1*fov_dim2))
-        projection = curr_dataset_r @ spatial_basis_r_weighted_by_variance - mean_img_r @ spatial_basis_r_weighted_by_variance
+        curr_dataset_r = curr_dataset.reshape((-1, fov_dim1 * fov_dim2))
+        projection = (
+            curr_dataset_r @ spatial_basis_r_weighted_by_variance
+            - mean_img_r @ spatial_basis_r_weighted_by_variance
+        )
         final_results.append(projection)
 
-    final_tensor = torch.concatenate(final_results, dim = 0)
+    final_tensor = torch.concatenate(final_results, dim=0)
     return final_tensor.T
 
 
-def compute_factorized_svd_with_leftbasis(p: torch.sparse_coo_tensor,
-                                          v: torch.tensor) -> Tuple[torch.tensor, torch.tensor, torch.tensor]:
+def compute_factorized_svd_with_leftbasis(
+    p: torch.sparse_coo_tensor, v: torch.tensor
+) -> Tuple[torch.tensor, torch.tensor, torch.tensor]:
     """
     Use case: you have a factorized movie, UPV where U is sparse (and you don't want to change that), and
     UP has orthonormal columns. This function reformats the factorization into UPV = (UR)sV_{new} where (UR) are left
@@ -393,21 +425,27 @@ def compute_factorized_svd_with_leftbasis(p: torch.sparse_coo_tensor,
         p (torch.tensor): shape (rank, rank)
         v: (torch.tensor): shape (rank, num_frames)
     """
-    q, m = [i.float().T for i in torch.linalg.qr(v.T, mode = "reduced")]#Now v = mq
+    q, m = [i.float().T for i in torch.linalg.qr(v.T, mode="reduced")]  # Now v = mq
 
-    #Note that (upm)^T(upm) = (m^T)m
+    # Note that (upm)^T(upm) = (m^T)m
     mtm = m.T @ m
     # mtm = (mtm + mtm.T) / 2
     # eig_vals, eig_vecs = [i.float() for i in torch.linalg.eigh(mtm.double())]
-    eig_vecs, eig_vals, _ = [i.float() for i in torch.linalg.svd(mtm, full_matrices = True)]
+    eig_vecs, eig_vals, _ = [
+        i.float() for i in torch.linalg.svd(mtm, full_matrices=True)
+    ]
 
     print(f"{torch.allclose(mtm, mtm.T)}")
-    print(f"When we ran the  leftbasis eigh routine, the smallest value we saw was {np.amin(eig_vals.cpu().numpy())}")
+    print(
+        f"When we ran the  leftbasis eigh routine, the smallest value we saw was {np.amin(eig_vals.cpu().numpy())}"
+    )
 
     # eig_vecs = torch.flip(eig_vecs, dims = [1])
     # eig_vals = torch.flip(eig_vals, dims = [0])
 
-    print(f"When we ran the eigh routine, the smallest value we saw was {np.amin(eig_vals.cpu().numpy())}")
+    print(
+        f"When we ran the eigh routine, the smallest value we saw was {np.amin(eig_vals.cpu().numpy())}"
+    )
     good_components = eig_vals > 0
     eig_vecs = eig_vecs[:, good_components]
     eig_vals = eig_vals[good_components]
@@ -418,9 +456,10 @@ def compute_factorized_svd_with_leftbasis(p: torch.sparse_coo_tensor,
     v = eig_vecs.T @ q
     return r, s, v
 
+
 def compute_lowrank_factorized_svd(
-        u: torch.sparse_coo_tensor,
-        v: torch.tensor,
+    u: torch.sparse_coo_tensor,
+    v: torch.tensor,
 ):
     """
     Compute the factorized Singular Value Decomposition (SVD) of a low-rank matrix factorization.
@@ -459,7 +498,9 @@ def compute_lowrank_factorized_svd(
         - This routine uses eigh on the spatial basis to exploit the low rank of the decomposition. This will lead to bad results if the matrix is ill-conditioned.
         PMD gives us a reasonable guarantee that this is not true (due to the blockwise decompositions).
     """
-    q, p = [i.float().T for i in torch.linalg.qr(v.T, mode = "reduced")] # Here, v = pq, with q having orth rows
+    q, p = [
+        i.float().T for i in torch.linalg.qr(v.T, mode="reduced")
+    ]  # Here, v = pq, with q having orth rows
     ut_u = torch.sparse.mm(u.T, u).to_dense()
 
     ptut_up = (p.T @ ut_u) @ p
@@ -470,8 +511,8 @@ def compute_lowrank_factorized_svd(
     eig_vals = eig_vals[good_components]
     eig_vecs = eig_vecs[:, good_components]
 
-    eig_vals = torch.flip(eig_vals, dims = [0])
-    eig_vecs = torch.flip(eig_vecs, dims = [1])
+    eig_vals = torch.flip(eig_vals, dims=[0])
+    eig_vecs = torch.flip(eig_vecs, dims=[1])
 
     s = torch.sqrt(eig_vals)
     r = p @ (eig_vecs / s[None, :])
@@ -480,15 +521,16 @@ def compute_lowrank_factorized_svd(
     return r, s, new_v
 
 
-
-def regress_onto_spatial_basis(dataset: LazyFrameLoader,
-                               u_aggregated: torch.sparse_coo_tensor,
-                               frame_batch_size: int,
-                               dataset_mean: torch.tensor,
-                               dataset_noise_variance: torch.tensor,
-                               full_fov_spatial_basis: torch.tensor,
-                               dtype: torch.dtype,
-                               device: str = "cpu") -> torch.tensor:
+def regress_onto_spatial_basis(
+    dataset: LazyFrameLoader,
+    u_aggregated: torch.sparse_coo_tensor,
+    frame_batch_size: int,
+    dataset_mean: torch.tensor,
+    dataset_noise_variance: torch.tensor,
+    full_fov_spatial_basis: torch.tensor,
+    dtype: torch.dtype,
+    device: str = "cpu",
+) -> torch.tensor:
     """
     We have a spatial basis from blockwise decompositions. This function will do two things, in a single pass through the
     data:
@@ -515,9 +557,13 @@ def regress_onto_spatial_basis(dataset: LazyFrameLoader,
     """
     num_frames, fov_dim1, fov_dim2 = dataset.shape
     num_iters = math.ceil(dataset.shape[0] / frame_batch_size)
-    dataset_mean = dataset_mean.to(device).to(dtype).reshape((fov_dim1*fov_dim2, 1))
-    dataset_noise_variance = dataset_noise_variance.to(device).to(dtype).reshape((fov_dim1*fov_dim2, 1))
-    full_fov_spatial_basis = full_fov_spatial_basis.to(device).to(dtype).reshape((fov_dim1*fov_dim2, -1))
+    dataset_mean = dataset_mean.to(device).to(dtype).reshape((fov_dim1 * fov_dim2, 1))
+    dataset_noise_variance = (
+        dataset_noise_variance.to(device).to(dtype).reshape((fov_dim1 * fov_dim2, 1))
+    )
+    full_fov_spatial_basis = (
+        full_fov_spatial_basis.to(device).to(dtype).reshape((fov_dim1 * fov_dim2, -1))
+    )
 
     u_t = u_aggregated.T.coalesce()
 
@@ -526,7 +572,9 @@ def regress_onto_spatial_basis(dataset: LazyFrameLoader,
 
     new_values = ut_values / dataset_noise_variance[col_indices].squeeze()
 
-    u_t_normalized = torch.sparse_coo_tensor(u_t.indices(), new_values, u_t.shape).coalesce()
+    u_t_normalized = torch.sparse_coo_tensor(
+        u_t.indices(), new_values, u_t.shape
+    ).coalesce()
 
     full_fov_spatial_projected = torch.sparse.mm(u_t, full_fov_spatial_basis)
     mean_projected = torch.sparse.mm(u_t_normalized, dataset_mean)
@@ -536,7 +584,13 @@ def regress_onto_spatial_basis(dataset: LazyFrameLoader,
     for k in tqdm(range(num_iters)):
         start_pt = k * frame_batch_size
         end_pt = min(start_pt + frame_batch_size, num_frames)
-        curr_data = torch.from_numpy(dataset[start_pt:end_pt]).to(device).to(dtype).permute(1, 2, 0).reshape((fov_dim1*fov_dim2, -1))
+        curr_data = (
+            torch.from_numpy(dataset[start_pt:end_pt])
+            .to(device)
+            .to(dtype)
+            .permute(1, 2, 0)
+            .reshape((fov_dim1 * fov_dim2, -1))
+        )
         projection = torch.sparse.mm(u_t_normalized, curr_data)
         projection -= mean_projected
         temporal_full_fov_comp = full_fov_spatial_basis.T @ curr_data
@@ -546,7 +600,9 @@ def regress_onto_spatial_basis(dataset: LazyFrameLoader,
         ## Add the full fov and blockwise temporal components that we estimate above to a list to concatenate later
         temporal_background_results.append(temporal_full_fov_comp)
         temporal_results.append(projection)
-    return torch.concatenate(temporal_results, dim = 1), torch.concatenate(temporal_background_results, dim = 1)
+    return torch.concatenate(temporal_results, dim=1), torch.concatenate(
+        temporal_background_results, dim=1
+    )
 
 
 def temporal_downsample(tensor: torch.Tensor, temporal_avg_factor: int) -> torch.Tensor:
@@ -562,15 +618,20 @@ def temporal_downsample(tensor: torch.Tensor, temporal_avg_factor: int) -> torch
     """
     height, width, num_frames = tensor.shape
     tensor = tensor.reshape(height * width, num_frames).unsqueeze(1)
-    downsampled = torch.nn.functional.avg_pool1d(tensor,
-                                                 kernel_size=temporal_avg_factor,
-                                                 stride=temporal_avg_factor,
-                                                 ceil_mode=True)
+    downsampled = torch.nn.functional.avg_pool1d(
+        tensor,
+        kernel_size=temporal_avg_factor,
+        stride=temporal_avg_factor,
+        ceil_mode=True,
+    )
 
     # Reshape back to (num_frames // n, height, width)
     return downsampled.squeeze().reshape(height, width, -1)
 
-def spatial_downsample(image_stack: torch.Tensor, spatial_avg_factor: int) -> torch.Tensor:
+
+def spatial_downsample(
+    image_stack: torch.Tensor, spatial_avg_factor: int
+) -> torch.Tensor:
     """
     Downsamples a (height, width, num_frames) image stack via n x n binning.
 
@@ -581,28 +642,37 @@ def spatial_downsample(image_stack: torch.Tensor, spatial_avg_factor: int) -> to
         Downsampled tensor of shape (H//factor, W//factor, T).
     """
 
-    image_stack = image_stack.permute(2, 0, 1).unsqueeze(1)  # (num_frames, 1, height, width)
-    downsampled = torch.nn.functional.avg_pool2d(image_stack, kernel_size=spatial_avg_factor, stride=spatial_avg_factor)  # (T, 1, H//2, W//2)
+    image_stack = image_stack.permute(2, 0, 1).unsqueeze(
+        1
+    )  # (num_frames, 1, height, width)
+    downsampled = torch.nn.functional.avg_pool2d(
+        image_stack, kernel_size=spatial_avg_factor, stride=spatial_avg_factor
+    )  # (T, 1, H//2, W//2)
     return downsampled.squeeze(1).permute(1, 2, 0)
 
-def blockwise_decomposition(video_subset: torch.tensor,
-                            full_fov_spatial_basis: torch.tensor,
-                            full_fov_temporal_basis: torch.tensor,
-                            subset_mean: torch.tensor,
-                            subset_noise_variance: torch.tensor,
-                            subset_pixel_weighting: torch.tensor,
-                            max_components: int,
-                            spatial_avg_factor: int,
-                            temporal_avg_factor: int,
-                            dtype: torch.dtype,
-                            spatial_denoiser: Optional[Callable] = None,
-                            temporal_denoiser: Optional[Callable] = None,
-                            device:str = "cpu") -> Tuple[torch.tensor, torch.tensor]:
+
+def blockwise_decomposition(
+    video_subset: torch.tensor,
+    full_fov_spatial_basis: torch.tensor,
+    full_fov_temporal_basis: torch.tensor,
+    subset_mean: torch.tensor,
+    subset_noise_variance: torch.tensor,
+    subset_pixel_weighting: torch.tensor,
+    max_components: int,
+    spatial_avg_factor: int,
+    temporal_avg_factor: int,
+    dtype: torch.dtype,
+    spatial_denoiser: Optional[Callable] = None,
+    temporal_denoiser: Optional[Callable] = None,
+    device: str = "cpu",
+) -> Tuple[torch.tensor, torch.tensor]:
     num_frames, fov_dim1, fov_dim2 = video_subset.shape
     subset = video_subset.to(device).to(dtype)
     subset = subset - subset_mean.to(device).to(dtype)[None, :, :]
     subset /= subset_noise_variance.to(device).to(dtype)[None, :, :]
-    spatial_basis_product = full_fov_spatial_basis.to(device).to(dtype) @ full_fov_temporal_basis.to(device).to(dtype)
+    spatial_basis_product = full_fov_spatial_basis.to(device).to(
+        dtype
+    ) @ full_fov_temporal_basis.to(device).to(dtype)
     subset = subset.permute(1, 2, 0) - spatial_basis_product
     subset_weighted = subset * subset_pixel_weighting.to(device).to(dtype)[:, :, None]
 
@@ -611,23 +681,35 @@ def blockwise_decomposition(video_subset: torch.tensor,
     else:
         spatial_pooled_subset = subset_weighted
 
-    spatial_pooled_subset_r = spatial_pooled_subset.reshape((-1, spatial_pooled_subset.shape[2]))
+    spatial_pooled_subset_r = spatial_pooled_subset.reshape(
+        (-1, spatial_pooled_subset.shape[2])
+    )
 
     if temporal_avg_factor != 1:
-        spatiotemporal_pooled_subset = temporal_downsample(spatial_pooled_subset, temporal_avg_factor)
+        spatiotemporal_pooled_subset = temporal_downsample(
+            spatial_pooled_subset, temporal_avg_factor
+        )
     else:
         spatiotemporal_pooled_subset = spatial_pooled_subset
 
-    spatiotemporal_pooled_subset_r = spatiotemporal_pooled_subset.reshape((-1, spatiotemporal_pooled_subset.shape[2]))
-    lowres_spatial_basis_r, _, _ = truncated_random_svd(spatiotemporal_pooled_subset_r,
-                                                        max_components,
-                                                        device=device)
+    spatiotemporal_pooled_subset_r = spatiotemporal_pooled_subset.reshape(
+        (-1, spatiotemporal_pooled_subset.shape[2])
+    )
+    lowres_spatial_basis_r, _, _ = truncated_random_svd(
+        spatiotemporal_pooled_subset_r, max_components, device=device
+    )
 
-    temporal_projection_from_downsample = lowres_spatial_basis_r.T @ spatial_pooled_subset_r
+    temporal_projection_from_downsample = (
+        lowres_spatial_basis_r.T @ spatial_pooled_subset_r
+    )
     if temporal_denoiser is not None:
-        temporal_projection_from_downsample = temporal_denoiser(temporal_projection_from_downsample)
+        temporal_projection_from_downsample = temporal_denoiser(
+            temporal_projection_from_downsample
+        )
 
-    temporal_basis_from_downsample = torch.linalg.svd(temporal_projection_from_downsample, full_matrices=False)[2]
+    temporal_basis_from_downsample = torch.linalg.svd(
+        temporal_projection_from_downsample, full_matrices=False
+    )[2]
     subset_weighted_r = subset_weighted.reshape((-1, subset_weighted.shape[2]))
     spatial_basis_fullres = subset_weighted_r @ temporal_basis_from_downsample.T
 
@@ -636,54 +718,62 @@ def blockwise_decomposition(video_subset: torch.tensor,
         spatial_basis_fullres = spatial_denoiser(spatial_basis_fullres)
         spatial_basis_fullres = spatial_basis_fullres.reshape((fov_dim1 * fov_dim2, -1))
 
-    spatial_basis_orthogonal, _, _ = torch.linalg.svd(spatial_basis_fullres, full_matrices=False)
+    spatial_basis_orthogonal, _, _ = torch.linalg.svd(
+        spatial_basis_fullres, full_matrices=False
+    )
 
     # Regress the original (unweighted) data onto this basis
     subset_r = subset.reshape((-1, subset.shape[2]))
     final_temporal_projection = spatial_basis_orthogonal.T @ subset_r
     left, sing, right = torch.linalg.svd(final_temporal_projection, full_matrices=False)
-    local_spatial_basis = (spatial_basis_orthogonal @ left).reshape((fov_dim1, fov_dim2, -1))
+    local_spatial_basis = (spatial_basis_orthogonal @ left).reshape(
+        (fov_dim1, fov_dim2, -1)
+    )
     local_temporal_basis = sing[:, None] * right
 
     return local_spatial_basis, local_temporal_basis
 
 
-def blockwise_decomposition_with_rank_selection(video_subset: torch.tensor,
-                                                full_fov_spatial_basis: torch.tensor,
-                                                full_fov_temporal_basis: torch.tensor,
-                                                subset_mean: torch.tensor,
-                                                subset_noise_variance: torch.tensor,
-                                                subset_pixel_weighting: torch.tensor,
-                                                max_components: int,
-                                                max_consecutive_failures: int,
-                                                spatial_roughness_threshold: float,
-                                                temporal_roughness_threshold: float,
-                                                spatial_avg_factor: int,
-                                                temporal_avg_factor: int,
-                                                dtype: torch.dtype,
-                                                spatial_denoiser: Optional[Callable] = None,
-                                                temporal_denoiser: Optional[Callable] = None,
-                                                device:str = "cpu"):
+def blockwise_decomposition_with_rank_selection(
+    video_subset: torch.tensor,
+    full_fov_spatial_basis: torch.tensor,
+    full_fov_temporal_basis: torch.tensor,
+    subset_mean: torch.tensor,
+    subset_noise_variance: torch.tensor,
+    subset_pixel_weighting: torch.tensor,
+    max_components: int,
+    max_consecutive_failures: int,
+    spatial_roughness_threshold: float,
+    temporal_roughness_threshold: float,
+    spatial_avg_factor: int,
+    temporal_avg_factor: int,
+    dtype: torch.dtype,
+    spatial_denoiser: Optional[Callable] = None,
+    temporal_denoiser: Optional[Callable] = None,
+    device: str = "cpu",
+):
+    local_spatial_basis, local_temporal_basis = blockwise_decomposition(
+        video_subset,
+        full_fov_spatial_basis,
+        full_fov_temporal_basis,
+        subset_mean,
+        subset_noise_variance,
+        subset_pixel_weighting,
+        max_components,
+        spatial_avg_factor,
+        temporal_avg_factor,
+        dtype,
+        spatial_denoiser=spatial_denoiser,
+        temporal_denoiser=temporal_denoiser,
+        device=device,
+    )
 
-    local_spatial_basis, local_temporal_basis = blockwise_decomposition(video_subset,
-                                                                        full_fov_spatial_basis,
-                                                                        full_fov_temporal_basis,
-                                                                        subset_mean,
-                                                                        subset_noise_variance,
-                                                                        subset_pixel_weighting,
-                                                                        max_components,
-                                                                        spatial_avg_factor,
-                                                                        temporal_avg_factor,
-                                                                        dtype,
-                                                                        spatial_denoiser = spatial_denoiser,
-                                                                        temporal_denoiser = temporal_denoiser,
-                                                                        device = device)
-
-
-    decisions = evaluate_fitness(local_spatial_basis,
-                                 local_temporal_basis,
-                                 spatial_roughness_threshold,
-                                 temporal_roughness_threshold)
+    decisions = evaluate_fitness(
+        local_spatial_basis,
+        local_temporal_basis,
+        spatial_roughness_threshold,
+        temporal_roughness_threshold,
+    )
 
     decisions = filter_by_failures(decisions, max_consecutive_failures)
     return local_spatial_basis[:, :, decisions], local_temporal_basis[decisions, :]
@@ -723,46 +813,60 @@ def threshold_heuristic(
     temporal_list = []
 
     d1, d2, t = dimensions
-    sim_mean = torch.zeros((d1, d2), device = device, dtype = dtype)
-    sim_noise_normalizer = torch.ones((d1, d2), device = device, dtype = dtype)
-    full_fov_spatial_basis = torch.zeros((d1, d2, 1), device = device, dtype = dtype)
-    full_fov_temporal_basis = torch.zeros((1, t), device = device, dtype = dtype)
-    pixel_weighting = torch.ones((d1, d2), device = device, dtype = dtype)
+    sim_mean = torch.zeros((d1, d2), device=device, dtype=dtype)
+    sim_noise_normalizer = torch.ones((d1, d2), device=device, dtype=dtype)
+    full_fov_spatial_basis = torch.zeros((d1, d2, 1), device=device, dtype=dtype)
+    full_fov_temporal_basis = torch.zeros((1, t), device=device, dtype=dtype)
+    pixel_weighting = torch.ones((d1, d2), device=device, dtype=dtype)
     max_components = num_comps
 
     for k in tqdm(range(iters)):
-        sim_data = torch.randn(t, d1*d2, device=device, dtype=dtype).reshape((t, d1, d2))
+        sim_data = torch.randn(t, d1 * d2, device=device, dtype=dtype).reshape(
+            (t, d1, d2)
+        )
 
-        spatial, temporal = blockwise_decomposition(sim_data,
-                                                    full_fov_spatial_basis,
-                                                    full_fov_temporal_basis,
-                                                    sim_mean,
-                                                    sim_noise_normalizer,
-                                                    pixel_weighting,
-                                                    max_components,
-                                                    spatial_avg_factor,
-                                                    temporal_avg_factor,
-                                                    dtype,
-                                                    spatial_denoiser = spatial_denoiser,
-                                                    temporal_denoiser = temporal_denoiser,
-                                                    device = device)
+        spatial, temporal = blockwise_decomposition(
+            sim_data,
+            full_fov_spatial_basis,
+            full_fov_temporal_basis,
+            sim_mean,
+            sim_noise_normalizer,
+            pixel_weighting,
+            max_components,
+            spatial_avg_factor,
+            temporal_avg_factor,
+            dtype,
+            spatial_denoiser=spatial_denoiser,
+            temporal_denoiser=temporal_denoiser,
+            device=device,
+        )
 
         spatial_stat = spatial_roughness_statistic(spatial)
         temporal_stat = temporal_roughness_statistic(temporal)
         spatial_list.append(spatial_stat)
         temporal_list.append(temporal_stat)
 
-    spatial_list = torch.concatenate(spatial_list, dim = 0).cpu().numpy()
-    temporal_list = torch.concatenate(temporal_list, dim = 0).cpu().numpy()
+    spatial_list = torch.concatenate(spatial_list, dim=0).cpu().numpy()
+    temporal_list = torch.concatenate(temporal_list, dim=0).cpu().numpy()
 
-
-    spatial_threshold = np.percentile(
-        spatial_list.flatten(), percentile_threshold)
-    temporal_threshold = np.percentile(
-        temporal_list.flatten(), percentile_threshold
-    )
+    spatial_threshold = np.percentile(spatial_list.flatten(), percentile_threshold)
+    temporal_threshold = np.percentile(temporal_list.flatten(), percentile_threshold)
     return spatial_threshold, temporal_threshold
 
+
+def construct_weighting_scheme(dim1, dim2) -> torch.tensor:
+    # Define the block weighting matrix
+    block_weights = np.ones((dim1, dim2), dtype=np.float32)
+    hbh = dim1 // 2
+    hbw = dim2 // 2
+    # Increase weights to value block centers more than edges
+    block_weights[:hbh, :hbw] += np.minimum(
+        np.tile(np.arange(0, hbw), (hbh, 1)), np.tile(np.arange(0, hbh), (hbw, 1)).T
+    )
+    block_weights[:hbh, hbw:] = np.fliplr(block_weights[:hbh, :hbw])
+    block_weights[hbh:, :] = np.flipud(block_weights[:hbh, :])
+    block_weights = torch.from_numpy(block_weights)
+    return block_weights
 
 
 def pmd_decomposition(
@@ -781,8 +885,8 @@ def pmd_decomposition(
     pixel_weighting: Optional[np.ndarray] = None,
     spatial_denoiser: Optional[Callable] = None,
     temporal_denoiser: Optional[Callable] = None,
-    device: str = "cpu"
-):
+    device: str = "cpu",
+) -> PMDArray:
     """
     General PMD Compression method
     Args:
@@ -814,12 +918,16 @@ def pmd_decomposition(
     display("Starting compression")
     num_frames, fov_dim1, fov_dim2 = dataset.shape
     if frame_batch_size < 1024:
-        raise ValueError(f"frame_batch_size is too small ({frame_batch_size}). "
-                         f"Please set it to at 1024. Your device (cpu or cuda) must have space for at least this much data")
+        raise ValueError(
+            f"frame_batch_size is too small ({frame_batch_size}). "
+            f"Please set it to at 1024. Your device (cpu or cuda) must have space for at least this much data"
+        )
     background_rank_limit = 30
     if background_rank > background_rank_limit:
-        raise ValueError(f"Background rank is too large. Should not be larger than {background_rank_limit}")
-    dtype = torch.float32 #This is the target dtype we use for doing computations
+        raise ValueError(
+            f"Background rank is too large. Should not be larger than {background_rank_limit}"
+        )
+    dtype = torch.float32  # This is the target dtype we use for doing computations
     check_fov_size((dataset.shape[1], dataset.shape[2]))
 
     if window_chunks is None:
@@ -839,35 +947,33 @@ def pmd_decomposition(
         frames = identify_window_chunks(frame_range, dataset.shape[0], window_chunks)
     display("We are initializing on a total of {} frames".format(len(frames)))
 
-    block_sizes = update_block_sizes(
-        block_sizes, (dataset.shape[1], dataset.shape[2])
-    )
+    block_sizes = update_block_sizes(block_sizes, (dataset.shape[1], dataset.shape[2]))
 
     overlap = [math.ceil(block_sizes[0] / 2), math.ceil(block_sizes[1] / 2)]
 
-    dataset_mean, dataset_noise_variance = compute_mean_and_normalizer_dataset(dataset,
-                                                                               compute_normalizer,
-                                                                               frame_batch_size,
-                                                                               device,
-                                                                               dtype)
+    dataset_mean, dataset_noise_variance = compute_mean_and_normalizer_dataset(
+        dataset, compute_normalizer, frame_batch_size, device, dtype
+    )
 
     dataset_mean = dataset_mean.to(device).to(dtype)
     dataset_noise_variance = dataset_noise_variance.to(device).to(dtype)
 
     display("Approximating full FOV basis terms")
-    full_fov_spatial_basis = compute_full_fov_spatial_basis(dataset,
-                                                            dataset_mean,
-                                                            dataset_noise_variance,
-                                                            background_rank,
-                                                            dtype=dtype,
-                                                            device=device,
-                                                            num_samples=1000)
+    full_fov_spatial_basis = compute_full_fov_spatial_basis(
+        dataset,
+        dataset_mean,
+        dataset_noise_variance,
+        background_rank,
+        dtype=dtype,
+        device=device,
+        num_samples=1000,
+    )
 
     full_fov_spatial_basis = full_fov_spatial_basis.to(device).to(dtype)
 
     display("Loading data to estimate complete spatial basis")
 
-    #First make sure the number of frames loaded is divisible by the temporal average factor
+    # First make sure the number of frames loaded is divisible by the temporal average factor
     if temporal_avg_factor >= len(frames):
         raise ValueError("Need at least {} frames".format(temporal_avg_factor))
 
@@ -885,24 +991,28 @@ def pmd_decomposition(
     if frame_batch_size >= data_for_spatial_fit.shape[0]:
         data_for_spatial_fit = data_for_spatial_fit.to(device).to(dtype)
 
-    full_fov_temporal_basis = compute_full_fov_temporal_basis(data_for_spatial_fit,
-                                                     dataset_mean,
-                                                     dataset_noise_variance,
-                                                     full_fov_spatial_basis,
-                                                     dtype,
-                                                     frame_batch_size,
-                                                     device=device)
-
-
+    full_fov_temporal_basis = compute_full_fov_temporal_basis(
+        data_for_spatial_fit,
+        dataset_mean,
+        dataset_noise_variance,
+        full_fov_spatial_basis,
+        dtype,
+        frame_batch_size,
+        device=device,
+    )
 
     if pixel_weighting is None:
-        pixel_weighting = torch.ones((fov_dim1, fov_dim2), device = device, dtype = dtype)
+        pixel_weighting = torch.ones((fov_dim1, fov_dim2), device=device, dtype=dtype)
     else:
         pixel_weighting = torch.from_numpy(pixel_weighting).to(device).to(dtype)
 
     ## Define
     dim_1_iters = list(
-        range(0, data_for_spatial_fit.shape[1] - block_sizes[0] + 1, block_sizes[0] - overlap[0])
+        range(
+            0,
+            data_for_spatial_fit.shape[1] - block_sizes[0] + 1,
+            block_sizes[0] - overlap[0],
+        )
     )
     if (
         dim_1_iters[-1] != data_for_spatial_fit.shape[1] - block_sizes[0]
@@ -911,7 +1021,11 @@ def pmd_decomposition(
         dim_1_iters.append(data_for_spatial_fit.shape[1] - block_sizes[0])
 
     dim_2_iters = list(
-        range(0, data_for_spatial_fit.shape[2] - block_sizes[1] + 1, block_sizes[1] - overlap[1])
+        range(
+            0,
+            data_for_spatial_fit.shape[2] - block_sizes[1] + 1,
+            block_sizes[1] - overlap[1],
+        )
     )
     if (
         dim_2_iters[-1] != data_for_spatial_fit.shape[2] - block_sizes[1]
@@ -919,71 +1033,71 @@ def pmd_decomposition(
     ):
         dim_2_iters.append(data_for_spatial_fit.shape[2] - block_sizes[1])
 
-
     # Define the block weighting matrix
-    block_weights = np.ones((block_sizes[0], block_sizes[1]), dtype=np.float32)
-    hbh = block_sizes[0] // 2
-    hbw = block_sizes[1] // 2
-    # Increase weights to value block centers more than edges
-    block_weights[:hbh, :hbw] += np.minimum(
-        np.tile(np.arange(0, hbw), (hbh, 1)), np.tile(np.arange(0, hbh), (hbw, 1)).T
+    block_weights = (
+        construct_weighting_scheme(block_sizes[0], block_sizes[1]).to(device).to(dtype)
     )
-    block_weights[:hbh, hbw:] = np.fliplr(block_weights[:hbh, :hbw])
-    block_weights[hbh:, :] = np.flipud(block_weights[:hbh, :])
-    block_weights = torch.from_numpy(block_weights).to(device).to(dtype)
 
-
-    sparse_indices = torch.arange(fov_dim1*fov_dim2, dtype = torch.long, device = device).reshape(
-        (fov_dim1, fov_dim2))
-
+    sparse_indices = torch.arange(
+        fov_dim1 * fov_dim2, dtype=torch.long, device=device
+    ).reshape((fov_dim1, fov_dim2))
 
     column_number = 0
     final_row_indices = []
     final_column_indices = []
     spatial_overall_values = []
     spatial_overall_unweighted_values = []
-    cumulative_weights = torch.zeros((fov_dim1, fov_dim2), dtype = dtype, device = device)
+    cumulative_weights = torch.zeros((fov_dim1, fov_dim2), dtype=dtype, device=device)
     total_temporal_fit = []
 
     display("Finding spatiotemporal roughness thresholds")
-    spatial_roughness_threshold, temporal_roughness_threshold = threshold_heuristic([block_sizes[0], block_sizes[1], window_chunks],
-                                                                                        spatial_avg_factor,
-                                                                                        temporal_avg_factor,
-                                                                                        spatial_denoiser,
-                                                                                        temporal_denoiser,
-                                                                                        dtype,
-                                                                                        num_comps=1,
-                                                                                        iters=250,
-                                                                                        percentile_threshold=sim_conf,
-                                                                                        device = device)
+    spatial_roughness_threshold, temporal_roughness_threshold = threshold_heuristic(
+        [block_sizes[0], block_sizes[1], window_chunks],
+        spatial_avg_factor,
+        temporal_avg_factor,
+        spatial_denoiser,
+        temporal_denoiser,
+        dtype,
+        num_comps=1,
+        iters=250,
+        percentile_threshold=sim_conf,
+        device=device,
+    )
 
     display("Running Blockwise Decompositions")
     for k in dim_1_iters:
         for j in dim_2_iters:
             slice_dim1 = slice(k, k + block_sizes[0])
             slice_dim2 = slice(j, j + block_sizes[1])
-            unweighted_local_spatial_basis, local_temporal_basis = blockwise_decomposition_with_rank_selection(data_for_spatial_fit[:, slice_dim1, slice_dim2],
-                                                                                full_fov_spatial_basis[slice_dim1,slice_dim2, :],
-                                                                                                               full_fov_temporal_basis,
-                                                                                                               dataset_mean[slice_dim1, slice_dim2],
-                                                                                                               dataset_noise_variance[slice_dim1, slice_dim2],
-                                                                                                               pixel_weighting[slice_dim1, slice_dim2],
-                                                                                                               max_components,
-                                                                                                               max_consecutive_failures,
-                                                                                                               spatial_roughness_threshold,
-                                                                                                               temporal_roughness_threshold,
-                                                                                                               spatial_avg_factor,
-                                                                                                               temporal_avg_factor,
-                                                                                                               dtype,
-                                                                                                               spatial_denoiser=spatial_denoiser,
-                                                                                                               temporal_denoiser=temporal_denoiser,
-                                                                                                               device = device)
+            (
+                unweighted_local_spatial_basis,
+                local_temporal_basis,
+            ) = blockwise_decomposition_with_rank_selection(
+                data_for_spatial_fit[:, slice_dim1, slice_dim2],
+                full_fov_spatial_basis[slice_dim1, slice_dim2, :],
+                full_fov_temporal_basis,
+                dataset_mean[slice_dim1, slice_dim2],
+                dataset_noise_variance[slice_dim1, slice_dim2],
+                pixel_weighting[slice_dim1, slice_dim2],
+                max_components,
+                max_consecutive_failures,
+                spatial_roughness_threshold,
+                temporal_roughness_threshold,
+                spatial_avg_factor,
+                temporal_avg_factor,
+                dtype,
+                spatial_denoiser=spatial_denoiser,
+                temporal_denoiser=temporal_denoiser,
+                device=device,
+            )
 
             total_temporal_fit.append(local_temporal_basis)
 
             # Weight the spatial components here
 
-            local_spatial_basis = unweighted_local_spatial_basis * block_weights[:, :, None]
+            local_spatial_basis = (
+                unweighted_local_spatial_basis * block_weights[:, :, None]
+            )
             current_cumulative_weight = block_weights
             cumulative_weights[
                 k : k + block_sizes[0], j : j + block_sizes[1]
@@ -993,13 +1107,18 @@ def pmd_decomposition(
                 k : k + block_sizes[0], j : j + block_sizes[1]
             ][:, :, None]
             curr_spatial_row_indices = curr_spatial_row_indices + torch.zeros(
-                (1, 1, local_spatial_basis.shape[2]), device = device, dtype = torch.long
+                (1, 1, local_spatial_basis.shape[2]), device=device, dtype=torch.long
             )
 
-            curr_spatial_col_indices = torch.zeros_like(curr_spatial_row_indices, device = device)
-            addend = torch.arange(column_number, column_number + local_spatial_basis.shape[2], device = device, dtype = torch.long)[
-                None, None, :
-            ]
+            curr_spatial_col_indices = torch.zeros_like(
+                curr_spatial_row_indices, device=device
+            )
+            addend = torch.arange(
+                column_number,
+                column_number + local_spatial_basis.shape[2],
+                device=device,
+                dtype=torch.long,
+            )[None, None, :]
             curr_spatial_col_indices = curr_spatial_col_indices + addend
 
             sparse_row_indices_f = curr_spatial_row_indices.flatten()
@@ -1009,28 +1128,45 @@ def pmd_decomposition(
             final_row_indices.append(sparse_row_indices_f)
             final_column_indices.append(sparse_col_indices_f)
             spatial_overall_values.append(spatial_values_f)
-            spatial_overall_unweighted_values.append(unweighted_local_spatial_basis.flatten())
+            spatial_overall_unweighted_values.append(
+                unweighted_local_spatial_basis.flatten()
+            )
             column_number += local_spatial_basis.shape[2]
 
-
-    #Construct the U matrix up to this point
-    final_row_indices = torch.concatenate(final_row_indices, dim = 0)
-    final_column_indices = torch.concatenate(final_column_indices, dim = 0)
-    spatial_overall_values = torch.concatenate(spatial_overall_values, dim = 0)
+    # Construct the U matrix up to this point
+    final_row_indices = torch.concatenate(final_row_indices, dim=0)
+    final_column_indices = torch.concatenate(final_column_indices, dim=0)
+    spatial_overall_values = torch.concatenate(spatial_overall_values, dim=0)
     final_indices = torch.stack([final_row_indices, final_column_indices], dim=0)
+
+    spatial_overall_unweighted_values = torch.concatenate(
+        spatial_overall_unweighted_values, dim=0
+    )
+    u_spatial_fit = torch.sparse_coo_tensor(
+        final_indices,
+        spatial_overall_unweighted_values,
+        (fov_dim1 * fov_dim2, column_number),
+    ).coalesce()
 
     if data_for_spatial_fit.shape[0] < dataset.shape[0]:
         display("Regressing the full dataset onto the learned spatial basis")
-        spatial_overall_unweighted_values = torch.concatenate(spatial_overall_unweighted_values, dim = 0)
-        u_spatial_fit = torch.sparse_coo_tensor(final_indices, spatial_overall_unweighted_values,
-                                                (fov_dim1*fov_dim2, column_number)).coalesce()
-        v_regression, full_dataset_temporal_basis = regress_onto_spatial_basis(dataset, u_spatial_fit, frame_batch_size, dataset_mean, dataset_noise_variance,
-                                           full_fov_spatial_basis, dtype, device)
+        v_regression, full_dataset_temporal_basis = regress_onto_spatial_basis(
+            dataset,
+            u_spatial_fit,
+            frame_batch_size,
+            dataset_mean,
+            dataset_noise_variance,
+            full_fov_spatial_basis,
+            dtype,
+            device,
+        )
     else:
-        v_regression = torch.concatenate(total_temporal_fit, dim = 0)
+        v_regression = torch.concatenate(total_temporal_fit, dim=0)
         full_dataset_temporal_basis = full_fov_temporal_basis
 
-    interpolation_weightings = torch.reciprocal(cumulative_weights.flatten()[final_row_indices])
+    interpolation_weightings = torch.reciprocal(
+        cumulative_weights.flatten()[final_row_indices]
+    )
     spatial_overall_values *= interpolation_weightings
 
     ## Now add the full FOV spatial background
@@ -1038,39 +1174,461 @@ def pmd_decomposition(
     if background_rank <= 0:
         num_cols = column_number
         num_rows = fov_dim1 * fov_dim2
+        u_global_projector = None
+        u_local_projector = torch.sparse_coo_tensor(
+            final_indices, spatial_overall_unweighted_values, (num_rows, num_cols)
+        )
     else:
-        background_sparse_row_indices = sparse_indices[:, :, None] + torch.zeros_like(full_fov_spatial_basis, device = device, dtype = torch.long)
-        column_range = torch.arange(column_number, column_number + background_rank, device = device, dtype = torch.long)[None, None, :]
+        background_sparse_row_indices = sparse_indices[:, :, None] + torch.zeros_like(
+            full_fov_spatial_basis, device=device, dtype=torch.long
+        )
+        column_range = torch.arange(
+            column_number,
+            column_number + background_rank,
+            device=device,
+            dtype=torch.long,
+        )[None, None, :]
         num_cols = column_number + background_rank
         num_rows = fov_dim1 * fov_dim2
-        background_sparse_column_indices = torch.zeros((sparse_indices.shape[0], sparse_indices.shape[1], 1), device = device, dtype = torch.long) + column_range
+        background_sparse_column_indices = (
+            torch.zeros(
+                (sparse_indices.shape[0], sparse_indices.shape[1], 1),
+                device=device,
+                dtype=torch.long,
+            )
+            + column_range
+        )
 
+        background_sparse_column_indices_standalone = (
+            background_sparse_column_indices - column_number
+        )
 
-        final_row_indices = torch.concatenate([final_row_indices, background_sparse_row_indices.flatten()], dim = 0)
-        final_column_indices = torch.concatenate([final_column_indices, background_sparse_column_indices.flatten()], dim = 0)
-        spatial_overall_values = torch.concatenate([spatial_overall_values, full_fov_spatial_basis.flatten()], dim = 0)
+        u_global_projector = torch.sparse_coo_tensor(
+            torch.stack(
+                [
+                    background_sparse_row_indices.flatten(),
+                    background_sparse_column_indices_standalone.flatten(),
+                ],
+                dim=0,
+            ),
+            full_fov_spatial_basis.flatten(),
+            (num_rows, background_rank),
+        )
+
+        u_local_projector = torch.sparse_coo_tensor(
+            torch.stack([final_row_indices, final_column_indices], dim=0),
+            spatial_overall_unweighted_values,
+            (num_rows, column_number),
+        )
+
+        final_row_indices = torch.concatenate(
+            [final_row_indices, background_sparse_row_indices.flatten()], dim=0
+        )
+        final_column_indices = torch.concatenate(
+            [final_column_indices, background_sparse_column_indices.flatten()], dim=0
+        )
+        spatial_overall_values = torch.concatenate(
+            [spatial_overall_values, full_fov_spatial_basis.flatten()], dim=0
+        )
+
         v_aggregated.append(full_dataset_temporal_basis)
 
-    final_indices = torch.stack([final_row_indices, final_column_indices], dim = 0)
-    u_aggregated = torch.sparse_coo_tensor(final_indices, spatial_overall_values, (num_rows, num_cols))
-    v_aggregated = torch.concatenate(v_aggregated, dim = 0)
+    final_indices = torch.stack([final_row_indices, final_column_indices], dim=0)
+    u_aggregated = torch.sparse_coo_tensor(
+        final_indices, spatial_overall_values, (num_rows, num_cols)
+    )
+    v_aggregated = torch.concatenate(v_aggregated, dim=0)
     display(f"Constructed U matrix. Rank of U is {u_aggregated.shape[1]}")
 
-    display("orthogonalizing the final representation")
-    r, s, v = compute_lowrank_factorized_svd(u_aggregated, v_aggregated)
-
-    final_pmd_arr = PMDArray((num_frames, fov_dim1, fov_dim2),
-                           u_aggregated.cpu(),
-                           r.cpu(),
-                           s.cpu(),
-                           v.cpu(),
-                           dataset_mean,
-                           dataset_noise_variance,
-                           device = "cpu")
+    final_pmd_arr = PMDArray(
+        (num_frames, fov_dim1, fov_dim2),
+        u_aggregated.cpu(),
+        v_aggregated.cpu(),
+        dataset_mean,
+        dataset_noise_variance,
+        u_local_projector=u_local_projector.cpu()
+        if u_local_projector is not None
+        else None,
+        u_global_projector=u_global_projector.cpu()
+        if u_global_projector is not None
+        else None,
+        device="cpu",
+    )
     display("PMD Objected constructed")
     return final_pmd_arr
 
 
+def pmd_batch(
+    dataset: LazyFrameLoader,
+    batch_dimensions: tuple[int, int],
+    batch_overlaps: tuple[int, int],
+    block_sizes: tuple[int, int],
+    frame_range: int,
+    max_components: int = 50,
+    background_rank: int = 15,
+    sim_conf: int = 5,
+    frame_batch_size: int = 10000,
+    max_consecutive_failures=1,
+    spatial_avg_factor: int = 1,
+    temporal_avg_factor: int = 1,
+    window_chunks: Optional[int] = None,
+    compute_normalizer: bool = True,
+    pixel_weighting: Optional[np.ndarray] = None,
+    spatial_denoiser: Optional[Callable] = None,
+    temporal_denoiser: Optional[Callable] = None,
+    device: str = "cpu",
+) -> PMDArray:
+    """
+    Method for running PMD across huge fields of view. This method breaks the large FOV into smaller regions (say, 300 x 300 pixels),
+    runs PMD on each smaller region, and pieces the results together to get a fullFOV decomposition.
+
+    Args:
+        dataset (masknmf.LazyFrameLoader): An array-like object with shape (frames, fov_dim1, fov_dim2) that loads frames of raw data
+        block_sizes (tuple[int, int]): The block sizes of the compression. Cannot be smaller than 10 in each dimension.
+        frame_range (int): Number of frames or raw data used to fit the spatial basis.
+            KEY: We assume that your system can store this many frames of raw data in RAM.
+        max_components (int): Max number of components we use to decompose any individual spatial block of the raw data.
+        background_rank (int): Before doing spatial blockwise decompositions, we estimate a full FOV truncated SVD; this often helps estimate global background trends
+            before blockwise decompositions; leading to better compression.
+        sim_conf (int): The percentile value used to define spatial and temporal roughness thresholds for rejecting/keeping SVD components
+        frame_batch_size (int): The maximum number of frames we load onto the computational device (CPU or GPU) at any point in time.
+        max_consecutive_failures (int): In each blockwise decomposition, we stop accepting SVD components after we see this many "bad" components.
+        spatial_avg_factor (int): In the blockwise decompositions, we can spatially downsample the data to estimate a cleaner temporal basis. We can use this to iteratively estimate a better
+            full-resolution basis for the data. If signal sits on only a few pixels, keep this parameter at 1 (spatially downsampling is undesirable in this case).
+        temporaL_avg_factor (int): In the blockwise decompositions, we can temporally downsample the data to estimate a cleaner spatial basis. We can use this to iteratively estimate a better
+            full-resolution basis for the data. If your signal "events" are very sparse (i.e. every event appears for only 1 frame) keep this parameter at 1 (temporal downsampling is undesirable in this case).
+         window_chunks (int): To be removed
+         compute_normalizer (bool): Whether or not we estimate a pixelwise noise variance. If False, the normalizer is set to 1 (no normalization).
+         pixel_weighting (Optional[np.ndarray]): Shape (fov_dim1, fov_dim2). We weight the data by this value to estimate a cleaner spatial basis. The pixel_weighting
+            should intuitively boost the relative variance of pixels containing signal to those that do not contain signal.
+        spatial_denoiser (Optional[Callable]): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
+        temporal_denoiser (Optional[Callable]): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
+        device (str): Which device the computations should be performed on. Options: "cuda" or "cpu".
+
+    Returns:
+        pmd_arr (PMDArray): A PMDArray capturing the compression results across the full FOV.
+    """
+
+    """
+    How do we interpolate and stitch together the PMD patches? 
+    (1) The u_local_projector and u_global_projector terms need to have their row indices modified. All other
+    concatenation follows easily
+    (2) We should "globally" weight each 300 x 300 patch with an interpolation function. This is important for
+    stitching together actual U matrices. 
+    (3) Stacking V is easy. 
+    
+    Workflow:
+    (1) Just run PMD across all the sub-patches of the data. Return a list of PMD objects. 
+    (2) Once that works, add the weighting functions, combine everything into one file. 
+    (3) Once that works, think about the optimal way to do dataloading. 
+    
+    
+    Design decision: if you have a huge FOV, it does not make sense to keep all of U on the GPU. So moving off GPU is good.
+    
+    Things to circle back on: 
+        Make sure the dataloader is being told to read the right stuff
+        The blockwise iteration scheme creates a lot of redundancy at the boundaries right now. Should improve that. 
+    """
+    num_frames, fov_dim1, fov_dim2 = dataset.shape
+
+    if batch_dimensions[0] < block_sizes[0] or batch_dimensions[1] < block_sizes[1]:
+        raise ValueError(f"Batch dimensions must be larger than the block size used in the PMD algorithm")
+
+    spatial_dim1_start_pts = list(
+        range(
+            0,
+            dataset.shape[1] - batch_dimensions[0] + 1,
+            batch_dimensions[0] - batch_overlaps[0],
+        )
+    )
+    if (
+        spatial_dim1_start_pts[-1] != dataset.shape[1] - batch_dimensions[0]
+        and dataset.shape[1] - batch_dimensions[0] > 0
+    ):
+        last_index = spatial_dim1_start_pts[-1] + batch_dimensions[0]
+        updated_index = last_index - block_sizes[0]
+        spatial_dim1_start_pts.append(updated_index)
+
+    spatial_dim2_start_pts = list(
+        range(
+            0,
+            dataset.shape[2] - batch_dimensions[1] + 1,
+            batch_dimensions[1] - batch_overlaps[1],
+        )
+    )
+    if (
+        spatial_dim2_start_pts[-1] != dataset.shape[2] - batch_dimensions[1]
+        and dataset.shape[2] - batch_dimensions[1] > 0
+    ):
+        last_index = spatial_dim2_start_pts[-1] + batch_dimensions[1]
+        updated_index = last_index - block_sizes[1]
+        spatial_dim2_start_pts.append(updated_index)
+
+    pmd_array_list = []
+    fov_list = []
+    for i in range(len(spatial_dim1_start_pts)):
+        for j in range(len(spatial_dim2_start_pts)):
+            curr_dim1_start_pt = spatial_dim1_start_pts[i]
+            curr_dim1_end_pt = min(spatial_dim1_start_pts[i] + batch_dimensions[0], dataset.shape[1])
+
+            curr_dim2_start_pt = spatial_dim2_start_pts[j]
+            curr_dim2_end_pt = min(spatial_dim2_start_pts[j] + batch_dimensions[1], dataset.shape[2])
+
+            slice1 = slice(curr_dim1_start_pt, curr_dim1_end_pt)
+            slice2 = slice(curr_dim2_start_pt, curr_dim2_end_pt)
+            fov_list.append((slice1, slice2))
+
+            display(
+                f"Processing {curr_dim1_start_pt}:{curr_dim1_end_pt} "
+                f"to {curr_dim2_start_pt}:{curr_dim2_end_pt}"
+            )
+            dataset_crop = dataset[
+                :,
+                curr_dim1_start_pt:curr_dim1_end_pt,
+                curr_dim2_start_pt:curr_dim2_end_pt,
+            ]
+
+            curr_pmd_array = pmd_decomposition(
+                dataset_crop,
+                block_sizes,
+                frame_range,
+                max_components,
+                background_rank,
+                sim_conf,
+                frame_batch_size,
+                max_consecutive_failures,
+                spatial_avg_factor,
+                temporal_avg_factor,
+                window_chunks=window_chunks,
+                compute_normalizer=compute_normalizer,
+                pixel_weighting=pixel_weighting,
+                spatial_denoiser=spatial_denoiser,
+                temporal_denoiser=temporal_denoiser,
+                device=device,
+            )
+
+            pmd_array_list.append(curr_pmd_array)
+
+    final_pmd = stitch_pmd_arrays(
+        pmd_array_list, fov_list, (num_frames, fov_dim1, fov_dim2)
+    )
+    return final_pmd
 
 
+def stitch_pmd_arrays(
+    pmd_list: List[PMDArray],
+    fov_list: List[Tuple[slice, slice]],
+    data_dimensions: Tuple[int, int, int],
+) -> PMDArray:
+    num_frames, fov_dim1, fov_dim2 = data_dimensions
+    pixel_mat = torch.arange(
+        fov_dim1 * fov_dim2, device="cpu", dtype=torch.long
+    ).reshape(fov_dim1, fov_dim2)
 
+    aggregate_local_v = []
+    aggregate_global_v = []
+
+    u_local_projector_values = []
+    u_local_projector_cols = []
+    u_local_projector_rows = []
+
+    u_local_basis_values = []
+    u_local_basis_cols = []
+    u_local_basis_rows = []
+
+    u_global_projector_values = []
+    u_global_projector_cols = []
+    u_global_projector_rows = []
+
+    u_global_basis_values = []
+    u_global_basis_cols = []
+    u_global_basis_rows = []
+
+    local_interpolation_weightings = torch.zeros((fov_dim1, fov_dim2))
+    global_interpolation_weightings = torch.zeros((fov_dim1, fov_dim2))
+
+    dataset_mean_img = torch.zeros((fov_dim1, fov_dim2))
+    dataset_var_img = torch.ones((fov_dim1, fov_dim2))
+
+    local_rank_tracker = 0
+    global_rank_tracker = 0
+    for k in range(len(pmd_list)):
+        curr_pmd = pmd_list[k]
+        curr_pmd.to("cpu")  # Ensure on CPU
+        dim1_slice = fov_list[k][0]
+        dim2_slice = fov_list[k][1]
+
+        weighting_function = construct_weighting_scheme(
+            dim1_slice.stop - dim1_slice.start, dim2_slice.stop - dim2_slice.start
+        )
+
+        local_interpolation_weightings[dim1_slice, dim2_slice] += weighting_function
+        global_interpolation_weightings[dim1_slice, dim2_slice] += weighting_function
+
+        dataset_mean_img[dim1_slice, dim2_slice] = curr_pmd.mean_img
+        dataset_var_img[dim1_slice, dim2_slice] = curr_pmd.var_img
+
+        current_row_map = pixel_mat[dim1_slice, dim2_slice].flatten()
+
+        # Process the local U basis
+        curr_u_local = curr_pmd.u_local_basis
+        curr_u_local_indices = curr_u_local.indices()
+        curr_u_local_rows, curr_u_local_cols = (
+            curr_u_local_indices[0],
+            curr_u_local_indices[1],
+        )
+        curr_u_local_values = curr_u_local.values()
+
+        # First apply the interpolation scheme:
+        curr_u_local_values *= weighting_function.flatten()[curr_u_local_rows]
+        # Then re-assign rows to their actual position on the full FOV
+        curr_u_local_rows = current_row_map[curr_u_local_rows]
+        curr_u_local_cols += local_rank_tracker
+        # Append results
+        u_local_basis_rows.append(curr_u_local_rows)
+        u_local_basis_cols.append(curr_u_local_cols)
+        u_local_basis_values.append(curr_u_local_values)
+
+        # Process local U projector
+        curr_u_local_projector = curr_pmd.u_local_projector
+        curr_u_local_projector_indices = curr_u_local_projector.indices()
+        curr_u_local_projector_rows, curr_u_local_projector_cols = [
+            curr_u_local_projector_indices[i] for i in [0, 1]
+        ]
+        curr_u_local_projector_values = curr_u_local_projector.values()
+        # No interpolation here, so we immediately re-assign rows to actual FOV positions
+        curr_u_local_projector_rows = current_row_map[curr_u_local_projector_rows]
+        curr_u_local_projector_cols += local_rank_tracker
+        # Append results
+        u_local_projector_rows.append(curr_u_local_projector_rows)
+        u_local_projector_cols.append(curr_u_local_projector_cols)
+        u_local_projector_values.append(curr_u_local_projector_values)
+
+        aggregate_local_v.append(curr_pmd.local_temporal_basis)
+        local_rank_tracker += curr_pmd.local_basis_rank
+
+        # Now process the global spatial/temporal matrices (if they exist)
+        if curr_pmd.global_basis_rank > 0:
+            aggregate_global_v.append(curr_pmd.global_temporal_basis)
+
+            # Process the global basis first
+            curr_u_global = curr_pmd.u_global_basis
+            curr_u_global_indices = curr_u_global.indices()
+            curr_u_global_rows, curr_u_global_cols = (
+                curr_u_global_indices[0],
+                curr_u_global_indices[1],
+            )
+            curr_u_global_values = curr_u_global.values()
+
+            # First apply the interpolation scheme:
+            curr_u_global_values *= weighting_function.flatten()[curr_u_global_rows]
+            # Then re-assign rows to their actual position on the full FOV
+            curr_u_global_rows = current_row_map[curr_u_global_rows]
+            curr_u_global_cols += global_rank_tracker
+            # Append results
+            u_global_basis_rows.append(curr_u_global_rows)
+            u_global_basis_cols.append(curr_u_global_cols)
+            u_global_basis_values.append(curr_u_global_values)
+
+            # Now process the global projector
+            curr_u_global_projector = curr_pmd.u_global_projector
+            curr_u_global_projector_indices = curr_u_global_projector.indices()
+            curr_u_global_projector_rows, curr_u_global_projector_cols = [
+                curr_u_global_projector_indices[i] for i in [0, 1]
+            ]
+            curr_u_global_projector_values = curr_u_global_projector.values()
+            # No interpolation here, so we immediately re-assign rows to actual FOV positions
+            curr_u_global_projector_rows = current_row_map[curr_u_global_projector_rows]
+            curr_u_global_projector_cols += global_rank_tracker
+            # Append results
+            u_global_projector_rows.append(curr_u_global_projector_rows)
+            u_global_projector_cols.append(curr_u_global_projector_cols)
+            u_global_projector_values.append(curr_u_global_projector_values)
+            global_rank_tracker += curr_pmd.global_basis_rank
+
+    contains_global_flag = len(u_global_projector_values) > 0
+    # Convert things to torch tensors, then reweight the global and local U bases
+    u_local_projector_values = torch.concatenate(u_local_projector_values, dim=0)
+    u_local_projector_cols = torch.concatenate(u_local_projector_cols, dim=0)
+    u_local_projector_rows = torch.concatenate(u_local_projector_rows, dim=0)
+    u_local_projector_final = torch.sparse_coo_tensor(
+        torch.stack([u_local_projector_rows, u_local_projector_cols], dim=0),
+        u_local_projector_values,
+        (fov_dim1 * fov_dim2, local_rank_tracker),
+    ).coalesce()
+
+    aggregate_local_v = torch.concatenate(aggregate_local_v, dim=0)
+
+    u_local_basis_values = torch.concatenate(u_local_basis_values, dim=0)
+    u_local_basis_cols = torch.concatenate(u_local_basis_cols, dim=0)
+    u_local_basis_rows = torch.concatenate(u_local_basis_rows, dim=0)
+    local_reweighting = torch.nan_to_num(
+        torch.reciprocal(local_interpolation_weightings.flatten()), nan=0.0
+    )
+    u_local_basis_values *= local_reweighting[u_local_basis_rows]
+
+    if contains_global_flag:
+        u_global_projector_values = torch.concatenate(u_global_projector_values, dim=0)
+        u_global_projector_cols = torch.concatenate(u_global_projector_cols, dim=0)
+        u_global_projector_rows = torch.concatenate(u_global_projector_rows, dim=0)
+        u_global_projector_final = torch.sparse_coo_tensor(
+            torch.stack([u_global_projector_rows, u_global_projector_cols], dim=0),
+            u_global_projector_values,
+            (fov_dim1 * fov_dim2, global_rank_tracker),
+        ).coalesce()
+
+        u_global_basis_values = torch.concatenate(u_global_basis_values, dim=0)
+        u_global_basis_cols = torch.concatenate(u_global_basis_cols, dim=0)
+        u_global_basis_rows = torch.concatenate(u_global_basis_rows, dim=0)
+        global_reweighting = torch.nan_to_num(
+            torch.reciprocal(global_interpolation_weightings.flatten()), nan=0.0
+        )
+        u_global_basis_values *= global_reweighting[u_global_basis_rows]
+
+        aggregate_global_v = torch.concatenate(aggregate_global_v, dim=0)
+
+        # Need to stack together the u basis in this case and the v basis
+        u_final_cols = torch.concatenate(
+            [u_local_basis_cols, u_global_basis_cols + local_rank_tracker], dim=0
+        )
+        u_final_rows = torch.concatenate(
+            [u_local_basis_rows, u_global_basis_rows], dim=0
+        )
+        u_final_values = torch.concatenate(
+            [u_local_basis_values, u_global_basis_values], dim=0
+        )
+        u_final = torch.sparse_coo_tensor(
+            torch.stack([u_final_rows, u_final_cols], dim=0),
+            u_final_values,
+            (fov_dim1 * fov_dim2, local_rank_tracker + global_rank_tracker),
+        ).coalesce()
+        v_final = torch.concatenate([aggregate_local_v, aggregate_global_v])
+        final_pmd_array = PMDArray(
+            (num_frames, fov_dim1, fov_dim2),
+            u_final,
+            v_final,
+            dataset_mean_img,
+            dataset_var_img,
+            u_local_projector_final,
+            u_global_projector=u_global_projector_final,
+            device="cpu",
+        )
+    else:
+        u_final = torch.sparse_coo_tensor(
+            torch.stack([u_local_basis_rows, u_local_basis_cols], dim=0),
+            u_local_basis_values,
+            (fov_dim1 * fov_dim2, local_rank_tracker),
+        )
+        v_final = aggregate_local_v
+        final_pmd_array = PMDArray(
+            (num_frames, fov_dim1, fov_dim2),
+            u_final,
+            v_final,
+            dataset_mean_img,
+            dataset_var_img,
+            u_local_projector_final,
+            u_global_projector=None,
+            device="cpu",
+        )
+
+    return final_pmd_array
