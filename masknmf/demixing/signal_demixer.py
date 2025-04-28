@@ -310,103 +310,6 @@ def get_mean_data(u_sparse, v):
     return torch.sparse.mm(u_sparse, torch.mean(v, dim=1, keepdim=True))
 
 
-def get_new_orthonormal_vector(U_sparse, R, tol=1e-6):
-    """
-    Input:
-        U_sparse: torch.sparse_coo_tensor of shape (d, K), where d is the number of pixels in the movie, K is the rank of the PMD decomposition
-        R: torch.Tensor of shape (K, K)
-
-    Output: a torch.Tensor with shape (d, 1), and a flag indicating whether the search worked (1) or failed (0)
-    """
-    device = R.device
-    RRt = torch.matmul(R, R.t())
-
-    num_tries = min(U_sparse.shape[0], 500)
-
-    indices_to_try = np.random.choice(U_sparse.shape[0], size=num_tries, replace=False)
-    indices_to_try[0] = 0
-    indices_to_try[-1] = U_sparse.shape[0] - 1
-
-    for k in indices_to_try:
-        curr_index = torch.arange(k, k + 1, device=R.device)
-        current_vector = torch.zeros([U_sparse.shape[0], 1], device=device)
-        current_vector[k, 0] = 1
-        U_sparse_row = torch.index_select(U_sparse.t(), 1, curr_index)
-
-        prod = torch.sparse.mm(U_sparse_row.t(), RRt.t()).t()
-        output = current_vector - torch.sparse.mm(U_sparse, prod)
-
-        if not torch.all(torch.abs(output) < 1e-3):
-            output = output / torch.linalg.norm(output)
-            return output, 1
-
-    return torch.zeros([U_sparse.shape[0], 1], device=device), 0
-
-
-def PMD_setup_routine(U_sparse, R, s, V):
-    """
-    Inputs:
-        U_sparse: torch.sparse_coo_tensor of shape (d, K), where d is the number of pixels in the movie, K is the rank of the PMD decomposition
-        R: torch.Tensor of shape (K, K)
-        s: torch.Tensor of shape (K). This describes a diagonal matrix (all other elts 0)
-        V: torch.Tensor of shape (K, T) where R1 is the rank of the PMD decomposition
-
-        Key: Conceptually, U_sparse*R*s*V (here, we don't multiply by "s" per se, we multiply by the diagonal matrix which "s" represents) is the expanded PMD decomposition
-
-
-    Outputs:
-        (U_sparse, R, s, V), potentially modified such that the rowspan of V contains the 1's vector. Here is what definitely stays the same --
-            - U_sparse * R is a matrix consisting of orthonormal columns (here we operate under the assumption that U_sparse has many more rows than columns)
-            - V has orthonormal rows
-            - s describes the diagonal of an otherwise empty matrix
-    """
-    if s.shape[0] == min(U_sparse.shape[0], V.shape[1]):
-        print("Full rank SVD provided; no need to modify anything")
-        return U_sparse, R, s, V
-    device = V.device
-    pad_flag, V = add_1s_to_rowspan(V)
-    if pad_flag:
-        new_vec, attempt_flag = get_new_orthonormal_vector(U_sparse, R)
-        if not attempt_flag:
-            print(
-                "The V row space enhancement step did not find a suitable orthogonal vector"
-            )
-            pass
-        else:
-            nonzero_indices = torch.nonzero(new_vec)
-            values = new_vec[nonzero_indices[:, 0], nonzero_indices[:, 1]]
-
-            rows = nonzero_indices[:, 0]
-            cols = torch.zeros_like(rows) + U_sparse.shape[1]
-
-            # Add new_vec as a column to U_sparse (this should be easy)
-            original_values = U_sparse.values()
-            original_rows = U_sparse.indices()[0, :]
-            original_cols = U_sparse.indices()[1, :]
-
-            new_values = torch.cat((original_values, values))
-            new_rows = torch.cat((original_rows, rows))
-            new_cols = torch.cat((original_cols, cols))
-
-            U_sparse = torch.sparse_coo_tensor(
-                torch.stack([new_rows, new_cols]),
-                new_values,
-                (U_sparse.shape[0], U_sparse.shape[1] + 1),
-            ).coalesce()
-            # U_sparse = torch_sparse.tensor.SparseTensor(row=new_rows, col=new_cols, value=new_values, \
-            #                                             sparse_sizes=(U_sparse.sparse_sizes()[0],
-            #                                                           U_sparse.sparse_sizes()[1] + 1)).coalesce()
-
-            # Add the appropriate padding to R
-            R = torch.hstack([R, torch.zeros([R.shape[0], 1], device=device)])
-            appendage = torch.zeros([1, R.shape[1]], device=device)
-            appendage[0, -1] = 1
-            R = torch.vstack([R, appendage])
-            s = torch.cat([s, torch.zeros([1], device=device)])
-
-    return U_sparse, R, s, V
-
-
 def process_custom_signals(
     a: torch.sparse_coo_tensor,
     u_sparse: torch.sparse_coo_tensor,
@@ -527,7 +430,7 @@ def get_total_edges(d1, d2):
 def get_local_correlation_structure(
     U_sparse: torch.sparse_coo_tensor,
     V: torch.tensor,
-    dims: tuple[int, int, int],
+    dims: Tuple[int, int, int],
     th: int,
     order: str = "C",
     batch_size: int = 10000,
@@ -794,7 +697,7 @@ def find_superpixel_UV(
     return connect_mat_1, comps
 
 
-def spatial_temporal_ini_UV(
+def spatial_temporal_ini_uv(
     u_sparse: torch.sparse_coo_tensor,
     v: torch.Tensor,
     dims: Tuple[int, int, int],
@@ -1697,7 +1600,7 @@ def superpixel_init(
         data_order,
     )
 
-    c_ini, a_ini = spatial_temporal_ini_UV(
+    c_ini, a_ini = spatial_temporal_ini_uv(
         u_sparse, v, dims, comps, length_cut, a=a, c=c
     )
 
