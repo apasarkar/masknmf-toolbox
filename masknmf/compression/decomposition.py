@@ -1369,10 +1369,16 @@ def pmd_batch(
     for i in range(len(spatial_dim1_start_pts)):
         for j in range(len(spatial_dim2_start_pts)):
             curr_dim1_start_pt = spatial_dim1_start_pts[i]
-            curr_dim1_end_pt = min(spatial_dim1_start_pts[i] + batch_dimensions[0], dataset.shape[1])
+            if i == len(spatial_dim1_start_pts) - 1:
+                curr_dim1_end_pt = dataset.shape[1]
+            else:
+                curr_dim1_end_pt = min(spatial_dim1_start_pts[i] + batch_dimensions[0], dataset.shape[1])
 
             curr_dim2_start_pt = spatial_dim2_start_pts[j]
-            curr_dim2_end_pt = min(spatial_dim2_start_pts[j] + batch_dimensions[1], dataset.shape[2])
+            if j == len(spatial_dim2_start_pts):
+                curr_dim2_end_pt = dataset.shape[2]
+            else:
+                curr_dim2_end_pt = min(spatial_dim2_start_pts[j] + batch_dimensions[1], dataset.shape[2])
 
             slice1 = slice(curr_dim1_start_pt, curr_dim1_end_pt)
             slice2 = slice(curr_dim2_start_pt, curr_dim2_end_pt)
