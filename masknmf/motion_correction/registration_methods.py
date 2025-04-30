@@ -827,7 +827,7 @@ def register_frames_pwrigid(
         rigid_shifts,
         pixel_weighting=patched_weights.reshape(
             patched_weights.shape[0], -1, patches[0], patches[1]
-        ),
+        ) if patched_weights is not None else None,
     )
 
     # Reshape to (num_frames, patch_grid_dim1, patch_grid_dim2, 2)
