@@ -8,14 +8,13 @@ version = "0.1.0"
 description = "masknmf pipeline for motion correction, denoising, compression, and demixing of functional neuroimaging data"
 readme = "README.md"
 license = "MIT"
-
 requires-python = ">=3.11, <3.13"  # ">=3.10"
 authors = [
     { name = "Amol Pasarkar" },
 ]
 keywords = ["neuroimaging", "motion correction", "demixing", "calcium imaging"]
 dependencies = [
-    "torch",
+    "torch==2.4.1",
     "fastplotlib",
     "future",
     "numpy",
@@ -38,8 +37,8 @@ dependencies = [
 gui = [
 	# "cmake",  # needed on py310, i think pip is fine
 	"imgui-bundle",
-	"pyqt5==5.15.11",
-	"pyqt5-qt5==5.15.2",
+	# "pyqt5==5.15.11",
+	# "pyqt5-qt5==5.15.2",
 	"glfw",
 ] 
 notebook = [
@@ -53,8 +52,8 @@ notebook = [
 napari = ["napari"]
 all = [
 	"imgui-bundle",
-	"pyqt5==5.15.11",
-	"pyqt5-qt5==5.15.2",
+	# "pyqt5==5.15.11",
+	# "pyqt5-qt5==5.15.2",
 	"glfw",
 	"jupyter_rfb>=0.5.1",
 	"jupyterlab",
