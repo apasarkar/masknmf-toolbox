@@ -2752,7 +2752,7 @@ class DemixingState(SignalProcessingState):
             curr_mask_row, curr_mask_col = torch.nonzero(new_masks, as_tuple=True)
 
             final_mask_rows.append(curr_mask_row)
-            final_mask_cols.append(curr_mask_col)
+            final_mask_cols.append(start + curr_mask_col)
 
         # Construct the new mask
         final_mask_rows = torch.cat(final_mask_rows, 0)
@@ -2772,7 +2772,6 @@ class DemixingState(SignalProcessingState):
             final_spatial_values,
             spatial_comps.shape,
         ).coalesce()
-
         return final_mask, final_spatial
 
     def support_update_routine(
