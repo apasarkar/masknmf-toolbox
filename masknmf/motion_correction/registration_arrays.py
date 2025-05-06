@@ -93,12 +93,12 @@ class RegistrationArray(LazyFrameLoader):
         Returns:
             np.ndarray: array at the indexed slice
         """
-        return self.index_frames_tensor(indices).cpu().numpy()
+        return self.index_frames_tensor(indices)[0].cpu().numpy()
 
     def index_frames_tensor(
         self,
         idx: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
-    ) -> torch.tensor:
+    ) -> Tuple[torch.tensor, torch.tensor]:
         """Retrieve motion-corrected frame at index `idx`."""
         reference_data_indexed = self._reference_dataset[idx]
         if self.target_dataset is None:
@@ -118,13 +118,14 @@ class RegistrationArray(LazyFrameLoader):
             target_data_subset = (
                 torch.from_numpy(target_data_indexed).to(self.device).float()
             )
-            moco_output = self.strategy.correct(
+            moco_output, shift_output = self.strategy.correct(
                 reference_subset, target_frames=target_data_subset, device=self.device
-            )[0].cpu()
+            )
 
         else:
             num_iters = math.ceil(reference_data_indexed.shape[0] / self.batch_size)
-            outputs = []
+            registered_frame_outputs = []
+            frame_shift_outputs = []
             for k in range(num_iters):
                 start = k * self.batch_size
                 end = min(start + self.batch_size, reference_data_indexed.shape[0])
@@ -145,10 +146,12 @@ class RegistrationArray(LazyFrameLoader):
                     target_subset = target_subset.expand(1, -1, -1)
                 subset_output = self.strategy.correct(
                     reference_subset, target_frames=target_subset, device=self.device
-                )[0].cpu()
-                outputs.append(subset_output)
-            moco_output = torch.concatenate(outputs, dim=0)
-        return moco_output
+                )
+                registered_frame_outputs.append(subset_output[0].cpu())
+                frame_shift_outputs.append(subset_output[1].cpu())
+            moco_output = torch.concatenate(registered_frame_outputs, dim=0)
+            shift_output = torch.concatenate(frame_shift_outputs, dim=0)
+        return moco_output, shift_output
 
 
 class FilteredArray(LazyFrameLoader):
