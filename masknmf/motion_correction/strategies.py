@@ -87,7 +87,7 @@ class RigidMotionCorrection(MotionCorrectionStrategy):
 class PiecewiseRigidMotionCorrection(MotionCorrectionStrategy):
     def __init__(
         self,
-        strides: Tuple[int, int],
+        num_blocks: Tuple[int, int],
         overlaps: Tuple[int, int],
         max_rigid_shifts: Tuple[int, int],
         max_deviation_rigid: Tuple[int, int],
@@ -95,15 +95,15 @@ class PiecewiseRigidMotionCorrection(MotionCorrectionStrategy):
         pixel_weighting: Optional[torch.tensor] = None,
     ):
         super().__init__(template)
-        self._strides = strides
+        self._num_blocks = num_blocks
         self._overlaps = overlaps
         self._max_rigid_shifts = max_rigid_shifts
         self._max_deviation_rigid = max_deviation_rigid
         self._pixel_weighting = pixel_weighting
 
     @property
-    def strides(self) -> Tuple[int, int]:
-        return self._strides
+    def num_blocks(self) -> Tuple[int, int]:
+        return self._num_blocks
 
     @property
     def pixel_weighting(self) -> Optional[torch.tensor]:
@@ -134,24 +134,14 @@ class PiecewiseRigidMotionCorrection(MotionCorrectionStrategy):
         if target_frames is not None:
             target_frames = target_frames.to(device)
 
-        if self.pixel_weighting is not None:
-            return register_frames_pwrigid(
+
+        return register_frames_pwrigid(
                 reference_frames.to(device),
                 self.template.to(device),
-                self.strides,
+                self.num_blocks,
                 self.overlaps,
                 self.max_rigid_shifts,
                 self.max_deviation_rigid,
                 target_frames=target_frames,
-                pixel_weighting=self.pixel_weighting.to(device),
-            )
-        else:
-            return register_frames_pwrigid(
-                reference_frames.to(device),
-                self.template.to(device),
-                self.strides,
-                self.overlaps,
-                self.max_rigid_shifts,
-                self.max_deviation_rigid,
-                target_frames=target_frames,
+                pixel_weighting=self.pixel_weighting.to(device) if self.pixel_weighting is not None else None,
             )

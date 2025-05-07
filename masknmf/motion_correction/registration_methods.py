@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import math
 from typing import *
 
 from typing import Tuple
@@ -380,8 +381,40 @@ def interpolate_to_border(shifted_imgs: torch.tensor, shifts: torch.tensor):
     return shifted_imgs
 
 
+def compute_stride_routine(shape: Tuple[int, int, int],
+                           num_blocks: Tuple[int, int],
+                           overlaps: Tuple[int, int]):
+    """
+    Args
+        num_blocks (Tuple[int, int]): The number of blocks in each dimension that we use to partition the FOV
+        overlaps (Tuple[int, int]): The amount of overlap in each dimension between adjacent blocks
+    Returns:
+        Tuple[Tuple[int, int], torch.tensor, torch.tensor]: A tuple describing the (a) strides in both dimensions and the start points for
+            each block.
+    """
+    fov_dim1, fov_dim2 = shape[1], shape[2]
+    if fov_dim1 < overlaps[0] or fov_dim2 < overlaps[1]:
+        raise ValueError(f"overlap values are bigger than the corresponding FOV dimensions")
+    if math.ceil((fov_dim1 - overlaps[0]) / num_blocks[0]) < overlaps[0]:
+        raise ValueError(f"This configuration guarantees that the stride in dimenion 0 is less than the overlaps, which is not allowed")
+    if math.ceil((fov_dim1 - overlaps[1]) / num_blocks[1]) < overlaps[1]:
+        raise ValueError(f"This configuration guarantees that the stride in dimenion 1 is less than the overlaps, which is not allowed")
+
+    ## Add some error catching logic later
+    dim1_start_pts = torch.floor(torch.linspace(0, fov_dim1 - overlaps[0], num_blocks[0] + 1))[:-1]
+    dim1_stride = fov_dim1 - overlaps[0] - dim1_start_pts[-1]
+
+    dim2_start_pts = torch.floor(torch.linspace(0, fov_dim1 - overlaps[1], num_blocks[1] + 1))[:-1]
+    dim2_stride = fov_dim2 - overlaps[1] - dim2_start_pts[-1]
+
+    return (dim1_stride, dim2_stride), dim1_start_pts, dim2_start_pts
+
+
 def extract_patches(
-    img: torch.tensor, patches: Tuple[int, int], overlaps: Tuple[int, int]
+    img: torch.tensor,
+    start_pts_dim1: torch.tensor,
+    start_pts_dim2: torch.tensor,
+    patch_dims: Tuple[int, int]
 ) -> torch.tensor:
     """
     Batched routine that extracted a proper "sliding window" of patches for piecewise rigid registration.
@@ -398,10 +431,9 @@ def extract_patches(
             patch_grid_dim1, patch_grid_dim2 gives the dimensions of the grid of overlapping patches (in the way they tile the actual FOV).
     """
     num_frames, h, w = img.shape
-
-    patch_h, patch_w = patches
-    overlap_h, overlap_w = overlaps
-    first_dim, second_dim = _get_indices((h, w), patch_h, patch_w, overlap_h, overlap_w)
+    device = img.device
+    patch_h, patch_w = patch_dims
+    first_dim, second_dim = start_pts_dim1, start_pts_dim2
 
     # Create all start positions using meshgrid
     grid_x, grid_y = torch.meshgrid(first_dim, second_dim, indexing="ij")
@@ -411,15 +443,15 @@ def extract_patches(
     num_patches = start_positions.shape[0]
 
     # Generate patch indices
-    patch_dim1 = torch.arange(patch_h).view(-1, 1) + start_positions[:, 0].view(
+    patch_dim1 = torch.arange(patch_h, device=device).view(-1, 1) + start_positions[:, 0].view(
         -1, 1, 1
-    )  # (num_patches, patch_h, 1)
-    patch_dim2 = torch.arange(patch_w).view(1, -1) + start_positions[:, 1].view(
+    ) # (num_patches, patch_h, 1)
+    patch_dim2 = torch.arange(patch_w, device=device).view(1, -1) + start_positions[:, 1].view(
         -1, 1, 1
     )  # (num_patches, 1, patch_w)
 
     patches = img[
-        :, patch_dim1, patch_dim2
+        :, patch_dim1.long(), patch_dim2.long()
     ]  # (num_frames, num_patches, patch_h, patch_w)
     return patches.reshape(
         (
@@ -430,42 +462,6 @@ def extract_patches(
             patch_w,
         )
     )
-
-
-def _get_indices(
-    img_shape: Tuple[int, int],
-    patch_h: int,
-    patch_w: int,
-    overlap_h: int,
-    overlap_w: int,
-) -> Tuple[torch.tensor, torch.tensor]:
-    """
-    Compute the start indices for extracting patches with given patch sizes and overlaps.
-
-    Args:
-        img_shape (tuple): Shape of the image (height, width).
-        patch_h (int): Patch height.
-        patch_w (int): Patch width.
-        overlap_h (int): Overlap along height.
-        overlap_w (int): Overlap along width.
-
-    Returns:
-        tuple[torch.Tensor, torch.Tensor]: Start indices for each patch along height and width.
-    """
-    h, w = img_shape
-
-    # Compute strides from overlaps
-    stride_h = patch_h - overlap_h
-    stride_w = patch_w - overlap_w
-
-    first_dim = torch.arange(0, h - patch_h, stride_h)
-    first_dim = torch.cat([first_dim, torch.tensor([max(h - patch_h, 0)])])
-
-    second_dim = torch.arange(0, w - patch_w, stride_w)
-    second_dim = torch.cat([second_dim, torch.tensor([max(w - patch_w, 0)])])
-
-    return first_dim, second_dim
-
 
 def apply_displacement_vector_field(
     imgs: torch.tensor, shift_vector_field: torch.tensor
@@ -744,10 +740,85 @@ def _estimate_patchwise_rigid_shifts(
     return shifts
 
 
+def construct_weighting_scheme(dim1: int, dim2: int) -> torch.Tensor:
+    # Half sizes (center region)
+    hbh = dim1 // 2
+    hbw = dim2 // 2
+
+    # Create the ramp matrices
+    ramp_y = torch.arange(hbh).unsqueeze(1).expand(hbh, hbw)
+    ramp_x = torch.arange(hbw).unsqueeze(0).expand(hbh, hbw)
+    min_ramp = torch.minimum(ramp_x, ramp_y).float()
+
+    # Initialize the full weighting matrix
+    block_weights = torch.ones((dim1, dim2), dtype=torch.float32)
+
+    # Fill quadrants
+    block_weights[:hbh, :hbw] += min_ramp
+    block_weights[:hbh, hbw:] = torch.fliplr(block_weights[:hbh, :dim2 - hbw])
+    block_weights[hbh:, :] = torch.flipud(block_weights[:dim1 - hbh, :])
+
+    return block_weights
+
+
+
+def scatter_patches_to_fov(
+    data_to_reformat: torch.Tensor,
+    start_points_dim0: torch.Tensor,
+    start_points_dim1: torch.Tensor,
+    fov_dims: tuple,
+):
+    """
+    Efficiently scatter patches into a full FOV tensor.
+
+    Args:
+        X: Tensor of shape (num_frames, num_patches_dim0, num_patches_dim1, patch_length_dim0, patch_length_dim1)
+        start_points_dim0: LongTensor of shape (num_patches_dim0,) - start indices for patches along dim 0
+        start_points_dim1: LongTensor of shape (num_patches_dim1,) - start indices for patches along dim 1
+        patch_dims: Tuple (patch_length_dim0, patch_length_dim1)
+        fov_dims: Tuple (fov_dim0, fov_dim1) - output FOV size
+
+    Returns:
+        full: Tensor of shape (num_frames, fov_dim0, fov_dim1)
+    """
+    device = data_to_reformat.device
+    F, P0, P1, ph, pw = data_to_reformat.shape
+    fov_dim0, fov_dim1 = fov_dims
+
+    # Create patch-local grid
+    dy = torch.arange(ph, device=device)
+    dx = torch.arange(pw, device=device)
+    grid_y, grid_x = torch.meshgrid(dy, dx, indexing='ij')  # shape (ph, pw)
+
+    # Global positions for each patch
+    start_y = start_points_dim0.to(device).squeeze() # (P0,)
+    start_x = start_points_dim1.to(device).squeeze() # (P1,)
+
+    # Compute global indices per patch
+    gy = start_y[:, None, None] + grid_y[None, :, :]       # (P0, ph, pw)
+    gx = start_x[:, None, None] + grid_x[None, :]       # (P1, ph, pw)
+
+    # Expand to full shape
+    gy = gy[None, :, None, :, :].expand(F, P0, P1, ph, pw)  # (F, P0, P1, ph, pw)
+    gx = gx[None, None, :, :, :].expand(F, P0, P1, ph, pw)  # (F, P0, P1, ph, pw)
+    gf = torch.arange(F, device=device)[:, None, None, None, None].expand(F, P0, P1, ph, pw)
+
+    # Flatten everything for scatter
+    data_to_reformat_flat = data_to_reformat.reshape(-1)
+    gy_flat = gy.reshape(-1).long()
+    gx_flat = gx.reshape(-1).long()
+    gf_flat = gf.reshape(-1).long()
+
+    # Output tensor
+    full = torch.zeros((F, fov_dim0, fov_dim1), device=device)
+    full.index_put_((gf_flat, gy_flat, gx_flat), data_to_reformat_flat, accumulate=True)
+
+    return full
+
 def register_frames_pwrigid(
     reference_frames: torch.tensor,
     template: torch.tensor,
-    strides: Tuple[int, int],
+    num_blocks: Tuple[int, int],
     overlaps: Tuple[int, int],
     max_rigid_shifts: Tuple[int, int],
     max_deviation_rigid: Tuple[int, int],
@@ -762,7 +833,7 @@ def register_frames_pwrigid(
         reference_frames (torch.tensor): Shape (num_frames, fov_dim1, fov_dim2). We estimate shifts that optimally align reference_frames to
             the template
         template (torch.tensor): Shape (fov_dim1, fov_dim2)  or (num_frames, fov_dim1, fov_dim2). The template(s) used for alignment.
-        strides (tuple[int, int]): Two integers, used to specify patch dimensions for pwrigid registration
+        num_blocks (tuple[int, int]): The number of patches in both the height and width dimensions that we partition the FOV into
         overlaps (tuple[int, int]): Two integers, used to specify the degree of overlap between patches.
             Together, (strides[0] + overlaps[0], strides[1] + overlaps[1]) defines the patch size for pw rigid registration.
         max_rigid_shifts (tuple[int, int]): The maximum (full-fov) rigid shifts, used to perform rigid motion correction prior to piecewise
@@ -805,15 +876,31 @@ def register_frames_pwrigid(
         reference_frames, template, max_rigid_shifts, pixel_weighting=pixel_weighting
     )
 
-    patches = (strides[0] + overlaps[0], strides[1] + overlaps[1])
-    patched_data = extract_patches(reference_frames.float(), patches, overlaps)
+    strides, dim1_start_pts, dim2_start_pts = compute_stride_routine(reference_frames.shape, num_blocks, overlaps)
+    dim1_start_pts = dim1_start_pts.to(device)
+    dim2_start_pts = dim2_start_pts.to(device)
+
+    patches = (int(strides[0].item()) + overlaps[0], int(strides[1].item()) + overlaps[1])
+    interpolation_weighting = construct_weighting_scheme(patches[0], patches[1]).to(device)
+    patched_data = extract_patches(reference_frames.float(),
+                                   dim1_start_pts,
+                                   dim2_start_pts,
+                                   patches)
+    patched_target_data = extract_patches(target_frames.float(),
+                                          dim1_start_pts,
+                                          dim2_start_pts,
+                                          patches)
     if pixel_weighting is not None:
         patched_weights = extract_patches(
-            pixel_weighting.unsqueeze(0).float(), patches, overlaps
-        )
+            pixel_weighting.unsqueeze(0).float(),dim1_start_pts.to(device),
+                                   dim2_start_pts.to(device),
+                                   patches)
     else:
         patched_weights = None
-    patched_templates = extract_patches(template.float(), patches, overlaps)
+    patched_templates = extract_patches(template.float(),
+                                        dim1_start_pts.to(device),
+                                        dim2_start_pts.to(device),
+                                        patches)
 
     patch_grid_dim1 = patched_data.shape[1]
     patch_grid_dim2 = patched_data.shape[2]
@@ -830,21 +917,28 @@ def register_frames_pwrigid(
         ) if patched_weights is not None else None,
     )
 
-    # Reshape to (num_frames, patch_grid_dim1, patch_grid_dim2, 2)
-    lowrank_patchwise_rigid_shifts = lowrank_patchwise_rigid_shifts.reshape(
-        (num_frames, patch_grid_dim1, patch_grid_dim2, 2)
-    )
-    """
-    Output: A num_frames x patch_grid_dim1 x patch_grid_dim2 x 2 tensor describing the patchwise estimated rigid shifts in the height and width dimension.
-    From here it is straightforward: (1) go from patch_grid_dim1 x patch_grid_dim2 x 2 --> fov dim 1, fov dim 2 x 2 motion field
-    (2) apply relevant shifts to target img
-    """
+    patched_target_data = apply_rigid_shifts(patched_target_data.reshape(-1, patches[0], patches[1]),
+                                       lowrank_patchwise_rigid_shifts.reshape(-1, 2))
+    patched_target_data = interpolate_to_border(patched_target_data,
+                                          lowrank_patchwise_rigid_shifts.reshape(-1, 2))
 
-    shift_field_batch = generate_motion_field_from_pwrigid_shifts(
-        lowrank_patchwise_rigid_shifts, fov_dim1, fov_dim2
+    ## Multiply each patch by the interpolation matrix
+    patched_target_data *= interpolation_weighting[None,...]
+
+    ## Reshape everything to (num_frames, num_patches_dim0, num_patches_dim1, patch_height, patch_width)
+    patched_target_data = patched_target_data.reshape(num_frames, patch_grid_dim1, patch_grid_dim2, patches[0], patches[1])
+
+    interpolation_patches = torch.zeros(1, patch_grid_dim1, patch_grid_dim2, patches[0], patches[1], device=device)
+    interpolation_patches += interpolation_weighting[None, None, None, :, :]
+
+    ## Now efficiently scatter this data back to (num_frames, fov_dim1, fov_dim2) data
+    pwrigid_results = scatter_patches_to_fov(patched_target_data, dim1_start_pts, dim2_start_pts, (fov_dim1, fov_dim2))
+
+    pwrigid_net_weightings = scatter_patches_to_fov(interpolation_patches, dim1_start_pts, dim2_start_pts, (fov_dim1, fov_dim2))
+
+    return torch.nan_to_num(pwrigid_results / pwrigid_net_weightings, nan=0.0), lowrank_patchwise_rigid_shifts.reshape(
+        num_frames, patch_grid_dim1, patch_grid_dim2, 2
     )
-    registered_imgs = apply_displacement_vector_field(target_frames, shift_field_batch)
-    return registered_imgs, lowrank_patchwise_rigid_shifts
 
 
 def weighted_alignment_loss(
