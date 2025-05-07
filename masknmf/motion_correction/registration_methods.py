@@ -11,7 +11,7 @@ def register_frames_rigid(
     max_shifts: Tuple[int, int],
     target_frames: Optional[torch.tensor] = None,
     pixel_weighting: Optional[torch.tensor] = None,
-):
+) -> Tuple[torch.tensor, torch.tensor]:
     """
     Runs full rigid motion correction pipeline: estimating shifts, applying shifts to the iamge stack, and using a copying scheme
     to deal with edge artifacts.
