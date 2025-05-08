@@ -404,7 +404,7 @@ def compute_stride_routine(shape: Tuple[int, int, int],
     dim1_start_pts = torch.floor(torch.linspace(0, fov_dim1 - overlaps[0], num_blocks[0] + 1))[:-1]
     dim1_stride = fov_dim1 - overlaps[0] - dim1_start_pts[-1]
 
-    dim2_start_pts = torch.floor(torch.linspace(0, fov_dim1 - overlaps[1], num_blocks[1] + 1))[:-1]
+    dim2_start_pts = torch.floor(torch.linspace(0, fov_dim2 - overlaps[1], num_blocks[1] + 1))[:-1]
     dim2_stride = fov_dim2 - overlaps[1] - dim2_start_pts[-1]
 
     return (dim1_stride, dim2_stride), dim1_start_pts, dim2_start_pts
@@ -740,18 +740,18 @@ def _estimate_patchwise_rigid_shifts(
     return shifts
 
 
-def construct_weighting_scheme(dim1: int, dim2: int) -> torch.Tensor:
+def construct_weighting_scheme(dim1: int, dim2: int, device="cpu") -> torch.Tensor:
     # Half sizes (center region)
     hbh = dim1 // 2
     hbw = dim2 // 2
 
     # Create the ramp matrices
-    ramp_y = torch.arange(hbh).unsqueeze(1).expand(hbh, hbw)
-    ramp_x = torch.arange(hbw).unsqueeze(0).expand(hbh, hbw)
+    ramp_y = torch.arange(hbh, device=device).unsqueeze(1).expand(hbh, hbw)
+    ramp_x = torch.arange(hbw, device=device).unsqueeze(0).expand(hbh, hbw)
     min_ramp = torch.minimum(ramp_x, ramp_y).float()
 
     # Initialize the full weighting matrix
-    block_weights = torch.ones((dim1, dim2), dtype=torch.float32)
+    block_weights = torch.ones((dim1, dim2), device=device, dtype=torch.float32)
 
     # Fill quadrants
     block_weights[:hbh, :hbw] += min_ramp
@@ -791,8 +791,8 @@ def scatter_patches_to_fov(
     grid_y, grid_x = torch.meshgrid(dy, dx, indexing='ij')  # shape (ph, pw)
 
     # Global positions for each patch
-    start_y = start_points_dim0.to(device).squeeze() # (P0,)
-    start_x = start_points_dim1.to(device).squeeze() # (P1,)
+    start_y = start_points_dim0.to(device) # (P0,)
+    start_x = start_points_dim1.to(device) # (P1,)
 
     # Compute global indices per patch
     gy = start_y[:, None, None] + grid_y[None, :, :]       # (P0, ph, pw)
@@ -881,7 +881,7 @@ def register_frames_pwrigid(
     dim2_start_pts = dim2_start_pts.to(device)
 
     patches = (int(strides[0].item()) + overlaps[0], int(strides[1].item()) + overlaps[1])
-    interpolation_weighting = construct_weighting_scheme(patches[0], patches[1]).to(device)
+    interpolation_weighting = construct_weighting_scheme(patches[0], patches[1], device=device)
     patched_data = extract_patches(reference_frames.float(),
                                    dim1_start_pts,
                                    dim2_start_pts,
@@ -891,15 +891,15 @@ def register_frames_pwrigid(
                                           dim2_start_pts,
                                           patches)
     if pixel_weighting is not None:
-        patched_weights = extract_patches(
-            pixel_weighting.unsqueeze(0).float(),dim1_start_pts.to(device),
-                                   dim2_start_pts.to(device),
-                                   patches)
+        patched_weights = extract_patches(pixel_weighting.unsqueeze(0).float(),
+                                         dim1_start_pts,
+                                         dim2_start_pts,
+                                         patches)
     else:
         patched_weights = None
     patched_templates = extract_patches(template.float(),
-                                        dim1_start_pts.to(device),
-                                        dim2_start_pts.to(device),
+                                        dim1_start_pts,
+                                        dim2_start_pts,
                                         patches)
 
     patch_grid_dim1 = patched_data.shape[1]
