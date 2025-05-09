@@ -44,7 +44,7 @@ gui = [
 notebook = [
     "imgui-bundle",
 	"jupyter_rfb>=0.5.1",
-	"jupyterlab",
+	"jupyterlab==4.4.0a0",
 	"sidecar",
 	"ipykernel",
 	"ipywidgets>=8.0.0,<9",
