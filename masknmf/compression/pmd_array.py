@@ -310,6 +310,7 @@ class PMDArray(FactorizedVideo):
         Args:
             frames (torch.tensor). Shape (fov_dim1, fov_dim2, num_frames) or (fov_dim1*fov_dim2, num_frames).
                 Frames which we want to project onto the spatial basis.
+            standardize (Optional[bool]): Indicates whether the frames of data are standardized before projection is performed
         Returns:
             projected_frames (torch.tensor). Shape (fov_dim1, fov_dim2, num_frames).
         """
@@ -441,3 +442,52 @@ class PMDArray(FactorizedVideo):
         product = self.getitem_tensor(item)
         product = product.cpu().numpy().astype(self.dtype).squeeze()
         return product
+
+
+
+class PMDResidualArray(LazyFrameLoader):
+    """
+    Factorized video for the spatial and temporal extracted sources from the data
+    """
+
+    def __init__(
+        self,
+        raw_arr: LazyFrameLoader,
+        pmd_arr: PMDArray,
+    ):
+        """
+        Args:
+            raw_arr (LazyFrameLoader): Any object that supports LazyFrameLoder functionality
+            pmd_arr (PMDArray)
+        """
+        self.pmd_arr = pmd_arr
+        self.raw_arr = raw_arr
+        self._shape = self.pmd_arr.shape
+
+        if self.pmd_arr.shape != self.raw_arr.shape:
+            raise ValueError("Two image stacks do not have the same shape")
+
+
+    @property
+    def dtype(self) -> str:
+        """
+        data type, default np.float32
+        """
+        return self.pmd_arr.dtype
+
+    @property
+    def shape(self) -> Tuple[int, int, int]:
+        """
+        Array shape (n_frames, dims_x, dims_y)
+        """
+        return self._shape
+
+    @property
+    def ndim(self) -> int:
+        """
+        Number of dimensions
+        """
+        return len(self.shape)
+
+    def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
+        return self.pmd_arr[indices] - self.raw_arr[indices].astype(self.dtype)
