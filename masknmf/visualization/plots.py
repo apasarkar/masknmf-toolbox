@@ -5,6 +5,8 @@ import numpy as np
 import os
 import plotly.graph_objects as go
 import plotly.subplots as sp
+
+import masknmf
 from masknmf.demixing import ResidCorrMode
 
 # Custom sorting function to sort based on the numerical part after 'neuron_'
@@ -91,12 +93,7 @@ def construct_index(folder: str, file_prefix="neuron", index_name="index.html"):
 
     print(f'Index file "{index_file}" created successfully.')
 
-
-# For every signal, need to look at the temporal trace and the PMD average, superimposed
-def get_roi_avg(array, p1, p2, normalize=True):
-    """
-    Given nonzero dim1 and dim2 indices p1 and p2, get the ROI average
-    """
+def pixel_crop_stack(array, p1, p2):
     if np.amin(p1) == np.amax(p1):
         term1 = slice(np.amin(p1), np.amin(p1) + 1)
         expand_first = True
@@ -118,9 +115,18 @@ def get_roi_avg(array, p1, p2, normalize=True):
         selected_pixels = np.expand_dims(selected_pixels, 2)
 
     if selected_pixels.ndim < 3:
-        print(f"error in roi avg, {p1} and {p2}")
+        print(f"error in pixel selection avg, coordinates are {p1} and {p2}")
         print(f"term 1 is {term1} and term2 is {term2}")
     data_2d = selected_pixels[:, p1 - np.amin(p1), p2 - np.amin(p2)]
+    return data_2d
+
+
+# For every signal, need to look at the temporal trace and the PMD average, superimposed
+def get_roi_avg(array, p1, p2, normalize=True):
+    """
+    Given nonzero dim1 and dim2 indices p1 and p2, get the ROI average
+    """
+    data_2d = pixel_crop_stack(array, p1, p2)
     avg_trace = np.mean(data_2d, axis=1)
     if normalize:
         return avg_trace / np.amax(avg_trace)
@@ -347,3 +353,116 @@ def plot_ith_roi(
 
     # Return the figure for further inspection (optional)
     return fig
+
+
+# Code to plot ROI averages on the residual vs. raw data
+
+
+def plot_pmd_vs_raw_stack_diagnostic(raw_trace: np.ndarray,
+                                     pmd_trace: np.ndarray,
+                                     residual_trace: np.ndarray,
+                                     image: np.ndarray):
+    """
+    Makes a plot showing the raw data ROI average of a given image ROI, the PMD trace ROI average, the residual ROI average, the image ROI average
+    Args:
+        raw_trace (np.ndarray): Shape (num_frames,)
+        pmd_trace (np.ndarray): Shape (num_frames,)
+        residual_trace (np.ndarray): Shape (num_frames,)
+        image (np.ndarray): Shape (fov_dim1, fov_dim2). Shows the spatial footprint that we used for ROI averaging
+    """
+    # Create subplot layout: 1 row for image, 3 for time series (4x1)
+    fig = sp.make_subplots(
+        rows=4,
+        cols=1,
+        shared_xaxes=False,
+        subplot_titles=["Image", "Raw", "PMD", "Diff"],
+    )
+
+    # Image: show as heatmap (row=1)
+    fig.add_trace(
+        go.Heatmap(
+            z=image,
+            colorscale="Viridis",
+            showscale=False
+        ),
+        row=1,
+        col=1
+    )
+
+    # Time series (rows 2–4)
+    fig.add_trace(go.Scatter(y=raw_trace, mode="lines", name="Raw"), row=2, col=1)
+    fig.add_trace(go.Scatter(y=pmd_trace, mode="lines", name="PMD"), row=3, col=1)
+    fig.add_trace(go.Scatter(y=residual_trace, mode="lines", name="Resid"), row=4, col=1)
+
+    # Synchronize x-axis zoom across time series (match xaxes)
+    fig.update_layout(
+        height=800,
+        xaxis=dict(matches="x1", scaleanchor="y1", scaleratio=1),
+        yaxis=dict(matches="y1", scaleanchor="x1", scaleratio=1),
+        title="Image + Synchronized Time Series",
+        xaxis2=dict(matches='x4'),  # ts1
+        xaxis3=dict(matches='x4'),  # ts2
+        xaxis4=dict(),              # ts3 is anchor
+    )
+
+    return fig
+
+def roi_compare_pmd_raw(raw_stack: np.ndarray,
+                        pmd_movie: masknmf.arrays.FactorizedVideo,
+                        spatial_footprint: np.ndarray):
+    """
+    Args:
+        raw_stack (np.ndarray): shape (num_frames, fov_dim1, fov_dim2)
+        raw_mean (np.ndarray): shape (fov_dim1, fov_dim2)
+        pmd_movie (masknmf.PMDArray): The pmd object
+        spatial_footprint (np.ndarray): A single spatial footprint (fov_dim1, fov_dim2)
+    """
+
+    p1, p2 = spatial_footprint.nonzero()
+    raw_roi_avg = get_roi_avg(raw_stack, p1, p2, normalize = False)
+    pmd_roi_avg = get_roi_avg(pmd_movie, p1, p2, normalize = False)
+
+    return raw_roi_avg, pmd_roi_avg
+
+
+def generate_raw_vs_resid_plot_folder(raw_stack: masknmf.arrays.LazyFrameLoader,
+                                      pmd_movie: masknmf.arrays.FactorizedVideo,
+                                      spatial_matrix: np.ndarray,
+                                      folder_location: str,
+                                      timeslice: Optional[slice]=None):
+    """
+    Utility function that uses plotly to generate traces for every neuron, showing its spatial footprint as a heatmap,
+    its ROI average on the raw data, ROI average of the PMD movie, and the ROI average of the "residual" (Raw - PMD)
+    stack.
+
+    Args:
+        raw_stack (masknmf.arrays.LazyFrameLoader): Shape (num_frames, fov_dim1, fov_dim2)
+        pmd_movie (masknmf.arrays.FactorizedVideo): Shape (num_frames, fov_dim1, fov_dim2)
+        spatial_matrix (np.ndarray): Shape (fov_dim1, fov_dim2, num_neurons).
+        folder_location (str): The folder path for this set of plots.
+    """
+    neuron_prefix = "neuron_"
+    if not os.path.exists(folder_location):
+        os.mkdir(folder_location)
+    for k in range(spatial_matrix.shape[2]):
+        raw_trace, pmd_trace = roi_compare_pmd_raw(raw_stack,
+                                                   pmd_movie,
+                                                   spatial_matrix[:, :, k])
+
+        if timeslice is not None:
+            new_fig = plot_pmd_vs_raw_stack_diagnostic(raw_trace[timeslice],
+                                  pmd_trace[timeslice],
+                                  (raw_trace - pmd_trace)[timeslice],
+                                  spatial_matrix[:, :, k])
+        else:
+            new_fig = plot_pmd_vs_raw_stack_diagnostic(raw_trace,
+                                                       pmd_trace,
+                                                       (raw_trace - pmd_trace),
+                                                       spatial_matrix[:, :, k])
+
+        curr_write_path = os.path.join(folder_location, f"{neuron_prefix}{k}.html")
+        new_fig.write_html(curr_write_path)
+
+    construct_index(folder=folder_location,
+                    file_prefix=f"{neuron_prefix}",
+                    index_name="index.html")
