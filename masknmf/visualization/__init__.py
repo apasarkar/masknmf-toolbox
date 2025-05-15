@@ -3,6 +3,7 @@ from .interactive_guis import (
     stack_comparison_interface,
     get_correlation_widget,
     make_demixing_video,
+    PMDWidget
 )
 from .plots import (
     construct_index,

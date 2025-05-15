@@ -1,13 +1,195 @@
 from typing import *
 import numpy as np
-import torch
-import fastplotlib as fpl
 from fastplotlib.widgets import ImageWidget
 from ipywidgets import HBox, VBox
-import os
-import re
+import fastplotlib as fpl
+from imgui_bundle import imgui
+from fastplotlib import ui
+import pygfx
+from functools import partial
+from ipywidgets import VBox, HBox
+from collections import OrderedDict
+import masknmf.arrays
 from masknmf import DemixingResults, PMDArray
-import torch
+
+
+class ROIManager(ui.EdgeWindow):
+    def __init__(self, figure, size):
+        super().__init__(
+            figure=figure,
+            size=size,
+            location="right",
+            title="ROI Selector"
+        )
+        self.add_rois_mode = False
+
+    def update(self):
+        _, self.add_rois_mode = imgui.checkbox("Add ROI", self.add_rois_mode)
+
+
+class PMDWidget:
+    def __init__(self, comparison_stack: masknmf.arrays.FactorizedVideo, pmd_stack: masknmf.PMDArray):
+        self._comparison_stack = comparison_stack
+        self._pmd_stack = pmd_stack
+        self._iw = fpl.ImageWidget([self.comparison_stack, self.pmd_stack],
+                                   names=["mcorr", "pmd"],
+                                   )
+
+        mcorr_img = self.iw.managed_graphics[0]
+        pmd_img = self.iw.managed_graphics[1]
+
+        self.image_graphics = [
+            mcorr_img,
+            pmd_img,
+        ]
+
+        self._fig_temporal = fpl.Figure(shape=(3, 1), names=["mcorr", "pmd", "residual"])
+        self.fig_temporal["mcorr"].add_line(np.zeros(self.pmd_stack.shape[0]))
+        self.fig_temporal["pmd"].add_line(np.zeros(self.pmd_stack.shape[0]))
+        self.fig_temporal["residual"].add_line(np.zeros(self.pmd_stack.shape[0]))
+
+        for subplot in self.fig_temporal:
+            subplot.toolbar = False
+
+        self._mcorr_selectors = list()
+        self._pmd_selectors = list()
+        self._residual_selectors = list()
+
+        self.rect_selector_kwargs = dict(
+            edge_thickness=1,
+            edge_color="w",
+            vertex_thickness=3.0,
+            vertex_color="cyan"
+        )
+
+        self.selectors = OrderedDict()
+
+        for img in self.image_graphics:
+            self.selectors[img] = list()
+
+        self.roi_manager = ROIManager(self.iw.figure, size=100)
+        self.iw.figure.add_gui(self.roi_manager)
+
+        self.RESIZING_NEW_RECT = False
+
+        for img in self.image_graphics:
+            img.add_event_handler(self.add_rectangle, "pointer_down")
+
+        self.iw.figure.renderer.add_event_handler(self.resize_rect, "pointer_move")
+        self.iw.figure.renderer.add_event_handler(self.end_resize, "pointer_up")
+
+    @property
+    def comparison_stack(self):
+        return self._comparison_stack
+
+    @property
+    def pmd_stack(self):
+        return self._pmd_stack
+
+    @property
+    def iw(self):
+        return self._iw
+
+    @property
+    def fig_temporal(self):
+        return self._fig_temporal
+
+    def rect_selector_moved(self, selectors_pair: tuple[fpl.RectangleSelector], ev: fpl.GraphicFeatureEvent):
+        for selector in selectors_pair:
+            selector.selection = ev.info["value"]
+
+        row_ixs, col_ixs = ev.get_selected_indices()
+        row_slice = slice(row_ixs[0], row_ixs[-1] + 1)
+        col_slice = slice(col_ixs[0], col_ixs[-1] + 1)
+
+        mcorr_temporal = self.comparison_stack[:, row_slice, col_slice].mean(axis=(1, 2))
+        pmd_temporal = self.pmd_stack[:, row_slice, col_slice].mean(axis=(1, 2))
+        residual_temporal = mcorr_temporal - pmd_temporal
+
+        self.fig_temporal["mcorr"].graphics[0].data[:, 1] = mcorr_temporal
+        self.fig_temporal["pmd"].graphics[0].data[:, 1] = pmd_temporal
+        self.fig_temporal["residual"].graphics[0].data[:, 1] = residual_temporal
+
+        for subplot in self.fig_temporal:
+            subplot.auto_scale()
+
+    def add_rectangle(self, ev: pygfx.PointerEvent):
+
+        if not self.roi_manager.add_rois_mode:
+            return
+
+        if ev.button != 1:
+            return
+
+        for subplot in self.iw.figure:
+            subplot.controller.enabled = False
+
+        # in world space
+        x, y = ev.pick_info["index"]
+
+        new_selectors = list()
+
+        for subplot in self.iw.figure:
+            if len(subplot.graphics) < 1:
+                continue  # empty subplot
+
+            img = subplot["image_widget_managed"]
+            new_selector = img.add_rectangle_selector(
+                selection=[x, x + 1, y, y + 1],
+                **self.rect_selector_kwargs
+            )
+
+            if len(self.selectors[img]) > 0:
+                old_selector = self.selectors[img].pop()
+                subplot.remove_graphic(old_selector)
+
+            self.selectors[img].append(new_selector)
+            new_selectors.append(new_selector)
+
+        for sel in new_selectors:
+            sel.add_event_handler(partial(self.rect_selector_moved, new_selectors), "selection")
+
+        self.RESIZING_NEW_RECT = True
+
+    def resize_rect(self, ev: pygfx.PointerEvent):
+        if not self.RESIZING_NEW_RECT:
+            return
+
+        img = self.image_graphics[0]
+
+        for subplot in self.iw.figure:
+            # world (x, y)
+            pos = subplot.map_screen_to_world(ev)
+            if pos is None:
+                continue
+            else:
+                break
+
+        if pos is None:
+            # if pointer was moved outside the subplot
+            self.RESIZING_NEW_RECT = False
+            return
+
+        x2, y2, _ = pos
+
+        # most recently added selector
+        x1, _, y1, _ = self.selectors[img][-1].selection
+
+        self.selectors[img][-1].selection = [x1, x2, y1, y2]
+
+    def end_resize(self, ev: pygfx.PointerEvent):
+        if ev.button != 1:
+            return
+        if not self.RESIZING_NEW_RECT:
+            return
+
+        for subplot in self.iw.figure:
+            subplot.controller.enabled = True
+
+        self.RESIZING_NEW_RECT = False
+
+    def show(self):
+        return VBox([self.iw.show(), self.fig_temporal.show(maintain_aspect=False)])
 
 
 def signal_space_demixing(
