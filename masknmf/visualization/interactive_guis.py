@@ -5,6 +5,8 @@ from ipywidgets import HBox, VBox
 import fastplotlib as fpl
 from imgui_bundle import imgui
 from fastplotlib import ui
+
+import masknmf.arrays
 from masknmf import DemixingResults, PMDArray
 
 
