@@ -5,7 +5,10 @@ from ipywidgets import HBox, VBox
 import fastplotlib as fpl
 from imgui_bundle import imgui
 from fastplotlib import ui
-
+import pygfx
+from functools import partial
+from ipywidgets import VBox, HBox
+from collections import OrderedDict
 import masknmf.arrays
 from masknmf import DemixingResults, PMDArray
 
