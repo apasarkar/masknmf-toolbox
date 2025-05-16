@@ -1,7 +1,11 @@
+import os
 from pathlib import Path
 import time
 
 import numpy as np
+from numpy.typing import ArrayLike
+from icecream import ic
+
 import torch
 import tifffile
 import ffmpeg
@@ -9,6 +13,11 @@ from matplotlib import cm
 from matplotlib.patches import Rectangle
 
 import masknmf
+
+if "MASKNMF_DEBUG" in os.environ:
+    ic.enable()
+else:
+    ic.disable()
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -31,9 +40,6 @@ else:
 def norm_minmax(imgs: np.ndarray) -> np.ndarray:
     """
     Normalize a NumPy array to the [0, 1] range.
-
-    Scales the values in the input array to be between 0 and 1 based on the array's minimum and maximum values.
-    This is often used as a preprocessing step before visualization of multi-scale data.
 
     Parameters
     ----------
@@ -243,29 +249,35 @@ def plot_pmd_projection(proj, a, savepath=None, fig_label=None, vmax=None, add_s
         plt.show()
 
 
-def run_plane(data_arr, idx, save_path=None):
+def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
 
-    save_path = Path.home() / ".masknmf" if save_path is None else Path(save_path)
+    debug = kwargs.get("debug", False)
+    if debug:
+        ic.enable()
+
+    save_path = Path.home() / ".masknmf" if save_path is None else Path(save_path).expanduser()
     save = True if save_path is not None else False
 
-    save_path = Path(save_path).expanduser()
     save_path.mkdir(exist_ok=True)
     plane_dir = save_path / f"plane{idx}"
     plane_dir.mkdir(exist_ok=True)
-
+    ic(save_path)
 
     if save:
-        save_mp4(plane_dir / "reg.mp4", data_arr, framerate=ops["fs"], speedup=10, chunk_size=100, cmap="gray", win=3, vcodec="libx264", normalize=True)
+        ic(
+            save_mp4(plane_dir / "reg.mp4", data_array, framerate=ops["fs"], speedup=10, chunk_size=100, cmap="gray", win=3, vcodec="libx264", normalize=True)
+        )
 
     rigid_strategy = masknmf.RigidMotionCorrection(max_shifts=(5, 5))
     pwrigid_strategy = masknmf.PiecewiseRigidMotionCorrection(num_blocks=(32, 32), overlaps=(5, 5), max_rigid_shifts=[5, 5], max_deviation_rigid=[2, 2])
 
     pwrigid_strategy = masknmf.motion_correction.compute_template(
-        data_arr, rigid_strategy, num_iterations_piecewise_rigid=1,
+        data_array, rigid_strategy, num_iterations_piecewise_rigid=1,
         pwrigid_strategy=pwrigid_strategy, device=DEVICE, batch_size=1000
     )
-    moco_results = masknmf.RegistrationArray(data_arr, pwrigid_strategy, device=DEVICE)
+    moco_results = masknmf.RegistrationArray(data_array, pwrigid_strategy, device=DEVICE)
     dense_moco = moco_results[:]
+    ic(dense_moco)
 
     if save:
         save_mp4(plane_dir / "dense_moco.mp4", dense_moco, framerate=ops["fs"], speedup=10, chunk_size=100, cmap="gray", win=3, vcodec="libx264", normalize=True)
@@ -275,9 +287,11 @@ def run_plane(data_arr, idx, save_path=None):
         max_components=10, background_rank=10, device=DEVICE,
     )
     np.savez(plane_dir / "pmd_checkpoint1.npz", pmd_obj)
+    ic(f"pmd_obj: {pmd_obj.ndim}")
 
     pmd_demixer = masknmf.demixing.signal_demixer.SignalDemixer(pmd_obj, device=DEVICE, frame_batch_size=100)
     np.savez(plane_dir / "pmd_checkpoint2.npz", pmd_obj)
+    ic(pmd_demixer.state.state_description)
 
     init_kwargs = {
         'mad_correlation_threshold': 0.85,
@@ -290,10 +304,11 @@ def run_plane(data_arr, idx, save_path=None):
         'text': False,
     }
     pmd_demixer.initialize_signals(**init_kwargs, is_custom=False)
-    print(f"Identified {pmd_demixer.results[0].shape[1]} neurons here")
+    ic(f"Identified {pmd_demixer.results[0].shape[1]} neurons here")
     np.savez(plane_dir / "pmd_checkpoint3.npz", pmd_obj)
 
     pmd_demixer.lock_results_and_continue()
+    ic(pmd_demixer.state.state_description)
 
     num_iters = 25
     localnmf_params = {
@@ -344,6 +359,8 @@ def run_plane(data_arr, idx, save_path=None):
     c = pmd_demixer.results.ac_array.export_c()
     np.savez(plane_dir / "pmd_final_a.npz", a)
     np.savez(plane_dir / "pmd_final_c.npz", c)
+    ic(a.shape, c.shape)
+    print("Complete!")
 
 
 if __name__ == "__main__":
@@ -353,7 +370,7 @@ if __name__ == "__main__":
         nt, Lx, Ly = ops["nframes"], ops["Lx"], ops["Ly"]
         data_arr = np.memmap(reg_file, shape=(nt, Lx, Ly), dtype=np.int16)
         run_plane(
-            data_arr=data_arr,
+            data_array=data_arr,
             idx=i,
             save_path=None  # go to ~/.masknmf
         )
