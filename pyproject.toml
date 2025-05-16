@@ -29,6 +29,7 @@ dependencies = [
     "networkx",
     "tqdm",
     "hydra-core",
+    "icecream",
 
     # plotting
     "plotly",
