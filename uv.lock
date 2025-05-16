@@ -1151,7 +1151,7 @@ wheels = [
 
 [[package]]
 name = "jupyterlab"
-version = "4.5.0a0"
+version = "4.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "async-lru" },
@@ -1168,9 +1168,9 @@ dependencies = [
     { name = "tornado" },
     { name = "traitlets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1c/9a/d1bd094610438d0c80f2e8c0aaee22164bc4d38015421ef335169845f8df/jupyterlab-4.5.0a0.tar.gz", hash = "sha256:716e31ba61dce9611c6c32988b807dca4eb22e9cfd992ec1a8d79c81ba6dd352", size = 23080873 }
+sdist = { url = "https://files.pythonhosted.org/packages/f4/3c/12a8b27ff2c3b4005bbb5e11c7747246965776d2b821193e53ffd61f1332/jupyterlab-4.4.2.tar.gz", hash = "sha256:afa9caf28c0cb966488be18e5e8daba9f018a1c4273a406b7d5006344cbc6d16", size = 23030818 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/93/13/a1e1ccb2546e0bca0049e2f25ccf5daf03f70efe752ca308965774e59796/jupyterlab-4.5.0a0-py3-none-any.whl", hash = "sha256:7ce6009b0410b710c584112459bf97542b8d5e52c545ea7caf1dc936fc4507ef", size = 12297436 },
+    { url = "https://files.pythonhosted.org/packages/f6/ae/fbb93f4990b7648849b19112d8b3e7427bbfc9c5cc8fdc6bf14c0e86d104/jupyterlab-4.4.2-py3-none-any.whl", hash = "sha256:857111a50bed68542bf55dca784522fe728f9f88b4fe69e8c585db5c50900419", size = 12294799 },
 ]
 
 [[package]]
@@ -1356,8 +1356,12 @@ dependencies = [
     { name = "cvxpy" },
     { name = "fastplotlib" },
     { name = "future" },
+    { name = "glfw" },
     { name = "h5py" },
     { name = "hydra-core" },
+    { name = "imgui-bundle" },
+    { name = "ipykernel" },
+    { name = "ipywidgets" },
     { name = "jupyter-rfb" },
     { name = "line-profiler" },
     { name = "matplotlib" },
@@ -1365,6 +1369,8 @@ dependencies = [
     { name = "numpy" },
     { name = "oasis-deconv" },
     { name = "plotly" },
+    { name = "pyqt5" },
+    { name = "pyqt5-qt5" },
     { name = "scikit-image" },
     { name = "scipy" },
     { name = "simplejpeg" },
@@ -1375,38 +1381,19 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "glfw" },
-    { name = "imgui-bundle" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "jupyter-rfb" },
     { name = "jupyterlab" },
     { name = "napari" },
-    { name = "sidecar" },
 ]
 dev = [
     { name = "glfw" },
-    { name = "imgui-bundle" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "jupyter-rfb" },
     { name = "jupyterlab" },
     { name = "napari" },
-    { name = "sidecar" },
-]
-gui = [
-    { name = "glfw" },
-    { name = "imgui-bundle" },
-]
-napari = [
-    { name = "napari" },
-]
-notebook = [
-    { name = "imgui-bundle" },
-    { name = "ipykernel" },
-    { name = "ipywidgets" },
-    { name = "jupyter-rfb" },
-    { name = "jupyterlab" },
-    { name = "sidecar" },
 ]
 
 [package.metadata]
@@ -1414,40 +1401,35 @@ requires-dist = [
     { name = "cvxpy", specifier = ">=1.6.5" },
     { name = "fastplotlib" },
     { name = "future" },
+    { name = "glfw" },
     { name = "glfw", marker = "extra == 'all'" },
-    { name = "glfw", marker = "extra == 'gui'" },
     { name = "h5py" },
     { name = "hydra-core" },
-    { name = "imgui-bundle", marker = "extra == 'all'" },
-    { name = "imgui-bundle", marker = "extra == 'gui'" },
-    { name = "imgui-bundle", marker = "extra == 'notebook'" },
+    { name = "imgui-bundle" },
+    { name = "ipykernel" },
     { name = "ipykernel", marker = "extra == 'all'" },
-    { name = "ipykernel", marker = "extra == 'notebook'" },
+    { name = "ipywidgets", specifier = ">=8.0.0,<9" },
     { name = "ipywidgets", marker = "extra == 'all'", specifier = ">=8.0.0,<9" },
-    { name = "ipywidgets", marker = "extra == 'notebook'", specifier = ">=8.0.0,<9" },
     { name = "jupyter-rfb", specifier = ">=0.5.1" },
     { name = "jupyter-rfb", marker = "extra == 'all'", specifier = ">=0.5.1" },
-    { name = "jupyter-rfb", marker = "extra == 'notebook'", specifier = ">=0.5.1" },
     { name = "jupyterlab", marker = "extra == 'all'" },
-    { name = "jupyterlab", marker = "extra == 'notebook'", specifier = "==4.5.0a0" },
     { name = "line-profiler" },
     { name = "masknmf-toolbox", extras = ["all"], marker = "extra == 'dev'" },
     { name = "matplotlib" },
     { name = "napari", marker = "extra == 'all'" },
-    { name = "napari", marker = "extra == 'napari'" },
     { name = "networkx" },
     { name = "numpy" },
     { name = "oasis-deconv" },
     { name = "plotly" },
+    { name = "pyqt5", specifier = "==5.15.11" },
+    { name = "pyqt5-qt5", specifier = "==5.15.2" },
     { name = "scikit-image" },
     { name = "scipy" },
-    { name = "sidecar", marker = "extra == 'all'" },
-    { name = "sidecar", marker = "extra == 'notebook'" },
     { name = "simplejpeg" },
     { name = "torch", specifier = "==2.4.1" },
     { name = "tqdm" },
 ]
-provides-extras = ["gui", "notebook", "napari", "all", "dev"]
+provides-extras = ["all", "dev"]
 
 [[package]]
 name = "matplotlib"
@@ -2339,6 +2321,50 @@ wheels = [
 ]
 
 [[package]]
+name = "pyqt5"
+version = "5.15.11"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyqt5-qt5" },
+    { name = "pyqt5-sip" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0e/07/c9ed0bd428df6f87183fca565a79fee19fa7c88c7f00a7f011ab4379e77a/PyQt5-5.15.11.tar.gz", hash = "sha256:fda45743ebb4a27b4b1a51c6d8ef455c4c1b5d610c90d2934c7802b5c1557c52", size = 3216775 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/11/64/42ec1b0bd72d87f87bde6ceb6869f444d91a2d601f2e67cd05febc0346a1/PyQt5-5.15.11-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:c8b03dd9380bb13c804f0bdb0f4956067f281785b5e12303d529f0462f9afdc2", size = 6579776 },
+    { url = "https://files.pythonhosted.org/packages/49/f5/3fb696f4683ea45d68b7e77302eff173493ac81e43d63adb60fa760b9f91/PyQt5-5.15.11-cp38-abi3-macosx_11_0_x86_64.whl", hash = "sha256:6cd75628f6e732b1ffcfe709ab833a0716c0445d7aec8046a48d5843352becb6", size = 7016415 },
+    { url = "https://files.pythonhosted.org/packages/b4/8c/4065950f9d013c4b2e588fe33cf04e564c2322842d84dbcbce5ba1dc28b0/PyQt5-5.15.11-cp38-abi3-manylinux_2_17_x86_64.whl", hash = "sha256:cd672a6738d1ae33ef7d9efa8e6cb0a1525ecf53ec86da80a9e1b6ec38c8d0f1", size = 8188103 },
+    { url = "https://files.pythonhosted.org/packages/f3/f0/ae5a5b4f9b826b29ea4be841b2f2d951bcf5ae1d802f3732b145b57c5355/PyQt5-5.15.11-cp38-abi3-win32.whl", hash = "sha256:76be0322ceda5deecd1708a8d628e698089a1cea80d1a49d242a6d579a40babd", size = 5433308 },
+    { url = "https://files.pythonhosted.org/packages/56/d5/68eb9f3d19ce65df01b6c7b7a577ad3bbc9ab3a5dd3491a4756e71838ec9/PyQt5-5.15.11-cp38-abi3-win_amd64.whl", hash = "sha256:bdde598a3bb95022131a5c9ea62e0a96bd6fb28932cc1619fd7ba211531b7517", size = 6865864 },
+]
+
+[[package]]
+name = "pyqt5-qt5"
+version = "5.15.2"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/62/09/99a222b0360616250fb2e6003a54e43a2a06b0774f0f8d5daafb86a2c375/PyQt5_Qt5-5.15.2-py3-none-macosx_10_13_intel.whl", hash = "sha256:76980cd3d7ae87e3c7a33bfebfaee84448fd650bad6840471d6cae199b56e154", size = 40546019 },
+    { url = "https://files.pythonhosted.org/packages/83/d4/241a6a518d0bcf0a9fcdcbad5edfed18d43e884317eab8d5230a2b27e206/PyQt5_Qt5-5.15.2-py3-none-manylinux2014_x86_64.whl", hash = "sha256:1988f364ec8caf87a6ee5d5a3a5210d57539988bf8e84714c7d60972692e2f4a", size = 59921716 },
+    { url = "https://files.pythonhosted.org/packages/1c/7e/ce7c66a541a105fa98b41d6405fe84940564695e29fc7dccf6d9e8c5f898/PyQt5_Qt5-5.15.2-py3-none-win32.whl", hash = "sha256:9cc7a768b1921f4b982ebc00a318ccb38578e44e45316c7a4a850e953e1dd327", size = 43447358 },
+    { url = "https://files.pythonhosted.org/packages/37/97/5d3b222b924fa2ed4c2488925155cd0b03fd5d09ee1cfcf7c553c11c9f66/PyQt5_Qt5-5.15.2-py3-none-win_amd64.whl", hash = "sha256:750b78e4dba6bdf1607febedc08738e318ea09e9b10aea9ff0d73073f11f6962", size = 50075158 },
+]
+
+[[package]]
+name = "pyqt5-sip"
+version = "12.17.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/01/79/086b50414bafa71df494398ad277d72e58229a3d1c1b1c766d12b14c2e6d/pyqt5_sip-12.17.0.tar.gz", hash = "sha256:682dadcdbd2239af9fdc0c0628e2776b820e128bec88b49b8d692fe682f90b4f", size = 104042 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/52/fd/7d6e3deca5ce37413956faf4e933ce6beb87ac0cc7b26d934b5ed998f88a/PyQt5_sip-12.17.0-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:2c912807dd638644168ea8c7a447bfd9d85a19471b98c2c588c4d2e911c09b0a", size = 122748 },
+    { url = "https://files.pythonhosted.org/packages/29/4d/e5981cde03b091fd83a1ef4ef6a4ca99ce6921d61b80c0222fc8eafdc99a/PyQt5_sip-12.17.0-cp311-cp311-manylinux_2_5_x86_64.manylinux1_x86_64.whl", hash = "sha256:71514a7d43b44faa1d65a74ad2c5da92c03a251bdc749f009c313f06cceacc9a", size = 276401 },
+    { url = "https://files.pythonhosted.org/packages/5f/30/4c282896b1e8841639cf2aca59acf57d8b261ed834ae976c959f25fa4a35/PyQt5_sip-12.17.0-cp311-cp311-win32.whl", hash = "sha256:023466ae96f72fbb8419b44c3f97475de6642fa5632520d0f50fc1a52a3e8200", size = 49091 },
+    { url = "https://files.pythonhosted.org/packages/24/c1/50fc7301aa39a50f451fc1b6b219e778c540a823fe9533a57b4793c859fd/PyQt5_sip-12.17.0-cp311-cp311-win_amd64.whl", hash = "sha256:fb565469d08dcb0a427def0c45e722323beb62db79454260482b6948bfd52d47", size = 59036 },
+    { url = "https://files.pythonhosted.org/packages/a3/e6/e51367c28d69b5a462f38987f6024e766fd8205f121fe2f4d8ba2a6886b9/PyQt5_sip-12.17.0-cp312-cp312-macosx_10_9_universal2.whl", hash = "sha256:ea08341c8a5da00c81df0d689ecd4ee47a95e1ecad9e362581c92513f2068005", size = 124650 },
+    { url = "https://files.pythonhosted.org/packages/64/3b/e6d1f772b41d8445d6faf86cc9da65910484ebd9f7df83abc5d4955437d0/PyQt5_sip-12.17.0-cp312-cp312-manylinux_2_5_x86_64.manylinux1_x86_64.whl", hash = "sha256:4a92478d6808040fbe614bb61500fbb3f19f72714b99369ec28d26a7e3494115", size = 281893 },
+    { url = "https://files.pythonhosted.org/packages/ed/c5/d17fc2ddb9156a593710c88afd98abcf4055a2224b772f8bec2c6eea879c/PyQt5_sip-12.17.0-cp312-cp312-win32.whl", hash = "sha256:b0ff280b28813e9bfd3a4de99490739fc29b776dc48f1c849caca7239a10fc8b", size = 49438 },
+    { url = "https://files.pythonhosted.org/packages/fe/c5/1174988d52c732d07033cf9a5067142b01d76be7731c6394a64d5c3ef65c/PyQt5_sip-12.17.0-cp312-cp312-win_amd64.whl", hash = "sha256:54c31de7706d8a9a8c0fc3ea2c70468aba54b027d4974803f8eace9c22aad41c", size = 58017 },
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -2734,18 +2760,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/58/15/8b3609fd3830ef7b27b655beb4b4e9c62313a4e8da8c676e142cc210d58e/shellingham-1.5.4.tar.gz", hash = "sha256:8dbca0739d487e5bd35ab3ca4b36e11c4078f3a234bfce294b0a0291363404de", size = 10310 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e0/f9/0595336914c5619e5f28a1fb793285925a8cd4b432c9da0a987836c7f822/shellingham-1.5.4-py2.py3-none-any.whl", hash = "sha256:7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686", size = 9755 },
-]
-
-[[package]]
-name = "sidecar"
-version = "0.7.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "ipywidgets" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/23/8c/1143344be27a8c72ab8f02e6b55270e89eca6387bae542f958b056a18764/sidecar-0.7.0.tar.gz", hash = "sha256:c3fa1694b5611c1fab9d7a96c07577ba0764068a89b7b39be9b9ce9770e9d363", size = 3333537 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c5/8e/3a325661f42c7d7aa246b16cbf1113caf94d418e5c367a2483ee1e1f9603/sidecar-0.7.0-py3-none-any.whl", hash = "sha256:a18e5972b45f5b6a81d6738a223471b3e1627bff1e26053834fd843006e67446", size = 17821 },
 ]
 
 [[package]]
