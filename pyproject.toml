@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["neuroimaging", "motion correction", "demixing", "calcium imaging"]
 dependencies = [
-    "torch==2.4.1",
+    "torch",
     "numpy",
     "scipy",
     "h5py",
