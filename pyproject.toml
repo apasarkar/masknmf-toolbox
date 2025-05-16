@@ -39,6 +39,7 @@ dependencies = [
     "jupyterlab==4.5.0a0",
     "simplejpeg",
     "imgui-bundle",
+    "PyQt5==5.15.11",
     "pyqt5-qt5==5.15.2; sys_platform == 'win32'",
     "pyqt5-qt5==5.15.16; sys_platform == 'darwin' or sys_platform == 'linux'",
     "ipywidgets>=8.0.0,<9",
