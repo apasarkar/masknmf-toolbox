@@ -32,14 +32,15 @@ dependencies = [
 
     # plotting
     "plotly",
-    "fastplotlib",
+    "fastplotlib @ git+https://github.com/fastplotlib/fastplotlib.git@main",
+    "pygfx @ git+https://github.com/pygfx/pygfx.git@main",
     "matplotlib",
     "jupyter-rfb>=0.5.1",
+    "jupyterlab==4.5.0a0",
     "simplejpeg",
     "imgui-bundle",
     "pyqt5-qt5==5.15.2; sys_platform == 'win32'",
     "pyqt5-qt5==5.15.16; sys_platform == 'darwin' or sys_platform == 'linux'",
-    "jupyter_rfb>=0.5.1",
     "ipywidgets>=8.0.0,<9",
     "glfw",
 ]
