@@ -1,16 +1,12 @@
 from pathlib import Path
 import time
-import os
-import sys
 
 import numpy as np
 import torch
 import tifffile
 import ffmpeg
-
-import fastplotlib as fpl
-import matplotlib.pyplot as plt
 from matplotlib import cm
+from matplotlib.patches import Rectangle
 
 import masknmf
 
@@ -21,8 +17,7 @@ if not torch.cuda.is_available():
         "CUDA is not available. Using CPU instead.\n"
         "If you have a GPU, check your CUDA installation with:\n"
         "  nvcc --version\n"
-        "Then verify PyTorch is installed with GPU support:\n"
-        "  pip show torch\n\n"
+        "and note the 11x or 12x version (e.g. Build cuda_12.6.r12.6/compiler.34841621_0).\n"
         "To install the correct version of PyTorch with CUDA, go to:\n"
         "  https://pytorch.org/get-started/locally/\n"
         "and select your system configuration to get the appropriate pip or conda command."
@@ -184,18 +179,80 @@ def save_mp4(
     print(f"Video saved to {fname}")
 
 
-def run_plane(idx, save=False, save_path=None):
-    if save_path is None:
-        save_path = Path.home() / ".masknmf"
-    save_path = Path(save_path)
+def plot_pmd_projection(proj, a, savepath=None, fig_label=None, vmax=None, add_scalebar=False, dx=2.0):
+    """
+    Plot PMD projection with ROIs overlaid similarly to Suite2p plot_projection.
+
+    Parameters
+    ----------
+    proj : np.ndarray
+        Background image (mean or max projection), shape (Ly, Lx).
+    a : np.ndarray
+        Spatial components, shape (Ly, Lx, n_rois).
+    savepath : Path or None
+        Where to save the image (optional).
+    fig_label : str or None
+        Optional label for the figure.
+    vmin, vmax : float
+        Contrast limits for the projection.
+    add_scalebar : bool
+        Add a scale bar to the plot.
+    dx : float
+        Microns per pixel.
+    """
+    import matplotlib.pyplot as plt
+    shape = proj.shape
+    fig, ax = plt.subplots(figsize=(6, 6), facecolor='black')
+
+    vmin = np.nanpercentile(proj, 2)
+    vmax = np.nanpercentile(proj, 98) if vmax is None else vmax
+    if vmax - vmin < 1e-6:
+        vmax = vmin + 1e-6
+
+    ax.imshow(proj, cmap='gray', vmin=vmin, vmax=vmax)
+    masks = np.nanmax(a, axis=-1)
+    overlay = np.zeros((*shape, 4), dtype=np.float32)
+    overlay[..., 1] = 1
+    overlay[..., 3] = (masks > 0) * 1.0
+    ax.imshow(overlay)
+
+    ax.set_xticks([])
+    ax.set_yticks([])
+    if fig_label:
+        fig_label = fig_label.replace("_", " ").replace("-", " ").replace(".", " ")
+        ax.set_ylabel(fig_label, color='white', fontweight='bold', fontsize=12)
+
+    if add_scalebar:
+        scale_bar_length = 100 / dx
+        scalebar_x = shape[1] * 0.05
+        scalebar_y = shape[0] * 0.90
+        ax.add_patch(Rectangle((scalebar_x, scalebar_y), scale_bar_length, 5,
+                               edgecolor='white', facecolor='white'))
+        ax.text(scalebar_x + scale_bar_length / 2, scalebar_y - 10,
+                "100 μm", color='white', fontsize=10, ha='center', fontweight='bold')
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    plt.tight_layout()
+    if savepath:
+        savepath.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(savepath, dpi=300, facecolor='black')
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def run_plane(data_arr, idx, save_path=None):
+
+    save_path = Path.home() / ".masknmf" if save_path is None else Path(save_path)
+    save = True if save_path is not None else False
+
+    save_path = Path(save_path).expanduser()
+    save_path.mkdir(exist_ok=True)
     plane_dir = save_path / f"plane{idx}"
-    plane_dir.mkdir(parents=True, exist_ok=True)
+    plane_dir.mkdir(exist_ok=True)
 
-    reg_file = Path(f"D:/demo/suite2p_results/plane{idx}/data.bin")
-    ops = np.load(Path(f"D:/demo/suite2p_results/plane{idx}/ops.npy"), allow_pickle=True).item()
-    nt, Lx, Ly = ops["nframes"], ops["Lx"], ops["Ly"]
-
-    data_arr = np.memmap(reg_file, shape=(nt, Lx, Ly), dtype=np.int16)
 
     if save:
         save_mp4(plane_dir / "reg.mp4", data_arr, framerate=ops["fs"], speedup=10, chunk_size=100, cmap="gray", win=3, vcodec="libx264", normalize=True)
@@ -283,6 +340,20 @@ def run_plane(idx, save=False, save_path=None):
 
     np.savez(plane_dir / "pmd_final.npz", pmd_obj)
 
+    a = pmd_demixer.results.ac_array.export_a()
+    c = pmd_demixer.results.ac_array.export_c()
+    np.savez(plane_dir / "pmd_final_a.npz", a)
+    np.savez(plane_dir / "pmd_final_c.npz", c)
 
-for i in range(1, 5):
-    run_plane(i, save=False)
+
+if __name__ == "__main__":
+    for i in range(1, 5):
+        reg_file = Path(f"D:/demo/suite2p_results/plane{i}/data.bin")
+        ops = np.load(Path(f"D:/demo/suite2p_results/plane{i}/ops.npy"), allow_pickle=True).item()
+        nt, Lx, Ly = ops["nframes"], ops["Lx"], ops["Ly"]
+        data_arr = np.memmap(reg_file, shape=(nt, Lx, Ly), dtype=np.int16)
+        run_plane(
+            data_arr=data_arr,
+            idx=i,
+            save_path=None  # go to ~/.masknmf
+        )
