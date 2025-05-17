@@ -362,15 +362,21 @@ def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
     ic(a.shape, c.shape)
     print("Complete!")
 
+def save_ops():
+    pass
+
 
 if __name__ == "__main__":
     for i in range(1, 5):
         reg_file = Path(f"D:/demo/suite2p_results/plane{i}/data.bin")
         ops = np.load(Path(f"D:/demo/suite2p_results/plane{i}/ops.npy"), allow_pickle=True).item()
-        nt, Lx, Ly = ops["nframes"], ops["Lx"], ops["Ly"]
-        data_arr = np.memmap(reg_file, shape=(nt, Lx, Ly), dtype=np.int16)
-        run_plane(
-            data_array=data_arr,
-            idx=i,
-            save_path=None  # go to ~/.masknmf
-        )
+        path = Path(f"~/.masknmf/plane{i}/ops.npy").expanduser()
+        np.save(path, ops)
+
+        # nt, Lx, Ly = ops["nframes"], ops["Lx"], ops["Ly"]
+        # data_arr = np.memmap(reg_file, shape=(nt, Lx, Ly), dtype=np.int16)
+        # run_plane(
+        #     data_array=data_arr,
+        #     idx=i,
+        #     save_path=None  # go to ~/.masknmf
+        # )
