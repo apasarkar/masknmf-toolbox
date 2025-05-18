@@ -109,11 +109,6 @@ def pixel_crop_stack(array, p1, p2):
         expand_second = False
 
     selected_pixels = array[:, term1, term2]
-    if expand_first:
-        selected_pixels = np.expand_dims(selected_pixels, 1)
-    if expand_second:
-        selected_pixels = np.expand_dims(selected_pixels, 2)
-
     if selected_pixels.ndim < 3:
         print(f"error in pixel selection avg, coordinates are {p1} and {p2}")
         print(f"term 1 is {term1} and term2 is {term2}")
@@ -429,7 +424,9 @@ def generate_raw_vs_resid_plot_folder(raw_stack: masknmf.arrays.LazyFrameLoader,
                                       pmd_movie: masknmf.arrays.FactorizedVideo,
                                       spatial_matrix: np.ndarray,
                                       folder_location: str,
-                                      timeslice: Optional[slice]=None):
+                                      timeslice: Optional[slice]=None,
+                                      flip_raw_trace: bool=False,
+                                      flip_pmd_trace: bool=False):
     """
     Utility function that uses plotly to generate traces for every neuron, showing its spatial footprint as a heatmap,
     its ROI average on the raw data, ROI average of the PMD movie, and the ROI average of the "residual" (Raw - PMD)
@@ -448,6 +445,13 @@ def generate_raw_vs_resid_plot_folder(raw_stack: masknmf.arrays.LazyFrameLoader,
         raw_trace, pmd_trace = roi_compare_pmd_raw(raw_stack,
                                                    pmd_movie,
                                                    spatial_matrix[:, :, k])
+        if flip_raw_trace:
+            raw_trace *= -1
+        if flip_pmd_trace:
+            pmd_trace *= -1
+
+        raw_trace -= np.mean(raw_trace)
+        pmd_trace -= np.mean(pmd_trace)
 
         if timeslice is not None:
             new_fig = plot_pmd_vs_raw_stack_diagnostic(raw_trace[timeslice],
