@@ -96,17 +96,13 @@ def construct_index(folder: str, file_prefix="neuron", index_name="index.html"):
 def pixel_crop_stack(array, p1, p2):
     if np.amin(p1) == np.amax(p1):
         term1 = slice(np.amin(p1), np.amin(p1) + 1)
-        expand_first = True
     else:
         term1 = slice(np.amin(p1), np.amax(p1) + 1)
-        expand_first = False
 
     if np.amin(p2) == np.amax(p2):
         term2 = slice(np.amin(p2), np.amin(p2) + 1)
-        expand_second = True
     else:
         term2 = slice(np.amin(p2), np.amax(p2) + 1)
-        expand_second = False
 
     selected_pixels = array[:, term1, term2]
     if selected_pixels.ndim < 3:
