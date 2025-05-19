@@ -252,20 +252,30 @@ def plot_pmd_projection(proj, a, savepath=None, fig_label=None, vmax=None, add_s
 def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
 
     debug = kwargs.get("debug", False)
+    framerate = kwargs.get("fs", 10)
+    save_video = kwargs.get("save_video", False)
+
     if debug:
         ic.enable()
 
     save_path = Path.home() / ".masknmf" if save_path is None else Path(save_path).expanduser()
-    save = True if save_path is not None else False
 
     save_path.mkdir(exist_ok=True)
     plane_dir = save_path / f"plane{idx}"
     plane_dir.mkdir(exist_ok=True)
     ic(save_path)
 
-    if save:
-        ic(
-            save_mp4(plane_dir / "reg.mp4", data_array, framerate=ops["fs"], speedup=10, chunk_size=100, cmap="gray", win=3, vcodec="libx264", normalize=True)
+    if save_video:
+        save_mp4(
+            plane_dir / "raw.mp4",
+            data_array,
+            framerate=framerate,
+            speedup=10,
+            chunk_size=100,
+            cmap="gray",
+            win=3,
+            vcodec="libx264",
+            normalize=True,
         )
 
     rigid_strategy = masknmf.RigidMotionCorrection(max_shifts=(5, 5))
@@ -279,8 +289,19 @@ def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
     dense_moco = moco_results[:]
     ic(dense_moco)
 
-    if save:
-        save_mp4(plane_dir / "dense_moco.mp4", dense_moco, framerate=ops["fs"], speedup=10, chunk_size=100, cmap="gray", win=3, vcodec="libx264", normalize=True)
+    if save_video:
+        framerate = ops.get("fs", 10)
+        save_mp4(
+            plane_dir / "reg.mp4",
+            data_array,
+            framerate=framerate,
+            speedup=10,
+            chunk_size=100,
+            cmap="gray",
+            win=3,
+            vcodec="libx264",
+            normalize=True,
+            )
 
     pmd_obj = masknmf.compression.pmd_decomposition(
         dense_moco, [32, 32], dense_moco.shape[0],
@@ -362,21 +383,28 @@ def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
     ic(a.shape, c.shape)
     print("Complete!")
 
-def save_ops():
-    pass
-
 
 if __name__ == "__main__":
-    for i in range(1, 5):
-        reg_file = Path(f"D:/demo/suite2p_results/plane{i}/data.bin")
-        ops = np.load(Path(f"D:/demo/suite2p_results/plane{i}/ops.npy"), allow_pickle=True).item()
-        path = Path(f"~/.masknmf/plane{i}/ops.npy").expanduser()
-        np.save(path, ops)
+    raw = True
+    for i in range(6, 9):
+        if raw:
+            if i < 10:
+                data_file = Path(f"D:/demo/assembled/plane_0{i}.tif")
+            else:
+                data_file = Path(f"D:/demo/assembled/plane_{i}.tif")
+            data_arr = tifffile.memmap(data_file, mode="r")
+        else:
+            data_file = Path(f"D:/demo/suite2p_results/plane{i}/data.bin")
+            ops = np.load(Path(f"D:/demo/suite2p_results/plane{i}/ops.npy"), allow_pickle=True).item()
+            path = Path(f"~/.masknmf/plane{i}/ops.npy").expanduser()
+            np.save(path, ops)
+            nt, Lx, Ly = ops["nframes"], ops["Lx"], ops["Ly"]
+            data_arr = np.memmap(data_file, shape=(nt, Lx, Ly), dtype=np.int16)
 
-        # nt, Lx, Ly = ops["nframes"], ops["Lx"], ops["Ly"]
-        # data_arr = np.memmap(reg_file, shape=(nt, Lx, Ly), dtype=np.int16)
-        # run_plane(
-        #     data_array=data_arr,
-        #     idx=i,
-        #     save_path=None  # go to ~/.masknmf
-        # )
+        run_plane(
+            data_array=data_arr,
+            idx=i,
+            save_path=None,  # go to ~/.masknmf
+            save_video=False,
+            debug=True
+        )
