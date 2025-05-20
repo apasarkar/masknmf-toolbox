@@ -1261,8 +1261,6 @@ class DemixingResults:
         """
         Args:
             u_sparse (torch.sparse_coo_tensor): shape (pixels, rank 1)
-            r (torch.tensor): shape (rank 1, rank 2)
-            s (torch.tensor): shape (rank 2)
             q (torch.tensor): shape (rank 2, rank 2)
             v (torch.tensor): shape (rank 2, num_frames)
             a (torch.sparse_coo_tensor): shape (pixels, number of neural signals)
