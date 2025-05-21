@@ -14,55 +14,38 @@ authors = [
 ]
 keywords = ["neuroimaging", "motion correction", "demixing", "calcium imaging"]
 dependencies = [
-    "torch==2.4.1",
-    "fastplotlib",
-    "future",
+    "torch>2",
     "numpy",
     "scipy",
-    "plotly",
-    "line-profiler",
     "h5py",
-    "matplotlib",
-    "networkx",
     "scikit-image",
+    "cvxpy>=1.6.5",
     "oasis-deconv",
+
+    "ipykernel",
+    "future",
+
+    "line-profiler",
+    "networkx",
     "tqdm",
     "hydra-core",
-    "cvxpy>=1.6.5",
-    "jupyter-rfb>=0.5.1",
-    "simplejpeg"
-]
+    "icecream",
 
-[project.optional-dependencies]
-gui = [
-	# "cmake",  # needed on py310, i think pip is fine
-	"imgui-bundle",
-	# "pyqt5==5.15.11",
-	# "pyqt5-qt5==5.15.2",
-	"glfw",
-] 
-notebook = [
+    # plotting
+    "plotly",
+    "fastplotlib @ git+https://github.com/fastplotlib/fastplotlib.git@main",
+    "pygfx @ git+https://github.com/pygfx/pygfx.git@main",
+    "matplotlib",
+    "jupyter-rfb>=0.5.1",
+    "jupyterlab==4.5.0a0",
+    "simplejpeg",
     "imgui-bundle",
-	"jupyter_rfb>=0.5.1",
-	"jupyterlab==4.4.0a0",
-	"sidecar",
-	"ipykernel",
-	"ipywidgets>=8.0.0,<9",
+    "PyQt5==5.15.11",
+    "pyqt5-qt5==5.15.2; sys_platform == 'win32'",
+    "pyqt5-qt5==5.15.16; sys_platform == 'darwin' or sys_platform == 'linux'",
+    "ipywidgets>=8.0.0,<9",
+    "glfw",
 ]
-napari = ["napari"]
-all = [
-	"imgui-bundle",
-	# "pyqt5==5.15.11",
-	# "pyqt5-qt5==5.15.2",
-	"glfw",
-	"jupyter_rfb>=0.5.1",
-	"jupyterlab",
-	"sidecar",
-	"ipykernel",
-	"ipywidgets>=8.0.0,<9",
-	"napari",
-]
-dev = ["masknmf_toolbox[all]"]
 
 [project.urls]
 Homepage = "https://github.com/apasarkar/masknmf-toolbox"
