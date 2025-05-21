@@ -441,7 +441,7 @@ def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
         pmd_demixer.demix(**localnmf_params)
     print(f"that took {time.time() - start_time}")
     print(f"after this step {pmd_demixer.results.a.shape[1]} signals identified")
-    np.save(plane_dir / "pmd_demixer.npz", pmd_demixer)
+    np.save(plane_dir / "pmd_demixer.npy", pmd_demixer)
 
     a = pmd_demixer.results.ac_array.export_a()
     c = pmd_demixer.results.ac_array.export_c()
