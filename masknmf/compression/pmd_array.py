@@ -452,7 +452,7 @@ class PMDResidualArray(LazyFrameLoader):
 
     def __init__(
         self,
-        raw_arr: LazyFrameLoader,
+        raw_arr: Union[LazyFrameLoader, FactorizedVideo],
         pmd_arr: PMDArray,
     ):
         """
