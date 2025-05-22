@@ -2781,6 +2781,7 @@ class DemixingState(SignalProcessingState):
         indices_to_keep = self._flag_components_for_deletion(corr_th_del)
         if indices_to_keep.shape[0] < self.a.shape[1]:
             self.a = torch.index_select(self.a, 1, indices_to_keep).coalesce()
+            self.mask_ab = torch.index_select(self.mask_ab, 1, indices_to_keep).coalesce()
             self.c = torch.index_select(self.c, 1, indices_to_keep)
             self.standard_correlation_image.c = self.c
             # Need to update the residual correlation image since the A/C terms changed
