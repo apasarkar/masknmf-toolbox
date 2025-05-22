@@ -258,7 +258,7 @@ def _compute_standard_correlation_image(
         corr_array (StandardCorrelationImages): A FactorizedVideo object that can lazily compute correlation images.
 
     """
-
+    num_frames = v.shape[1]
     # Step 1: Standardize c
     c = temporal_traces - torch.mean(temporal_traces, dim=0, keepdim=True)
     c_norm = torch.sqrt(torch.sum(c * c, dim=0, keepdim=True))
@@ -278,7 +278,7 @@ def _compute_standard_correlation_image(
     v_sum = torch.sum(v, dim=1, keepdim=True)
     uv_sum = torch.sparse.mm(u_sparse, v_sum)
     uv_meanzero_norm += (-2) * uv_sum * uv_mean
-    uv_meanzero_norm += uv_mean * uv_mean
+    uv_meanzero_norm += uv_mean * uv_mean * num_frames
 
     # To finish norm computation, need to compute diag(UVV^TU). This is rowsum(UVV^T (hadamard) U).
     batch_iters = math.ceil(u_sparse.shape[1] / frame_batch_size)
