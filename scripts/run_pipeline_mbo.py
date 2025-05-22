@@ -350,7 +350,6 @@ def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
         moco_results = masknmf.RegistrationArray(data_array, pwrigid_strategy, device=DEVICE)
         np.save(plane_dir / "moco.npy", moco_results, allow_pickle=True)
         dense_moco = moco_results[:]
-        ic(dense_moco)
 
     if save_video:
         save_mp4(
@@ -441,7 +440,7 @@ def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
         pmd_demixer.demix(**localnmf_params)
     print(f"that took {time.time() - start_time}")
     print(f"after this step {pmd_demixer.results.a.shape[1]} signals identified")
-    np.save(plane_dir / "pmd_demixer.npy", pmd_demixer)
+    np.save(plane_dir / "pmd_demixer.npy", pmd_demixer, allow_pickle=True)
 
     a = pmd_demixer.results.ac_array.export_a()
     c = pmd_demixer.results.ac_array.export_c()
@@ -459,8 +458,8 @@ def load_tiff():
 
 if __name__ == "__main__":
     for i in [7]:
-        inpath = r"D:\W2_DATA\kbarber\2025_03_01\mk301\masknmf\roi_2"
-        savedir = r"D:\W2_DATA\kbarber\2025_03_01\mk301\masknmf\roi_2\results2"
+        inpath = r"D:\W2_DATA"
+        savedir = r"D:\W2_DATA\temp_masknmf_plane7"
         Path(savedir).mkdir(exist_ok=True)
         files = list(Path(inpath).glob("*.tif*"))[0]
         data_arr = tifffile.imread(files)
@@ -472,11 +471,3 @@ if __name__ == "__main__":
             debug=True,
             overwrite=True,
         )
-
-        # else:
-        #     data_file = Path(f"D:/demo/suite2p_results/plane{i}/data.bin")
-        #     ops = np.load(Path(f"D:/demo/suite2p_results/plane{i}/ops.npy"), allow_pickle=True).item()
-        #     path = Path(f"~/.masknmf/plane{i}/ops.npy").expanduser()
-        #     np.save(path, ops)
-        #     nt, Lx, Ly = ops["nframes"], ops["Lx"], ops["Ly"]
-        #     data_arr = np.memmap(data_file, shape=(nt, Lx, Ly), dtype=np.int16)
