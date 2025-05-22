@@ -1,11 +1,12 @@
 import torch
 import numpy as np
 import masknmf
+from masknmf.compression import PMDArray
 from typing import *
 import math
 
 def pmd_autocovariance_diagnostics(raw_movie: masknmf.LazyFrameLoader,
-                                   pmd_movie: masknmf.PMDArray,
+                                   pmd_movie: PMDArray,
                                    batch_size: int = 200,
                                    device: str = 'cpu') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
