@@ -2473,7 +2473,7 @@ class DemixingState(SignalProcessingState):
                     start, min_neural_signals, device=self.device, dtype=torch.long
                 )
                 a_dense_curr = torch.index_select(self.a, 1, inds).to_dense()
-                denominator += torch.sum(wuvc_crop * a_dense_curr, dim=1, keepdim=True)
+                numerator -= torch.sum(wuvc_crop * a_dense_curr, dim=1, keepdim=True)
 
         weights = torch.nan_to_num(numerator / denominator, nan=0.0)
         threshold_function = torch.nn.ReLU()
@@ -2481,9 +2481,9 @@ class DemixingState(SignalProcessingState):
 
         # Finally, we export the ring model to a factorized format: UQV, where Q describes the fluctuating component
         # The static component gets added to the static background
-        static_projection = self.pmd_obj.project_frames(wb, standardize=False)
+        static_projection = self.pmd_obj.project_frames(weights * wb, standardize=False)
         static_projection = torch.sparse.mm(self.u_sparse, static_projection)
-        self.b += static_projection
+        self.b -= static_projection
 
         q_list = []
         for k in range(max_iters):
