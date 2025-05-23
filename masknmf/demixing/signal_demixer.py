@@ -2530,7 +2530,11 @@ class DemixingState(SignalProcessingState):
     #     self.factorized_ring_term = ur.T @ (weights.unsqueeze(1) * ring_output)
 
     def static_baseline_update(self):
-        self.b = regression_update.baseline_update(self.uv_mean, self.a, self.c)
+        if self.factorized_ring_term is not None:
+            mean_used = self.uv_mean - torch.sparse.mm(self.u_sparse, (self.factorized_ring_term @ torch.mean(self.v, dim=1, keepdim=True)))
+        else:
+            mean_used = self.uv_mean
+        self.b = regression_update.baseline_update(mean_used, self.a, self.c)
 
     def fluctuating_baseline_update(self):
         """
