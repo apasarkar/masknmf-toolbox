@@ -79,13 +79,7 @@ class RingModel:
         Args:
             new_weights (torch.tensor): Shape (d1*d2)
         """
-        net_pixels = self.shape[0] * self.shape[1]
-        index_values = torch.arange(net_pixels, device=self.device, dtype=torch.long)
-        self._weights = torch.sparse_coo_tensor(
-            torch.stack([index_values, index_values]),
-            new_weights,
-            (net_pixels, net_pixels),
-        ).coalesce()
+        self._weights = new_weights.clone().to(self.device)
 
     @property
     def support(self):
@@ -104,13 +98,7 @@ class RingModel:
         Args:
             new_mask (torch.tensor): Shape (d1*d2), index i is 0 if pixel i contains neural signal, otherwise it is 0
         """
-        net_pixels = self.shape[0] * self.shape[1]
-        index_values = torch.arange(net_pixels, device=self.device, dtype=torch.long)
-        self._support = torch.sparse_coo_tensor(
-            torch.stack([index_values, index_values]),
-            new_mask,
-            (net_pixels, net_pixels),
-        ).coalesce()
+        self._support = new_mask.clone().to(self.device)
 
     def forward(self, images: torch.tensor):
         """
@@ -120,10 +108,9 @@ class RingModel:
             images (torch.tensor): Shape (pixels, num_frames)
 
         Returns:
-            ring_outputs (torch.tensor): Shape (num_images, height, width). The output of running the ring model
-
+            ring_outputs (torch.tensor): Shape (pixels, num_frames). The output of running the ring model
         """
-        images_masked = torch.sparse.mm(self.support, images)
+        images_masked = self.support[:, None] * images
 
         if self.order == "F":
             images_masked_3_d = torch.reshape(
@@ -163,7 +150,7 @@ class RingModel:
             convolved_stack = torch.permute(convolved_stack, (1, 2, 0))
         convolved_stack = convolved_stack.reshape((self.shape[0] * self.shape[1], -1))
 
-        return torch.sparse.mm(self.weights, convolved_stack)
+        return self.weights[:, None] * convolved_stack
 
     # def _precompute_ring_info(self):
     #     d1, d2 = self.shape
