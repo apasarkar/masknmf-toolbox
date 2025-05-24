@@ -40,7 +40,7 @@ class PMDWidget:
         self._pmd_stack = pmd_stack
         self._residual_stack = masknmf.PMDResidualArray(self.comparison_stack, self.pmd_stack)
         display('Computing Residual Statistics')
-        raw_lag1, pmd_lag1, resid_lag1 = masknmf.compression.pmd_autocovariance_diagnostics(self.comparison_stack,
+        raw_lag1, pmd_lag1, resid_lag1 = masknmf.diagnostics.pmd_autocovariance_diagnostics(self.comparison_stack,
                                                                                             self.pmd_stack,
                                                                                             batch_size=frame_batch_size,
                                                                                             device=device)
