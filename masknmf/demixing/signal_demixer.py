@@ -258,7 +258,7 @@ def _compute_standard_correlation_image(
         corr_array (StandardCorrelationImages): A FactorizedVideo object that can lazily compute correlation images.
 
     """
-
+    num_frames = v.shape[1]
     # Step 1: Standardize c
     c = temporal_traces - torch.mean(temporal_traces, dim=0, keepdim=True)
     c_norm = torch.sqrt(torch.sum(c * c, dim=0, keepdim=True))
@@ -278,7 +278,7 @@ def _compute_standard_correlation_image(
     v_sum = torch.sum(v, dim=1, keepdim=True)
     uv_sum = torch.sparse.mm(u_sparse, v_sum)
     uv_meanzero_norm += (-2) * uv_sum * uv_mean
-    uv_meanzero_norm += uv_mean * uv_mean
+    uv_meanzero_norm += uv_mean * uv_mean * num_frames
 
     # To finish norm computation, need to compute diag(UVV^TU). This is rowsum(UVV^T (hadamard) U).
     batch_iters = math.ceil(u_sparse.shape[1] / frame_batch_size)
@@ -2473,7 +2473,7 @@ class DemixingState(SignalProcessingState):
                     start, min_neural_signals, device=self.device, dtype=torch.long
                 )
                 a_dense_curr = torch.index_select(self.a, 1, inds).to_dense()
-                denominator += torch.sum(wuvc_crop * a_dense_curr, dim=1, keepdim=True)
+                numerator -= torch.sum(wuvc_crop * a_dense_curr, dim=1, keepdim=True)
 
         weights = torch.nan_to_num(numerator / denominator, nan=0.0)
         threshold_function = torch.nn.ReLU()
@@ -2481,9 +2481,9 @@ class DemixingState(SignalProcessingState):
 
         # Finally, we export the ring model to a factorized format: UQV, where Q describes the fluctuating component
         # The static component gets added to the static background
-        static_projection = self.pmd_obj.project_frames(wb, standardize=False)
+        static_projection = self.pmd_obj.project_frames(weights * wb, standardize=False)
         static_projection = torch.sparse.mm(self.u_sparse, static_projection)
-        self.b += static_projection
+        self.b -= static_projection
 
         q_list = []
         for k in range(max_iters):
@@ -2530,7 +2530,11 @@ class DemixingState(SignalProcessingState):
     #     self.factorized_ring_term = ur.T @ (weights.unsqueeze(1) * ring_output)
 
     def static_baseline_update(self):
-        self.b = regression_update.baseline_update(self.uv_mean, self.a, self.c)
+        if self.factorized_ring_term is not None:
+            mean_used = self.uv_mean - torch.sparse.mm(self.u_sparse, (self.factorized_ring_term @ torch.mean(self.v, dim=1, keepdim=True)))
+        else:
+            mean_used = self.uv_mean
+        self.b = regression_update.baseline_update(mean_used, self.a, self.c)
 
     def fluctuating_baseline_update(self):
         """
