@@ -34,24 +34,20 @@ def pmd_autocovariance_diagnostics(raw_movie: masknmf.LazyFrameLoader,
     pmd_movie.to(device)
     pmd_movie.rescale = True
     raw_autocov = torch.zeros(fov_dim1, fov_dim2, device=device).float()
-    left_raw_mean = (torch.zeros_like(raw_autocov) - torch.from_numpy(raw_movie[-1]).float().to(device)) / (
-            num_frames - 1)
-    right_raw_mean = (torch.zeros_like(raw_autocov) - torch.from_numpy(raw_movie[0]).float().to(device)) / (
-            num_frames - 1)
+    left_raw_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (torch.from_numpy(raw_movie[-1]).float().to(device) / (
+            num_frames - 1))
+    right_raw_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (torch.from_numpy(raw_movie[0]).float().to(device) / (
+            num_frames - 1))
 
     pmd_autocov = torch.zeros(fov_dim1, fov_dim2, device=device).float()
-    left_pmd_mean = (torch.zeros_like(raw_autocov) - pmd_movie.getitem_tensor([num_frames - 1]).float().to(device)) / (
-            num_frames - 1)
-    right_pmd_mean = (torch.zeros_like(raw_autocov) - pmd_movie.getitem_tensor([0]).float().to(device)) / (
-            num_frames - 1)
+    left_pmd_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (pmd_movie.getitem_tensor([num_frames - 1]).float().to(device) / (
+            num_frames - 1))
+    right_pmd_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (pmd_movie.getitem_tensor([0]).float().to(device) / (
+            num_frames - 1))
 
     resid_autocov = torch.zeros(fov_dim1, fov_dim2, device=device).float()
-    left_resid_mean = (torch.zeros_like(raw_autocov) - (
-            torch.from_numpy(raw_movie[-1]).float().to(device) - pmd_movie.getitem_tensor(
-        [num_frames - 1]).float().to(device))) / (num_frames - 1)
-    right_resid_mean = (torch.zeros_like(raw_autocov) - (
-            torch.from_numpy(raw_movie[0]).float().to(device) - pmd_movie.getitem_tensor([0]).float().to(
-        device))) / (num_frames - 1)
+    left_resid_mean = left_raw_mean - left_pmd_mean
+    right_resid_mean = right_raw_mean - right_pmd_mean
 
     start_pts = np.arange(0, num_frames, batch_size)
     if start_pts.shape[0] > 1 and start_pts[-1] == num_frames - 1:
