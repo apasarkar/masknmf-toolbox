@@ -301,6 +301,21 @@ class PMDArray(FactorizedVideo):
         Number of dimensions
         """
         return len(self.shape)
+    
+    def calculate_rank_heatmap(self) -> torch.tensor:
+        """
+        Generates rank heatmap image based on U. Equal to row summation of binarized U matrix.
+        Returns:
+            rank_heatmap (torch.tensor). Shape (fov_dim1, fov_dim2).
+        """
+        binarized_u = torch.sparse_coo_tensor(
+            self.u.indices(), 
+            torch.ones_like(self.u.values()), 
+            self.u.size()
+            )
+        row_sum_u = torch.sparse.sum(binarized_u, dim=1)
+        return torch.reshape(row_sum_u.to_dense(), 
+                             (self.shape[1],self.shape[2]))
 
     def project_frames(
         self, frames: torch.tensor, standardize: Optional[bool] = True
