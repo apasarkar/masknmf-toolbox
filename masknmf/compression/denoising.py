@@ -126,6 +126,7 @@ class BlindSpotTemporal(nn.Module):
         bs5 = self.bsconv5(enc4)
         bs6 = self.bsconv6(enc5)
 
+
         out = torch.cat([bs1, bs2, bs3, bs4, bs5, bs6], dim=1)
         out = self.final_activation(self.final(out))
         return out
@@ -150,7 +151,7 @@ class TotalVarianceTemporalDenoiser(pl.LightningModule):
     def __init__(
             self,
             learning_rate=1e-3,
-            max_epochs=20,
+            max_epochs=1,
     ):
         super(TotalVarianceTemporalDenoiser, self).__init__()
 
@@ -232,7 +233,8 @@ class MultivariateTimeSeriesDataset(torch.utils.data.Dataset):
             input_size (int): Length of the input snippet.
             overlap (int): The number of overlapping samples between consecutive windows.
         """
-        self.data = data.astype(np.float32)
+        self.data = torch.from_numpy(data).float()
+        self.num_series = self.data.shape[0]
         self.input_size = input_size
         self.overlap = overlap
         self.stride = input_size - overlap  # Effective step size for sliding windows
@@ -247,20 +249,22 @@ class MultivariateTimeSeriesDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         # Total number of snippets: number of windows per time series * number of time series
-        return self.num_windows
+        return self.num_windows * self.num_series
 
-    def __getitem__(self, idx):
+    def __getitem__(self, dataset_index):
         """
         Given an index, returns the corresponding time series snippet.
         """
+        which_series = dataset_index // self.num_windows
+        idx = dataset_index % self.num_windows
         start_idx = idx * self.stride
         end_idx = start_idx + self.input_size
         if end_idx >= self.data.shape[1]:
             # If the end index exceeds the data length, adjust it
             end_idx = self.data.shape[1]
             start_idx = end_idx - self.input_size
-        data = torch.tensor(self.data[:, start_idx:end_idx])
+        data = self.data[[which_series], start_idx:end_idx]
         if self.provide_indices:
-            return data, start_idx, end_idx
+            return data, which_series, start_idx, end_idx
         else:
             return data
