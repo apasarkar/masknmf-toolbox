@@ -327,11 +327,11 @@ def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
         )
 
     # motion correction
-    expected = plane_dir / "moco.npy"
-    if expected.exists() and not kwargs.get("overwrite", False):
+
+    reg_data_file = plane_dir / "data_reg.npy"
+    if reg_data_file.exists() and not kwargs.get("overwrite", False):
         ic("Loading moco")
-        moco_results = np.load(expected, allow_pickle=True)
-        dense_moco = moco_results[:]
+        dense_moco = np.load(reg_data_file)
     else:
         ic("No moco found, running it")
         rigid_strategy = masknmf.RigidMotionCorrection(
@@ -348,21 +348,8 @@ def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
             pwrigid_strategy=pwrigid_strategy, device=DEVICE, batch_size=1000
         )
         moco_results = masknmf.RegistrationArray(data_array, pwrigid_strategy, device=DEVICE)
-        np.save(plane_dir / "moco.npy", moco_results, allow_pickle=True)
         dense_moco = moco_results[:]
-
-    if save_video:
-        save_mp4(
-            plane_dir / "reg.mp4",
-            data_array,
-            framerate=kwargs.get("fs", 17),
-            speedup=10,
-            chunk_size=100,
-            cmap="gray",
-            win=3,
-            vcodec="libx264",
-            normalize=True,
-            )
+        np.save(plane_dir / "data_reg.npy", dense_moco)
 
     # PMD decomposition
     t_pmd = time.time()
@@ -458,8 +445,8 @@ def load_tiff():
 
 if __name__ == "__main__":
     for i in [7]:
-        inpath = r"D:\W2_DATA\kbarber\2025_03_01\mk301\masknmf\roi_2"
-        savedir = r"D:\W2_DATA\kbarber\2025_03_01\mk301\masknmf\roi_2\results2"
+        inpath = r"D:\W2_DATA\masknmf\mk301_kbarber\full_fov"
+        savedir = r"D:\W2_DATA\masknmf\mk301_kbarber\full_fov"
         Path(savedir).mkdir(exist_ok=True)
         files = list(Path(inpath).glob("*.tif*"))[0]
         data_arr = tifffile.imread(files)
