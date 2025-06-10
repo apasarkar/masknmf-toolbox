@@ -10,6 +10,7 @@ from functools import partial
 from ipywidgets import VBox, HBox
 from collections import OrderedDict
 import masknmf.arrays
+from masknmf.utils import display
 from masknmf import DemixingResults, PMDArray
 
 
@@ -28,20 +29,38 @@ class ROIManager(ui.EdgeWindow):
 
 
 class PMDWidget:
-    def __init__(self, comparison_stack: masknmf.arrays.FactorizedVideo, pmd_stack: masknmf.PMDArray):
+    def __init__(self,
+                 comparison_stack: masknmf.arrays.FactorizedVideo,
+                 pmd_stack: masknmf.PMDArray,
+                 frame_batch_size: int=200,
+                 device="cpu"):
+
+        pmd_stack.to(device)
         self._comparison_stack = comparison_stack
         self._pmd_stack = pmd_stack
-        self._iw = fpl.ImageWidget([self.comparison_stack, self.pmd_stack],
-                                   names=["mcorr", "pmd"],
+        self._residual_stack = masknmf.PMDResidualArray(self.comparison_stack, self.pmd_stack)
+        display('Computing Residual Statistics')
+        raw_lag1, pmd_lag1, resid_lag1 = masknmf.diagnostics.pmd_autocovariance_diagnostics(self.comparison_stack,
+                                                                                            self.pmd_stack,
+                                                                                            batch_size=frame_batch_size,
+                                                                                            device=device)
+        display('Residual Statistics: Complete')
+        self._iw = fpl.ImageWidget([self.comparison_stack,
+                                    self.pmd_stack,
+                                    self._residual_stack,
+                                    raw_lag1,
+                                    pmd_lag1,
+                                    resid_lag1],
+                                   names=["mcorr",
+                                          "pmd",
+                                          "residual",
+                                          'mcorr lag1 acf',
+                                          'pmd lag1 acf',
+                                          'resid lag1 acf'],
+                                   figure_shape=(2, 3)
                                    )
 
-        mcorr_img = self.iw.managed_graphics[0]
-        pmd_img = self.iw.managed_graphics[1]
-
-        self.image_graphics = [
-            mcorr_img,
-            pmd_img,
-        ]
+        self.image_graphics = [k for k in self.iw.managed_graphics]
 
         self._fig_temporal = fpl.Figure(shape=(3, 1), names=["mcorr", "pmd", "residual"])
         self.fig_temporal["mcorr"].add_line(np.zeros(self.pmd_stack.shape[0]))
@@ -94,24 +113,24 @@ class PMDWidget:
     def fig_temporal(self):
         return self._fig_temporal
 
-    def rect_selector_moved(self, selectors_pair: tuple[fpl.RectangleSelector], ev: fpl.GraphicFeatureEvent):
+    def rect_selector_moved(self, selectors_pair: Tuple[fpl.RectangleSelector], ev: fpl.GraphicFeatureEvent):
         for selector in selectors_pair:
             selector.selection = ev.info["value"]
 
         row_ixs, col_ixs = ev.get_selected_indices()
-        row_slice = slice(row_ixs[0], row_ixs[-1] + 1)
-        col_slice = slice(col_ixs[0], col_ixs[-1] + 1)
-
-        mcorr_temporal = self.comparison_stack[:, row_slice, col_slice].mean(axis=(1, 2))
-        pmd_temporal = self.pmd_stack[:, row_slice, col_slice].mean(axis=(1, 2))
-        residual_temporal = mcorr_temporal - pmd_temporal
-
-        self.fig_temporal["mcorr"].graphics[0].data[:, 1] = mcorr_temporal
-        self.fig_temporal["pmd"].graphics[0].data[:, 1] = pmd_temporal
-        self.fig_temporal["residual"].graphics[0].data[:, 1] = residual_temporal
-
-        for subplot in self.fig_temporal:
-            subplot.auto_scale()
+        self._row_slice = slice(row_ixs[0], row_ixs[-1] + 1)
+        self._col_slice = slice(col_ixs[0], col_ixs[-1] + 1)
+        #
+        # mcorr_temporal = self.comparison_stack[:, row_slice, col_slice].mean(axis=(1, 2))
+        #
+        # pmd_temporal = self.pmd_stack[:, row_slice, col_slice].mean(axis=(1, 2))
+        # residual_temporal = mcorr_temporal - pmd_temporal
+        # self.fig_temporal["mcorr"].graphics[0].data[:, 1] = mcorr_temporal
+        # self.fig_temporal["pmd"].graphics[0].data[:, 1] = pmd_temporal
+        # self.fig_temporal["residual"].graphics[0].data[:, 1] = residual_temporal
+        #
+        # for subplot in self.fig_temporal:
+        #     subplot.auto_scale()
 
     def add_rectangle(self, ev: pygfx.PointerEvent):
 
@@ -183,10 +202,27 @@ class PMDWidget:
         if not self.RESIZING_NEW_RECT:
             return
 
+        self._crop_and_display()
+
+    def _crop_and_display(self):
+
+        mcorr_temporal = self.comparison_stack[:, self._row_slice, self._col_slice].mean(axis=(1, 2))
+
+        pmd_temporal = self.pmd_stack[:, self._row_slice, self._col_slice].mean(axis=(1, 2))
+        residual_temporal = mcorr_temporal - pmd_temporal
+        self.fig_temporal["mcorr"].graphics[0].data[:, 1] = mcorr_temporal
+        self.fig_temporal["pmd"].graphics[0].data[:, 1] = pmd_temporal
+        self.fig_temporal["residual"].graphics[0].data[:, 1] = residual_temporal
+
+        for subplot in self.fig_temporal:
+            subplot.auto_scale()
+
         for subplot in self.iw.figure:
             subplot.controller.enabled = True
 
         self.RESIZING_NEW_RECT = False
+        self._row_slice = None
+        self._col_slice = None
 
     def show(self):
         return VBox([self.iw.show(), self.fig_temporal.show(maintain_aspect=False)])

@@ -94,30 +94,32 @@ def construct_index(folder: str, file_prefix="neuron", index_name="index.html"):
     print(f'Index file "{index_file}" created successfully.')
 
 def pixel_crop_stack(array, p1, p2):
+    if array.shape[0] == 1:
+        raise ValueError("Need more than 1 frame in data")
     if np.amin(p1) == np.amax(p1):
         term1 = slice(np.amin(p1), np.amin(p1) + 1)
-        expand_first = True
+        dim1_flag = True
     else:
         term1 = slice(np.amin(p1), np.amax(p1) + 1)
-        expand_first = False
+        dim1_flag = False
 
     if np.amin(p2) == np.amax(p2):
         term2 = slice(np.amin(p2), np.amin(p2) + 1)
-        expand_second = True
+        dim2_flag = True
     else:
         term2 = slice(np.amin(p2), np.amax(p2) + 1)
-        expand_second = False
+        dim2_flag = False
 
-    selected_pixels = array[:, term1, term2]
-    if expand_first:
-        selected_pixels = np.expand_dims(selected_pixels, 1)
-    if expand_second:
-        selected_pixels = np.expand_dims(selected_pixels, 2)
+    selected_pixels = array[:, term1, term2].squeeze()
 
-    if selected_pixels.ndim < 3:
-        print(f"error in pixel selection avg, coordinates are {p1} and {p2}")
-        print(f"term 1 is {term1} and term2 is {term2}")
-    data_2d = selected_pixels[:, p1 - np.amin(p1), p2 - np.amin(p2)]
+    if dim1_flag and dim2_flag:
+        data_2d = selected_pixels[:, None]
+    elif dim1_flag and not dim2_flag:
+        data_2d = selected_pixels[:, None, p2 - np.amin(p2)]
+    elif not dim1_flag and dim2_flag:
+        data_2d = selected_pixels[:, p1 - np.amin(p1), None]
+    else:
+        data_2d = selected_pixels[:, p1 - np.amin(p1), p2 - np.amin(p2)]
     return data_2d
 
 
@@ -429,7 +431,9 @@ def generate_raw_vs_resid_plot_folder(raw_stack: masknmf.arrays.LazyFrameLoader,
                                       pmd_movie: masknmf.arrays.FactorizedVideo,
                                       spatial_matrix: np.ndarray,
                                       folder_location: str,
-                                      timeslice: Optional[slice]=None):
+                                      timeslice: Optional[slice]=None,
+                                      flip_raw_trace: bool=False,
+                                      flip_pmd_trace: bool=False):
     """
     Utility function that uses plotly to generate traces for every neuron, showing its spatial footprint as a heatmap,
     its ROI average on the raw data, ROI average of the PMD movie, and the ROI average of the "residual" (Raw - PMD)
@@ -448,6 +452,13 @@ def generate_raw_vs_resid_plot_folder(raw_stack: masknmf.arrays.LazyFrameLoader,
         raw_trace, pmd_trace = roi_compare_pmd_raw(raw_stack,
                                                    pmd_movie,
                                                    spatial_matrix[:, :, k])
+        if flip_raw_trace:
+            raw_trace *= -1
+        if flip_pmd_trace:
+            pmd_trace *= -1
+
+        raw_trace -= np.mean(raw_trace)
+        pmd_trace -= np.mean(pmd_trace)
 
         if timeslice is not None:
             new_fig = plot_pmd_vs_raw_stack_diagnostic(raw_trace[timeslice],
@@ -466,3 +477,117 @@ def generate_raw_vs_resid_plot_folder(raw_stack: masknmf.arrays.LazyFrameLoader,
     construct_index(folder=folder_location,
                     file_prefix=f"{neuron_prefix}",
                     index_name="index.html")
+
+def pmd_spike_diagnostic(moco_stack: np.ndarray,
+                         pmd_object: masknmf.PMDArray,
+                         roi_footprint: np.ndarray,
+                         raw_autocorr: np.ndarray,
+                         pmd_autocorr: np.ndarray,
+                         resid_autocorr: np.ndarray,
+                         image_radius: int,
+                         raw_roi_avg: np.ndarray,
+                         pmd_roi_avg: np.ndarray,
+                         residual_roi_avg: np.ndarray,
+                         raw_spike_heights: np.ndarray,
+                         pmd_spike_heights: np.ndarray,
+                         c_peaks: np.ndarray,
+                         attenuation_estimate: np.ndarray,
+                         zscore_attenuation: np.ndarray):
+    fov_dim1, fov_dim2 = roi_footprint.shape
+
+    p1, p2 = roi_footprint.nonzero()
+    min_index_dim1 = np.maximum(0, np.amin(p1) - image_radius)
+    max_index_dim1 = np.minimum(fov_dim1, np.amax(p1) + image_radius)
+    min_index_dim2 = np.maximum(0, np.amin(p2) - image_radius)
+    max_index_dim2 = np.minimum(fov_dim2, np.amax(p2) + image_radius)
+    spatial_slices = slice(min_index_dim1, max_index_dim1), slice(min_index_dim2, max_index_dim2)
+    yticks = np.arange(min_index_dim1, max_index_dim2)
+    xticks = np.arange(min_index_dim2, max_index_dim2)
+
+    pmd_object.rescale = True
+
+    # Crop autocorrelation maps
+    raw_autocorr = raw_autocorr[spatial_slices[0], spatial_slices[1]]
+    pmd_autocorr = pmd_autocorr[spatial_slices[0], spatial_slices[1]]
+    resid_autocorr = resid_autocorr[spatial_slices[0], spatial_slices[1]]
+    roi_crop = roi_footprint[spatial_slices[0], spatial_slices[1]]
+
+    fig = sp.make_subplots(
+        rows=9,
+        cols=4,
+        shared_xaxes=False,
+        subplot_titles=[
+            "ROI",
+            "Raw Lag1",
+            "PMD Lag1",
+            "Resid Lag1",
+            "Raw",
+            "PMD",
+            "Resid",
+            "Raw Spike Heights",
+            "PMD Spike Heights",
+            "Spike Locations",
+            "Relu[raw_spike_height - pmd_spike_height] / raw_spike_height",
+            "Relu[raw_spike_height - pmd_spike_height] / Resid ROI Avg Std Dev"
+        ],
+        specs=[
+            [{"type": "heatmap"}, {"type": "heatmap"}, {"type": "heatmap"}, {"type": "heatmap"}],
+            [{"colspan": 4}, None, None, None],
+            [{"colspan": 4}, None, None, None],
+            [{"colspan": 4}, None, None, None],
+            [{"colspan": 4}, None, None, None],
+            [{"colspan": 4}, None, None, None],
+            [{"colspan": 4}, None, None, None],
+            [{"colspan": 4}, None, None, None],
+            [{"colspan": 4}, None, None, None],
+        ],
+    )
+
+    fig.add_trace(go.Heatmap(z=roi_crop, colorscale="Viridis", showscale=False, x=xticks, y=yticks), row=1, col=1)
+    fig.add_trace(go.Heatmap(z=raw_autocorr, colorscale="Viridis", showscale=True, x=xticks, y=yticks), row=1,
+                  col=2)
+    fig.add_trace(go.Heatmap(z=pmd_autocorr, colorscale="Viridis", showscale=False, x=xticks, y=yticks), row=1,
+                  col=3)
+    fig.add_trace(go.Heatmap(z=resid_autocorr, colorscale="Viridis", showscale=False, x=xticks, y=yticks), row=1,
+                  col=4)
+
+    binary_peak_vector = np.zeros_like(residual_roi_avg)
+    binary_peak_vector[c_peaks] = 1
+    pmd_spike_height_vector = binary_peak_vector.copy()
+    pmd_spike_height_vector[c_peaks] = pmd_spike_heights
+    raw_spike_height_vector = binary_peak_vector.copy()
+    raw_spike_height_vector[c_peaks] = raw_spike_heights
+    attenuation_vector = np.zeros_like(residual_roi_avg)
+    attenuation_vector[c_peaks] = attenuation_estimate
+    zscore_attenuation_vector = np.zeros_like(residual_roi_avg)
+    zscore_attenuation_vector[c_peaks] = zscore_attenuation
+
+    fig.add_trace(go.Scatter(y=raw_roi_avg, mode="lines", name="Raw"), row=2, col=1)
+    fig.add_trace(go.Scatter(y=pmd_roi_avg, mode="lines", name="PMD"), row=3, col=1)
+    fig.add_trace(go.Scatter(y=residual_roi_avg, mode="lines", name="Resid"), row=4, col=1)
+    fig.add_trace(go.Scatter(y=raw_spike_height_vector, mode="lines", name="Raw Spike Height"), row=5, col=1)
+    fig.add_trace(go.Scatter(y=pmd_spike_height_vector, mode="lines", name="PMD Spike Height"), row=6, col=1)
+    fig.add_trace(go.Scatter(y=binary_peak_vector, mode="lines", name="Spike Locations"), row=7, col=1)
+    fig.add_trace(go.Scatter(y=attenuation_vector, mode="lines", name="Fraction Attenuated"), row=8, col=1)
+    fig.add_trace(go.Scatter(y=zscore_attenuation_vector, mode="lines", name="Z-Scored Spike Loss"), row=9, col=1)
+
+    fig.update_layout(
+        height=1400,
+        width=1200,
+        title="Synchronized Image + Trace Layout",
+        xaxis=dict(matches='x1', scaleanchor='y1'),
+        xaxis2=dict(matches='x1'),
+        xaxis3=dict(matches='x1'),
+        xaxis4=dict(matches='x1'),
+        yaxis=dict(matches='y1'),
+        yaxis2=dict(matches='y1'),
+        yaxis3=dict(matches='y1'),
+        yaxis4=dict(matches='y1'),
+        xaxis5=dict(matches='x5'),
+        xaxis6=dict(matches='x5'),
+        xaxis7=dict(matches='x5'),
+        xaxis8=dict(matches='x5'),
+        xaxis9=dict(matches='x5'),
+    )
+
+    return fig

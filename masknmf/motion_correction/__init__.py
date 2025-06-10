@@ -20,6 +20,12 @@ from .spatial_filters import (
     compute_highpass_filter_kernel,
 )
 
+from .moco_preprocessing import (
+    compute_saturation_mask,
+    dilate_saturation_mask,
+    mask_inpainting_routine,
+)
+
 __all__ = [
     "RegistrationArray",
     "FilteredArray",

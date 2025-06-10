@@ -458,8 +458,8 @@ def load_tiff():
 
 if __name__ == "__main__":
     for i in [7]:
-        inpath = r"D:\W2_DATA"
-        savedir = r"D:\W2_DATA\temp_masknmf_plane7"
+        inpath = r"D:\W2_DATA\kbarber\2025_03_01\mk301\masknmf\roi_2"
+        savedir = r"D:\W2_DATA\kbarber\2025_03_01\mk301\masknmf\roi_2\results2"
         Path(savedir).mkdir(exist_ok=True)
         files = list(Path(inpath).glob("*.tif*"))[0]
         data_arr = tifffile.imread(files)
