@@ -296,11 +296,15 @@ def load_from_dir(plane_dir):
     return results
 
 
-def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
+def run_plane(
+        data_array: ArrayLike,
+        zplane: int | str | Path,
+        save_path=None,
+        **kwargs
+):
 
     debug = kwargs.get("debug", False)
     framerate = kwargs.get("fs", 10)
-    save_video = kwargs.get("save_video", False)
 
     if debug:
         ic.enable()
@@ -310,24 +314,13 @@ def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
     save_path = Path.home() / ".masknmf" if save_path is None else Path(save_path).expanduser()
 
     save_path.mkdir(exist_ok=True)
-    plane_dir = save_path / f"plane{idx}"
+    if isinstance(zplane, int):
+        plane_dir = save_path / f"plane{zplane}"
+    else:
+        plane_dir = save_path / zplane
     plane_dir.mkdir(exist_ok=True)
-    ic(save_path)
-    if save_video:
-        save_mp4(
-            plane_dir / "raw.mp4",
-            data_array,
-            framerate=framerate,
-            speedup=10,
-            chunk_size=100,
-            cmap="gray",
-            win=3,
-            vcodec="libx264",
-            normalize=True,
-        )
 
     # motion correction
-
     reg_data_file = plane_dir / "data_reg.npy"
     if reg_data_file.exists() and not kwargs.get("overwrite", False):
         ic("Loading moco")
@@ -376,7 +369,13 @@ def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
     }
 
     # Initialize signals
-    pmd_demixer.initialize_signals(**init_kwargs, is_custom=False)
+    try:
+        pmd_demixer.initialize_signals(**init_kwargs, is_custom=False)
+    except ValueError as e:
+        print(f"Initialization for input {zplane} failed: {e}")
+        text = "Initialization failed, skipping plane."
+        np.save(plane_dir / "error.npy", text)
+        return
     ic(f"Identified {pmd_demixer.results[0].shape[1]} neurons here")
     np.save(plane_dir / "pmd_demixer.npy", pmd_demixer, allow_pickle=True)
 
@@ -418,7 +417,14 @@ def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
         'text': False,
     }
 
-    pmd_demixer.initialize_signals(**init_kwargs, is_custom=False)
+    try:
+        pmd_demixer.initialize_signals(**init_kwargs, is_custom=False)
+    except ValueError as e:
+        print(f"Initialization for input {zplane} failed: {e}")
+        text = "Initialization failed, skipping plane."
+        np.save(plane_dir / "error.npy", text)
+        return
+
     print(f"Identified {pmd_demixer.results[0].shape[1]} neurons here")
     pmd_demixer.lock_results_and_continue(carry_background=True)
 
@@ -436,23 +442,20 @@ def run_plane(data_array: ArrayLike, idx, save_path=None, **kwargs):
     ic(a.shape, c.shape)
     print(f"complete, saved to {plane_dir}")
 
-def load_tiff():
-    tiff_file = Path("path/to/your/tiff/file.tif")
-    if not tiff_file.exists():
-        raise FileNotFoundError(f"File not found: {tiff_file}")
-    data = tifffile.imread(tiff_file)
-    return data
 
 if __name__ == "__main__":
-    for i in [7]:
-        inpath = r"D:\W2_DATA\masknmf\mk301_kbarber\full_fov"
-        savedir = r"D:\W2_DATA\masknmf\mk301_kbarber\full_fov"
-        Path(savedir).mkdir(exist_ok=True)
-        files = list(Path(inpath).glob("*.tif*"))[0]
-        data_arr = tifffile.imread(files)
+
+    inpath = r"D:\tests\data\assembled\roi2"
+    savedir = r"D:\tests\data\assembled\roi2\masknmf"
+
+    Path(savedir).mkdir(exist_ok=True)
+    files = sorted(list(Path(inpath).glob("*.tif*")))
+
+    for file in files:
+        data_arr = tifffile.memmap(file)
         run_plane(
             data_array=data_arr,
-            idx=i,
+            zplane=file.stem,
             save_path=savedir,
             save_video=False,
             debug=True,
