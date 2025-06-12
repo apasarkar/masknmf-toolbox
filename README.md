@@ -31,8 +31,10 @@ cd masknmf-toolbox
 
 Virtual environments are outside the scope of this README, but in general we recommend:
 - [UV](https://docs.astral.sh/uv/) (strongly recommended, prepend `uv` to all `pip` commands)
+```bash
+uv pip install .
+```
 - [venv](https://docs.python.org/3/library/venv.html#creating-virtual-environments)
-
 ```bash
 pip install .
 ```
@@ -57,8 +59,8 @@ $ pip install git+https://github.com/apasarkar/masknmf-toolbox.git@main
 $ uv pip install git+https://github.com/apasarkar/masknmf-toolbox.git@main
 
 Installed 1 package in 0.63ms
- - masknmf-toolbox==0.1.0 (from file:///home/flynn/repos/work/masknmf-toolbox)
- + masknmf-toolbox==0.1.0 (from git+https://github.com/apasarkar/masknmf-toolbox.git@62d3dddfc6e8a024c3ae6284659c871e951ee6c1)
+ - masknmf-toolbox==0.1.0 
+ + masknmf-toolbox==0.1.0 
 ```
 
 ## GPU Dependencies
