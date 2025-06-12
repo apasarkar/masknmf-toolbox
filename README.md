@@ -1,11 +1,9 @@
 # masknmf-toolbox
 
-
 [**Installation**](https://github.com/apasarkar/masknmf-toolbox#Installation) |
 [**API**](https://github.com/apasarkar/masknmf-toolbox#API) |
 [**Data Formats**](https://github.com/apasarkar/masknmf-toolbox#examples) |
 [**Paper**](https://github.com/apasarkar/masknmf-toolbox#Paper) |
-
 
 PyTorch implementation of the masknmf framework for {calcium, voltage, glutamate} imaging analysis. Supports GPU-accelerated:
 - Motion Correction
@@ -13,22 +11,91 @@ PyTorch implementation of the masknmf framework for {calcium, voltage, glutamate
 - Signal Demixing
 - High-performance visualization
 
-# Installation
+## Installation
+ 
+Tests are run against Python 3.11 and 3.12, on Linux and Windows using `pip` and `miniforge3`.
 
-In a conda or python venv, do the following:
+### Download the repository
+
+Until the package is published to PyPI, you have a few options to download the software:
+1. `git clone` (recommended)
+2. Download directly from [GitHub (code -> Download ZIP)](https://github.com/apasarkar/masknmf-toolbox)
+3. Install directly from a branch (see [Skip the cloning step](https://github.com/apasarkar/masknmf-toolbox#skip-the-cloning-step))
+
 ```bash
-
-#1. First install the version of PyTorch you want: https://pytorch.org/get-started/locally/
-
-#2. Clone the repo
 git clone https://github.com/apasarkar/masknmf-toolbox.git
-pip install -e ".[notebook]"
+cd masknmf-toolbox
 ```
 
-# API
+### pip
+
+Virtual environments are outside the scope of this README, but in general we recommend:
+- [UV](https://docs.astral.sh/uv/) (strongly recommended, prepend `uv` to all `pip` commands)
+- [venv](https://docs.python.org/3/library/venv.html#creating-virtual-environments)
+
+```bash
+pip install .
+```
+
+### miniforge3
+
+The only tested and supported flavor of `anaconda` is [miniforge3](https://github.com/conda-forge/miniforge?tab=readme-ov-file#requirements-and-installers):
+
+```bash
+conda create -n masknmf -c conda-forge python=3.12
+pip install .
+```
+
+### Skip the cloning step
+
+If your environment is already set up, you can skip the cloning step and install directly from a branch of the repository:
+
+```bash
+# with standard venvs 
+$ pip install git+https://github.com/apasarkar/masknmf-toolbox.git@main
+# or with UV
+$ uv pip install git+https://github.com/apasarkar/masknmf-toolbox.git@main
+
+Installed 1 package in 0.63ms
+ - masknmf-toolbox==0.1.0 (from file:///home/flynn/repos/work/masknmf-toolbox)
+ + masknmf-toolbox==0.1.0 (from git+https://github.com/apasarkar/masknmf-toolbox.git@62d3dddfc6e8a024c3ae6284659c871e951ee6c1)
+```
+
+## GPU Dependencies
+
+The default installation of PyTorch will not have cuda enabled.
+To get the cuda-enabled PyTorch installation
+
+Find which Cuda version you're using (e.g. cuda_12.6)
+
+```bash
+nvcc --version
+% or
+nvidia-smi
+```
+
+Windows should have `nvcc` available in the command prompt if you have installed the CUDA toolkit.
+
+If not, you can find it in the CUDA installation directory:
+
+- Windows:`C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin`
+- Linux/Unix: `/usr/local/cuda/bin/nvcc`
+
+```bash
+$ nvcc --version
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2024 NVIDIA Corporation
+Built on Thu_Sep_12_02:55:00_Pacific_Daylight_Time_2024
+Cuda compilation tools, release 12.6, V12.6.77
+Build cuda_12.6.r12.6/compiler.34841621_0
+```
+
+Install the version of PyTorch that matches your cuda and operating system [on the PyTorch Getting Started](https://pytorch.org/get-started/locally/).
+
+## API
 See the notebooks folder for demos on how to use the motion correction, compression, and demixing APIs.
 
-# Data Formats
+## Data Formats
 Support currently provided for 
 - multipage .tiff files 
 - hdf5 files. 
