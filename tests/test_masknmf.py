@@ -1,23 +1,26 @@
-from pathlib import Path
-
 import numpy as np
 import torch
 import masknmf
+import pytest
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def get_device():
-    
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    print(DEVICE)
-
-    rigid_strategy = masknmf.RigidMotionCorrection(
-        max_shifts=(5, 5)
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU unavailable")
+def test_rigid_motion_gpu():
+    x = (np.random.rand(4, 32, 32) * 4096).astype(np.int16)
+    rigid = masknmf.RigidMotionCorrection(max_shifts=(3, 3))
+    rigid = masknmf.motion_correction.compute_template(
+        x, rigid, num_iterations_piecewise_rigid=0, device=DEVICE
     )
-    pwrigid_strategy = masknmf.PiecewiseRigidMotionCorrection(
-        num_blocks=(32, 32),
-        overlaps=(5, 5),
-        max_rigid_shifts=[5, 5],
-        max_deviation_rigid=[2, 2]
+    out = masknmf.RegistrationArray(x, rigid, device='cuda')[:]
+    assert out.shape == x.shape
+
+def test_rigid_motion_cpu():
+    x = (np.random.rand(4, 32, 32) * 4096).astype(np.int16)
+    rigid = masknmf.RigidMotionCorrection(max_shifts=(3, 3))
+    rigid = masknmf.motion_correction.compute_template(
+        x, rigid, num_iterations_piecewise_rigid=0, device='cpu'
     )
-
-
+    out = masknmf.RegistrationArray(x, rigid, device='cpu')[:]
+    assert out.shape == x.shape
