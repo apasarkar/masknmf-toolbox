@@ -13,29 +13,44 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: [3.10, 3.11, 3.12]
+        python-version: ["3.12"]
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v6
         with:
+          version: "latest"
           python-version: ${{ matrix.python-version }}
           enable-cache: true
       - run: GIT_LFS_SKIP_SMUDGE=1 uv sync --all-extras
-      - run: uv run pytest tests
+      - name: Test with python ${{ matrix.python-version }}
+        run: uv run --frozen pytest tests
 
-  conda-test:
-    if: |
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, 'ci')
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: [3.10, 3.11, 3.12]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: mamba-org/setup-micromamba@v1
-        with:
-          environment-name: masknmf
-          create-args: python=${{ matrix.python-version }} pip
-      - run: pip install . && pip install pytest
-      - run: pytest tests
+conda-test:
+  if: github.event_name != 'push' || contains(github.event.head_commit.message, 'ci')
+  runs-on: ubuntu-latest
+  strategy:
+    matrix:
+      python-version: ['3.12']
+
+  steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Miniforge3
+      uses: conda-incubator/setup-miniconda@v3
+      with:
+        miniforge-variant: Miniforge3  
+        miniforge-version: latest
+        python-version: ${{ matrix.python-version }}
+        environment-name: masknmf
+        activate-environment: masknmf  
+        channels: conda-forge
+
+    - name: Install package & pytest
+      shell: bash -l {0}                
+      run: |
+        pip install . pytest
+
+    - name: Run tests
+      shell: bash -l {0}
+      run: pytest tests
+
