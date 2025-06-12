@@ -60,5 +60,5 @@ Issues = "https://github.com/apasarkar/masknmf-toolbox/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["masknmf"]
+include = ["masknmf", "masknmf.*"] 
 
