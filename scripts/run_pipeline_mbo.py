@@ -186,8 +186,7 @@ def save_mp4(
 
 
 def plot_pmd_projection(
-        proj,
-        a,
+        results_dir: str | Path,
         savepath=None,
         fig_label=None,
         add_scalebar=False,
@@ -198,10 +197,8 @@ def plot_pmd_projection(
 
     Parameters
     ----------
-    proj : np.ndarray
-        Background image (mean or max projection), shape (Ly, Lx).
-    a : np.ndarray
-        Spatial components, shape (Ly, Lx, n_rois).
+    results_dir : str or Path
+        Directory where the results are saved.
     savepath : Path or None
         Where to save the image (optional).
     fig_label : str or None
@@ -212,7 +209,15 @@ def plot_pmd_projection(
         Microns per pixel.
     """
     import matplotlib.pyplot as plt
+
+    res = load_from_dir(results_dir)
+
+    a = res["a"]
+    demixer = res["pmd_demixer"]
+
+    proj = demixer.pmd_obj.mean_img.to("cpu")
     shape = proj.shape
+
     fig, ax = plt.subplots(figsize=(6, 6), facecolor='black')
 
     vmin = np.nanpercentile(proj, 2)
@@ -304,8 +309,6 @@ def run_plane(
 ):
 
     debug = kwargs.get("debug", False)
-    framerate = kwargs.get("fs", 10)
-
     if debug:
         ic.enable()
     else:
@@ -441,15 +444,16 @@ def run_plane(
     np.save(plane_dir / "c.npy", c)
     ic(a.shape, c.shape)
     print(f"complete, saved to {plane_dir}")
+    plot_pmd_projection(plane_dir, savepath=plane_dir / "projection.png")
 
 
 if __name__ == "__main__":
 
-    inpath = r"D:\tests\data\assembled\roi2"
-    savedir = r"D:\tests\data\assembled\roi2\masknmf"
+    inpath = r"D:\tests_bigmem\no_phase\roi2"
+    savedir = r"D:\tests_bigmem\no_phase\roi2"
 
     Path(savedir).mkdir(exist_ok=True)
-    files = sorted(list(Path(inpath).glob("*.tif*")))
+    files = sorted(list(Path(inpath).glob("*tif*")))
 
     for file in files:
         data_arr = tifffile.memmap(file)
@@ -461,3 +465,4 @@ if __name__ == "__main__":
             debug=True,
             overwrite=True,
         )
+        x = 2
