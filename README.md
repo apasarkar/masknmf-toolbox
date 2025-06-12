@@ -1,11 +1,9 @@
 # masknmf-toolbox
 
-
 [**Installation**](https://github.com/apasarkar/masknmf-toolbox#Installation) |
 [**API**](https://github.com/apasarkar/masknmf-toolbox#API) |
 [**Data Formats**](https://github.com/apasarkar/masknmf-toolbox#examples) |
 [**Paper**](https://github.com/apasarkar/masknmf-toolbox#Paper) |
-
 
 PyTorch implementation of the masknmf framework for {calcium, voltage, glutamate} imaging analysis. Supports GPU-accelerated:
 - Motion Correction
@@ -13,40 +11,42 @@ PyTorch implementation of the masknmf framework for {calcium, voltage, glutamate
 - Signal Demixing
 - High-performance visualization
 
-# Installation
+## Installation
  
 Tests are run against Python 3.11 and 3.12, on Linux and Windows using `pip` and `miniforge3`.
 
-## Clone the repository
+### Download the repository
 
-Until the package is published to PyPI, you will need to clone the repository (or download from GitHub) to install the package.
+Until the package is published to PyPI, you have a few options to download the software:
+1. `git clone` (recommended)
+2. Download directly from [GitHub (code -> Download ZIP)](https://github.com/apasarkar/masknmf-toolbox)
+3. Install directly from a branch (see [Skip the cloning step](https://github.com/apasarkar/masknmf-toolbox#skip-the-cloning-step))
 
 ```bash
 git clone https://github.com/apasarkar/masknmf-toolbox.git
 cd masknmf-toolbox
 ```
 
-
-## pip
+### pip
 
 Virtual environments are outside the scope of this README, but in general we recommend:
-- [UV](https://docs.astral.sh/uv/) (strongly recommended)
+- [UV](https://docs.astral.sh/uv/) (strongly recommended, prepend `uv` to all `pip` commands)
 - [venv](https://docs.python.org/3/library/venv.html#creating-virtual-environments)
 
 ```bash
 pip install .
 ```
 
-## miniforge3
+### miniforge3
 
-The only tested and supported flavor of `anaconda` is [miniforge3](https://github.com/conda-forge/miniforge?tab=readme-ov-file#requirements-and-installers)
+The only tested and supported flavor of `anaconda` is [miniforge3](https://github.com/conda-forge/miniforge?tab=readme-ov-file#requirements-and-installers):
 
 ```bash
 conda create -n masknmf -c conda-forge python=3.12
 pip install .
 ```
 
-## Skip the cloning step
+### Skip the cloning step
 
 If your environment is already set up, you can skip the cloning step and install directly from a branch of the repository:
 
@@ -92,10 +92,10 @@ Build cuda_12.6.r12.6/compiler.34841621_0
 
 Install the version of PyTorch that matches your cuda and operating system [on the PyTorch Getting Started](https://pytorch.org/get-started/locally/).
 
-# API
+## API
 See the notebooks folder for demos on how to use the motion correction, compression, and demixing APIs.
 
-# Data Formats
+## Data Formats
 Support currently provided for 
 - multipage .tiff files 
 - hdf5 files. 
