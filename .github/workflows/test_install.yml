@@ -20,7 +20,6 @@ jobs:
         with:
           version: "latest"
           python-version: ${{ matrix.python-version }}
-          enable-cache: true
       - run: GIT_LFS_SKIP_SMUDGE=1 uv sync --all-extras
       - name: Test with python ${{ matrix.python-version }}
         run: uv run --frozen pytest tests
