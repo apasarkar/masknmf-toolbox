@@ -15,16 +15,19 @@ PyTorch implementation of the masknmf framework for {calcium, voltage, glutamate
 
 # Installation
 
-Clone the repository
+Clone the repository:
 
 ```bash
 git clone https://github.com/apasarkar/masknmf-toolbox.git
 cd masknmf-toolbox
-
-# if you have a virtual env already set up
-pip install .
-
 ```
+
+if you have an environment activated:
+
+```bash
+pip install .
+```
+
 If, for some reason, you're forced to use conda (miniforge3 only)
 
 ```bash
@@ -32,15 +35,19 @@ conda create -n masknmf -c conda-forge python=3.12
 pip install .
 ```
 
-Install the version of PyTorch that matches your cuda: https://pytorch.org/get-started/locally/
+## GPU Dependencies
 
-To find this via terminal:
+The default installation of PyTorch will not have cuda enabled.
+To get the cuda-enabled PyTorch installation
 
+Find which Cuda version you're using (e.g. cuda_12.6)
 ```bash
 nvcc --version
 % or
 nvidia-smi
 ```
+
+Install the version of PyTorch that matches your cuda and operating system [on the PyTorch Getting Started](https://pytorch.org/get-started/locally/).
 
 # API
 See the notebooks folder for demos on how to use the motion correction, compression, and demixing APIs.
