@@ -1,22 +1,14 @@
 from pathlib import Path
 
 import numpy as np
-
 import torch
-import tifffile
-import ffmpeg
-import matplotlib
-
 import masknmf
-
-ic.enable()
 
 
 def get_device():
     
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    ic(DEVICE)
-    ic(f"Using CUDA with device: {torch.cuda.get_device_name(0)}")
+    print(DEVICE)
 
     rigid_strategy = masknmf.RigidMotionCorrection(
         max_shifts=(5, 5)
