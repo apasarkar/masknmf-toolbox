@@ -18,7 +18,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
       - run: GIT_LFS_SKIP_SMUDGE=1 uv sync --all-extras
-      - run: uvx pytest tests
+      - run: uv run pytest tests
 
   conda:
     runs-on: ubuntu-latest
