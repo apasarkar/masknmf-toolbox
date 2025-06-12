@@ -1,0 +1,35 @@
+name: Install and Test
+
+on:
+  # pull_request:
+  #   branches: [dev]
+  workflow_dispatch:
+
+jobs:
+  uv-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.10, 3.11, 3.12]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - run: GIT_LFS_SKIP_SMUDGE=1 uv sync --all-extras
+      - run: uvx pytest tests
+
+  conda:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.10, 3.11, 3.12]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v1
+        with:
+          environment-name: masknmf
+          create-args: python=${{ matrix.python-version }} pip
+      - run: pip install . && pip install pytest
+      - run: pytest tests
