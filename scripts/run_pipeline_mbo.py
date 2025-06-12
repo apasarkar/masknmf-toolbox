@@ -160,7 +160,7 @@ def load_from_dir(plane_dir):
     plane_dir = Path(plane_dir).expanduser()
 
     results = {}
-    moco_path = plane_dir / "moco.npy"
+    moco_path = plane_dir / "data_reg.npy"
     pmd_demixer_path = plane_dir / "pmd_demixer.npy"
     a_path = plane_dir / "a.npy"
     c_path = plane_dir / "a.npy"
@@ -180,10 +180,14 @@ def run_plane(
         data_array: ArrayLike,
         zplane: int | str | Path,
         save_path=None,
-        **kwargs
+        ops=None,
+        debug=False,
+        overwrite=False,
 ):
+    if ops is None:
+        ops = {}
 
-    debug = kwargs.get("debug", False)
+    debug = debug
     if debug:
         logger.setLevel(logging.DEBUG)
     else:
@@ -198,34 +202,62 @@ def run_plane(
         plane_dir = save_path / zplane
     plane_dir.mkdir(exist_ok=True)
 
+    do_rigid = ops.get("do_rigid", True)
+    do_nonrigid = ops.get("do_nonrigid", False)
+
     # motion correction
     reg_data_file = plane_dir / "data_reg.npy"
-    if reg_data_file.exists() and not kwargs.get("overwrite", False):
-        logger.info("Loading moco")
-        dense_moco = np.load(reg_data_file)
+    if reg_data_file.exists():
+        logger.info("Found moco results.")
+        if overwrite:
+            logger.info("Overwriting existing moco results.")
+            return
+        else:
+            # Load existing motion-corrected data
+            logger.info("Loading moco")
+            dense_moco = np.load(reg_data_file)
     else:
-        logger.info("No moco found, running it")
-        rigid_strategy = masknmf.RigidMotionCorrection(
-            max_shifts=(5, 5)
+        _, H, W = data_array.shape
+        block_size = 100
+        num_blocks = (
+            max(1, W // block_size),
+            max(1, H // block_size),
         )
+        logger.info(
+            f"Running registration: rigid = {do_rigid},"
+            f" nonrigid = {do_nonrigid},"
+            f" num_blocks = {num_blocks}"
+        )
+        rigid_strategy = masknmf.RigidMotionCorrection(max_shifts=(5, 5))
         pwrigid_strategy = masknmf.PiecewiseRigidMotionCorrection(
-            num_blocks=(32, 32),
+            num_blocks=num_blocks,
             overlaps=(5, 5),
-            max_rigid_shifts=[5, 5],
-            max_deviation_rigid=[2, 2]
+            max_rigid_shifts=(5, 5),
+            max_deviation_rigid=(2, 2),
+        ) if do_nonrigid else None
+        num_pw_iters = 1 if do_nonrigid else 0
+
+        mc_strategy = masknmf.motion_correction.compute_template(
+            data_array,
+            rigid_strategy,
+            num_iterations_piecewise_rigid=num_pw_iters,
+            pwrigid_strategy=pwrigid_strategy,
+            device=DEVICE,
+            batch_size=1000,
         )
-        pwrigid_strategy = masknmf.motion_correction.compute_template(
-            data_array, rigid_strategy, num_iterations_piecewise_rigid=1,
-            pwrigid_strategy=pwrigid_strategy, device=DEVICE, batch_size=1000
+
+        moco_array = masknmf.RegistrationArray(
+            data_array,
+            strategy=mc_strategy if (do_rigid or do_nonrigid) else rigid_strategy,
+            device=DEVICE,
         )
-        moco_results = masknmf.RegistrationArray(data_array, pwrigid_strategy, device=DEVICE)
-        dense_moco = moco_results[:]
+        dense_moco = moco_array[:]
         np.save(plane_dir / "data_reg.npy", dense_moco)
 
     # PMD decomposition
     t_pmd = time.time()
     pmd_obj = masknmf.compression.pmd_decomposition(
-        dense_moco, [32, 32], dense_moco.shape[0],
+        dense_moco, (32, 32), dense_moco.shape[0],
         max_components=10, background_rank=10, device=DEVICE,
     )
     print(f"PMD took {time.time() - t_pmd:.2f}s")
@@ -317,18 +349,22 @@ def run_plane(
     c = pmd_demixer.results.ac_array.export_c()
     np.save(plane_dir / "a.npy", a)
     np.save(plane_dir / "c.npy", c)
-    logger.info(a.shape, c.shape)
+    logger.info((a.shape, c.shape))
     print(f"complete, saved to {plane_dir}")
     plot_pmd_projection(plane_dir, savepath=plane_dir / "projection.png")
 
 
 if __name__ == "__main__":
 
-    inpath = r"D:\tests_bigmem\no_phase\roi2"
-    savedir = r"D:\tests_bigmem\no_phase\roi2"
+    inpath = r"D:\tests_bigmem\roi2"
+    savedir = r"D:\tests_bigmem\roi2\rigid_only"
 
     Path(savedir).mkdir(exist_ok=True)
-    files = sorted(list(Path(inpath).glob("*tif*")))
+    files = sorted(list(Path(inpath).glob("*plane7.tif*")))
+    ops = {
+        "do_rigid": True,
+        "do_nonrigid": False,
+    }
 
     for file in files:
         data_arr = tifffile.memmap(file)
@@ -336,8 +372,7 @@ if __name__ == "__main__":
             data_array=data_arr,
             zplane=file.stem,
             save_path=savedir,
-            save_video=False,
-            debug=True,
-            overwrite=True,
+            ops=ops,
+            debug=False,
+            overwrite=True
         )
-        x = 2
