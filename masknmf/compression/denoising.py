@@ -328,12 +328,12 @@ class MultivariateTimeSeriesDataset(torch.utils.data.Dataset):
             return data
 
 def denoise_batched(
-    model,
-    traces,
-    noise_variance_percentile=5,
-    var_partition_timesteps=5000,
-    input_size=900,
-    overlap=200,
+    model: torch.nn.Module,
+    traces: np.ndarray,
+    noise_variance_percentile: float=5,
+    var_partition_timesteps: int=5000,
+    input_size: int=900,
+    overlap: int=200,
 ):
     """
     Denoise a large dataset by processing in batches.
@@ -342,7 +342,7 @@ def denoise_batched(
 
     Args:
         model: Trained model
-        traces: Input traces to denoise [num_nodes, num_timesteps]
+        traces: Input traces to denoise [num_traces, num_timesteps]
         noise_variance_percentile: Percentile for noise variance estimation
         var_partition_timesteps: Number of timesteps to use for variance partitioning
     Returns:
@@ -351,9 +351,14 @@ def denoise_batched(
         signal_weight: weights for signal component. Shape: [num_nodes, num_timesteps]
         observation_weight: weights for observation component. Shape: [num_nodes, num_timesteps]
     """
+    traces_means = np.mean(traces, axis=1, keepdims=True)
+    traces_normalized = traces - traces_means
+    traces_norms = np.linalg.norm(traces_normalized, axis=1, keepdims=True)
+    traces_normalized /= traces_norms
+
     noise_variance = partition_variance(
         model,
-        traces[:, :var_partition_timesteps],
+        traces_normalized[:, :var_partition_timesteps],
         percentile=noise_variance_percentile,
     )
 
@@ -363,12 +368,15 @@ def denoise_batched(
     denoised_traces, signal_mean, signal_weight, observation_weight, total_var = (
         _denoise_batched_inner(
             model,
-            traces,
+            traces_normalized,
             noise_variance,
             input_size=input_size,
             overlap=overlap,
         )
     )
+
+    denoised_traces *= traces_norms
+    denoised_traces += traces_means
     noise_variance = noise_variance.cpu().numpy()
     return (
         denoised_traces,
@@ -505,14 +513,14 @@ def denoise_with_partitioned_variance(model, traces, noise_variance):
         # In some regions we may have total_variance <= noise_variance.
         # Since this can't happen, we reset the variance to noise_variance
         # in those regions.
-        total_variance = torch.clamp(total_variance, min=noise_var)
+        total_variance_normalizer = torch.clamp(total_variance, min=noise_var)
 
         # Ensure signal variance is positive
-        signal_var = torch.clamp(total_variance - noise_var, min=0)
+        signal_var = torch.clamp(total_variance_normalizer - noise_var, min=0)
 
         # Apply Bayesian formula for posterior mean
-        weight_signal = noise_var / total_variance
-        weight_observation = signal_var / total_variance
+        weight_signal = noise_var / total_variance_normalizer
+        weight_observation = signal_var / total_variance_normalizer
         denoised_traces = weight_signal * mu_x + weight_observation * traces_tensor
 
     return (
