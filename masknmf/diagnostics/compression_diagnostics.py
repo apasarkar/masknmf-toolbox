@@ -5,6 +5,139 @@ from masknmf.compression import PMDArray
 from typing import *
 import math
 
+
+def compute_pmd_spatial_correlation_maps(raw_stack: Union[np.ndarray, masknmf.LazyFrameLoader, masknmf.FactorizedVideo],
+                                         pmd_stack: masknmf.PMDArray,
+                                         device='cpu',
+                                         batch_size: int = 200) -> Tuple[torch.tensor, torch.tensor, torch.tensor]:
+    """
+    Computes spatial correlation heatmaps for the raw data, PMD reconstruction, and residuals.
+    For each pair of adjacent pixels (in horizontal, vertical, and diagonal directions),
+    the function calculates the normalized covariance (correlation) between pixel values over time.
+    The normalization is based on the raw variance so that comparisons between raw, PMD, and residual
+    signals reflect how well PMD decorrelates spatial structure.
+
+    Args:
+        raw_stack (Union[np.ndarray, masknmf.LazyFrameLoader, masknmf.FactorizedVideo]):
+            The raw video stack with shape (frames, height, width).
+        pmd_stack (masknmf.PMDArray):
+            The PMD reconstruction object, which includes factorized temporal and spatial components.
+        device (str):
+            The device on which computations will be performed ('cpu' or 'cuda').
+        batch_size (int):
+            Number of frames to process per batch.
+        mode (str):
+            Currently unused; placeholder for future support of different aggregation modes.
+    Returns:
+        Tuple[np.ndarray, np.ndarray, np.ndarray]:
+            Three spatial correlation maps (height, width) for:
+              - raw video
+              - PMD reconstruction
+              - residual (raw - PMD)
+    """
+    pmd_stack.to(device)
+    pmd_stack.rescale = True
+    num_frames, fov_dim1, fov_dim2 = raw_stack.shape
+
+    raw_var_img = torch.from_numpy(np.std(raw_stack, axis=0, keepdims=True)).to(device)
+    raw_mean = torch.from_numpy(np.mean(raw_stack, axis=0, keepdims=True)).to(device)
+    pmd_mean = pmd_stack.mean_img.to(device)[None, :, :] + torch.sparse.mm(pmd_stack.u, torch.mean(pmd_stack.v, dim=1,
+                                                                                                   keepdim=True)).reshape(
+        (1, fov_dim1, fov_dim2)).to(device)
+    resid_mean = raw_mean - pmd_mean
+
+    top_left_bottom_right = torch.zeros((3, fov_dim1 - 1, fov_dim2 - 1), device=device).float()
+    horizontal = torch.zeros((3, fov_dim1, fov_dim2 - 1), device=device).float()
+    vertical = torch.zeros((3, fov_dim1 - 1, fov_dim2), device=device).float()
+    top_right_bottom_left = torch.zeros((3, fov_dim1 - 1, fov_dim2 - 1), device=device).float()
+
+    # First compute the mean and variance of the stack
+    num_iters = math.ceil(num_frames / batch_size)
+    for k in tqdm(range(num_iters)):
+        start = batch_size * k
+        end = min(start + batch_size, num_frames)
+        raw_subset = (torch.from_numpy(raw_stack[start:end, :, :]).to(device) - raw_mean) / raw_var_img
+        pmd_subset = (torch.from_numpy(pmd_stack[start:end, :, :]).to(device) - pmd_mean) / raw_var_img
+
+        pmd_subset = torch.nan_to_num(pmd_subset, nan=0)
+        raw_subset = torch.nan_to_num(raw_subset, nan=0)
+        residual_subset = raw_subset - pmd_subset
+
+        top_left_bottom_right[0, :, :] += torch.sum(raw_subset[:, :-1, :-1] *
+                                                    raw_subset[:, 1:, 1:], dim=0) / num_frames
+        top_left_bottom_right[1, :, :] += torch.sum(pmd_subset[:, :-1, :-1] *
+                                                    pmd_subset[:, 1:, 1:], dim=0) / num_frames
+        top_left_bottom_right[2, :, :] += torch.sum(residual_subset[:, :-1, :-1] *
+                                                    residual_subset[:, 1:, 1:], dim=0) / num_frames
+
+        horizontal[0, :, :] += torch.sum(raw_subset[:, :, :-1] *
+                                         raw_subset[:, :, 1:], dim=0) / num_frames
+        horizontal[1, :, :] += torch.sum(pmd_subset[:, :, :-1] *
+                                         pmd_subset[:, :, 1:], dim=0) / num_frames
+        horizontal[2, :, :] += torch.sum(residual_subset[:, :, :-1] *
+                                         residual_subset[:, :, 1:], dim=0) / num_frames
+
+        vertical[0, :, :] += torch.sum(raw_subset[:, :-1, :] *
+                                       raw_subset[:, 1:, :], dim=0) / num_frames
+        vertical[1, :, :] += torch.sum(pmd_subset[:, :-1, :] *
+                                       pmd_subset[:, 1:, :], dim=0) / num_frames
+        vertical[2, :, :] += torch.sum(residual_subset[:, :-1, :] *
+                                       residual_subset[:, 1:, :], dim=0) / num_frames
+
+        top_right_bottom_left[0, :, :] += torch.sum(raw_subset[:, :-1, 1:] *
+                                                    raw_subset[:, 1:, :-1], dim=0) / num_frames
+        top_right_bottom_left[1, :, :] += torch.sum(pmd_subset[:, :-1, 1:] *
+                                                    pmd_subset[:, 1:, :-1], dim=0) / num_frames
+        top_right_bottom_left[2, :, :] += torch.sum(residual_subset[:, :-1, 1:] *
+                                                    residual_subset[:, 1:, :-1], dim=0) / num_frames
+
+    counter_matrix = torch.zeros((fov_dim1, fov_dim2), device=device).float()
+    raw_final_img = torch.zeros((fov_dim1, fov_dim2), device=device).float()
+    pmd_final_img = torch.zeros((fov_dim1, fov_dim2), device=device).float()
+    resid_final_img = torch.zeros((fov_dim1, fov_dim2), device=device).float()
+
+    raw_final_img[:-1, :-1] += top_left_bottom_right[0, ...]
+    raw_final_img[1:, 1:] += top_left_bottom_right[0, ...]
+    pmd_final_img[:-1, :-1] += top_left_bottom_right[1, ...]
+    pmd_final_img[1:, 1:] += top_left_bottom_right[1, ...]
+    resid_final_img[:-1, :-1] += top_left_bottom_right[2, ...]
+    resid_final_img[1:, 1:] += top_left_bottom_right[2, ...]
+
+    counter_matrix[:-1, :-1] += 1
+    counter_matrix[1:, 1:] += 1
+
+    raw_final_img[:, :-1] += horizontal[0, ...]
+    raw_final_img[:, 1:] += horizontal[0, ...]
+    pmd_final_img[:, :-1] += horizontal[1, ...]
+    pmd_final_img[:, 1:] += horizontal[1, ...]
+    resid_final_img[:, :-1] += horizontal[2, ...]
+    resid_final_img[:, 1:] += horizontal[2, ...]
+    counter_matrix[:, :-1] += 1
+    counter_matrix[:, 1:] += 1
+
+    raw_final_img[:-1, :] += vertical[0, ...]
+    raw_final_img[1:, :] += vertical[0, ...]
+    pmd_final_img[:-1, :] += vertical[1, ...]
+    pmd_final_img[1:, :] += vertical[1, ...]
+    resid_final_img[:-1, :] += vertical[2, ...]
+    resid_final_img[1:, :] += vertical[2, ...]
+    counter_matrix[:-1, :] += 1
+    counter_matrix[1:, :] += 1
+
+    raw_final_img[:-1, 1:] += top_right_bottom_left[0, ...]
+    raw_final_img[1:, :-1] += top_right_bottom_left[0, ...]
+    pmd_final_img[:-1, 1:] += top_right_bottom_left[1, ...]
+    pmd_final_img[1:, :-1] += top_right_bottom_left[1, ...]
+    resid_final_img[:-1, 1:] += top_right_bottom_left[2, ...]
+    resid_final_img[1:, :-1] += top_right_bottom_left[2, ...]
+    counter_matrix[:-1, 1:] += 1
+    counter_matrix[1:, :-1] += 1
+
+    raw_final_img /= counter_matrix
+    pmd_final_img /= counter_matrix
+    resid_final_img /= counter_matrix
+
+    return raw_final_img, pmd_final_img, resid_final_img
 def pmd_autocovariance_diagnostics(raw_movie: masknmf.LazyFrameLoader,
                                    pmd_movie: PMDArray,
                                    batch_size: int = 200,
