@@ -357,13 +357,13 @@ def run_plane(
 if __name__ == "__main__":
 
     inpath = r"D:\tests_bigmem\roi2"
-    savedir = r"D:\tests_bigmem\roi2\rigid_only"
+    savedir = r"D:\tests_bigmem\roi2\masknmf"
 
     Path(savedir).mkdir(exist_ok=True)
     files = sorted(list(Path(inpath).glob("*plane7.tif*")))
     ops = {
         "do_rigid": True,
-        "do_nonrigid": False,
+        "do_nonrigid": True,
     }
 
     for file in files:
