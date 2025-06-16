@@ -19,13 +19,26 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
 
-      - run: GIT_LFS_SKIP_SMUDGE=1 uv sync --all-extras
-      - run: GIT_LFS_SKIP_SMUDGE=1 uv run -m pytest tests
+      - name: UV sync
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:GIT_LFS_SKIP_SMUDGE = "1"
+          uv sync --all-extras
+          uv run -m pytest tests
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          GIT_LFS_SKIP_SMUDGE: 1
+        run: |
+          uv sync --all-extras
+          uv run -m pytest tests
+      # - run: GIT_LFS_SKIP_SMUDGE=1 uv sync --all-extras
+      # - run: GIT_LFS_SKIP_SMUDGE=1 uv run -m pytest tests
 
   conda-test:
     # if: github.event_name == 'push' ||
