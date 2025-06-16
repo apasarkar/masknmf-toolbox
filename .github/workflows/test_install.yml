@@ -23,13 +23,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: UV sync
+      - name: UV sync (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $env:GIT_LFS_SKIP_SMUDGE = "1"
           uv sync --all-extras
           uv run -m pytest tests
+
+      - name: UV sync (Unix)
         if: runner.os != 'Windows'
         shell: bash
         env:
