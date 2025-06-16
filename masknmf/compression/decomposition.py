@@ -650,6 +650,30 @@ def spatial_downsample(
     )  # (T, 1, H//2, W//2)
     return downsampled.squeeze(1).permute(1, 2, 0)
 
+def _temporal_basis_pca(temporal_basis: torch.tensor,
+                       explained_var_cutoff: float=0.99) -> torch.tensor:
+    """
+    Keeps the top "k" PCA components of temporal_basis that explain >= explained_var_cutoff of the variance
+    Args:
+        temporal_basis (torch.tensor): Shape (number_of_timeseries, num_timesteps).
+        explained_var_cutoff (float): Float between 0 and 1, describes how much of the net variance these comps
+            should explain. Default value of 0.99 makes sense when you are processing data that has been smoothed
+            already via some denoising algorithm - this should shift the signal subspace to the top of the spectrum.
+    Returns:
+        truncated_temporal_basis (torch.tensor): Shape (truncated_num_of_timeseries, num_timesteps). Truncated basis
+    """
+    temporal_basis_mean = torch.mean(temporal_basis, dim=1, keepdim=True)
+    temporal_basis_meansub = temporal_basis - temporal_basis_mean
+    _, sing, right_vec = torch.linalg.svd(temporal_basis_meansub, full_matrices=False)
+    explained_ratios = torch.cumsum(sing**2, dim=0) / torch.sum(sing**2, dim=0)
+
+    ind = torch.nonzero(explained_ratios >= explained_var_cutoff, as_tuple=True)
+    if ind[0].numel() == 0:
+        ind = temporal_basis.shape[0]
+    else:
+        ind = ind[0][0].item() + 1
+    new_basis = right_vec[:ind, :]
+    return new_basis
 
 def blockwise_decomposition(
     video_subset: torch.tensor,
@@ -689,6 +713,7 @@ def blockwise_decomposition(
         spatiotemporal_pooled_subset = temporal_downsample(
             spatial_pooled_subset, temporal_avg_factor
         )
+        spatiotemporal_pooled_subset -= torch.mean(spatiotemporal_pooled_subset, dim=2, keepdim=True)
     else:
         spatiotemporal_pooled_subset = spatial_pooled_subset
 
@@ -706,10 +731,15 @@ def blockwise_decomposition(
         temporal_projection_from_downsample = temporal_denoiser(
             temporal_projection_from_downsample
         )
-
-    temporal_basis_from_downsample = torch.linalg.svd(
-        temporal_projection_from_downsample, full_matrices=False
-    )[2]
+        temporal_basis_from_downsample = _temporal_basis_pca(temporal_projection_from_downsample,
+                                                                  explained_var_cutoff = .99)
+    else:
+        temporal_basis_from_downsample = _temporal_basis_pca(temporal_projection_from_downsample,
+                                                                  explained_var_cutoff = 1.0)
+    #
+    # temporal_basis_from_downsample = torch.linalg.svd(
+    #     temporal_projection_from_downsample, full_matrices=False
+    # )[2]
     subset_weighted_r = subset_weighted.reshape((-1, subset_weighted.shape[2]))
     spatial_basis_fullres = subset_weighted_r @ temporal_basis_from_downsample.T
 
@@ -730,6 +760,9 @@ def blockwise_decomposition(
         (fov_dim1, fov_dim2, -1)
     )
     local_temporal_basis = sing[:, None] * right
+
+    if temporal_denoiser is not None:
+        local_temporal_basis = temporal_denoiser(local_temporal_basis)
 
     return local_spatial_basis, local_temporal_basis
 
