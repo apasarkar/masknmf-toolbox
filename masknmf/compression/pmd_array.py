@@ -163,12 +163,13 @@ class PMDArray(FactorizedVideo):
         if u_local_projector is not None:
             self._u_local_projector = u_local_projector.to(device).coalesce()
         else:
-            self._u_projector = None
+            self._u_local_projector = None
         if u_global_projector is not None:
             self._u_global_projector = u_global_projector.to(device).coalesce()
             self._u_global_basis = self._compute_global_spatial_basis()
         else:
             self._u_global_projector = None
+            self._u_global_basis = None
         self._device = self._u.device
         self._shape = fov_shape
 
