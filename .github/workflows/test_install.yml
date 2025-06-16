@@ -23,7 +23,7 @@ jobs:
     strategy:
       matrix:
         python-version: ['3.11', '3.12']
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -46,8 +46,6 @@ jobs:
         run: |
           uv sync --all-extras
           uv run -m pytest tests
-      # - run: GIT_LFS_SKIP_SMUDGE=1 uv sync --all-extras
-      # - run: GIT_LFS_SKIP_SMUDGE=1 uv run -m pytest tests
 
   conda-test:
     if: ${{ !github.event.pull_request.draft }}
@@ -55,7 +53,7 @@ jobs:
     strategy:
       matrix:
         python-version: ['3.11', '3.12']
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Miniforge3
