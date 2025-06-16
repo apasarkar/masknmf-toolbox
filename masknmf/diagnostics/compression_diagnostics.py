@@ -4,6 +4,7 @@ import masknmf
 from masknmf.compression import PMDArray
 from typing import *
 import math
+from tqdm import tqdm
 
 
 def compute_pmd_spatial_correlation_maps(raw_stack: Union[np.ndarray, masknmf.LazyFrameLoader, masknmf.FactorizedVideo],
