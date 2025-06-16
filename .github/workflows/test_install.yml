@@ -1,36 +1,61 @@
 name: Install and Test
 
 on:
+  push:
+    branches: 
+      - main
+      - dev
   pull_request:
-    branches: [dev]
+    branches:
+      - main
+      - dev
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
   workflow_dispatch:
 
 jobs:
   uv-test:
-    runs-on: ubuntu-latest
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         python-version: ['3.11', '3.12']
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
 
-      - run: GIT_LFS_SKIP_SMUDGE=1 uv sync --all-extras
-      - run: GIT_LFS_SKIP_SMUDGE=1 uv run -m pytest tests
+      - name: UV sync (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:GIT_LFS_SKIP_SMUDGE = "1"
+          uv sync --all-extras
+          uv run -m pytest tests
+
+      - name: UV sync (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          GIT_LFS_SKIP_SMUDGE: 1
+        run: |
+          uv sync --all-extras
+          uv run -m pytest tests
 
   conda-test:
-    if: github.event_name != 'push' || contains(github.event.head_commit.message, 'ci')
-    runs-on: ubuntu-latest
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         python-version: ['3.11', '3.12']
-
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-
       - name: Set up Miniforge3
         uses: conda-incubator/setup-miniconda@v3
         with:

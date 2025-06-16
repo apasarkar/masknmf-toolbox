@@ -2592,14 +2592,7 @@ class DemixingState(SignalProcessingState):
 
         # Denoise 'c' components if desired
         if denoise:
-            c = self.c.cpu().numpy()
-            c = utils.denoise(
-                c
-            )  # We now use OASIS denoising to improve improve signals
-            c = np.nan_to_num(
-                c, posinf=0, neginf=0, nan=0
-            )  # Gracefully handle invalid values
-            self.c = torch.from_numpy(c).float().to(self.device)
+            pass
 
         # Delete bad components
         temp = torch.squeeze(torch.sum(self.c, dim=0) == 0).long()

@@ -1,5 +1,4 @@
 import numpy as np
-from oasis.functions import deconvolve
 import scipy.sparse
 
 import matplotlib.pyplot as plt
@@ -301,19 +300,5 @@ def get_box(img):
         x, y = np.nonzero(img)
         return int(np.amin(x)), int(np.amax(x)), int(np.amin(y)), int(np.amax(y))
 
-
-def denoise(ci):
-    """
-    Denoises a set of temporal traces
-    Params:
-        ci: ndarray (A x B). Algorithms denoises in the second dimension (i.e. it denoises a total of 'A' temporal traces)
-    """
-    ci_new = np.zeros_like(ci)
-    for k in range(ci.shape[1]):
-        c = ci[:, k].astype("double")
-        denoised, s, b, g, lam = deconvolve(c, penalty=1)
-        ci_new[:, k] = denoised.squeeze()
-
-    return ci_new
 
 
