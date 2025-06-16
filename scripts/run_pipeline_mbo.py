@@ -359,14 +359,19 @@ if __name__ == "__main__":
     inpath = r"D:\tests_bigmem\roi2"
     savedir = r"D:\tests_bigmem\roi2\masknmf"
 
+    completed = [x.stem for x in Path(savedir).iterdir()]
+
     Path(savedir).mkdir(exist_ok=True)
-    files = sorted(list(Path(inpath).glob("*plane7.tif*")))
+    files = sorted(list(Path(inpath).glob("*.tif*")))
     ops = {
         "do_rigid": True,
         "do_nonrigid": True,
     }
 
     for file in files:
+        if file.stem in completed:
+            print(f"Skipping {file.stem}, already processed.")
+            continue
         data_arr = tifffile.memmap(file)
         run_plane(
             data_array=data_arr,
