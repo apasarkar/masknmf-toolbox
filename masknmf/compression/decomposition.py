@@ -366,6 +366,7 @@ def compute_full_fov_temporal_basis(
     dtype: torch.dtype,
     frame_batch_size: int,
     device: str = "cpu",
+    temporal_denoiser: Optional[Callable] = None
 ) -> torch.tensor:
     """
     Regress some portion of the data onto the spatial basis.
@@ -377,7 +378,10 @@ def compute_full_fov_temporal_basis(
         dtype (torch.dtype): The dtype on which we do computations. Should be torch.float32.
         frame_batch_size (int): The max number of frames we want to load onto GPU at a time.
         device (str): Either "cpu" or "cuda". Specifies whether we can do computations on GPU or not.
+        temporal_denoiser (Callable): A function which denoises batches of time series. Input is a tensor of shape
+            (batch_size, num_timesteps), output is same.
     Returns:
+        spatial_basis (torch.tensor). Shape (num_pixels, rank). The orthogonal spatial basis
         temporal_basis (torch.tensor). Shape (rank, num_frames). Projection of standardized data onto spatial basis.
     """
     num_frames, fov_dim1, fov_dim2 = dataset.shape
@@ -408,8 +412,33 @@ def compute_full_fov_temporal_basis(
         )
         final_results.append(projection)
 
-    final_tensor = torch.concatenate(final_results, dim=0)
-    return final_tensor.T
+    temporal_basis = torch.concatenate(final_results, dim=0).T #Shape (rank, num_timesteps)
+
+    if temporal_denoiser is not None:
+        temporal_basis = temporal_denoiser(temporal_basis)
+        temporal_basis = _temporal_basis_pca(temporal_basis, explained_var_cutoff=.99)
+        rank = temporal_basis.shape[0]
+
+        full_fov_spatial_basis = torch.zeros((rank, fov_dim1*fov_dim2), device=device)
+        temporal_sum = temporal_basis @ torch.ones((temporal_basis.shape[1], 1), device=device, dtype=temporal_basis.dtype)
+        full_fov_spatial_basis -= temporal_sum @ mean_img_r
+        for k in range(num_iters):
+            if frame_batch_size >= dataset.shape[0]:
+                curr_dataset = dataset.to(device).to(dtype)
+                start_pt = 0
+                end_pt = dataset.shape[0]
+            else:
+                start_pt = k * frame_batch_size
+                end_pt = min(dataset.shape[0], start_pt + frame_batch_size)
+                curr_dataset = dataset[start_pt:end_pt].to(device).to(dtype)
+            curr_dataset_r = curr_dataset.reshape((-1, fov_dim1 * fov_dim2))
+            full_fov_spatial_basis += temporal_basis[:, start_pt:end_pt] @ curr_dataset_r
+        full_fov_spatial_basis *= torch.reciprocal(noise_variance_img_r.T)
+        left_sing, sing, right_sing = torch.linalg.svd(full_fov_spatial_basis, full_matrices=False)
+        temporal_basis = temporal_basis.T @ (left_sing * sing[None, :])
+        return right_sing.T.reshape(fov_dim1, fov_dim2, -1), temporal_basis.T
+    else:
+        return full_fov_spatial_basis, temporal_basis
 
 
 def compute_factorized_svd_with_leftbasis(
@@ -1024,7 +1053,7 @@ def pmd_decomposition(
     if frame_batch_size >= data_for_spatial_fit.shape[0]:
         data_for_spatial_fit = data_for_spatial_fit.to(device).to(dtype)
 
-    full_fov_temporal_basis = compute_full_fov_temporal_basis(
+    full_fov_spatial_basis, full_fov_temporal_basis = compute_full_fov_temporal_basis(
         data_for_spatial_fit,
         dataset_mean,
         dataset_noise_variance,
@@ -1032,7 +1061,9 @@ def pmd_decomposition(
         dtype,
         frame_batch_size,
         device=device,
+        temporal_denoiser=temporal_denoiser
     )
+    background_rank = full_fov_temporal_basis.shape[0]
 
     if pixel_weighting is None:
         pixel_weighting = torch.ones((fov_dim1, fov_dim2), device=device, dtype=dtype)
