@@ -20,7 +20,6 @@ dependencies = [
     "h5py",
     "scikit-image",
     "cvxpy>=1.6.5",
-    "oasis-deconv",
 
     "ipykernel",
     "future",
@@ -34,10 +33,10 @@ dependencies = [
     # plotting
     "plotly",
     "fastplotlib @ git+https://github.com/fastplotlib/fastplotlib.git@main",
-    "pygfx @ git+https://github.com/pygfx/pygfx.git@main",
+    # "pygfx @ git+https://github.com/pygfx/pygfx.git@main",
     "matplotlib",
     "jupyter-rfb>=0.5.1",
-    "jupyterlab==4.5.0a0",
+    "jupyterlab",
     "simplejpeg",
     "imgui-bundle",
     "PyQt5==5.15.11",
@@ -47,6 +46,12 @@ dependencies = [
     "glfw",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.4.0",
+    "ruff>=0.11.13",
+]
+
 [project.urls]
 Homepage = "https://github.com/apasarkar/masknmf-toolbox"
 Repository = "https://github.com/apasarkar/masknmf-toolbox"
@@ -54,4 +59,5 @@ Issues = "https://github.com/apasarkar/masknmf-toolbox/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["masknmf"]
+include = ["masknmf", "masknmf.*"] 
+
