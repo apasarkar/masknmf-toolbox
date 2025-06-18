@@ -1053,17 +1053,21 @@ def pmd_decomposition(
     if frame_batch_size >= data_for_spatial_fit.shape[0]:
         data_for_spatial_fit = data_for_spatial_fit.to(device).to(dtype)
 
-    full_fov_spatial_basis, full_fov_temporal_basis = compute_full_fov_temporal_basis(
-        data_for_spatial_fit,
-        dataset_mean,
-        dataset_noise_variance,
-        full_fov_spatial_basis,
-        dtype,
-        frame_batch_size,
-        device=device,
-        temporal_denoiser=temporal_denoiser
-    )
-    background_rank = full_fov_temporal_basis.shape[0]
+    if background_rank > 0:
+        full_fov_spatial_basis, full_fov_temporal_basis = compute_full_fov_temporal_basis(
+            data_for_spatial_fit,
+            dataset_mean,
+            dataset_noise_variance,
+            full_fov_spatial_basis,
+            dtype,
+            frame_batch_size,
+            device=device,
+            temporal_denoiser=temporal_denoiser
+        )
+        background_rank = full_fov_temporal_basis.shape[0]
+    else:
+        full_fov_temporal_basis = torch.zeros((1, num_frames), device=device, dtype=full_fov_spatial_basis.dtype)
+
 
     if pixel_weighting is None:
         pixel_weighting = torch.ones((fov_dim1, fov_dim2), device=device, dtype=dtype)
