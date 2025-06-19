@@ -152,7 +152,7 @@ def filter_by_failures(
     # Convolve to find runs of n consecutive False values
     conv_result = torch.nn.functional.conv1d(
         seq, kernel, stride=1, padding=max_consecutive_failures - 1
-    ).squeeze()[: false_tensor.shape[0]]
+    ).squeeze(0, 1)[: false_tensor.shape[0]]
 
     over_threshold = (conv_result >= max_consecutive_failures).to(torch.float32)
     keep_comps = (
@@ -160,7 +160,6 @@ def filter_by_failures(
     )  ##Two cumulative sums guarantee we pick the last element properly
 
     return keep_comps
-
 
 def identify_window_chunks(
     frame_range: int, total_frames: int, window_chunks: int
@@ -1067,6 +1066,9 @@ def pmd_decomposition(
         background_rank = full_fov_temporal_basis.shape[0]
     else:
         full_fov_temporal_basis = torch.zeros((1, num_frames), device=device, dtype=full_fov_spatial_basis.dtype)
+
+    #Make sure the number of frames we use matches the size of the dataset
+    full_fov_temporal_basis = full_fov_temporal_basis[:, frames]
 
 
     if pixel_weighting is None:
