@@ -365,7 +365,7 @@ def compute_full_fov_temporal_basis(
     dtype: torch.dtype,
     frame_batch_size: int,
     device: str = "cpu",
-    temporal_denoiser: Optional[Callable] = None
+    temporal_denoiser: Optional[torch.nn.Module] = None
 ) -> torch.tensor:
     """
     Regress some portion of the data onto the spatial basis.
@@ -377,7 +377,7 @@ def compute_full_fov_temporal_basis(
         dtype (torch.dtype): The dtype on which we do computations. Should be torch.float32.
         frame_batch_size (int): The max number of frames we want to load onto GPU at a time.
         device (str): Either "cpu" or "cuda". Specifies whether we can do computations on GPU or not.
-        temporal_denoiser (Callable): A function which denoises batches of time series. Input is a tensor of shape
+        temporal_denoiser (Optional[torch.nn.Module]): A function which denoises batches of time series. Input is a tensor of shape
             (batch_size, num_timesteps), output is same.
     Returns:
         spatial_basis (torch.tensor). Shape (num_pixels, rank). The orthogonal spatial basis
@@ -764,10 +764,7 @@ def blockwise_decomposition(
     else:
         temporal_basis_from_downsample = _temporal_basis_pca(temporal_projection_from_downsample,
                                                                   explained_var_cutoff = 1.0)
-    #
-    # temporal_basis_from_downsample = torch.linalg.svd(
-    #     temporal_projection_from_downsample, full_matrices=False
-    # )[2]
+
     subset_weighted_r = subset_weighted.reshape((-1, subset_weighted.shape[2]))
     spatial_basis_fullres = subset_weighted_r @ temporal_basis_from_downsample.T
 
@@ -809,8 +806,8 @@ def blockwise_decomposition_with_rank_selection(
     spatial_avg_factor: int,
     temporal_avg_factor: int,
     dtype: torch.dtype,
-    spatial_denoiser: Optional[Callable] = None,
-    temporal_denoiser: Optional[Callable] = None,
+    spatial_denoiser: Optional[torch.nn.Module] = None,
+    temporal_denoiser: Optional[torch.nn.Module] = None,
     device: str = "cpu",
 ):
     local_spatial_basis, local_temporal_basis = blockwise_decomposition(
@@ -844,14 +841,15 @@ def threshold_heuristic(
     dimensions: tuple[int, int, int],
     spatial_avg_factor: int,
     temporal_avg_factor: int,
-    spatial_denoiser: Callable,
-    temporal_denoiser: Callable,
+    spatial_denoiser: Optional[torch.nn.Module],
+    temporal_denoiser: Optional[torch.nn.Module],
     dtype: torch.dtype,
     num_comps: int = 1,
     iters: int = 250,
     percentile_threshold: float = 5,
     device: str = "cpu",
 ) -> tuple[float, float]:
+
     """
     Generates a histogram of spatial and temporal roughness statistics from running the decomposition on random noise.
     This is used to decide how "smooth" the temporal and spatial components need to be in order to contain signal.
@@ -859,6 +857,12 @@ def threshold_heuristic(
     Args:
         dimensions (tuple): Tuple describing the dimensions of the blocks which we will
             decompose. Contains (d1, d2, T), the two spatial field of view dimensions and the number of frames
+        spatial_avg_factor (int): The factor (in both spatial dimensions) by which we downsample the data to get higher SNR estimates
+        temporal_avg_factor (int): The factor (in time dimension) by which we downsample the data to get higher SNR estimates
+        spatial_denoiser (Optional[torch.nn.Module]): A spatial denoiser module for denoising spatial basis vectors
+        temporal_denoiser (Optional[torch.nn.Module]): A temporal denoiser module for denoising (batch_size, timeseries_length)
+            shaped time series data
+        dtype (torch.dtype): the dtype that all tensors must have
         num_comps (int): The number of components which we identify in the decomposition
         iters (int): The number of times we run this simulation procedure to collect a histogram of spatial and temporal
             roughness statistics
@@ -944,8 +948,8 @@ def pmd_decomposition(
     window_chunks: Optional[int] = None,
     compute_normalizer: bool = True,
     pixel_weighting: Optional[np.ndarray] = None,
-    spatial_denoiser: Optional[Callable] = None,
-    temporal_denoiser: Optional[Callable] = None,
+    spatial_denoiser: Optional[torch.nn.Module] = None,
+    temporal_denoiser: Optional[torch.nn.Module] = None,
     device: str = "cpu",
 ) -> PMDArray:
     """
@@ -969,8 +973,8 @@ def pmd_decomposition(
          compute_normalizer (bool): Whether or not we estimate a pixelwise noise variance. If False, the normalizer is set to 1 (no normalization).
          pixel_weighting (Optional[np.ndarray]): Shape (fov_dim1, fov_dim2). We weight the data by this value to estimate a cleaner spatial basis. The pixel_weighting
             should intuitively boost the relative variance of pixels containing signal to those that do not contain signal.
-        spatial_denoiser (Optional[Callable]): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
-        temporal_denoiser (Optional[Callable]): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
+        spatial_denoiser (Optional[torch.nn.Module]): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
+        temporal_denoiser (Optional[torch.nn.Module]): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
         device (str): Which device the computations should be performed on. Options: "cuda" or "cpu".
 
     Returns:
@@ -990,6 +994,13 @@ def pmd_decomposition(
         )
     dtype = torch.float32  # This is the target dtype we use for doing computations
     check_fov_size((dataset.shape[1], dataset.shape[2]))
+
+    # Move denoisers to device
+    if temporal_denoiser is not None:
+        temporal_denoiser.to(device)
+    if spatial_denoiser is not None:
+        spatial_denoiser.to(device)
+
 
     if window_chunks is None:
         window_chunks = frame_range
@@ -1344,8 +1355,8 @@ def pmd_batch(
     window_chunks: Optional[int] = None,
     compute_normalizer: bool = True,
     pixel_weighting: Optional[np.ndarray] = None,
-    spatial_denoiser: Optional[Callable] = None,
-    temporal_denoiser: Optional[Callable] = None,
+    spatial_denoiser: Optional[torch.nn.Module] = None,
+    temporal_denoiser: Optional[torch.nn.Module] = None,
     device: str = "cpu",
 ) -> PMDArray:
     """
@@ -1371,8 +1382,8 @@ def pmd_batch(
          compute_normalizer (bool): Whether or not we estimate a pixelwise noise variance. If False, the normalizer is set to 1 (no normalization).
          pixel_weighting (Optional[np.ndarray]): Shape (fov_dim1, fov_dim2). We weight the data by this value to estimate a cleaner spatial basis. The pixel_weighting
             should intuitively boost the relative variance of pixels containing signal to those that do not contain signal.
-        spatial_denoiser (Optional[Callable]): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
-        temporal_denoiser (Optional[Callable]): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
+        spatial_denoiser (Optional[torch.nn.Module]): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
+        temporal_denoiser (Optional[torch.nn.Module]): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
         device (str): Which device the computations should be performed on. Options: "cuda" or "cpu".
 
     Returns:

@@ -357,7 +357,7 @@ def denoise_batched(
         signal_weight: weights for signal component. Shape: [num_nodes, num_timesteps]
         observation_weight: weights for observation component. Shape: [num_nodes, num_timesteps]
     """
-    device = model.device #Infer device from the model device
+    device = next(model.parameters()).device #Infer device from the model device
     traces = traces.to(device)
     traces_means = torch.mean(traces, dim=1, keepdim=True)
     traces_normalized = traces - traces_means
@@ -453,7 +453,7 @@ def _denoise_batched_inner(model: torch.nn.Module,
 
     # Create arrays to hold results
     num_batches = eval_dataset.num_windows
-    device = model.device
+    device = next(model.parameters()).device
 
     denoised_traces = torch.zeros_like(traces, device=device, dtype=torch.float32)
     signal_mean = torch.zeros_like(traces, device=device, dtype=torch.float32)
@@ -544,3 +544,19 @@ def denoise_with_partitioned_variance(model: torch.nn.Module,
         weight_observation,
         total_variance,
     )
+
+
+class PMDTemporalDenoiser(torch.nn.Module):
+
+    def __init__(self,
+                 trained_model: torch.nn.Module,
+                 noise_variance_quantile:float = 1):
+        super(PMDTemporalDenoiser, self).__init__()
+        self.noise_variance_quantile = noise_variance_quantile
+        self.net = trained_model
+
+    def forward(self, traces: torch.tensor):
+        return denoise_batched(self.net,
+                               traces,
+                               noise_variance_quantile=self.noise_variance_quantile,
+                               input_size=traces.shape[1])[0]
