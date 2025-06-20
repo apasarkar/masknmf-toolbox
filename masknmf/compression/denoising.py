@@ -12,64 +12,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from torch.utils.data import DataLoader
 import os
 import sys
-import matplotlib.pyplot as plt
 from masknmf.utils import display
-
-
-
-def plot_reconstruction_info(ground_truth,
-                             noisy_trace,
-                             network_prediction,
-                             mixed_prediction,
-                             signal_weight,
-                             observation_weight,
-                             total_var,
-                             noise_variance,
-                             out_folder=None,
-                             out_name=None):
-    residual = noisy_trace - mixed_prediction
-
-    signals = [
-        ground_truth,
-        noisy_trace,
-        network_prediction,
-        mixed_prediction,
-        residual,
-        signal_weight,
-        observation_weight,
-        total_var
-    ]
-
-    titles = [
-        "Ground Truth",
-        "Noisy Trace",
-        "Network Prediction",
-        "Mixed Prediction",
-        "Residual (Noisy - Mixed)",
-        "Signal Weight",
-        "Observation Weight",
-        f"Total Variance. NoiseVar = {float(noise_variance[0]):.2}"
-    ]
-
-    n_signals = len(signals)
-    fig, axes = plt.subplots(n_signals, 1, figsize=(10, 2 * n_signals), sharex=True)
-
-    if n_signals == 1:
-        axes = [axes]
-
-    for ax, signal, title in zip(axes, signals, titles):
-        ax.plot(signal, lw=1.5)
-        ax.set_title(title)
-        ax.grid(True)
-
-    axes[-1].set_xlabel("Time")
-    plt.tight_layout()
-    if out_folder is not None and out_name is not None:
-        final_path = os.path.join(out_folder, out_name)
-        print(final_path)
-        plt.savefig(final_path, bbox_inches="tight")
-    else:
-        plt.show()
 
 
 class MaskedConv1d(nn.Conv1d):
