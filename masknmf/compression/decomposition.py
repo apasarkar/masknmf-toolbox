@@ -1580,12 +1580,12 @@ def stitch_pmd_arrays(
         u_local_projector_cols.append(curr_u_local_projector_cols)
         u_local_projector_values.append(curr_u_local_projector_values)
 
-        aggregate_local_v.append(curr_pmd.local_temporal_basis)
+        aggregate_local_v.append(curr_pmd.v_local_basis)
         local_rank_tracker += curr_pmd.local_basis_rank
 
         # Now process the global spatial/temporal matrices (if they exist)
         if curr_pmd.global_basis_rank > 0:
-            aggregate_global_v.append(curr_pmd.global_temporal_basis)
+            aggregate_global_v.append(curr_pmd.v_global_basis)
 
             # Process the global basis first
             curr_u_global = curr_pmd.u_global_basis

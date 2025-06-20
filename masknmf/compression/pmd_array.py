@@ -245,15 +245,19 @@ class PMDArray(FactorizedVideo):
             return int(self.u_global_projector.shape[1])
 
     @property
-    def local_basis_rank(self) -> int:
-        return self.u.shape[1] - self.global_basis_rank
+    def pmd_rank(self) -> int:
+        return self.u.shape[1]
 
     @property
-    def local_temporal_basis(self) -> torch.tensor:
+    def local_basis_rank(self) -> int:
+        return self.pmd_rank - self.global_basis_rank
+
+    @property
+    def v_local_basis(self) -> torch.tensor:
         return self.v[: self.local_basis_rank]
 
     @property
-    def global_temporal_basis(self) -> torch.tensor:
+    def v_global_basis(self) -> torch.tensor:
         return self.v[self.local_basis_rank :]
 
     def _compute_global_spatial_basis(self) -> Optional[torch.sparse_coo_tensor]:
