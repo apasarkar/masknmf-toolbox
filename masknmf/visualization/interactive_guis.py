@@ -9,9 +9,9 @@ import pygfx
 from functools import partial
 from ipywidgets import VBox, HBox
 from collections import OrderedDict
-import masknmf.arrays
 from masknmf.utils import display
-from masknmf import DemixingResults, PMDArray
+from masknmf import DemixingResults, PMDArray, PMDResidualArray
+from masknmf.diagnostics import pmd_autocovariance_diagnostics
 
 
 class ROIManager(ui.EdgeWindow):
@@ -30,17 +30,17 @@ class ROIManager(ui.EdgeWindow):
 
 class PMDWidget:
     def __init__(self,
-                 comparison_stack: masknmf.arrays.FactorizedVideo,
-                 pmd_stack: masknmf.PMDArray,
+                 comparison_stack,
+                 pmd_stack: PMDArray,
                  frame_batch_size: int=200,
                  device="cpu"):
 
         pmd_stack.to(device)
         self._comparison_stack = comparison_stack
         self._pmd_stack = pmd_stack
-        self._residual_stack = masknmf.PMDResidualArray(self.comparison_stack, self.pmd_stack)
+        self._residual_stack = PMDResidualArray(self.comparison_stack, self.pmd_stack)
         display('Computing Residual Statistics')
-        raw_lag1, pmd_lag1, resid_lag1 = masknmf.diagnostics.pmd_autocovariance_diagnostics(self.comparison_stack,
+        raw_lag1, pmd_lag1, resid_lag1 = pmd_autocovariance_diagnostics(self.comparison_stack,
                                                                                             self.pmd_stack,
                                                                                             batch_size=frame_batch_size,
                                                                                             device=device)
