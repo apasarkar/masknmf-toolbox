@@ -9,11 +9,12 @@ import networkx as nx
 import numpy as np
 from typing import *
 from pytorch_lightning.loggers import TensorBoardLogger
-from copy import deepcopy
 from torch.utils.data import DataLoader
 import os
 import sys
 import matplotlib.pyplot as plt
+from masknmf.utils import display
+
 
 
 def plot_reconstruction_info(ground_truth,
@@ -294,7 +295,25 @@ class MultivariateTimeSeriesDataset(torch.utils.data.Dataset):
             self.data = torch.from_numpy(data).float()
         else:
             self.data = data.float()
-        # self.data = torch.from_numpy(data).float()
+
+        starting_num_rows = self.data.shape[0]
+        # Compute row-wise standard deviation
+        std_vals = self.data.std(dim=1)
+
+        # Keep rows with std greater than eps
+        non_constant_rows = std_vals > 1e-6
+        self.data = self.data[non_constant_rows, :]
+        updated_num_rows = self.data.shape[0]
+
+        if starting_num_rows != updated_num_rows:
+            display(f"Some of the input time series had no variance, these are excluded from training"
+                    f"the input data had {starting_num_rows} time series. "
+                    f"After filtering, the training data has {updated_num_rows} time series")
+
+        self.data = self.data - self.data.mean(dim=1, keepdim=True)
+        self.data /= torch.linalg.norm(self.data, dim=1, keepdim=True)
+
+
         self.num_series = self.data.shape[0]
         self.input_size = input_size
         self.overlap = overlap
