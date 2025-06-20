@@ -11,4 +11,5 @@ from .plots import (
     plot_pmd_vs_raw_stack_diagnostic,
     generate_raw_vs_resid_plot_folder,
     roi_compare_pmd_raw,
+    pmd_temporal_denoiser_trace_plot
 )
