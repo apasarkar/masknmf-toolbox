@@ -20,16 +20,13 @@ dependencies = [
     "h5py",
     "scikit-image",
     "cvxpy>=1.6.5",
-
     "ipykernel",
     "future",
-
     "line-profiler",
     "networkx",
     "tqdm",
     "hydra-core",
     "icecream",
-
     # plotting
     "plotly",
     "fastplotlib @ git+https://github.com/fastplotlib/fastplotlib.git@main",
@@ -44,6 +41,7 @@ dependencies = [
     "pyqt5-qt5==5.15.16; sys_platform == 'darwin' or sys_platform == 'linux'",
     "ipywidgets>=8.0.0,<9",
     "glfw",
+    "pytorch-lightning>=2.5.2",
 ]
 
 [dependency-groups]
