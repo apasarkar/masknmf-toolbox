@@ -510,4 +510,12 @@ class PMDResidualArray(LazyFrameLoader):
         return len(self.shape)
 
     def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
-        return self.raw_arr[indices].astype(self.dtype) - self.pmd_arr[indices]
+        if self.pmd_arr.rescale is False:
+            self.pmd_arr.rescale = True
+            switch = True
+        else:
+            switch = False
+        output = self.raw_arr[indices].astype(self.dtype) - self.pmd_arr[indices]
+        if switch:
+            self.pmd_arr.rescale = False
+        return output
