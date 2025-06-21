@@ -6,6 +6,7 @@ import numpy as np
 import tifffile
 import torch
 
+from masknmf.default_ops import default_ops
 from masknmf.run_masknmf import run_array
 
 logger = logging.getLogger(__name__)
@@ -16,17 +17,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-
-def default_ops():
-    """
-    Default options for masknmf processing.
-    """
-    return {
-        "do_rigid": True,
-        "do_nonrigid": True,
-        "overwrite": False,
-        "debug": False,
-    }
 
 def add_args(parser: argparse.ArgumentParser):
     parser.add_argument("inpath", type=Path, help="Input TIFF directory")
