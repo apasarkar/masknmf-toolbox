@@ -99,7 +99,7 @@ def compress_and_denoise(cfg: DictConfig) -> None:
         curr_temporal_denoiser = None
     
     
-    pmd_obj = masknmf.compression.pmd_decomposition(my_data,
+    pmd_denoised = masknmf.compression.pmd_decomposition(my_data,
                                                     block_sizes,
                                                     my_data.shape[0],
                                                     max_components = cfg.max_components,
@@ -110,13 +110,33 @@ def compress_and_denoise(cfg: DictConfig) -> None:
                                                     device = device,
                                                     temporal_denoiser = curr_temporal_denoiser,
                                                     frame_batch_size = cfg.frame_batch_size)
-    
-    
-    display(f"Processing complete. The final rank is {pmd_obj.pmd_rank}")
-    output_location = os.path.join(os.path.abspath(cfg.outdir), "pmd_results.npz")
+
+    pmd_no_denoise = masknmf.compression.pmd_decomposition(my_data,
+                                                    block_sizes,
+                                                    my_data.shape[0],
+                                                    max_components = cfg.max_components,
+                                                    max_consecutive_failures = cfg.max_consecutive_failures,
+                                                    temporal_avg_factor = cfg.temporal_avg_factor,
+                                                    spatial_avg_factor = cfg.spatial_avg_factor,
+                                                    background_rank = cfg.background_rank,
+                                                    device = device,
+                                                    temporal_denoiser = None, #Turn off denoiser
+                                                    frame_batch_size = cfg.frame_batch_size)
+
+    display(f"Processing complete. The rank of PMD with denoiser is {pmd_denoised.pmd_rank}. The rank of PMD without denoiser is {pmd_no_denoise.pmd_rank}")
+
+    outdir = os.path.abspath(cfg.outdir)
+    if os.path.isdir(outdir):
+        output_location = os.path.join(os.path.abspath(cfg.outdir), "pmd_results.npz")
+    else:
+        output_location = cfg.outdir
+        
     
     #From this, it is easy to load the results into a notebook, visualize things, etc.sl
-    np.savez("pmd_results.npz", pmd = pmd_obj, raw_path = parent_folder)
+    np.savez(output_location, 
+             pmd_denoise = pmd_denoised,
+             pmd_no_denoise = pmd_no_denoise,
+             raw_path = parent_folder)
     display("Results saved")
     
     
