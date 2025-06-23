@@ -116,7 +116,7 @@ def compress_and_denoise(cfg: DictConfig) -> None:
     output_location = os.path.join(os.path.abspath(cfg.outdir), "pmd_results.npz")
     
     #From this, it is easy to load the results into a notebook, visualize things, etc.sl
-    np.savez("pmd_resuts.npz", pmd = pmd_obj, raw_path = parent_folder)
+    np.savez("pmd_results.npz", pmd = pmd_obj, raw_path = parent_folder)
     display("Results saved")
     
     
