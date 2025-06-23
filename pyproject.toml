@@ -55,12 +55,6 @@ dev = [
     "ruff>=0.11.13",
 ]
 
-[dependency-groups]
-dev = [
-    "pytest>=8.4.0",
-    "ruff>=0.11.13",
-]
-
 [project.urls]
 Homepage = "https://github.com/apasarkar/masknmf-toolbox"
 Repository = "https://github.com/apasarkar/masknmf-toolbox"
