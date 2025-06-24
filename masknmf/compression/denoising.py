@@ -324,6 +324,7 @@ def denoise_batched(
     traces_means = torch.mean(traces, dim=1, keepdim=True)
     traces_normalized = traces - traces_means
     traces_norms = torch.linalg.norm(traces_normalized, dim=1, keepdim=True)
+    traces_norms[traces_norms == 0] = 1
     traces_normalized /= traces_norms
 
     noise_variance = partition_variance(
@@ -406,16 +407,16 @@ def _denoise_batched_inner(model: torch.nn.Module,
     Returns:
         denoised_traces (torch.tensor): Shape (number_of_traces, number_of_frames) The denoised traces
     """
+    # Create arrays to hold results
+    device = next(model.parameters()).device
     # Hacky way to re-use the iteration pattern here over timesteps:
+    placeholder_trace = torch.arange(traces.shape[1], device=device)[None, :]
     eval_dataset = MultivariateTimeSeriesDataset(
-        traces[[0]], input_size=input_size, overlap=overlap,
+        placeholder_trace, input_size=input_size, overlap=overlap,
         provide_indices=True,
     )
 
-
-    # Create arrays to hold results
     num_batches = eval_dataset.num_windows
-    device = next(model.parameters()).device
 
     denoised_traces = torch.zeros_like(traces, device=device, dtype=torch.float32)
     signal_mean = torch.zeros_like(traces, device=device, dtype=torch.float32)
