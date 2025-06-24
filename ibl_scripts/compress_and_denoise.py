@@ -83,7 +83,8 @@ def compress_and_denoise(cfg: DictConfig) -> None:
         raise ValueError(f"the path {parent_folder} does not seem to exist")
     bin_path = os.path.join(parent_folder, "data.bin")
     ops_path = os.path.join(parent_folder, "ops.npy")
-    my_data = MotionBinDataset(bin_path, ops_path)
+    my_data = MotionBinDataset(bin_path, ops_path)[:]
+    my_data = my_data[:, 5:-5, 5:-5]
     
     block_sizes = [cfg.block_size_dim1, cfg.block_size_dim2]
 
@@ -148,7 +149,7 @@ if __name__ == "__main__":
         'outdir': '.',
         'block_size_dim1': 32,
         'block_size_dim2': 32,
-        'background_rank': 0,
+        'background_rank': 15,
         'max_components':20,
         'max_consecutive_failures': 1,
         'spatial_avg_factor': 1,

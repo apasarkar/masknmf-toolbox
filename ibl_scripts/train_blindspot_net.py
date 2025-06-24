@@ -80,8 +80,9 @@ def train_denoiser(cfg: DictConfig) -> None:
         raise ValueError(f"the path {parent_folder} does not seem to exist")
     bin_path = os.path.join(parent_folder, "data.bin")
     ops_path = os.path.join(parent_folder, "ops.npy")
-    my_data = MotionBinDataset(bin_path, ops_path)
-    
+    my_data = MotionBinDataset(bin_path, ops_path)[:]
+    my_data = my_data[:, 10:-10, 10:-10]
+    display(f"post crop the shape is {my_data.shape}")
     block_sizes = [cfg.block_size_dim1, cfg.block_size_dim2]
 
     device = cfg.device
