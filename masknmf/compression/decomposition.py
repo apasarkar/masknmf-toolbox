@@ -706,7 +706,6 @@ def _temporal_basis_pca(temporal_basis: torch.tensor,
     new_basis = right_vec[:ind, :]
     return new_basis
 
-
 def blockwise_decomposition(
         video_subset: torch.tensor,
         full_fov_spatial_basis: torch.tensor,
@@ -775,8 +774,12 @@ def blockwise_decomposition(
     else:
         temporal_projection_from_downsample = temporal_projection_from_downsample[std_values != 0]
 
-    temporal_basis_from_downsample = _temporal_basis_pca(temporal_projection_from_downsample,
-                                                         explained_var_cutoff=.99 if temporal_denoiser is None else 1.0)
+    if temporal_denoiser is None or temporal_projection_from_downsample.shape[0] <= 1:
+        temporal_basis_from_downsample = _temporal_basis_pca(temporal_projection_from_downsample,
+                                                             explained_var_cutoff=1.0)
+    else:
+        temporal_basis_from_downsample = _temporal_basis_pca(temporal_projection_from_downsample,
+                                                             explained_var_cutoff=0.99)
 
     subset_weighted_r = subset_weighted.reshape((-1, subset_weighted.shape[2]))
     spatial_basis_fullres = subset_weighted_r @ temporal_basis_from_downsample.T
