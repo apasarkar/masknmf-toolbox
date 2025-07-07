@@ -6,6 +6,106 @@ from typing import *
 import math
 from tqdm import tqdm
 
+def compute_general_spatial_correlation_map(
+        stack: Union[np.ndarray, masknmf.LazyFrameLoader, masknmf.FactorizedVideo],
+        device: str = 'cpu',
+        batch_size: int = 200) -> torch.tensor:
+    """
+    General routine to compute a spatial correlation map for a single stack.
+    Args:
+        stack (Union[np.ndarray, masknmf.LazyFrameLoader, masknmf.FactorizedVideo]): A (num_frames, fov_dim1, fov_dim2)
+            shaped imaging stack
+        device (str): Which device we use for computations ('cpu', 'cuda', etc.)
+        batch_size (int): The number of frames to process at a time
+    Returns:
+        (torch.tensor): The spatial correlation map for this stack
+    """
+    num_frames, fov_dim1, fov_dim2 = stack.shape
+
+    stack_mean = torch.zeros((fov_dim1, fov_dim2), device=device).float()
+    stack_std = torch.zeros((fov_dim1, fov_dim2), device=device).float()
+
+    num_iters = math.ceil(num_frames / batch_size)
+
+    for k in tqdm(range(num_iters)):
+        start = k * batch_size
+        end = min(start + batch_size, num_frames)
+        curr_frames = torch.from_numpy(stack[start:end]).to(device).float()
+        if curr_frames.ndim == 2:
+            curr_frames = curr_frames[None, :, :]
+        stack_mean += (torch.sum(curr_frames, dim=0) / num_frames)
+
+    for k in tqdm(range(num_iters)):
+        start = k * batch_size
+        end = min(start + batch_size, num_frames)
+        curr_frames = torch.from_numpy(stack[start:end]).to(device).float()
+        curr_frames -= stack_mean[None, :, :]
+        if curr_frames.ndim == 2:
+            curr_frames = curr_frames[None, :, :]
+        stack_std += torch.sum(curr_frames * curr_frames, dim=0) / num_frames
+
+    stack_std = stack_std.clamp(
+        min=0.0)  # Easy way to avoid numerical issues with division by values close to 0 in torch
+    stack_std = torch.sqrt(stack_std)
+    stack_std = stack_std.clamp(
+        min=0.0)  # Easy way to avoid numerical issues with division by values close to 0 in torch
+
+    top_left_bottom_right = torch.zeros((1, fov_dim1 - 1, fov_dim2 - 1), device=device).float()
+    horizontal = torch.zeros((1, fov_dim1, fov_dim2 - 1), device=device).float()
+    vertical = torch.zeros((1, fov_dim1 - 1, fov_dim2), device=device).float()
+    top_right_bottom_left = torch.zeros((1, fov_dim1 - 1, fov_dim2 - 1), device=device).float()
+
+    num_iters = math.ceil(num_frames / batch_size)
+    for k in tqdm(range(num_iters)):
+        start = batch_size * k
+        end = min(start + batch_size, num_frames)
+        stack_subset = stack[start:end, :, :]
+
+        if stack_subset.ndim == 2:
+            stack_subset = stack_subset[None, :, :]
+        stack_subset = (torch.from_numpy(stack_subset).to(device).float() - stack_mean[None, :, :])
+        stack_subset /= stack_std[None, :, :]
+        stack_subset = torch.nan_to_num(stack_subset, nan=0.0)
+        top_left_bottom_right[0, :, :] += torch.sum(stack_subset[:, :-1, :-1] *
+                                                    stack_subset[:, 1:, 1:], dim=0) / num_frames
+
+        horizontal[0, :, :] += torch.sum(stack_subset[:, :, :-1] *
+                                         stack_subset[:, :, 1:], dim=0) / num_frames
+
+
+        vertical[0, :, :] += torch.sum(stack_subset[:, :-1, :] *
+                                       stack_subset[:, 1:, :], dim=0) / num_frames
+
+        top_right_bottom_left[0, :, :] += torch.sum(stack_subset[:, :-1, 1:] *
+                                                    stack_subset[:, 1:, :-1], dim=0) / num_frames
+
+    counter_matrix = torch.zeros((fov_dim1, fov_dim2), device=device).float()
+    stack_final_img = torch.zeros((fov_dim1, fov_dim2), device=device).float()
+
+    stack_final_img[:-1, :-1] += top_left_bottom_right[0, ...]
+    stack_final_img[1:, 1:] += top_left_bottom_right[0, ...]
+
+    counter_matrix[:-1, :-1] += 1
+    counter_matrix[1:, 1:] += 1
+
+    stack_final_img[:, :-1] += horizontal[0, ...]
+    stack_final_img[:, 1:] += horizontal[0, ...]
+    counter_matrix[:, :-1] += 1
+    counter_matrix[:, 1:] += 1
+
+    stack_final_img[:-1, :] += vertical[0, ...]
+    stack_final_img[1:, :] += vertical[0, ...]
+    counter_matrix[:-1, :] += 1
+    counter_matrix[1:, :] += 1
+
+    stack_final_img[:-1, 1:] += top_right_bottom_left[0, ...]
+    stack_final_img[1:, :-1] += top_right_bottom_left[0, ...]
+    counter_matrix[:-1, 1:] += 1
+    counter_matrix[1:, :-1] += 1
+
+    stack_final_img /= counter_matrix
+    return stack_final_img
+
 
 def compute_pmd_spatial_correlation_maps(raw_stack: Union[np.ndarray, masknmf.LazyFrameLoader, masknmf.FactorizedVideo],
                                          pmd_stack: masknmf.PMDArray,
@@ -30,7 +130,7 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[np.ndarray, masknmf.La
         mode (str):
             Currently unused; placeholder for future support of different aggregation modes.
     Returns:
-        Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        Tuple[torch.tensor, torch.tensor, torch.tensor]:
             Three spatial correlation maps (height, width) for:
               - raw video
               - PMD reconstruction
@@ -52,7 +152,6 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[np.ndarray, masknmf.La
     vertical = torch.zeros((3, fov_dim1 - 1, fov_dim2), device=device).float()
     top_right_bottom_left = torch.zeros((3, fov_dim1 - 1, fov_dim2 - 1), device=device).float()
 
-    # First compute the mean and variance of the stack
     num_iters = math.ceil(num_frames / batch_size)
     for k in tqdm(range(num_iters)):
         start = batch_size * k
@@ -139,6 +238,8 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[np.ndarray, masknmf.La
     resid_final_img /= counter_matrix
 
     return raw_final_img, pmd_final_img, resid_final_img
+
+
 def pmd_autocovariance_diagnostics(raw_movie: masknmf.LazyFrameLoader,
                                    pmd_movie: PMDArray,
                                    batch_size: int = 200,
@@ -168,16 +269,20 @@ def pmd_autocovariance_diagnostics(raw_movie: masknmf.LazyFrameLoader,
     pmd_movie.to(device)
     pmd_movie.rescale = True
     raw_autocov = torch.zeros(fov_dim1, fov_dim2, device=device).float()
-    left_raw_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (torch.from_numpy(raw_movie[-1]).float().to(device) / (
-            num_frames - 1))
-    right_raw_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (torch.from_numpy(raw_movie[0]).float().to(device) / (
-            num_frames - 1))
+    left_raw_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (
+                torch.from_numpy(raw_movie[-1]).float().to(device) / (
+                num_frames - 1))
+    right_raw_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (
+                torch.from_numpy(raw_movie[0]).float().to(device) / (
+                num_frames - 1))
 
     pmd_autocov = torch.zeros(fov_dim1, fov_dim2, device=device).float()
-    left_pmd_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (pmd_movie.getitem_tensor([num_frames - 1]).float().to(device) / (
-            num_frames - 1))
-    right_pmd_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (pmd_movie.getitem_tensor([0]).float().to(device) / (
-            num_frames - 1))
+    left_pmd_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (
+                pmd_movie.getitem_tensor([num_frames - 1]).float().to(device) / (
+                num_frames - 1))
+    right_pmd_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (
+                pmd_movie.getitem_tensor([0]).float().to(device) / (
+                num_frames - 1))
 
     resid_autocov = torch.zeros(fov_dim1, fov_dim2, device=device).float()
     left_resid_mean = left_raw_mean - left_pmd_mean

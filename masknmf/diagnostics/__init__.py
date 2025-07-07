@@ -1,1 +1,1 @@
-from .compression_diagnostics import pmd_autocovariance_diagnostics
+from .compression_diagnostics import pmd_autocovariance_diagnostics, compute_pmd_spatial_correlation_maps, compute_general_spatial_correlation_map
