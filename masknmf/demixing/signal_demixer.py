@@ -389,23 +389,14 @@ def threshold_data_inplace(movie_chunk, mad_threshold_value: int = 2, dim: int =
     Returns:
         Yd: This is an in-place operation
     """
+    movie_median = torch.median(movie_chunk, dim=dim, keepdim=True)[0]
+    diff = torch.abs(movie_chunk - movie_median)
+    mad_values = torch.median(diff, dim=dim, keepdim=True)[0]
 
-    # Get per-pixel medians
-    movie_median = get_median(movie_chunk, axis=dim)
-    diff = torch.sub(movie_chunk, movie_median)
+    weight_matrix = torch.where(diff > mad_values*mad_threshold_value, 1.0, torch.nan)
+    # weight_matrix = torch.where(diff > mad_values * mad_threshold_value, 1.0, 0.0)
 
-    # Calculate MAD values
-    torch.abs(diff, out=diff)
-    movie_mad_values = get_median(diff, axis=dim)
-
-    # Calculate actual threshold
-    torch.mul(movie_mad_values, mad_threshold_value, out=movie_mad_values)
-    th_val = movie_median.add(movie_mad_values)
-
-    # Subtract threshold values
-    torch.sub(movie_chunk, th_val, out=movie_chunk)
-    torch.clamp(movie_chunk, min=0, out=movie_chunk)
-    return movie_chunk
+    return movie_chunk * weight_matrix
 
 
 def reshape_fortran(x, shape):
@@ -501,6 +492,7 @@ def get_local_correlation_structure(
     correlation_values = torch.zeros((total_edges), dtype=torch.float32, device=device)
 
     progress_index = 0
+    print("494 NEW VALUE")
     for tile_x in range(iters_x):
         for tile_y in range(iters_y):
             x_pt = (tilesize - 1) * tile_x
@@ -549,20 +541,24 @@ def get_local_correlation_structure(
             Yd = Yd.permute(2, 0, 1)
 
             # Normalize each trace in-place, using robust correlation statistic
-            torch.sub(Yd, torch.mean(Yd, dim=0, keepdim=True), out=Yd)
-            divisor = torch.std(Yd, dim=0, unbiased=False, keepdim=True)
-            final_divisor = torch.sqrt(divisor * divisor + pseudo**2)
+            Yd -= torch.nanmean(Yd, dim=0, keepdim=True)
+            divisor = torch.nansum(Yd*Yd, dim=0, keepdim=True) + pseudo**2
+            divisor = torch.sqrt(divisor)
+            divisor = torch.nan_to_num(divisor, nan=1.0)
+            divisor[divisor < 0] = 1.0
+            final_divisor = divisor.clone()
+
 
             # If divisor is 0, that implies that the std of a 0-mean pixel is 0, which means the
             # pixel is 0 everywhere. In this case, set divisor to 1, so Yd/divisor = 0, as expected
-            final_divisor[divisor < tol] = 1  # Temporarily set all small values to 1.
+            final_divisor[divisor < tol] = 1.0  # Temporarily set all small values to 1.
             torch.reciprocal(final_divisor, out=final_divisor)
-            final_divisor[divisor < tol] = 0  ##Now set these small values to 0
+            final_divisor[divisor < tol] = 0.0  ##Now set these small values to 0
 
             torch.mul(Yd, final_divisor, out=Yd)
 
             # Vertical pixel correlations
-            rho = torch.mean(Yd[:, :-1, :] * Yd[:, 1:, :], dim=0)
+            rho = torch.nansum(Yd[:, :-1, :] * Yd[:, 1:, :], dim=0)
             point1_curr = indices_curr_2d[:-1, :].flatten()
             point2_curr = indices_curr_2d[1:, :].flatten()
             rho_curr = rho.flatten()
@@ -574,11 +570,11 @@ def get_local_correlation_structure(
             ] = point2_curr
             correlation_values[
                 progress_index : progress_index + point1_curr.shape[0]
-            ] = rho_curr
+            ] = torch.nan_to_num(rho_curr, nan=0.0)
             progress_index = progress_index + point1_curr.shape[0]
 
             # Horizontal pixel correlations
-            rho = torch.mean(Yd[:, :, :-1] * Yd[:, :, 1:], dim=0)
+            rho = torch.nansum(Yd[:, :, :-1] * Yd[:, :, 1:], dim=0)
             point1_curr = indices_curr_2d[:, :-1].flatten()
             point2_curr = indices_curr_2d[:, 1:].flatten()
             rho_curr = rho.flatten()
@@ -590,11 +586,11 @@ def get_local_correlation_structure(
             ] = point2_curr
             correlation_values[
                 progress_index : progress_index + point1_curr.shape[0]
-            ] = rho_curr
+            ] = torch.nan_to_num(rho_curr, nan=0.0)
             progress_index = progress_index + point1_curr.shape[0]
 
             # Top left and bottom right diagonal correlations
-            rho = torch.mean(Yd[:, :-1, :-1] * Yd[:, 1:, 1:], dim=0)
+            rho = torch.nansum(Yd[:, :-1, :-1] * Yd[:, 1:, 1:], dim=0)
             point1_curr = indices_curr_2d[:-1, :-1].flatten()
             point2_curr = indices_curr_2d[1:, 1:].flatten()
             rho_curr = rho.flatten()
@@ -606,11 +602,11 @@ def get_local_correlation_structure(
             ] = point2_curr
             correlation_values[
                 progress_index : progress_index + point1_curr.shape[0]
-            ] = rho_curr
+            ] = torch.nan_to_num(rho_curr, nan=0.0)
             progress_index = progress_index + point1_curr.shape[0]
 
             # Bottom left and top right diagonal correlations
-            rho = torch.mean(Yd[:, 1:, :-1] * Yd[:, :-1, 1:], dim=0)
+            rho = torch.nansum(Yd[:, 1:, :-1] * Yd[:, :-1, 1:], dim=0)
             point1_curr = indices_curr_2d[1:, :-1].flatten()
             point2_curr = indices_curr_2d[:-1, 1:].flatten()
             rho_curr = rho.flatten()
@@ -622,7 +618,7 @@ def get_local_correlation_structure(
             ] = point2_curr
             correlation_values[
                 progress_index : progress_index + point1_curr.shape[0]
-            ] = rho_curr
+            ] = torch.nan_to_num(rho_curr, nan=0.0)
             progress_index = progress_index + point1_curr.shape[0]
 
     return (
@@ -1335,44 +1331,6 @@ def prepare_iteration_uv(
     return a_mat, c_mat, ordering.cpu().numpy()
 
 
-def fit_large_spatial_support(
-    comp, c_init, U_sparse_torch, V_torch, th, a_sparse=None, c=None, batch_size=500
-):
-    """
-    Routine for estimating
-    """
-    print("Fitting larger spatial support")
-    comp = list(comp)
-    num_iters = math.ceil(len(comp) / batch_size)
-    final_values = torch.zeros(0, device=V_torch.device)
-
-    for k in range(num_iters):
-        start_pt = batch_size * k
-        end_pt = min(len(comp), batch_size * (k + 1))
-        components = comp[start_pt:end_pt]
-        comp_tensor = torch.LongTensor(components).to(V_torch.device)
-        U_subset = torch.index_select(U_sparse_torch, 0, comp_tensor)
-        y_temp = torch.sparse.mm(U_subset, V_torch)
-
-        if a_sparse is not None and c is not None:
-            a_subset = torch.index_select(a_sparse, 0, comp_tensor)
-            ac_prod = torch.sparse.mm(a_subset, c)
-            y_temp = torch.sub(y_temp, ac_prod)
-
-        y_temp = threshold_data_inplace(y_temp, th, dim=1)
-
-        normalizer = torch.sum(c_init * c_init)
-        elt_product = torch.sum(c_init[None, :] * y_temp, dim=1)
-
-        curr_values = elt_product / normalizer
-        threshold_function = torch.nn.ReLU()
-        curr_values_thr = threshold_function(curr_values)
-
-        final_values = torch.cat(
-            (final_values, curr_values_thr.type(final_values.dtype)), dim=0
-        )
-
-    return final_values
 
 
 def superpixel_init(
