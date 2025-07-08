@@ -457,7 +457,7 @@ def get_local_correlation_structure(
     The following correlation Data Structure:
     To understand this, recall that we flatten the 2D field of view into a 1 dimensional column vector
         dim1_coordinates: torch.Tensor, 1 dimensional. Describes a list of row coordinates in the field of view
-        dim2_coordinates: torch.Tensor, 1 dimensional. Describes a list of column coordinates in the field of view
+        dim2_coordinates: torch.Tensor, 1 dimensional. Describes a list of row coordinates in the field of view
         correlations: torch.Tensor, 1 dimensional.
 
     Key: each element at index i of "correlations" describes the computed correlation between the adjacent pixels given by
@@ -695,8 +695,7 @@ def spatial_temporal_ini_uv(
     u_sparse: torch.sparse_coo_tensor,
     v: torch.Tensor,
     dims: Tuple[int, int, int],
-    comps: List[Set[int]],
-    length_cut: int,
+    a_init: torch.sparse_coo_tensor,
     a: Optional[torch.sparse_coo_tensor] = None,
     c: Optional[torch.tensor] = None,
 ) -> Tuple[torch.sparse_coo_tensor, torch.tensor]:
@@ -707,8 +706,6 @@ def spatial_temporal_ini_uv(
         u_sparse (torch.sparse_coo_tensor): Shape (d1*d2, R1) where d1, d2 are field of view dimensions.
         v (torch.Tensor): Shape (R2, T). T is the number of timepoints.
         dims (tuple): Contains (d1, d2, T). Describes data shape.
-        comps (List[Set[int]]): Each set describes a single superpixel. The values in that set are the pixel indices where the superpixel is active.
-        length_cut (int): Minimum number of components required for a superpixel to be declared.
         a (Optional[np.ndarray], optional): Shape (d1*d2, K) where K is the number of neurons. Defaults to None.
         c (Optional[np.ndarray], optional): Shape (T, K) where T is the number of time points. Defaults to None.
 
@@ -726,48 +723,21 @@ def spatial_temporal_ini_uv(
     else:
         k = 0
 
-    total_length = 0
-    good_indices = []
-    index_val = 0
-
-    # Step 1: Identify which connected components are large enough to qualify as superpixels
-    for comp in comps:
-        curr_length = len(list(comp))
-        if curr_length > length_cut:
-            good_indices.append(index_val)
-            total_length += curr_length
-        index_val += 1
-    comps = [comps[good_indices[i]] for i in range(len(good_indices))]
-
-    # Step 2: Turn the superpixels into "a" and "c" values
-    a_row_init = torch.zeros(total_length, dtype=torch.long)
-    a_col_init = torch.zeros(total_length, dtype=torch.long)
-    a_value_init = torch.zeros(total_length, dtype=v.dtype)
-
-    ref_point = 0
-    counter = 0
-    for comp in comps:
-        curr_length = len(list(comp))
-        ##Below line super important: + k allows concatenation
-        a_col_init[ref_point : ref_point + curr_length] = counter + k
-        a_row_init[ref_point : ref_point + curr_length] = torch.Tensor(list(comp))
-        a_value_init[ref_point : ref_point + curr_length] = 1
-        ref_point += curr_length
-        counter = counter + 1
-
+    a_row_init, a_col_init = a_init.indices()
     a_row_init = a_row_init.to(device)
     a_col_init = a_col_init.to(device)
-    a_value_init = a_value_init.to(device)
+    a_value_init = a_init.values().to(device)
+    num_init_comps = a_init.shape[1]
 
     if pre_existing:
-        c_final = torch.cat([c, torch.zeros(t, len(comps), device=device)], dim=1)
+        c_final = torch.cat([c, torch.zeros(t, num_init_comps, device=device)], dim=1)
         a_orig_row, a_orig_col = a.indices()
         a_orig_values = a.values()
-        final_rows = torch.cat([a_row_init, a_orig_row], dim=0)
-        final_cols = torch.cat([a_col_init, a_orig_col], dim=0)
-        final_values = torch.cat([a_value_init, a_orig_values], dim=0)
+        final_rows = torch.cat([a_orig_row, a_row_init], dim=0)
+        final_cols = torch.cat([a_orig_col, a_col_init + c.shape[1]], dim=0)
+        final_values = torch.cat([a_orig_values, a_value_init], dim=0)
     else:
-        c_final = torch.zeros(t, len(comps), device=device)
+        c_final = torch.zeros(t, num_init_comps, device=device)
         final_rows = a_row_init
         final_cols = a_col_init
         final_values = a_value_init
@@ -777,7 +747,7 @@ def spatial_temporal_ini_uv(
         torch.sparse_coo_tensor(
             torch.stack([final_rows, final_cols]),
             final_values,
-            (dims[0] * dims[1], k + len(comps)),
+            (dims[0] * dims[1], k + num_init_comps),
         )
         .coalesce()
         .to(device)
@@ -800,7 +770,7 @@ def spatial_temporal_ini_uv(
         )
 
     # Now return only the newly initialized components
-    col_index_tensor = torch.arange(start=k, end=k + len(comps), step=1, device=device)
+    col_index_tensor = torch.arange(start=k, end=k + num_init_comps, step=1, device=device)
     a_sparse = torch.index_select(a_sparse, 1, col_index_tensor)
     c_final = torch.index_select(c_final, 1, col_index_tensor)
 
@@ -1239,9 +1209,8 @@ def local_mad_correlation_mat(
 ) -> np.ndarray:
     """
     We MAD-threshold each pixel and compute correlations between neighboring pixels in the superpixel step
-    This routine is compute and memory optimized to manipulate these (on CPU and on GPU)
-    and produce a single correlation heatmap. Each pixel's intensity is the average of its correlation with neighboring
-    pixels.
+    Start with an index-index-value representation of the correlations (i.e. (3, 4, 0.2) means the corr between pixels 3, 4 is 0.2).
+    The below function removes duplicates. It then computes the average correlation for each pixel "i" with all of its neighbors.
 
     Args:
         dim1_coordinates (torch.tensor): Shape (N). Pixel coordinates in the field of view
@@ -1405,9 +1374,48 @@ def superpixel_init(
         data_order,
     )
 
-    c_ini, a_ini = spatial_temporal_ini_uv(
-        u_sparse, v, dims, comps, length_cut, a=a, c=c
-    )
+    total_length = 0
+    good_indices = []
+    index_val = 0
+
+    # Step 1: Identify which connected components are large enough to qualify as superpixels
+    for comp in comps:
+        curr_length = len(list(comp))
+        if curr_length > length_cut:
+            good_indices.append(index_val)
+            total_length += curr_length
+        index_val += 1
+    comps = [comps[good_indices[i]] for i in range(len(good_indices))]
+
+    # Step 2: Turn the superpixels into "a" and "c" values
+    a_row_init = torch.zeros(total_length, dtype=torch.long)
+    a_col_init = torch.zeros(total_length, dtype=torch.long)
+    a_value_init = torch.zeros(total_length, dtype=v.dtype)
+
+    ref_point = 0
+    counter = 0
+    for comp in comps:
+        curr_length = len(list(comp))
+        ##Below line super important: + k allows concatenation
+        a_col_init[ref_point:ref_point + curr_length] = counter
+        a_row_init[ref_point:ref_point + curr_length] = torch.Tensor(list(comp))
+        a_value_init[ref_point:ref_point + curr_length] = 1
+        ref_point += curr_length
+        counter = counter + 1
+
+    a_ini = torch.sparse_coo_tensor(
+            torch.stack([a_row_init, a_col_init]),
+            a_value_init,
+            (dims[0] * dims[1], len(comps)),
+        ).coalesce()
+
+
+    c_ini, a_ini = spatial_temporal_ini_uv(u_sparse,
+                                           v,
+                                           dims,
+                                           a_ini,
+                                           a=a,
+                                           c=c)
 
     print("find pure superpixels!")
     ## cut image into small parts to find pure superpixels ##
