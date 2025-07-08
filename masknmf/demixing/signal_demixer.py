@@ -457,7 +457,7 @@ def get_local_correlation_structure(
     The following correlation Data Structure:
     To understand this, recall that we flatten the 2D field of view into a 1 dimensional column vector
         dim1_coordinates: torch.Tensor, 1 dimensional. Describes a list of row coordinates in the field of view
-        dim2_coordinates: torch.Tensor, 1 dimensional. Describes a list of row coordinates in the field of view
+        dim2_coordinates: torch.Tensor, 1 dimensional. Describes a list of column coordinates in the field of view
         correlations: torch.Tensor, 1 dimensional.
 
     Key: each element at index i of "correlations" describes the computed correlation between the adjacent pixels given by
@@ -492,7 +492,6 @@ def get_local_correlation_structure(
     correlation_values = torch.zeros((total_edges), dtype=torch.float32, device=device)
 
     progress_index = 0
-    print("494 NEW VALUE")
     for tile_x in range(iters_x):
         for tile_y in range(iters_y):
             x_pt = (tilesize - 1) * tile_x
@@ -1468,6 +1467,7 @@ def superpixel_init(
         uv_mean = get_mean_data(u_sparse, v)
         b = regression_update.baseline_update(uv_mean, a, c)
     else:
+        print(f'shape of a_ini is {a_ini.shape} and c_ini is {c_ini.shape} and pure_pix is {pure_pix.shape}')
         a, c, brightness_rank = prepare_iteration_uv(
             pure_pix,
             a_ini,
