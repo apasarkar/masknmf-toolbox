@@ -30,6 +30,7 @@ from .demixing_utils import (
 from . import regression_update
 from .background_estimation import RingModel
 from masknmf.compression import PMDArray
+from .. import display
 
 
 def make_mask_dynamic(
@@ -1332,6 +1333,64 @@ def prepare_iteration_uv(
     return a_mat, c_mat, ordering.cpu().numpy()
 
 
+def find_local_peaks_2d(greyscale_img: torch.tensor,
+                        kernel_radius: int = 3,
+                        correlation_cutoff: float = 0.8,
+                        exclude_border=True):
+    """
+    Finds local peaks in a 2D PyTorch tensor (image).
+    A peak is defined as a pixel that is the maximum within its local neighborhood.
+    """
+    kernel_size = kernel_radius * 2 + 1
+    # Create a max-pooling filter
+    if kernel_size % 2 == 0:
+        raise ValueError("kernel size must be odd")
+    if exclude_border:
+        image = torch.zeros_like(greyscale_img)
+        image[1:-1, 1:-1] = greyscale_img[1:-1, 1:-1]
+    else:
+        image = greyscale_img.clone()
+    max_filter = torch.nn.functional.max_pool2d(image.unsqueeze(0), kernel_size=kernel_size, stride=1,
+                                                padding=kernel_size // 2)
+
+    is_peak = torch.logical_and(image == max_filter.squeeze(0), image > correlation_cutoff)
+
+    # Get the coordinates of the peaks
+    peak_coords = torch.nonzero(is_peak, as_tuple=False)
+    return peak_coords
+
+def superpixel_adapter(peak_coords: torch.tensor,
+                       dims: Tuple[int, int, int],
+                       order: str = "C"):
+    """
+    Args:
+        peak_coords (torch.tensor): Shape (num_coords, 2)
+        dims (Tuple[int, int, int]): Height, Width, Num Frames of video
+    """
+    device = peak_coords.device
+    fov_d1, fov_d2, n_frames = dims
+
+    # First construct the superpixel mat that masknmf currently uses
+    superpixel_img = torch.zeros(fov_d1, fov_d2, dtype=torch.int64, device=device)
+    superpixel_img[(peak_coords[:, 0], peak_coords[:, 1])] = torch.arange(peak_coords.shape[0], device=device)
+
+    # Next construct the a_ini that mask uses. Note: row major order
+    if order == "C":
+        row_values = peak_coords[:, 0] * fov_d2 + peak_coords[:, 1]
+    elif order == "F":
+        row_values = peak_coords[:, 1] * fov_d1 + peak_coords[:, 0]
+    else:
+        raise ValueError("Invalid ordering provided")
+    col_values = torch.arange(row_values.shape[0], device=device)
+    data = torch.ones_like(col_values).float()
+
+    a_ini = torch.sparse_coo_tensor(
+        torch.stack([row_values, col_values]),
+        data,
+        (dims[0] * dims[1], data.shape[0]),
+    ).coalesce()
+
+    return a_ini, superpixel_img.cpu().numpy()
 
 
 def superpixel_init(
@@ -1396,16 +1455,27 @@ def superpixel_init(
     else:
         raise ValueError("Invalid configuration of c and a values were provided")
 
-    print("find superpixels!")
-    a_ini, connect_mat_1 = find_superpixel_UV(
-        dims,
-        cut_off_point,
-        length_cut,
-        dim1_coordinates,
-        dim2_coordinates,
-        correlations,
-        data_order,
-    )
+    display("find superpixels - updated pipeline")
+    corr_image = local_mad_correlation_mat(dim1_coordinates,
+                                           dim2_coordinates,
+                                           correlations,
+                                           dims,
+                                           data_order)
+
+    peaks = find_local_peaks_2d(torch.from_numpy(corr_image).to('cuda'),
+                                     kernel_radius=3,
+                                     correlation_cutoff=cut_off_point,
+                                     exclude_border=False)
+    display(f" peaks shape is {peaks.shape}")
+    if peaks.shape[0] == 0:
+        display("No superpixels found, set lower correlation threshold!")
+        return (None, None, None, None, None, None)
+
+    a_ini, connect_mat_1 = superpixel_adapter(peaks,
+                                              dims,
+                                              data_order)
+
+    display("New pipeline ran")
 
     c_ini, a_ini = spatial_temporal_ini_uv(u_sparse,
                                            v,
@@ -1414,7 +1484,9 @@ def superpixel_init(
                                            a=a,
                                            c=c)
 
-    print("find pure superpixels!")
+    display(f"after spatial temporal ini the shape is {a_ini.shape}")
+
+    display("find pure superpixels!")
     ## cut image into small parts to find pure superpixels ##
     patch_height = patch_size[0]
     patch_width = patch_size[1]
@@ -1449,7 +1521,7 @@ def superpixel_init(
     pure_pix = np.hstack(pure_pix)
     pure_pix = np.unique(pure_pix)
 
-    print("prepare iteration!")
+    display("prepare iteration!")
     if not first_init_flag:
         a_newpass, c_newpass, brightness_rank = prepare_iteration_uv(
             pure_pix,
