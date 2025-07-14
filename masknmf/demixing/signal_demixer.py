@@ -916,8 +916,6 @@ def search_superpixel_in_range(
         unique_pix (np.ndarray): Array containing the indices of identified superpixels in this spatial patch.
         temporal_trace_subset (torch.tensor): Shape (T, num_found_superpixels). Temporal traces for all superpixels
             found in this spatial subset of the FOV.
-
-    TODO: Eliminate this function and move all ops end to end to pytorch
     """
     unique_pix = np.asarray(np.sort(np.unique(connect_mat_cropped)), dtype="int")
     unique_pix = unique_pix[np.nonzero(unique_pix)]
@@ -1362,7 +1360,7 @@ def superpixel_adapter(peak_coords: torch.tensor,
 
     # First construct the superpixel mat that masknmf currently uses
     superpixel_img = torch.zeros(fov_d1, fov_d2, dtype=torch.int64, device=device)
-    superpixel_img[(peak_coords[:, 0], peak_coords[:, 1])] = torch.arange(peak_coords.shape[0], device=device)
+    superpixel_img[(peak_coords[:, 0], peak_coords[:, 1])] = torch.arange(1, peak_coords.shape[0]+1, device=device)
 
     # Next construct the a_ini that mask uses. Note: row major order
     if order == "C":
@@ -1482,7 +1480,7 @@ def superpixel_init(
     unique_pix = unique_pix[np.nonzero(unique_pix)]
     pure_pix = []
 
-    connect_mat_2d = connectivity_mat.reshape(dims[0], dims[1], order=data_order)
+    # connect_mat_2d = connectivity_mat.reshape(dims[0], dims[1], order=data_order)
     for i in range(height_num):
         for j in range(width_num):
             start_height_pt = i * patch_size[0]
@@ -1491,7 +1489,7 @@ def superpixel_init(
             end_width_pt = min(start_width_pt + patch_size[1], dims[1])
 
             unique_pix_temp, m = search_superpixel_in_range(
-                connect_mat_2d[start_height_pt:end_height_pt, start_width_pt:end_width_pt],
+                connectivity_mat[start_height_pt:end_height_pt, start_width_pt:end_width_pt],
                 c_ini,
             )
             pure_pix_temp = successive_projection(
@@ -1509,6 +1507,10 @@ def superpixel_init(
             a_ini,
             c_ini,
         )
+        pure_superpixel_img_1d = torch.sparse.mm(a_newpass, torch.ones(a_newpass.shape[1], 1, device=a_newpass.device,
+                                                                    dtype=a_newpass.dtype))
+        pure_superpixel_img_1d[pure_superpixel_img_1d > 0] = 1.0
+
 
         ## Boilerplate for concatenating two sparse tensors along dim 1:
         a_dims = (a.shape[0], a.shape[1] + a_newpass.shape[1])
@@ -1531,6 +1533,10 @@ def superpixel_init(
             a_ini,
             c_ini,
         )
+        pure_superpixel_img_1d = torch.sparse.mm(a, torch.ones(a.shape[1], 1, device=a.device,
+                                                                       dtype=a.dtype))
+        pure_superpixel_img_1d[pure_superpixel_img_1d > 0] = 1.0
+
         uv_mean = get_mean_data(u_sparse, v)
         b = regression_update.baseline_update(uv_mean, a, c)
 
@@ -1549,8 +1555,10 @@ def superpixel_init(
 
     superpixel_dict = {
         "superpixel_map": connectivity_mat,
-        "pure_superpixel_coords": pure_pix,
+        "pure_superpixel_map": pure_superpixel_img_1d.cpu().numpy().reshape((dims[0], dims[1]), order=data_order),
         "superpixel_coords": unique_pix,
+        "current_peaks": peaks.cpu().numpy(),
+        "correlation_image": corr_image
     }
 
     return a, a.bool(), c, b, superpixel_dict, superpixel_img
@@ -1982,6 +1990,7 @@ class InitializingState(SignalProcessingState):
         self.c_init = None
         self.b_init = None
         self.diagnostic_image = None
+        self.superpixel_dict = None
 
         if a is not None:
             self.a = a.to(self.device).coalesce()
@@ -2020,7 +2029,7 @@ class InitializingState(SignalProcessingState):
 
     @property
     def results(self):
-        return self.a_init, self.mask_a_init, self.c_init, self.b_init
+        return self.a_init, self.mask_a_init, self.c_init, self.b_init, self.superpixel_dict
 
     def lock_results_and_continue(
         self, context: SignalDemixer, carry_background: bool = True
@@ -2124,7 +2133,7 @@ class InitializingState(SignalProcessingState):
             self.mask_a_init,
             self.c_init,
             self.b_init,
-            output_dictionary,
+            self.superpixel_dict,
             self.diagnostic_image,
         ) = superpixel_init(
             self.u_sparse,
