@@ -1443,8 +1443,6 @@ def superpixel_init(
         b (torch.Tensor): Pixelwise baseline estimate, shape(d1*d2)
         superpixel_dictionary (dict): Dictionary of key superpixel matrices for this round of initialization
         superpixel_img (np.ndarray): Shape (d1, d2): Plotted superpixel image
-
-    TODO: Make the second pass "a" also a sparse tensor.
     """
 
     if a is None and c is None:
@@ -1470,7 +1468,7 @@ def superpixel_init(
         display("No superpixels found, set lower correlation threshold!")
         return (None, None, None, None, None, None)
 
-    a_ini, connect_mat_1 = superpixel_adapter(peaks,
+    a_ini, connectivity_mat = superpixel_adapter(peaks,
                                               dims,
                                               data_order)
 
@@ -1487,36 +1485,31 @@ def superpixel_init(
 
     display("find pure superpixels!")
     ## cut image into small parts to find pure superpixels ##
-    patch_height = patch_size[0]
-    patch_width = patch_size[1]
-    height_num = int(np.ceil(dims[0] / patch_height))
-    width_num = int(np.ceil(dims[1] / patch_width))
-    num_patch = height_num * width_num
-    patch_ref_mat = np.array(range(num_patch)).reshape(
-        height_num, width_num, order=data_order
-    )
+    height_num = int(np.ceil(dims[0] / patch_size[0]))
+    width_num = int(np.ceil(dims[1] / patch_size[1]))
 
-    unique_pix = np.asarray(np.sort(np.unique(connect_mat_1)), dtype="int")
+    unique_pix = np.asarray(np.sort(np.unique(connectivity_mat)), dtype="int")
     unique_pix = unique_pix[np.nonzero(unique_pix)]
     brightness_rank_sup = order_superpixels(c_ini)
     pure_pix = []
 
-    connect_mat_2d = connect_mat_1.reshape(dims[0], dims[1], order=data_order)
-    for kk in range(num_patch):
-        pos = np.where(patch_ref_mat == kk)
-        up = pos[0][0] * patch_height
-        down = min(up + patch_height, dims[0])
-        left = pos[1][0] * patch_width
-        right = min(left + patch_width, dims[1])
-        unique_pix_temp, m = search_superpixel_in_range(
-            connect_mat_2d[up:down, left:right],
-            c_ini,
-        )
-        pure_pix_temp = successive_projection(
-            m, m.shape[1], residual_cut, device=device
-        )
-        if len(pure_pix_temp) > 0:
-            pure_pix.append(unique_pix_temp[pure_pix_temp])
+    connect_mat_2d = connectivity_mat.reshape(dims[0], dims[1], order=data_order)
+    for i in range(height_num):
+        for j in range(width_num):
+            start_height_pt = i * patch_size[0]
+            end_height_pt = min(start_height_pt + patch_size[0], dims[0])
+            start_width_pt = j * patch_size[1]
+            end_width_pt = min(start_width_pt + patch_size[1], dims[1])
+
+            unique_pix_temp, m = search_superpixel_in_range(
+                connect_mat_2d[start_height_pt:end_height_pt, start_width_pt:end_width_pt],
+                c_ini,
+            )
+            pure_pix_temp = successive_projection(
+                m, m.shape[1], residual_cut, device=device
+            )
+            if len(pure_pix_temp) > 0:
+                pure_pix.append(unique_pix_temp[pure_pix_temp])
     pure_pix = np.hstack(pure_pix)
     pure_pix = np.unique(pure_pix)
 
@@ -1559,16 +1552,13 @@ def superpixel_init(
 
     # Plot superpixel correlation image
     if plot_en:
-        mad_correlation_img = local_mad_correlation_mat(
-            dim1_coordinates, dim2_coordinates, correlations, dims, data_order
-        )
         _, superpixel_img = pure_superpixel_corr_compare_plot(
-            connect_mat_1,
+            connectivity_mat,
             unique_pix,
             pure_pix,
             brightness_rank_sup,
             brightness_rank,
-            mad_correlation_img,
+            corr_image,
             text,
             order=data_order,
         )
@@ -1576,7 +1566,7 @@ def superpixel_init(
         superpixel_img = None
 
     superpixel_dict = {
-        "connect_mat_1": connect_mat_1,
+        "connect_mat_1": connectivity_mat,
         "pure_pix": pure_pix,
         "unique_pix": unique_pix,
         "brightness_rank": brightness_rank,
