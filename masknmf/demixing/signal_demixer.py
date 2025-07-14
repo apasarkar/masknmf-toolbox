@@ -1131,8 +1131,6 @@ def pure_superpixel_corr_compare_plot(
     connect_mat_1: np.ndarray,
     unique_pix: np.ndarray,
     pure_pix: np.ndarray,
-    brightness_rank_sup: np.ndarray,
-    brightness_rank: np.ndarray,
     mad_correlation_img: np.ndarray,
     text: bool = False,
     order: str = "C",
@@ -1170,12 +1168,12 @@ def pure_superpixel_corr_compare_plot(
             ax.text(
                 (pos1)[np.array(len(pos1) / 3, dtype=int)],
                 (pos0)[np.array(len(pos0) / 3, dtype=int)],
-                f"{brightness_rank_sup[ii] + 1}",
+                f"{ii + 1}",
                 verticalalignment="bottom",
                 horizontalalignment="right",
                 color="black",
                 fontsize=15,
-            )  # , fontweight="bold")
+            )
     ax.set(title="Superpixels")
     ax.title.set_fontsize(15)
     ax.title.set_fontweight("bold")
@@ -1202,7 +1200,7 @@ def pure_superpixel_corr_compare_plot(
             ax1.text(
                 (pos1)[np.array(len(pos1) / 3, dtype=int)],
                 (pos0)[np.array(len(pos0) / 3, dtype=int)],
-                f"{brightness_rank[ii] + 1}",
+                f"{ii + 1}",
                 verticalalignment="bottom",
                 horizontalalignment="right",
                 color="black",
@@ -1302,7 +1300,7 @@ def local_mad_correlation_mat(
 
 def prepare_iteration_uv(
     pure_pix: np.ndarray, a_mat: torch.sparse_coo_tensor, c_mat: torch.tensor
-) -> Tuple[torch.sparse_coo_tensor, torch.tensor, np.ndarray]:
+) -> Tuple[torch.sparse_coo_tensor, torch.tensor]:
     """
     Extract pure superpixels and order the components by brightness
 
@@ -1315,7 +1313,6 @@ def prepare_iteration_uv(
     Returns:
         a_mat_pure (torch.sparse_coo_tensor): The brightness-ordered spatial matrix containing only pure superpixels
         c_mat_pure (torch.tensor): The brightness ordered temporal matrix containing only pure superpixels
-        brightness_rank (np.ndarray): Shape (number of pure superpixels,). The brightness ranks involved in reordering
     """
 
     # Extract the pure superpixels
@@ -1323,14 +1320,7 @@ def prepare_iteration_uv(
     pure_pix_indices = torch.from_numpy(pure_pix_indices).long().to(a_mat.device)
     a_mat = torch.index_select(a_mat, 1, pure_pix_indices).coalesce()
     c_mat = torch.index_select(c_mat, 1, pure_pix_indices)
-
-    c_mat_norm = c_mat / torch.linalg.norm(c_mat, dim=0, keepdim=True)
-    max_values = torch.amax(c_mat_norm, dim=0)
-    ordering = torch.argsort(max_values, descending=True)
-
-    a_mat = torch.index_select(a_mat, 1, ordering).coalesce()
-    c_mat = torch.index_select(c_mat, 1, ordering)
-    return a_mat, c_mat, ordering.cpu().numpy()
+    return a_mat, c_mat
 
 
 def find_local_peaks_2d(greyscale_img: torch.tensor,
@@ -1490,7 +1480,6 @@ def superpixel_init(
 
     unique_pix = np.asarray(np.sort(np.unique(connectivity_mat)), dtype="int")
     unique_pix = unique_pix[np.nonzero(unique_pix)]
-    brightness_rank_sup = order_superpixels(c_ini)
     pure_pix = []
 
     connect_mat_2d = connectivity_mat.reshape(dims[0], dims[1], order=data_order)
@@ -1515,7 +1504,7 @@ def superpixel_init(
 
     display("prepare iteration!")
     if not first_init_flag:
-        a_newpass, c_newpass, brightness_rank = prepare_iteration_uv(
+        a_newpass, c_newpass = prepare_iteration_uv(
             pure_pix,
             a_ini,
             c_ini,
@@ -1537,7 +1526,7 @@ def superpixel_init(
         b = regression_update.baseline_update(uv_mean, a, c)
     else:
         print(f'shape of a_ini is {a_ini.shape} and c_ini is {c_ini.shape} and pure_pix is {pure_pix.shape}')
-        a, c, brightness_rank = prepare_iteration_uv(
+        a, c = prepare_iteration_uv(
             pure_pix,
             a_ini,
             c_ini,
@@ -1545,19 +1534,12 @@ def superpixel_init(
         uv_mean = get_mean_data(u_sparse, v)
         b = regression_update.baseline_update(uv_mean, a, c)
 
-    assert a.shape[1] > 0, (
-        "Superpixels did not identify any components, re-run "
-        "with different parameters before proceeding"
-    )
-
     # Plot superpixel correlation image
     if plot_en:
         _, superpixel_img = pure_superpixel_corr_compare_plot(
             connectivity_mat,
             unique_pix,
             pure_pix,
-            brightness_rank_sup,
-            brightness_rank,
             corr_image,
             text,
             order=data_order,
@@ -1566,11 +1548,9 @@ def superpixel_init(
         superpixel_img = None
 
     superpixel_dict = {
-        "connect_mat_1": connectivity_mat,
-        "pure_pix": pure_pix,
-        "unique_pix": unique_pix,
-        "brightness_rank": brightness_rank,
-        "brightness_rank_sup": brightness_rank_sup,
+        "superpixel_map": connectivity_mat,
+        "pure_superpixel_coords": pure_pix,
+        "superpixel_coords": unique_pix,
     }
 
     return a, a.bool(), c, b, superpixel_dict, superpixel_img
