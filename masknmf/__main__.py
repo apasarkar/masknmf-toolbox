@@ -18,6 +18,12 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+def is_completed(file: Path, outdir: Path, *, required=("pmd_demixer.npy",)) -> bool:
+    file = Path(file)
+    outdir = Path(outdir).expanduser()
+    plane_dir = outdir / file.stem
+    return all((plane_dir / name).exists() for name in required)
+
 def add_args(parser: argparse.ArgumentParser):
     parser.add_argument("inpath", type=Path, help="Input TIFF directory")
     parser.add_argument("outpath", type=Path, help="Output directory")
@@ -46,22 +52,28 @@ def parse_args(parser: argparse.ArgumentParser):
             ops[k] = bool(v) if isinstance(default_ops()[k], bool) else type(default_ops()[k])(v)
     return args, ops
 
-
 def main():
     args, ops = parse_args(add_args(argparse.ArgumentParser()))
 
     args.outpath.mkdir(exist_ok=True)
-    completed = {x.stem for x in args.outpath.iterdir()}
-    files = sorted(args.inpath.glob("*.tif*"))
+
+    inpath = args.inpath
+    if inpath.is_file():
+        files = [inpath.parent]
+    elif inpath.is_dir():
+        files = sorted(inpath.glob("*.tif*"))
+    else:
+        raise ValueError(f"Invalid input path: {inpath}")
+
+    if not files:
+        raise ValueError(f"No TIFF files found in {inpath}")
 
     for file in files:
-
-        if file.stem in completed and not ops["overwrite"]:
+        if is_completed(args.outpath, file.stem) and not ops["overwrite"]:
             print(f"Skipping {file.stem}, already processed.")
             continue
-
+        print(f"Running: {file.name}")
         data_arr = tifffile.memmap(file)
-
         run_array(
             data_array=data_arr,
             data_index=file.stem,
