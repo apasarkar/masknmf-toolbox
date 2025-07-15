@@ -1347,8 +1347,14 @@ def find_local_peaks_2d(greyscale_img: torch.tensor,
     is_peak = torch.logical_and(image == max_filter.squeeze(0), image > correlation_cutoff)
 
     # Get the coordinates of the peaks
-    peak_coords = torch.nonzero(is_peak, as_tuple=False)
-    return peak_coords
+    selected_peak_coords = torch.nonzero(is_peak, as_tuple=False)
+
+    #Get the coordinates of all peaks greater than 0
+    total_peak = torch.logical_and(image == max_filter.squeeze(0), image > 0.0)
+    total_peak_coords = torch.nonzero(is_peak, as_tuple=False)
+
+
+    return selected_peak_coords, total_peak_coords
 
 def superpixel_adapter(peak_coords: torch.tensor,
                        dims: Tuple[int, int, int],
@@ -1451,7 +1457,7 @@ def superpixel_init(
                                            dims,
                                            data_order)
 
-    peaks = find_local_peaks_2d(torch.from_numpy(corr_image).to('cuda'),
+    peaks, total_peaks = find_local_peaks_2d(torch.from_numpy(corr_image).to('cuda'),
                                      kernel_radius=3,
                                      correlation_cutoff=cut_off_point,
                                      exclude_border=True)
@@ -1547,6 +1553,7 @@ def superpixel_init(
     unique_pix = unique_pix.cpu().numpy()
     pure_pix = pure_pix.cpu().numpy()
     peaks = peaks.cpu().numpy()
+    total_peaks = total_peaks.cpu().numpy()
     if plot_en:
         _, superpixel_img = pure_superpixel_corr_compare_plot(
             connectivity_mat,
@@ -1563,7 +1570,8 @@ def superpixel_init(
         "superpixel_map": connectivity_mat,
         "pure_superpixel_map": pure_superpixel_img_1d.cpu().numpy().reshape((dims[0], dims[1]), order=data_order),
         "superpixel_coords": unique_pix,
-        "current_peaks": peaks,
+        "selected_peaks": peaks,
+        "total_peaks": total_peaks,
         "correlation_image": corr_image
     }
     display(f'initialized {a.shape[1]} signals')
@@ -2040,7 +2048,7 @@ class InitializingState(SignalProcessingState):
     def lock_results_and_continue(
         self, context: SignalDemixer, carry_background: bool = True
     ):
-        if any(element is None for element in self.results):
+        if any(element is None for element in self.results[:4]):
             raise ValueError("Results do not exist. Run initialize signals first.")
         else:  # Initiate state transition
             if carry_background:
