@@ -901,7 +901,7 @@ def order_superpixels(c_mat: torch.tensor) -> np.ndarray:
 
 
 def search_superpixel_in_range(
-    connect_mat_cropped: np.ndarray, temporal_mat: torch.tensor
+    connect_mat_cropped: torch.tensor, temporal_mat: torch.tensor
 ) -> Tuple[np.ndarray, torch.tensor]:
     """
     Given a spatial crop of the superpixel matrix, this routine returns the temporal traces associated with
@@ -917,12 +917,16 @@ def search_superpixel_in_range(
         temporal_trace_subset (torch.tensor): Shape (T, num_found_superpixels). Temporal traces for all superpixels
             found in this spatial subset of the FOV.
     """
-    unique_pix = np.asarray(np.sort(np.unique(connect_mat_cropped)), dtype="int")
-    unique_pix = unique_pix[np.nonzero(unique_pix)]
-    unique_pix = torch.from_numpy(unique_pix).long().to(temporal_mat.device)
-    temporal_trace_subset = torch.index_select(temporal_mat, 1, unique_pix - 1)
+    unique_pix = torch.unique(connect_mat_cropped)
+    unique_pix = unique_pix[unique_pix != 0]  # remove zeros
+    unique_pix, _ = torch.sort(unique_pix)  # sort
 
-    return unique_pix.cpu().numpy(), temporal_trace_subset
+    unique_pix = unique_pix.to(dtype=torch.long, device=temporal_mat.device)
+
+    # Index into temporal_mat (assumes columns are pixels)
+    temporal_trace_subset = torch.index_select(temporal_mat, dim=1, index=unique_pix - 1)
+
+    return unique_pix, temporal_trace_subset
 
 
 def successive_projection(
@@ -1314,8 +1318,7 @@ def prepare_iteration_uv(
     """
 
     # Extract the pure superpixels
-    pure_pix_indices = pure_pix - np.array([1]).astype("int")
-    pure_pix_indices = torch.from_numpy(pure_pix_indices).long().to(a_mat.device)
+    pure_pix_indices = pure_pix - 1
     a_mat = torch.index_select(a_mat, 1, pure_pix_indices).coalesce()
     c_mat = torch.index_select(c_mat, 1, pure_pix_indices)
     return a_mat, c_mat
@@ -1359,8 +1362,9 @@ def superpixel_adapter(peak_coords: torch.tensor,
     fov_d1, fov_d2, n_frames = dims
 
     # First construct the superpixel mat that masknmf currently uses
+    unique_pix = torch.arange(1, peak_coords.shape[0]+1, device=device)
     superpixel_img = torch.zeros(fov_d1, fov_d2, dtype=torch.int64, device=device)
-    superpixel_img[(peak_coords[:, 0], peak_coords[:, 1])] = torch.arange(1, peak_coords.shape[0]+1, device=device)
+    superpixel_img[(peak_coords[:, 0], peak_coords[:, 1])] = unique_pix
 
     # Next construct the a_ini that mask uses. Note: row major order
     if order == "C":
@@ -1378,7 +1382,7 @@ def superpixel_adapter(peak_coords: torch.tensor,
         (dims[0] * dims[1], data.shape[0]),
     ).coalesce()
 
-    return a_ini, superpixel_img.cpu().numpy()
+    return a_ini, superpixel_img, unique_pix
 
 
 def superpixel_init(
@@ -1450,13 +1454,13 @@ def superpixel_init(
     peaks = find_local_peaks_2d(torch.from_numpy(corr_image).to('cuda'),
                                      kernel_radius=3,
                                      correlation_cutoff=cut_off_point,
-                                     exclude_border=False)
+                                     exclude_border=True)
     display(f" peaks shape is {peaks.shape}")
     if peaks.shape[0] == 0:
         display("No superpixels found, set lower correlation threshold!")
         return (None, None, None, None, None, None)
 
-    a_ini, connectivity_mat = superpixel_adapter(peaks,
+    a_ini, connectivity_mat, unique_pix= superpixel_adapter(peaks,
                                               dims,
                                               data_order)
 
@@ -1476,8 +1480,6 @@ def superpixel_init(
     height_num = int(np.ceil(dims[0] / patch_size[0]))
     width_num = int(np.ceil(dims[1] / patch_size[1]))
 
-    unique_pix = np.asarray(np.sort(np.unique(connectivity_mat)), dtype="int")
-    unique_pix = unique_pix[np.nonzero(unique_pix)]
     pure_pix = []
 
     # connect_mat_2d = connectivity_mat.reshape(dims[0], dims[1], order=data_order)
@@ -1497,8 +1499,8 @@ def superpixel_init(
             )
             if len(pure_pix_temp) > 0:
                 pure_pix.append(unique_pix_temp[pure_pix_temp])
-    pure_pix = np.hstack(pure_pix)
-    pure_pix = np.unique(pure_pix)
+    pure_pix = torch.hstack(pure_pix)
+    pure_pix = torch.unique(pure_pix)
 
     display("prepare iteration!")
     if not first_init_flag:
@@ -1541,6 +1543,10 @@ def superpixel_init(
         b = regression_update.baseline_update(uv_mean, a, c)
 
     # Plot superpixel correlation image
+    connectivity_mat = connectivity_mat.cpu().numpy()
+    unique_pix = unique_pix.cpu().numpy()
+    pure_pix = pure_pix.cpu().numpy()
+    peaks = peaks.cpu().numpy()
     if plot_en:
         _, superpixel_img = pure_superpixel_corr_compare_plot(
             connectivity_mat,
@@ -1557,10 +1563,10 @@ def superpixel_init(
         "superpixel_map": connectivity_mat,
         "pure_superpixel_map": pure_superpixel_img_1d.cpu().numpy().reshape((dims[0], dims[1]), order=data_order),
         "superpixel_coords": unique_pix,
-        "current_peaks": peaks.cpu().numpy(),
+        "current_peaks": peaks,
         "correlation_image": corr_image
     }
-
+    display(f'initialized {a.shape[1]} signals')
     return a, a.bool(), c, b, superpixel_dict, superpixel_img
 
 
