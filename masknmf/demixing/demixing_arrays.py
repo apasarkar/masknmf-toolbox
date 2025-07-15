@@ -1254,11 +1254,13 @@ class DemixingResults:
         b: torch.tensor,
         residual_correlation_image: ResidualCorrelationImages,
         standard_correlation_image: StandardCorrelationImages,
+        background_to_signal_correlation_image: StandardCorrelationImages,
         order: str,
         data_shape: tuple[int, int, int],
         device="cpu",
     ):
         """
+        This class provides a convenient way to export all demixing result as array-like objects.
         Args:
             u_sparse (torch.sparse_coo_tensor): shape (pixels, rank 1)
             q (torch.tensor): shape (rank 2, rank 2)
@@ -1283,6 +1285,7 @@ class DemixingResults:
         self._c = c.to(device)
         self._residual_correlation_image = residual_correlation_image
         self._standard_correlation_image = standard_correlation_image
+        self._background_to_signal_correlation_image = background_to_signal_correlation_image
         if self.order == "C":
             self._baseline = b.reshape((self.shape[1], self.shape[2])).to(self.device)
         elif self.order == "F":
@@ -1296,6 +1299,10 @@ class DemixingResults:
     @property
     def residual_correlation_image(self) -> ResidualCorrelationImages:
         return self._residual_correlation_image
+
+    @property
+    def background_to_signal_correlation_image(self) -> StandardCorrelationImages:
+        return self._background_to_signal_correlation_image
 
     @property
     def shape(self):
