@@ -1074,7 +1074,8 @@ class StandardCorrelationImages(FactorizedVideo):
         self._device = u_sparse.device
         self._u = u_sparse
         self._v = v
-        self._c = c
+        self._c = None
+        self.c = c # All temporal data goes through the setter to get normalized
         self._movie_mean = movie_mean
         self._movie_normalizer = movie_normalizer
         self._fov_dims = (fov_dims[0], fov_dims[1])
