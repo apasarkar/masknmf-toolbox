@@ -887,6 +887,14 @@ class ResidualCorrelationImages(FactorizedVideo):
         return self._support_correlation_values
 
     @property
+    def residual_movie_mean(self) -> torch.tensor:
+        return self._residual_movie_mean
+
+    @property
+    def residual_movie_normalizer(self) -> torch.tensor:
+        return self._residual_movie_normalizer
+
+    @property
     def order(self) -> str:
         return self._order
 
@@ -1119,6 +1127,14 @@ class StandardCorrelationImages(FactorizedVideo):
         return self.c.shape[1], self._fov_dims[0], self._fov_dims[1]
 
     @property
+    def movie_mean(self) -> torch.tensor:
+        return self._movie_mean
+
+    @property
+    def movie_normalizer(self) -> torch.tensor:
+        return self._movie_normalizer
+
+    @property
     def order(self) -> str:
         return self._order
 
@@ -1270,8 +1286,9 @@ class DemixingResults:
             c (torch.tensor): shape (number of frames, number of neural signals)
             b (torch.tensor): shape (pixels)
             residual_correlation_image (ResidualCorrelationImages): Shape (number of neural signals, FOV dim 1, FOV dim 2)
+                The residual corr img corresponding to these demixing results
             standard_correlation_image (StandardCorrelationImages): Shape (number of neural signals,
-                FOV dim 1, FOV dim 2)
+                FOV dim 1, FOV dim 2): The standard corr img corresponding to these demixing results
             order (str): order used to reshape data from 2D to 1D
             data_shape (tuple): (number of frames, field of view dimension 1, field of view dimension 2)
             device (str): 'cpu' or 'cuda'. used to manage where the tensors reside
@@ -1280,31 +1297,64 @@ class DemixingResults:
         self._order = order
         self._shape = data_shape
         self._u_sparse = u_sparse.to(device)
-        self._q = q.to(device)
-        self._v = v.to(device)
-        self._a = a.to(device)
-        self._c = c.to(device)
-        self._residual_correlation_image = residual_correlation_image
-        self._standard_correlation_image = standard_correlation_image
-        self._background_to_signal_correlation_image = background_to_signal_correlation_image
+        self._q = q
+        self._v = v
+        self._a = a
+        self._c = c
+
+        ## Store the critical values for each of these
+        self._std_corr_img_mean = standard_correlation_image.movie_mean
+        self._std_corr_img_normalizer = standard_correlation_image.movie_normalizer
+
+        self._bkgd_std_corr_img_mean = background_to_signal_correlation_image.movie_mean
+        self._bkgd_std_corr_img_normalizer = background_to_signal_correlation_image.movie_normalizer
+
+        self._resid_corr_img_support_values = residual_correlation_image.support_correlation_values
+        self._resid_corr_img_mean = residual_correlation_image.residual_movie_mean
+        self._resid_corr_img_normalizer = residual_correlation_image.residual_movie_normalizer
+
         if self.order == "C":
-            self._baseline = b.reshape((self.shape[1], self.shape[2])).to(self.device)
+            self._baseline = b.reshape((self.shape[1], self.shape[2]))
         elif self.order == "F":
             # Note we swap 1 and 2 here
-            self._baseline = b.reshape((self.shape[2], self.shape[1])).T.to(self.device)
+            self._baseline = b.reshape((self.shape[2], self.shape[1])).T
+
+        #Move all tracked tensors to desired location so everything is on one device
+        self.to(device)
 
     @property
     def standard_correlation_image(self) -> StandardCorrelationImages:
-        return self._standard_correlation_image
-
-    @property
-    def residual_correlation_image(self) -> ResidualCorrelationImages:
-        return self._residual_correlation_image
+        return StandardCorrelationImages(self._u_sparse,
+                                         self._v,
+                                         self._c,
+                                         self._std_corr_img_mean,
+                                         self._std_corr_img_normalizer,
+                                         (self._shape[1], self._shape[2]),
+                                         order=self.order)
 
     @property
     def background_to_signal_correlation_image(self) -> StandardCorrelationImages:
-        return self._background_to_signal_correlation_image
+        return StandardCorrelationImages(self._u_sparse,
+                                         self._q @ self._v,
+                                         self._c,
+                                         self._bkgd_std_corr_img_mean,
+                                         self._bkgd_std_corr_img_normalizer,
+                                         (self._shape[1], self._shape[2]),
+                                         order=self.order)
 
+    @property
+    def residual_correlation_image(self) -> ResidualCorrelationImages:
+        return ResidualCorrelationImages(self._u_sparse,
+                                         self._v,
+                                         self._q,
+                                         self._a,
+                                         self._c,
+                                         self._resid_corr_img_support_values,
+                                         self._resid_corr_img_mean,
+                                         self._resid_corr_img_normalizer,
+                                         (self._shape[1], self._shape[2]),
+                                         mode=ResidCorrMode.RESIDUAL,
+                                         order=self._order)
     @property
     def shape(self):
         return self._shape
@@ -1325,6 +1375,15 @@ class DemixingResults:
         self._a = self._a.to(self.device)
         self._c = self._c.to(self.device)
         self._baseline = self.baseline.to(self.device)
+        self._std_corr_img_mean = self._std_corr_img_mean.to(self.device)
+        self._std_corr_img_normalizer = self._std_corr_img_normalizer.to(self.device)
+
+        self._bkgd_std_corr_img_mean = self._bkgd_std_corr_img_mean.to(self.device)
+        self._bkgd_std_corr_img_normalizer = self._bkgd_std_corr_img_normalizer.to(self.device)
+
+        self._resid_corr_img_support_values = self._resid_corr_img_support_values.to(self.device)
+        self._resid_corr_img_mean = self._resid_corr_img_mean.to(self.device)
+        self._resid_corr_img_normalizer = self._resid_corr_img_normalizer.to(self.device)
 
     @property
     def fov_shape(self) -> Tuple[int, int]:
