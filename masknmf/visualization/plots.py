@@ -369,6 +369,8 @@ def plot_ith_roi(
         yaxis4=dict(matches="y1", scaleanchor="x1", scaleratio=1),
         xaxis5=dict(matches="x1", scaleanchor="y1", scaleratio=1),
         yaxis5=dict(matches="y1", scaleanchor="x1", scaleratio=1),
+        xaxis6=dict(matches="x1", scaleanchor="y1", scaleratio=1),
+        yaxis6=dict(matches="y1", scaleanchor="x1", scaleratio=1),
     )
 
     # Save to an HTML file
