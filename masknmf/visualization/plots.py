@@ -160,6 +160,7 @@ def plot_ith_roi(
             f"folder {folder} does not exist; please make it then run this code"
         )
 
+    background_to_signal_corr_image = results.background_to_signal_correlation_image
     order = results.order
     current_a = (
         torch.index_select(results.a, 1, torch.arange(i, i + 1).to(results.device))
@@ -206,6 +207,10 @@ def plot_ith_roi(
         i, lb_dim1:ub_dim1, lb_dim2:ub_dim2
     ]
 
+    curr_background_to_signal_corr = background_to_signal_corr_image[
+        i, lb_dim1:ub_dim1, lb_dim2:ub_dim2
+    ]
+
     # Create x and y axes that match the p1 and p2 coordinates
     x_ticks = np.arange(lb_dim2, ub_dim2)
     y_ticks = np.arange(lb_dim1, ub_dim1)
@@ -213,13 +218,14 @@ def plot_ith_roi(
     # Create a Plotly subplot
     fig = sp.make_subplots(
         rows=5,
-        cols=5,
+        cols=6,
         subplot_titles=[
             "Spatial Footprint",
             "Residual Std Dev Image",
             "PMD Std Dev Image",
             "Corr(PMD, c_i)",
             "Corr(Resid, c_i)",
+            "Corr(Bkgd, c_i)",
             "Temporal Trace",
             "Background Trace",
             "Residual",
@@ -232,11 +238,12 @@ def plot_ith_roi(
                 {"type": "heatmap"},
                 {"type": "heatmap"},
                 {"type": "heatmap"},
+                {"type": "heatmap"},
             ],
-            [{"colspan": 5}, None, None, None, None],
-            [{"colspan": 5}, None, None, None, None],
-            [{"colspan": 5}, None, None, None, None],
-            [{"colspan": 5}, None, None, None, None],
+            [{"colspan": 6}, None, None, None, None, None],
+            [{"colspan": 6}, None, None, None, None, None],
+            [{"colspan": 6}, None, None, None, None, None],
+            [{"colspan": 6}, None, None, None, None, None],
         ],
     )
 
@@ -295,6 +302,20 @@ def plot_ith_roi(
         col=5,
     )
 
+    fig.add_trace(
+        go.Heatmap(
+            z=curr_background_to_signal_corr,
+            x=x_ticks,
+            y=y_ticks,
+            showscale=False,
+            colorscale="Viridis",
+            zmin=0,
+            zmax=1,
+        ),
+        row=1,
+        col=6,
+    )
+
     # Temporal Trace
     fig.add_trace(
         go.Scatter(y=signal_roi_avg, mode="lines", name="Signal"), row=2, col=1
@@ -348,6 +369,8 @@ def plot_ith_roi(
         yaxis4=dict(matches="y1", scaleanchor="x1", scaleratio=1),
         xaxis5=dict(matches="x1", scaleanchor="y1", scaleratio=1),
         yaxis5=dict(matches="y1", scaleanchor="x1", scaleratio=1),
+        xaxis6=dict(matches="x1", scaleanchor="y1", scaleratio=1),
+        yaxis6=dict(matches="y1", scaleanchor="x1", scaleratio=1),
     )
 
     # Save to an HTML file

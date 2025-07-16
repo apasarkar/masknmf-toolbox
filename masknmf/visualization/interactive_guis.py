@@ -228,40 +228,33 @@ class PMDWidget:
         return VBox([self.iw.show(), self.fig_temporal.show(maintain_aspect=False)])
 
 
-def signal_space_demixing(
-    demixing_results: DemixingResults, pmd_array: PMDArray, v_range: tuple
-):
-    mean_img = pmd_array.mean_img
-    dense_ac_movie = demixing_results.ac_array[:]
-
-    num_frames, fov_dim1, fov_dim2 = dense_ac_movie.shape
+def signal_space_demixing(demixing_results: masknmf.DemixingResults,
+                          v_range: tuple,
+                          device: str = 'cpu'):
+    demixing_results.to(device)
+    pmd_arr = demixing_results.pmd_array
+    pmd_arr.rescale = False
+    ac_arr = demixing_results.ac_array
+    num_frames, fov_dim1, fov_dim2 = pmd_arr.shape
 
     data_order = demixing_results.ac_array.order
-    a_dense = (
-        demixing_results.ac_array.a.cpu()
-        .to_dense()
-        .numpy()
-        .reshape((fov_dim1, fov_dim2, -1), order=data_order)
-    )
-    c_numpy = demixing_results.ac_array.c.cpu().numpy()
+    a_dense = demixing_results.ac_array.export_a()
+    c_numpy = demixing_results.ac_array.export_c()
+    print(c_numpy.shape)
     colors = demixing_results.colorful_ac_array.colors.cpu().numpy()
 
     color_projection_img = np.tensordot(a_dense, colors, axes=(2, 0))
 
-    normalized_ac_movie = dense_ac_movie / np.amax(dense_ac_movie)
-    normalized_mean_img = mean_img / np.amax(mean_img)
-
-    superimposed_movie = normalized_ac_movie + 5 * normalized_mean_img[None, :, :]
     iw = fpl.ImageWidget(
-        data=[color_projection_img, dense_ac_movie, superimposed_movie],
-        names=["Signal Img", "Signal Movie", "Superimposed"],
-        rgb=[True, False, False],
+        data=[pmd_arr, ac_arr, color_projection_img],
+        names=["pmd", "ac_movie", "color projection"],
+        rgb=[False, False, True],
         figure_shape=(1, 3),
         histogram_widget=True,
         graphic_kwargs={"vmin": v_range[0], "vmax": v_range[1]},
     )
 
-    ig = iw.figure[0, 0]["image_widget_managed"]
+    ig = iw.figure[0, 2]["image_widget_managed"]
     iw.vmin = 0
     ig.vmax = 255
 
@@ -273,21 +266,21 @@ def signal_space_demixing(
 
     def clickEvent(ev):
         dim2_coord, dim1_coord = ev.pick_info["index"]
+        print(type(dim2_coord))
+        print(dim2_coord)
+        print(isinstance(dim2_coord, np.integer))
 
         a_identified = a_dense[dim1_coord, dim2_coord, :] != 0
         num_neurons = np.sum(a_identified.astype("int"))
         if num_neurons == 0:
             line_fig[0, 0].clear()
             line_fig[0, 0].add_line(data=placeholder)
-            line_fig[0, 0].set_title(f"No Signals at {dim2_coord, dim2_coord}")
+            line_fig[0, 0].title = f"No Signals at {dim2_coord, dim2_coord}"
             line_fig[1, 0].clear()
-            trace_to_show = (
-                pmd_array[:, dim1_coord, dim2_coord]
-                - pmd_array.mean_img[dim1_coord, dim2_coord]
-            ) / pmd_array.var_img[dim1_coord, dim2_coord]
+            trace_to_show = pmd_arr[:, slice(dim1_coord, dim1_coord + 1), slice(dim2_coord, dim2_coord + 1)]
             mean_pmd_trace = np.column_stack([np.arange(num_frames), trace_to_show])
             line_fig[1, 0].add_line(mean_pmd_trace)
-            line_fig[1, 0].set_title(f"PMD Signal")
+            line_fig[1, 0].title = f"PMD Signal"
         else:
             line_fig[0, 0].clear()
             line_fig[1, 0].clear()
@@ -316,14 +309,11 @@ def signal_space_demixing(
             line_fig[0, 0].add_line_stack(
                 list_elts, colors=rgba_colors.squeeze(), separation=2
             )
-            line_fig[0, 0].set_title(f"Signals at {dim2_coord, dim1_coord}.")
-            trace_to_show = (
-                pmd_array[:, dim1_coord, dim2_coord]
-                - pmd_array.mean_img[dim1_coord, dim2_coord]
-            ) / pmd_array.var_img[dim1_coord, dim2_coord]
+            line_fig[0, 0].title = f"Signals at {dim2_coord, dim1_coord}."
+            trace_to_show = pmd_arr[:, dim1_coord, dim2_coord]
             mean_pmd_trace = np.column_stack([np.arange(num_frames), trace_to_show])
             line_fig[1, 0].add_line(mean_pmd_trace)
-            line_fig[1, 0].set_title(f"PMD Signal")
+            line_fig[1, 0].title = f"PMD Signal"
 
         line_fig[1, 0].auto_scale(maintain_aspect=False)
         line_fig[0, 0].auto_scale(maintain_aspect=False)
@@ -333,7 +323,6 @@ def signal_space_demixing(
     iw.figure[0, 2].graphics[0].add_event_handler(clickEvent, "click")
 
     return VBox([iw.show(), line_fig.show()])
-
 
 def stack_comparison_interface(
     stack_1: Union[np.ndarray, PMDArray],
@@ -448,4 +437,23 @@ def make_demixing_video(
             iw.vmin = 0
             ig.vmax = 255
 
+    return iw
+
+
+def visualize_superpixels_peaks(superpixel_results: dict):
+    superpixel_map = superpixel_results['superpixel_map']
+    pure_superpixel_map = superpixel_results['pure_superpixel_map']
+    correlation_image = superpixel_results['correlation_image']
+
+    superpixel_img = np.stack([correlation_image.copy()] * 3, axis=-1)
+    superpixel_img[superpixel_map > 0] = [4, 0, 0]
+
+    pure_superpixel_img = np.stack([correlation_image.copy()] * 3, axis=-1)
+    pure_superpixel_img[pure_superpixel_map > 0] = [4, 0, 0]
+    iw = fpl.ImageWidget(data=[np.stack([correlation_image] * 3, axis=-1),
+                               superpixel_img,
+                               pure_superpixel_img],
+                         rgb=[True, True, True],
+                         figure_shape=(1, 3),
+                         names=['corr', 'superpix', 'pure superpix'])
     return iw

@@ -3,7 +3,8 @@ from .interactive_guis import (
     stack_comparison_interface,
     get_correlation_widget,
     make_demixing_video,
-    PMDWidget
+    PMDWidget,
+    visualize_superpixels_peaks
 )
 from .plots import (
     construct_index,
