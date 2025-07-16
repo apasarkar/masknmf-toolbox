@@ -55,6 +55,16 @@ def test_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
     cropping can be an expensive and avoidable operation.
     """
     for k in range(len(my_tuple)):
+        if isinstance(my_tuple[k], np.ndarray):
+            if my_tuple[k].shape[0] < spatial_dims[k]:
+                return True
+
+        if isinstance(my_tuple[k], np.integer):
+            return True
+
+        if isinstance(my_tuple[k], int):
+            return True
+
         if isinstance(my_tuple[k], slice):
             if test_slice_effect(my_tuple[k], spatial_dims[k]):
                 return True
@@ -392,13 +402,34 @@ class PMDArray(FactorizedVideo):
         if v_crop.ndim < self._v.ndim:
             v_crop = v_crop.unsqueeze(1)
 
+
         # Step 4: Deal with remaining indices after lazy computing the frame(s)
         if isinstance(item, tuple) and test_spatial_crop_effect(
             item[1:], self.shape[1:]
         ):
-            pixel_space_crop = self.pixel_mat[item[1:]]
-            mean_img_crop = self.mean_img[item[1:]].flatten()
-            var_img_crop = self.var_img[item[1:]].flatten()
+            if isinstance(item[1], np.ndarray) and len(item[1]) == 1:
+                term_1 = slice(int(item[1]), int(item[1]) + 1)
+            elif isinstance(item[1], np.integer):
+                term_1 = slice(int(item[1]), int(item[1]) + 1)
+            elif isinstance(item[1], int):
+                term_1 = slice(item[1], item[1] + 1)
+            else:
+                term_1 = item[1]
+
+            if isinstance(item[2], np.ndarray) and len(item[2]) == 1:
+                term_2 = slice(int(item[2]), int(item[2]) + 1)
+            elif isinstance(item[2], np.integer):
+                term_2 = slice(int(item[2]), int(item[2]) + 1)
+            elif isinstance(item[2], int):
+                term_2 = slice(item[2], item[2] + 1)
+            else:
+                term_2 = item[2]
+
+            spatial_crop_terms = (term_1, term_2)
+
+            pixel_space_crop = self.pixel_mat[spatial_crop_terms]
+            mean_img_crop = self.mean_img[spatial_crop_terms].flatten()
+            var_img_crop = self.var_img[spatial_crop_terms].flatten()
             u_indices = pixel_space_crop.flatten()
             u_crop = torch.index_select(self._u, 0, u_indices)
             implied_fov = pixel_space_crop.shape
