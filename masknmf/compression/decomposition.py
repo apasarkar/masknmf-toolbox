@@ -29,7 +29,7 @@ def truncated_random_svd(
     b = q.T @ input_matrix
     u, s, v = torch.linalg.svd(b, full_matrices=False)
     u_final = q @ u
-    v_final = s[:, None] * v
+    v_final = v
     return u_final[:, :rank], s[:rank], v_final[:rank, :]
 
 
