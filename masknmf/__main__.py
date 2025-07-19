@@ -28,6 +28,8 @@ def add_args(parser: argparse.ArgumentParser):
     parser.add_argument("inpath", type=Path, help="Input TIFF directory")
     parser.add_argument("outpath", type=Path, help="Output directory")
     parser.add_argument("--ops", type=str, default="", help="Optional path to ops npy file")
+    parser.add_argument("--pmd-only", action="store_true", help="Return after running PMD."
+                                                                "Helpful if you expect demixing to fail.")
 
     ops0 = default_ops()
     for k, v in ops0.items():
@@ -59,7 +61,7 @@ def main():
 
     inpath = args.inpath
     if inpath.is_file():
-        files = [inpath.parent]
+        files = [inpath]
     elif inpath.is_dir():
         files = sorted(inpath.glob("*.tif*"))
     else:
@@ -73,7 +75,11 @@ def main():
             print(f"Skipping {file.stem}, already processed.")
             continue
         print(f"Running: {file.name}")
-        data_arr = tifffile.memmap(file)
+        try:
+            data_arr = tifffile.memmap(file)
+        except (ValueError, MemoryError):
+            data_arr = tifffile.imread(file)
+
         run_array(
             data_array=data_arr,
             data_index=file.stem,
@@ -81,6 +87,7 @@ def main():
             ops=ops,
             debug=ops["debug"],
             overwrite=ops["overwrite"],
+            pmd_only=args.pmd_only,
         )
 
 if __name__ == "__main__":

@@ -137,6 +137,7 @@ def run_array(
         ops: dict | None = None,
         debug : bool = False,
         overwrite: bool = False,
+        pmd_only = False,
 ):
     if ops is None:
         ops = {}
@@ -213,6 +214,9 @@ def run_array(
         max_components=10, background_rank=10, device=DEVICE,
     )
     print(f"PMD took {time.time() - t_pmd:.2f}s")
+    np.save(plane_dir / "pmd_obj.npy", pmd_obj, allow_pickle=True)
+    if pmd_only:
+        return
 
     del dense_moco
     pmd_demixer = masknmf.demixing.signal_demixer.SignalDemixer(pmd_obj, device=DEVICE, frame_batch_size=100)
