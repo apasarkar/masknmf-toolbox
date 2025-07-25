@@ -14,6 +14,7 @@ from tqdm import tqdm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from typing import Tuple
 
+import masknmf.demixing.regression_update
 from .demixing_arrays import (
     DemixingResults,
     StandardCorrelationImages,
@@ -365,13 +366,12 @@ def process_custom_signals(
         message = "nonneg" if c_nonneg else "unconstrained"
         display(f"temporal footprints provided. Initializing signals. Computing optimal {message} affine transform of signal "
                 f"to match video ")
-        c = torch.zeros([v.shape[1], a.shape[1]], device=device, dtype=torch.float)
 
-        if b is None:
-            b = get_mean_data(u_sparse, v)
-        c = regression_update.temporal_update_hals(
-            u_sparse, v, a, c, b, c_nonneg=c_nonneg, blocks=blocks
-        )
+        c, b = masknmf.demixing.regression_update.alternating_least_squares_affine_fit(u_sparse,
+                                                                                       v,
+                                                                                       a,
+                                                                                       c,
+                                                                                       scale_nonneg=c_nonneg)
 
 
 
