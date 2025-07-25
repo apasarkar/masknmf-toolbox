@@ -12,6 +12,7 @@ from typing import *
 import networkx as nx
 from tqdm import tqdm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from typing import Tuple
 
 from .demixing_arrays import (
     DemixingResults,
@@ -314,9 +315,11 @@ def process_custom_signals(
         a: torch.sparse_coo_tensor,
         u_sparse: torch.sparse_coo_tensor,
         v: torch.tensor,
+        b: Optional[torch.tensor] = None,
+        c: Optional[torch.tensor] = None,
         c_nonneg: bool = True,
         blocks=None,
-) -> tuple[
+) -> Tuple[
     torch.sparse_coo_tensor, torch.sparse_coo_tensor, torch.tensor, torch.tensor
 ]:
     """
@@ -338,6 +341,7 @@ def process_custom_signals(
     if not a.is_coalesced():
         a = a.coalesce()  # Coalesce to remove duplicate indices
 
+    initial_num_signals = a.shape[1]
     new_indices = a.indices().clone().to(device)
     new_values = a.values().clone().to(device)
     dims = (u_sparse.shape[0], a.shape[1])
@@ -346,15 +350,30 @@ def process_custom_signals(
         indices=new_indices, values=new_values, size=dims
     ).coalesce()
 
-    c = torch.zeros([v.shape[1], a.shape[1]], device=device, dtype=torch.float)
+    if c is None:
+        message = "nonneg" if c_nonneg else "unconstrained"
+        display(f"no temporal footprints provided, running {message} least squares")
+        c = torch.zeros([v.shape[1], a.shape[1]], device=device, dtype=torch.float)
 
-    uv_mean = get_mean_data(u_sparse, v)
+        if b is None:
+            b = get_mean_data(u_sparse, v)
+        c = regression_update.temporal_update_hals(
+            u_sparse, v, a, c, b, c_nonneg=c_nonneg, blocks=blocks
+        )
 
-    # Baseline update followed by 'c' update:
-    b = regression_update.baseline_update(uv_mean, a, c)
-    c = regression_update.temporal_update_hals(
-        u_sparse, v, a, c, b, c_nonneg=c_nonneg, blocks=blocks
-    )
+    else:
+        message = "nonneg" if c_nonneg else "unconstrained"
+        display(f"temporal footprints provided. Initializing signals. Computing optimal {message} affine transform of signal "
+                f"to match video ")
+        c = torch.zeros([v.shape[1], a.shape[1]], device=device, dtype=torch.float)
+
+        if b is None:
+            b = get_mean_data(u_sparse, v)
+        c = regression_update.temporal_update_hals(
+            u_sparse, v, a, c, b, c_nonneg=c_nonneg, blocks=blocks
+        )
+
+
 
     c_norm = torch.linalg.norm(c, dim=0)
     nonzero_dim1 = torch.nonzero(c_norm).squeeze(1)
@@ -363,6 +382,8 @@ def process_custom_signals(
     c_torch = torch.index_select(c, 1, nonzero_dim1)
     a_torch = torch.index_select(a, 1, nonzero_dim1)
     a_mask = a_torch.bool()
+
+    display(f"started with {initial_num_signals} signals, ended initialization with {a_torch.shape[1]} signals")
 
     return a_torch, a_mask, c_torch, b
 
@@ -2164,15 +2185,20 @@ class InitializingState(SignalProcessingState):
         )
 
     def _initialize_signals_custom(
-            self, spatial_footprints: Union[torch.sparse_coo_tensor, np.ndarray]
+            self,
+            spatial_footprints: Union[torch.sparse_coo_tensor, np.ndarray],
+            temporal_footprints: Optional[Union[torch.tensor, np.ndarray]] = None,
+            baseline_estimate: Optional[Union[torch.tensor, np.ndarray]] = None,
+            c_nonneg: Optional[bool] = True
     ):
         """
-        Given a set of spatial footprints, initialize all of the signals.
+        Given a set of spatial footprints, initialize signals for NMF.
         Args:
             spatial_footprints (Union[torch.sparse_coo_tensor, torch.tensor, np.ndarray, scipy.sparse.spmatrix]):
                 A set of footprints, either 2D (fov dim 1 * fov dim 2, number of neurons) or 3D (fov dim 1, fov dim 2,
                 number of neurons). If it is 2D, the assumption is that the 2D frames have been flattened into
                 1D vectors in the same "order" (i.e. "C" or "F" ordering) in which the input video has been reordered.
+            temporal_footprints
         """
         if isinstance(spatial_footprints, np.ndarray):
             if spatial_footprints.ndim == 3:
@@ -2234,6 +2260,26 @@ class InitializingState(SignalProcessingState):
                 f"which is not supported"
             )
 
+        if temporal_footprints is not None:
+            if temporal_footprints.shape[1] != processed_spatial_tensor.shape[1]:
+                raise ValueError(f"Provided different number of temporal ({temporal_footprints.shape[1]}) "
+                                 f"vs spatial ({processed_spatial_tensor.shape[1]}) signals. ")
+            if temporal_footprints.shape[0] != self.v.shape[1]:
+                raise ValueError(f"Data mismatch: Temporal footprints have {temporal_footprints.shape[0]} time points"
+                                 f"and video data has {self.v.shape[1]} time points")
+            if isinstance(temporal_footprints, np.ndarray):
+                temporal_footprints = torch.from_numpy(temporal_footprints).to(self.device).float()
+
+
+        if baseline_estimate is not None:
+            if baseline_estimate.ndim == 2:
+                pass
+            elif baseline_estimate.ndim == 1:
+                pass
+            else:
+                raise ValueError(f"baseline estimate should either be flattened (1D) or 2D. "
+                                 f"Input has {baseline_estimate.ndim} dimensions")
+
         (
             self.a_init,
             self.mask_a_init,
@@ -2243,7 +2289,11 @@ class InitializingState(SignalProcessingState):
             processed_spatial_tensor,
             self.u_sparse,
             self.v,
+            b=baseline_estimate,
+            c=temporal_footprints,
+            c_nonneg=c_nonneg
         )
+
         self.diagnostic_image = None
 
     def initialize_signals(
