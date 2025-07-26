@@ -86,9 +86,7 @@ def _compute_residual_correlation_image(
     Want to subtract the background first: 
     UV - UQV = U(I - Q)V. Moving forward, we define V_new = (I - Q)V and use UV_new. 
     """
-    v_new = (
-                    torch.eye(v.shape[0], device=device, dtype=torch.float) - factorized_ring_term
-            ) @ v
+    v_new = v - factorized_ring_term
 
     residual_movie_norms = torch.zeros(
         (u_sparse.shape[0], 1), device=device, dtype=torch.float32
@@ -372,7 +370,6 @@ def process_custom_signals(
                                                                                        a,
                                                                                        c,
                                                                                        scale_nonneg=c_nonneg)
-
 
 
     c_norm = torch.linalg.norm(c, dim=0)
@@ -2127,27 +2124,16 @@ class InitializingState(SignalProcessingState):
             # This indicates that it is the first time we are running the superpixel init with this set of
             # pre-existing self.a and self.c values, so we need to compute the local correlation data
             if self.factorized_ring_term is not None:
-                bg_subtract_term = (
-                        torch.eye(
-                            self.u_sparse.shape[1],
-                            dtype=self.u_sparse.dtype,
-                            device=self.device,
-                        )
-                        - self.factorized_ring_term
-                )
+                bg_subtract_temporal_basis = self.v - self.factorized_ring_term
             else:
-                bg_subtract_term = torch.eye(
-                    self.u_sparse.shape[1],
-                    dtype=self.u_sparse.dtype,
-                    device=self.device,
-                )
+                bg_subtract_temporal_basis = self.v
             (
                 self.dim1_coordinates,
                 self.dim2_coordinates,
                 self.correlations,
             ) = get_local_correlation_structure(
                 self.u_sparse,
-                torch.matmul(bg_subtract_term, self.v),
+                bg_subtract_temporal_basis,
                 self.shape,
                 mad_threshold,
                 order=self.data_order,
@@ -2365,9 +2351,7 @@ class DemixingState(SignalProcessingState):
         self.uv_mean = get_mean_data(self.u_sparse, self.v)
 
         if factorized_ring_term is None:
-            self._factorized_ring_term_init = torch.zeros(
-                [self.u_sparse.shape[1], self.v.shape[0]], device=self.device
-            )
+            self._factorized_ring_term_init = torch.zeros_like(self.v)
         else:
             self._factorized_ring_term_init = factorized_ring_term.to(self.device)
             self._validate_factorized_ring_term()
@@ -2441,15 +2425,15 @@ class DemixingState(SignalProcessingState):
 
     def _validate_factorized_ring_term(self):
         """Checks that the factorized ring term at the initialization is valid"""
-        expected_dimensions = self.u_sparse.shape[1], self.u_sparse.shape[1]
+        expected_dimensions = self.v.shape[0], self.v.shape[1]
         if not isinstance(self._factorized_ring_term_init, torch.Tensor):
             raise ValueError(
                 f"Expected data of type {torch.Tensor} for factorized ring term but got type"
                 f"{type(self._factorized_ring_term_init)}"
             )
         if (
-                self.u_sparse.shape[1] != self._factorized_ring_term_init.shape[0]
-                or self.v.shape[0] != self._factorized_ring_term_init.shape[1]
+                self.v.shape[0] != self._factorized_ring_term_init.shape[0]
+                or self.v.shape[1] != self._factorized_ring_term_init.shape[1]
         ):
             raise ValueError(
                 f"Shape of factorized_background_term is {self._factorized_ring_term_init.shape}"
@@ -2571,40 +2555,11 @@ class DemixingState(SignalProcessingState):
                     weights * wu, standardize=False
                 )
                 q_list.append(projected_wu)
-        self.factorized_ring_term = torch.concatenate(q_list, dim=1)
-
-    #
-    # def ring_model_weight_update_old(self):
-    #     self.W.weights = torch.ones(
-    #         (self.shape[0] * self.shape[1]), device=self.device
-    #     ).float()
-    #     ur = torch.sparse.mm(self.u_sparse, self.r)
-    #     e = torch.matmul(
-    #         torch.ones([1, self.v.shape[1]], device=self.device), self.v.t()
-    #     )
-    #     x = torch.matmul(self.c.t(), self.v.t())
-    #
-    #     spatial_term = ur * self.s.unsqueeze(0)
-    #     spatial_term -= self.b @ e
-    #     full_residual = spatial_term - torch.sparse.mm(self.a, x)
-    #     ring_output = self.W.forward(spatial_term)
-    #
-    #     numerator = torch.sum(full_residual * ring_output, dim=1)
-    #     denominator = torch.square(torch.linalg.norm(ring_output, dim=1))
-    #
-    #     weights = torch.nan_to_num(
-    #         numerator / denominator, nan=0.0, posinf=0.0, neginf=0.0
-    #     )
-    #
-    #     threshold_function = torch.nn.ReLU()
-    #     weights = threshold_function(weights)
-    #     # Now export the ring model to its factorized form:
-    #     self.factorized_ring_term = ur.T @ (weights.unsqueeze(1) * ring_output)
+        self.factorized_ring_term = torch.concatenate(q_list, dim=1) @ self.v
 
     def static_baseline_update(self):
         if self.factorized_ring_term is not None:
-            mean_used = self.uv_mean - torch.sparse.mm(self.u_sparse, (
-                        self.factorized_ring_term @ torch.mean(self.v, dim=1, keepdim=True)))
+            mean_used = self.uv_mean - torch.sparse.mm(self.u_sparse, torch.mean(self.factorized_ring_term, dim=1, keepdim=True))
         else:
             mean_used = self.uv_mean
         self.b = regression_update.baseline_update(mean_used, self.a, self.c)
@@ -2991,7 +2946,7 @@ class DemixingState(SignalProcessingState):
         self.standard_correlation_image.c = self.c
         self.compute_residual_correlation_image()
         background_to_signal_correlation_image = _compute_standard_correlation_image(self.u_sparse,
-                                                                                     self.factorized_ring_term @ self.v,
+                                                                                     self.factorized_ring_term,
                                                                                      self.c,
                                                                                      (self.d1, self.d2),
                                                                                      self.data_order,

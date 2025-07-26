@@ -826,10 +826,7 @@ class ResidualCorrelationImages(FactorizedVideo):
         self._u = u_sparse
         self._v = v
         self._factorized_ring_term = factorized_ring_term
-        self._background_subtracted_term = (
-            torch.eye(self._u.shape[1], device=self.device, dtype=torch.float)
-            - self._factorized_ring_term
-        )
+        self._background_term = self._factorized_ring_term
         self._c = c
         self._c_norm = self._c - torch.mean(self._c, dim=0, keepdim=True)
         self._c_norm = self._c_norm / torch.linalg.norm(
@@ -975,7 +972,7 @@ class ResidualCorrelationImages(FactorizedVideo):
         if c_crop.ndim < self._c_norm.ndim:
             c_crop = c_crop.unsqueeze(1)
 
-        v_crop = self._v @ c_crop
+        v_crop = self._v @ c_crop - self._background_term @ c_crop
         cc_crop = self._c.T @ c_crop
         selected_neurons = self._index_values[frame_indexer]
         if selected_neurons.ndim < 1:
@@ -1010,16 +1007,15 @@ class ResidualCorrelationImages(FactorizedVideo):
             used_order = self.order
 
         # Temporal term is guaranteed to have nonzero "T" dimension below
+        ## TODO: If you only had 2 matrices in the factorization, this if/else is useless. But eventually background term will be its own factorization. So keep this for now.
         if np.prod(implied_fov) <= v_crop.shape[1]:
-            product = torch.sparse.mm(u_crop, self._background_subtracted_term)
-            product = torch.matmul(product, v_crop)
+            product = torch.sparse.mm(u_crop, v_crop)
             product -= mean_crop.unsqueeze(1) @ torch.sum(c_crop, dim=0, keepdim=True)
             product -= torch.sparse.mm(a_crop, cc_crop)
             product /= movie_normalizer_crop.unsqueeze(1)
 
         else:
-            product = self._background_subtracted_term @ v_crop
-            product = torch.sparse.mm(u_crop, product)
+            product = torch.sparse.mm(u_crop, v_crop)
             product -= torch.sparse.mm(a_crop, cc_crop)
             product -= mean_crop.unsqueeze(1) @ torch.sum(c_crop, dim=0, keepdim=True)
 
@@ -1442,13 +1438,25 @@ class DemixingResults:
         )
 
     @property
-    def fluctuating_background_array(self) -> FluctuatingBackgroundArray:
+    def fluctuating_background_array(self) -> PMDArray:
         """
-        Returns a FluctuatingBackgroundArray using the tensors stored in this object
+        TODO: When the refactor is complete, need to return once again a Fluctuating Background Array
+        Returns a PMDArray using the tensors stored in this object
         """
-        return FluctuatingBackgroundArray(
-            self.fov_shape, self.order, self.u, self.q, self.v
+        mean_img = torch.zeros(self.shape[1], self.shape[2], device=self.device)
+        var_img = torch.ones(self.shape[1], self.shape[2], device=self.device)
+        return PMDArray(
+            self.shape,
+            self.u,
+            self.q,
+            mean_img,
+            var_img,
+            device=self.device,
+            rescale=True,
         )
+        # return FluctuatingBackgroundArray(
+        #     self.fov_shape, self.order, self.u, self.q, self.v
+        # )
 
     @property
     def residual_array(self) -> ResidualArray:

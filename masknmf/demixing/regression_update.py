@@ -67,7 +67,6 @@ def spatial_update_hals(
     nonzero_row_indices = torch.squeeze(torch.sum(mask_ab, dim=1).nonzero())
     mask_ab = torch.index_select(mask_ab, 0, nonzero_row_indices)
 
-    Vc = torch.matmul(v, c)
     a_dense = torch.index_select(a_sparse, 0, nonzero_row_indices).to_dense()
 
     C_prime = torch.matmul(c.t(), c)
@@ -84,13 +83,11 @@ def spatial_update_hals(
     u_subset = torch.index_select(u_sparse, 0, nonzero_row_indices)
 
     if q is not None:
-        eye_elt = torch.eye(u_sparse.shape[1], device=device, dtype=u_sparse.dtype)
         background_subtracted_projection = torch.sparse.mm(
-            u_subset, torch.matmul((eye_elt - q), Vc)
+            u_subset, torch.matmul((v - q), c)
         )
     else:
-        eye_elt = torch.eye(u_sparse.shape[1], device=device, dtype=u_sparse.dtype)
-        background_subtracted_projection = torch.sparse.mm(u_subset, Vc)
+        background_subtracted_projection = torch.sparse.mm(u_subset, torch.matmul(v, c))
     baseline_projection = torch.matmul(
         torch.index_select(b, 0, nonzero_row_indices), torch.sum(c, dim=0, keepdim=True)
     )
@@ -162,15 +159,13 @@ def temporal_update_hals(
     # aTUR = torch.sparse.mm(aTU, r)
     if q is not None:
         fluctuating_background_subtracted_projection = torch.sparse.mm(
-            aTU, torch.eye(u_sparse.shape[1], device=device, dtype=u_sparse.dtype) - q
+            aTU, v - q
         )
     else:
         fluctuating_background_subtracted_projection = torch.sparse.mm(
-            aTU, torch.eye(u_sparse.shape[1], device=device, dtype=u_sparse.dtype)
+            aTU, v
         )
-    fluctuating_background_subtracted_projection = (
-        fluctuating_background_subtracted_projection @ v
-    )
+
 
     # Step 2: Get aTbe
     aTb = torch.matmul(a_sparse.t(), b)
