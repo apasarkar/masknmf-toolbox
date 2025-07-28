@@ -2478,6 +2478,52 @@ class DemixingState(SignalProcessingState):
         indicator = (torch.sparse.mm(self.a, ones_vec).squeeze() == 0).to(torch.float32)
         self.W.support = indicator
 
+    def lowrank_background_svd(self,
+                               downsampling_factor: int,
+                               background_rank: int,
+                               num_oversamples:int = 5):
+        """
+        Pipeline that sketches a rank-k SVD of downsampled(UV - AC - b) to get a temporal background estimate
+        Regresses this back onto (UV - AC - b) to get the full background estimate
+        """
+        device = self.device
+        num_frames = self.v.shape[1]
+        random_data = torch.randn(num_frames, background_rank + num_oversamples, device=device)
+        resid_projection = (torch.sparse.mm(self.u_sparse, self.v @ random_data) -
+                          torch.sparse.mm(self.a, self.c.T @ random_data) -
+                          self.b @ torch.sum(random_data, dim=0, keepdim=True))
+        resid_projection = resid_projection.reshape(self.d1, self.d2, resid_projection.shape[1])
+        resid_projection = masknmf.compression.decomposition.spatial_downsample(resid_projection, downsampling_factor)
+        resid_projection = resid_projection.reshape(resid_projection.shape[0]*resid_projection.shape[1],
+                                                    resid_projection.shape[2])
+        orth_qr, tri_qr = torch.linalg.qr(resid_projection, mode="reduced")
+
+        # Downsample U, A and B
+        u_downsample = masknmf.compression.decomposition.downsample_sparse(self.u_sparse,
+                                                                           (self.d1, self.d2),
+                                                                           downsampling_factor)
+        a_downsample = masknmf.compression.decomposition.downsample_sparse(self.a,
+                                                                           (self.d1, self.d2),
+                                                                           downsampling_factor)
+        b_downsample = masknmf.compression.decomposition.spatial_downsample(self.b.reshape(self.d1, self.d2, 1),
+                                                                            downsampling_factor).squeeze()
+        b_downsample = b_downsample.reshape(b_downsample.shape[0]*b_downsample.shape[1], 1)
+
+        right_term = torch.sparse.mm(u_downsample.t(), orth_qr).T @ self.v
+        right_term -= torch.sparse.mm(a_downsample.t(), orth_qr).T @ self.c.T
+        right_term -= orth_qr.T @ b_downsample
+        #Project the residual onto this orth spatial basis
+        _, _, v_bkgd = torch.linalg.svd(right_term, full_matrices=False)
+
+        #Go back to full resolution data, project onto the v_bkgd temporal basis
+        left_term = torch.sparse.mm(self.u_sparse, self.v @ v_bkgd.T)
+        left_term -= torch.sparse.mm(self.a, (self.c.T @ v_bkgd.T))
+        left_term -= self.b @ torch.sum(v_bkgd.T, dim=0, keepdim=True)
+        u, s, v_left = torch.linalg.svd(left_term, full_matrices=False)
+        v_final = v_left @ v_bkgd
+        return u[:, :background_rank], s[:background_rank], v_final[:background_rank, :]
+
+
     def ring_model_weight_update(self):
         self.W.weights = torch.ones(
             (self.shape[0] * self.shape[1]), device=self.device
@@ -2564,7 +2610,43 @@ class DemixingState(SignalProcessingState):
             mean_used = self.uv_mean
         self.b = regression_update.baseline_update(mean_used, self.a, self.c)
 
+    def lowrank_ring_update(self,
+                            x: torch.tensor):
+        """
+        Given: a factorization xy^t where x is in the U basis, y is orthogonal, this fits an unconstrained ring model
+        and projects the result onto the U spatial basis
+        """
+        self.W.weights = torch.ones(
+            (self.shape[0] * self.shape[1]), device=self.device
+        ).float()
+        num_frames = self.v.shape[1]
+        wx = self.W.forward(x)
+        numerator = torch.sum(wx * x, dim = 1)
+        denominator = torch.sum(wx * wx, dim = 1)
+        weights = torch.nan_to_num(numerator / denominator, nan = 0.0)
+        wx *= weights[:, None]
+        projection = self.pmd_obj.project_frames(wx, standardize=False)
+        return projection
+
+
     def fluctuating_baseline_update(self):
+        """
+        Low-rank baseline update pipeline
+        :return:
+        """
+        background_rank = 20 #Hardcoded for now, refactor later
+        downsampling_factor = 20 #Also hardcoded for now, refactor later
+        u_bkgd, s_bkgd, v_bkgd = self.lowrank_background_svd(downsampling_factor,
+                                                             background_rank)
+        new_left_term = self.pmd_obj.project_frames(u_bkgd, standardize=False)
+        new_left_term = torch.sparse.mm(self.u_sparse, new_left_term)
+        new_left_term *= s_bkgd[None, :]
+        ring_weighted_left_term = self.lowrank_ring_update(new_left_term)
+        self.factorized_ring_term = ring_weighted_left_term @ v_bkgd
+        # self.c -= ((self.c.T @ v_bkgd.T) @ v_bkgd).T
+
+
+    def fluctuating_baseline_update_old(self):
         """
         Performs a fluctuating baseline update
         """

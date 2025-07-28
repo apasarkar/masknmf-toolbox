@@ -304,7 +304,7 @@ class PMDArray(FactorizedVideo):
                 Frames which we want to project onto the spatial basis.
             standardize (Optional[bool]): Indicates whether the frames of data are standardized before projection is performed
         Returns:
-            projected_frames (torch.tensor). Shape (fov_dim1, fov_dim2, num_frames).
+            projected_frames (torch.tensor). Shape (fov_dim1 * fov_dim2, num_frames).
         """
         if self.u_local_projector is None:
             raise ValueError(
