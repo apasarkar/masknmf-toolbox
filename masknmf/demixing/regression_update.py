@@ -33,7 +33,7 @@ def spatial_update_hals(
     a_sparse: torch.sparse_coo_tensor,
     c: torch.tensor,
     b: torch.tensor,
-    q: Optional[torch.tensor] = None,
+    q: Optional[Tuple[torch.tensor, torch.tensor]] = None,
     blocks: Optional[Union[torch.tensor, list]] = None,
     mask_ab: Optional[torch.sparse_coo_tensor] = None,
 ):
@@ -55,7 +55,6 @@ def spatial_update_hals(
     Returns:
         a_sparse: torch.sparse_coo_tensor. Dimensions d x k, containing updated spatial matrix
 
-    TODO: Make 'a' input a sparse matrix
     """
     # Load all values onto device in torch
     device = v.device
@@ -84,7 +83,7 @@ def spatial_update_hals(
 
     if q is not None:
         background_subtracted_projection = torch.sparse.mm(
-            u_subset, torch.matmul((v - q), c)
+            u_subset, (v@c - q[0]@(q[1]@c))
         )
     else:
         background_subtracted_projection = torch.sparse.mm(u_subset, torch.matmul(v, c))
@@ -127,7 +126,7 @@ def temporal_update_hals(
     a_sparse: torch.sparse_coo_tensor,
     c: torch.tensor,
     b: torch.tensor,
-    q: Optional[torch.tensor] = None,
+    q: Optional[Tuple[torch.tensor, torch.tensor]] = None,
     c_nonneg: bool = True,
     blocks: Optional[Union[torch.tensor, list]] = None,
 ):
@@ -158,9 +157,8 @@ def temporal_update_hals(
     aTU = torch.sparse.mm(a_sparse.t(), u_sparse)
     # aTUR = torch.sparse.mm(aTU, r)
     if q is not None:
-        fluctuating_background_subtracted_projection = torch.sparse.mm(
-            aTU, v - q
-        )
+        fluctuating_background_subtracted_projection = torch.sparse.mm(aTU, v)
+        fluctuating_background_subtracted_projection -= torch.sparse.mm(aTU, q[0]) @ q[1]
     else:
         fluctuating_background_subtracted_projection = torch.sparse.mm(
             aTU, v

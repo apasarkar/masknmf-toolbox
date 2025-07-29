@@ -69,7 +69,7 @@ def make_mask_dynamic(
 def _compute_residual_correlation_image(
         u_sparse: torch.sparse_coo_tensor,
         v: torch.tensor,
-        factorized_ring_term: torch.tensor,
+        factorized_ring_term: Tuple[torch.tensor, torch.tensor],
         spatial_comps: torch.sparse_coo_tensor,
         temporal_comps: torch.tensor,
         fov_dims: Tuple[int, int],
@@ -82,11 +82,7 @@ def _compute_residual_correlation_image(
     Insert docs here
     """
 
-    """
-    Want to subtract the background first: 
-    UV - UQV = U(I - Q)V. Moving forward, we define V_new = (I - Q)V and use UV_new. 
-    """
-    v_new = v - factorized_ring_term
+    v_new = v - (factorized_ring_term[0] @ factorized_ring_term[1])
 
     residual_movie_norms = torch.zeros(
         (u_sparse.shape[0], 1), device=device, dtype=torch.float32
@@ -1996,7 +1992,7 @@ class InitializingState(SignalProcessingState):
             c: Optional[torch.tensor] = None,
             pixel_batch_size: int = 40000,
             frame_batch_size: int = 2000,
-            factorized_ring_term: Optional[torch.tensor] = None,
+            factorized_ring_term: Optional[Tuple[torch.tensor, torch.tensor]] = None,
     ):
         super().__init__(pixel_batch_size, frame_batch_size)
         """
@@ -2124,7 +2120,7 @@ class InitializingState(SignalProcessingState):
             # This indicates that it is the first time we are running the superpixel init with this set of
             # pre-existing self.a and self.c values, so we need to compute the local correlation data
             if self.factorized_ring_term is not None:
-                bg_subtract_temporal_basis = self.v - self.factorized_ring_term
+                bg_subtract_temporal_basis = self.v - (self.factorized_ring_term[0] @ self.factorized_ring_term[1])
             else:
                 bg_subtract_temporal_basis = self.v
             (
@@ -2321,7 +2317,7 @@ class DemixingState(SignalProcessingState):
             c_init,
             mask_init,
             dimensions: Tuple[int, int, int],
-            factorized_ring_term: Optional[torch.tensor] = None,
+            factorized_ring_term: Optional[Tuple[torch.tensor, torch.tensor]] = None,
             data_order: str = "C",
             device: str = "cpu",
             pixel_batch_size: int = 10000,
@@ -2351,9 +2347,10 @@ class DemixingState(SignalProcessingState):
         self.uv_mean = get_mean_data(self.u_sparse, self.v)
 
         if factorized_ring_term is None:
-            self._factorized_ring_term_init = torch.zeros_like(self.v)
+            self._factorized_ring_term_init = (torch.zeros(self.v.shape[0], 1, device=self.v.device, dtype=self.v.dtype),
+                                               torch.zeros(1, self.v.shape[1], device=self.v.device, dtype=self.v.dtype))
         else:
-            self._factorized_ring_term_init = factorized_ring_term.to(self.device)
+            self._factorized_ring_term_init = (factorized_ring_term[0].to(self.device), factorized_ring_term[1].to(self.device))
             self._validate_factorized_ring_term()
         self.factorized_ring_term = None
 
@@ -2421,24 +2418,19 @@ class DemixingState(SignalProcessingState):
         if self.mask_ab is None:
             self.mask_ab = self.a.bool().coalesce()
 
-        self.factorized_ring_term = self._factorized_ring_term_init.clone()
+        self.factorized_ring_term = (self._factorized_ring_term_init[0].clone(), self._factorized_ring_term_init[1].clone())
 
     def _validate_factorized_ring_term(self):
         """Checks that the factorized ring term at the initialization is valid"""
-        expected_dimensions = self.v.shape[0], self.v.shape[1]
-        if not isinstance(self._factorized_ring_term_init, torch.Tensor):
-            raise ValueError(
-                f"Expected data of type {torch.Tensor} for factorized ring term but got type"
-                f"{type(self._factorized_ring_term_init)}"
-            )
-        if (
-                self.v.shape[0] != self._factorized_ring_term_init.shape[0]
-                or self.v.shape[1] != self._factorized_ring_term_init.shape[1]
-        ):
-            raise ValueError(
-                f"Shape of factorized_background_term is {self._factorized_ring_term_init.shape}"
-                f"expected shape is {expected_dimensions}"
-            )
+        if self._factorized_ring_term_init[0].shape[1] != self._factorized_ring_term_init[1].shape[0]:
+            raise ValueError(f"Factorized Ring Term product dimensions do not match. Term 1 has "
+                             f"shape {self._factorized_ring_term_init[0].shape[1]} while Term 2 has shape"
+                             f"{self._factorized_ring_term_init[1].shape[0]}")
+        if not self._factorized_ring_term_init[0].shape[0] == self.v.shape[0]:
+            raise ValueError("Left dimensions of factorized ring term needs to have shape equal to the PMD rank")
+        if not self._factorized_ring_term_init[1].shape[1] == self.v.shape[1]:
+            raise ValueError("Right dimension of factorized ring term needs to have shape equal to the number of frames")
+
 
     def initialize_standard_correlation_image(self):
         self.standard_correlation_image = _compute_standard_correlation_image(
@@ -2523,89 +2515,11 @@ class DemixingState(SignalProcessingState):
         v_final = v_left @ v_bkgd
         return u[:, :background_rank], s[:background_rank], v_final[:background_rank, :]
 
-
-    def ring_model_weight_update(self):
-        self.W.weights = torch.ones(
-            (self.shape[0] * self.shape[1]), device=self.device
-        ).float()
-        num_frames = self.v.shape[1]
-
-        # Precompute some key quantities
-        wb = self.W.forward(self.b)
-        uv_one = torch.sparse.mm(self.u_sparse, torch.sum(self.v, dim=1, keepdim=True))
-        wuv_one = self.W.forward(uv_one)
-        vc = self.v @ self.c
-        vvt = self.v @ self.v.T
-
-        # Knock out the easy terms first
-        denominator = -2 * wb * wuv_one
-        denominator += wb * wb * num_frames
-
-        numerator = -1 * wuv_one * self.b
-        numerator -= wb * uv_one
-        numerator += wb * self.b * num_frames
-        numerator += wb * torch.sparse.mm(
-            self.a, torch.sum(self.c, dim=0, keepdim=True).T
-        )
-
-        max_frames = max(self.u_sparse.shape[1], self.c.shape[1])
-        max_iters = math.ceil(max_frames / self.frame_batch_size)
-        for k in range(max_iters):
-            start = k * self.frame_batch_size
-            end = start + self.frame_batch_size
-
-            if start < self.u_sparse.shape[1]:
-                min_pmd = min(end, self.u_sparse.shape[1])
-                inds = torch.arange(
-                    start, min_pmd, device=self.device, dtype=torch.long
-                )
-                curr_u_dense = torch.index_select(self.u_sparse, 1, inds).to_dense()
-                wu = self.W.forward(curr_u_dense)
-                uvvt = torch.sparse.mm(self.u_sparse, vvt[:, inds])
-                wuvvt = self.W.forward(uvvt)  # wu @ vvt
-                denominator += torch.sum(wuvvt * wu, dim=1, keepdim=True)
-                numerator += torch.sum(wuvvt * curr_u_dense, dim=1, keepdim=True)
-
-            if start < self.c.shape[1]:
-                min_neural_signals = min(end, self.c.shape[1])
-                vc_crop = vc[:, start:min_neural_signals]
-                uvc_crop = torch.sparse.mm(self.u_sparse, vc_crop)
-                wuvc_crop = self.W.forward(uvc_crop)
-                inds = torch.arange(
-                    start, min_neural_signals, device=self.device, dtype=torch.long
-                )
-                a_dense_curr = torch.index_select(self.a, 1, inds).to_dense()
-                numerator -= torch.sum(wuvc_crop * a_dense_curr, dim=1, keepdim=True)
-
-        weights = torch.nan_to_num(numerator / denominator, nan=0.0)
-        threshold_function = torch.nn.ReLU()
-        weights = threshold_function(weights)
-
-        # Finally, we export the ring model to a factorized format: UQV, where Q describes the fluctuating component
-        # The static component gets added to the static background
-        static_projection = self.pmd_obj.project_frames(weights * wb, standardize=False)
-        static_projection = torch.sparse.mm(self.u_sparse, static_projection)
-        self.b -= static_projection
-
-        q_list = []
-        for k in range(max_iters):
-            start = k * self.frame_batch_size
-            min_pmd = min(start + self.frame_batch_size, self.u_sparse.shape[1])
-            if start < self.u_sparse.shape[1]:
-                inds = torch.arange(
-                    start, min_pmd, device=self.device, dtype=torch.long
-                )
-                curr_u_dense = torch.index_select(self.u_sparse, 1, inds).to_dense()
-                wu = self.W.forward(curr_u_dense)
-                projected_wu = self.pmd_obj.project_frames(
-                    weights * wu, standardize=False
-                )
-                q_list.append(projected_wu)
-        self.factorized_ring_term = torch.concatenate(q_list, dim=1) @ self.v
-
     def static_baseline_update(self):
         if self.factorized_ring_term is not None:
-            mean_used = self.uv_mean - torch.sparse.mm(self.u_sparse, torch.mean(self.factorized_ring_term, dim=1, keepdim=True))
+            mean_used = self.uv_mean - torch.sparse.mm(self.u_sparse,
+                                                       (self.factorized_ring_term[0] @
+                                                        torch.mean(self.factorized_ring_term[1], dim=1, keepdim=True)))
         else:
             mean_used = self.uv_mean
         self.b = regression_update.baseline_update(mean_used, self.a, self.c)
@@ -2619,7 +2533,6 @@ class DemixingState(SignalProcessingState):
         self.W.weights = torch.ones(
             (self.shape[0] * self.shape[1]), device=self.device
         ).float()
-        num_frames = self.v.shape[1]
         wx = self.W.forward(x)
         numerator = torch.sum(wx * x, dim = 1)
         denominator = torch.sum(wx * wx, dim = 1)
@@ -2642,8 +2555,7 @@ class DemixingState(SignalProcessingState):
         new_left_term = torch.sparse.mm(self.u_sparse, new_left_term)
         new_left_term *= s_bkgd[None, :]
         ring_weighted_left_term = self.lowrank_ring_update(new_left_term)
-        self.factorized_ring_term = ring_weighted_left_term @ v_bkgd
-        # self.c -= ((self.c.T @ v_bkgd.T) @ v_bkgd).T
+        self.factorized_ring_term = (ring_weighted_left_term, v_bkgd)
 
 
     def fluctuating_baseline_update_old(self):
@@ -3028,7 +2940,7 @@ class DemixingState(SignalProcessingState):
         self.standard_correlation_image.c = self.c
         self.compute_residual_correlation_image()
         background_to_signal_correlation_image = _compute_standard_correlation_image(self.u_sparse,
-                                                                                     self.factorized_ring_term,
+                                                                                     self.factorized_ring_term[0] @ self.factorized_ring_term[1],
                                                                                      self.c,
                                                                                      (self.d1, self.d2),
                                                                                      self.data_order,
