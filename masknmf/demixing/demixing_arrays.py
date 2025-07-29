@@ -1330,7 +1330,7 @@ class DemixingResults:
     @property
     def background_to_signal_correlation_image(self) -> StandardCorrelationImages:
         return StandardCorrelationImages(self._u_sparse,
-                                         self._q @ self._v,
+                                         self._q[0] @ self._q[1],
                                          self._c,
                                          self._bkgd_std_corr_img_mean,
                                          self._bkgd_std_corr_img_normalizer,

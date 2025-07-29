@@ -309,8 +309,6 @@ def plot_ith_roi(
             y=y_ticks,
             showscale=False,
             colorscale="Viridis",
-            zmin=0,
-            zmax=1,
         ),
         row=1,
         col=6,
