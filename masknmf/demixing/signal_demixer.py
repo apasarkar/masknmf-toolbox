@@ -367,7 +367,6 @@ def process_custom_signals(
                                                                                        c,
                                                                                        scale_nonneg=c_nonneg)
 
-
     c_norm = torch.linalg.norm(c, dim=0)
     nonzero_dim1 = torch.nonzero(c_norm).squeeze(1)
 
@@ -2251,6 +2250,8 @@ class InitializingState(SignalProcessingState):
                                  f"and video data has {self.v.shape[1]} time points")
             if isinstance(temporal_footprints, np.ndarray):
                 temporal_footprints = torch.from_numpy(temporal_footprints).to(self.device).float()
+            elif isinstance(temporal_footprints, torch.Tensor):
+                temporal_footprints = temporal_footprints.to(self.device).float()
 
 
         if baseline_estimate is not None:
