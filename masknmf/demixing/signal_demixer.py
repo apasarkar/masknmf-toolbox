@@ -2345,6 +2345,7 @@ class DemixingState(SignalProcessingState):
         self.standard_correlation_image = None
         self.residual_correlation_image = None
         self.uv_mean = get_mean_data(self.u_sparse, self.v)
+        self.background_rank = None
 
         if factorized_ring_term is None:
             self._factorized_ring_term_init = (torch.zeros(self.v.shape[0], 1, device=self.v.device, dtype=self.v.dtype),
@@ -2542,28 +2543,32 @@ class DemixingState(SignalProcessingState):
         return projection
 
 
-    def fluctuating_baseline_update(self):
+    def fluctuating_baseline_update(self,
+                                    downsampling_factor: int=20,
+                                    background_sketch: int=300):
         """
-        Low-rank baseline update pipeline
-        :return:
+        Args:
+            downsampling_factor (int): Spatially downsample the data by this factor (in each dimension) before computing
+                the neuropil temporal basis
+            background_sketch (int): Rank of randomized SVD to estimate spectrum of the background. Idea:
+                compute a truncated SVD of Downsample(UV - AC - B) of rank "background_sketch". Then find
+                the number of components used to explain 95% of the data. Use this as the background rank for subsequent steps.
         """
-        background_rank = 20 #Hardcoded for now, refactor later
-        downsampling_factor = 20 #Also hardcoded for now, refactor later
+        if self.background_rank is None:
+            u_bkgd, s_bkgd, v_bkgd = self.lowrank_background_svd(downsampling_factor,
+                                                                 background_sketch)
+            explained_variance_term = torch.cumsum(s_bkgd ** 2, dim=0) / torch.sum(s_bkgd ** 2)
+            min_rank = int(torch.argmax((explained_variance_term >= 0.95).float()).item())
+            self.background_rank = min_rank
+            display(f"The estimated min rank is {self.background_rank}")
+
         u_bkgd, s_bkgd, v_bkgd = self.lowrank_background_svd(downsampling_factor,
-                                                             background_rank)
+                                                             self.background_rank)
         new_left_term = self.pmd_obj.project_frames(u_bkgd, standardize=False)
         new_left_term = torch.sparse.mm(self.u_sparse, new_left_term)
         new_left_term *= s_bkgd[None, :]
         ring_weighted_left_term = self.lowrank_ring_update(new_left_term)
         self.factorized_ring_term = (ring_weighted_left_term, v_bkgd)
-
-
-    def fluctuating_baseline_update_old(self):
-        """
-        Performs a fluctuating baseline update
-        """
-        self.update_ring_model_support()
-        self.ring_model_weight_update()
 
     def spatial_update(self, plot_en=False):
         self.a = regression_update.spatial_update_hals(
@@ -2840,6 +2845,7 @@ class DemixingState(SignalProcessingState):
             support_threshold: Union[list, float] = 0.9,
             deletion_threshold: float = 0.2,
             ring_model_start_pt: int = 5,
+            background_downsampling_factor: int=20,
             ring_radius: int = 10,
             merge_threshold: float = 0.8,
             merge_overlap_threshold: float = 0.4,
@@ -2861,6 +2867,9 @@ class DemixingState(SignalProcessingState):
                 this value.
             ring_model_start_pt (int): How many HALS iterations to wait before fitting the ring model. To disable
                 the ring model set this to be greater than maxiter.
+            background_downsampling_factor (int): We subtract estimates of A*C, spatially downsample, then estimate the temporal basis
+                for the neuropil. This parameter specifies the downsampling factor in each dimension.
+                For example, background_downsampling_factor = 20 means that we do (20 x 20) spatial downsampling (averaging) in this step.
             ring_radius (int): The radius of the ring model (if it is used)
             merge_threshold (float): Between 0 and 1. We merge two signals based on the degree of overlap between their thresholded
                 correlation images. This parameter is the cutoff for computing those thresholded correlation images.
@@ -2875,6 +2884,7 @@ class DemixingState(SignalProcessingState):
             plot_en (bool): Indicates whether plotting is enabled; this is only used for debugging purposes.
         """
         # Key: precompute_quantities is a setup function which must be run first in this routine
+        self.background_rank = None #Always estimate the background rank each time
         self.precompute_quantities()
         self.W = RingModel(
             self.shape[0], self.shape[1], ring_radius, self.device, self.data_order
@@ -2909,7 +2919,7 @@ class DemixingState(SignalProcessingState):
             self.static_baseline_update()
 
             if iters >= ring_model_start_pt:
-                self.fluctuating_baseline_update()
+                self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
             else:
                 pass
 
