@@ -2086,7 +2086,6 @@ class InitializingState(SignalProcessingState):
             self,
             mad_threshold: int = 1,
             mad_correlation_threshold: float = 0.9,
-            min_superpixel_size: int = 3,
             residual_threshold: float = 0.3,
             patch_size: Tuple[int, int] = (100, 100),
             robust_corr_term: float = 0.03,
