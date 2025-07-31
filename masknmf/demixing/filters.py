@@ -8,7 +8,7 @@ def spatial_filter_pmd(pmd_obj: masknmf.PMDArray,
                        batch_size: int = 200,
                        filter_sigma: int = 3,
                        device: str = 'cpu') -> masknmf.PMDArray:
-    if pmd_obj is False:
+    if pmd_obj.rescale is False:
         switch = True
         pmd_obj.rescale = True
     else:

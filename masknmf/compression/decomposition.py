@@ -29,7 +29,7 @@ def truncated_random_svd(
     b = q.T @ input_matrix
     u, s, v = torch.linalg.svd(b, full_matrices=False)
     u_final = q @ u
-    v_final = s[:, None] * v
+    v_final = v
     return u_final[:, :rank], s[:rank], v_final[:rank, :]
 
 
@@ -658,6 +658,44 @@ def temporal_downsample(tensor: torch.Tensor, temporal_avg_factor: int) -> torch
     # Reshape back to (num_frames // n, height, width)
     return downsampled.squeeze().reshape(height, width, -1)
 
+
+def downsample_sparse(sparse_tensor: torch.sparse_coo_tensor,
+                      fov_dims: Tuple[int, int],
+                      downsample_factor: int):
+    """
+    Given a 2D sparse tensor, describing a (height, width, num_frames) array, this routine performs spatial downsampling
+    (averaging). Assumes the (height, width) is vectorized in row-major order
+    Args:
+        sparse_tensor (torch.sparse_coo_tensor): Shape (height*width, columns)
+    Returns:
+        torch.sparse_coo_tensor: Shape ((height//factor) * (width//factor), columns)
+    """
+    divisor = downsample_factor ** 2
+    height, width = fov_dims[0], fov_dims[1]
+    rows, cols = sparse_tensor.indices()
+    sparse_values = sparse_tensor.values()
+    h_vals = torch.floor(rows / width)
+    w_vals = rows - h_vals * width
+
+    new_height, new_width = height // downsample_factor, width // downsample_factor
+    h_vals /= downsample_factor
+    w_vals /= downsample_factor
+    h_vals = torch.floor(h_vals).long()
+    good_indices = (h_vals < new_height).long()
+    w_vals = torch.floor(w_vals).long()
+    good_indices *= (w_vals < new_width).long()
+    new_rows = h_vals * new_width + w_vals
+
+    new_rows *= good_indices
+
+    final_indices = torch.stack([new_rows, cols], dim=0)
+    downsampled_sparse_tensor = torch.sparse_coo_tensor(
+        final_indices,
+        (sparse_values * good_indices) / divisor,
+        (new_height * new_width, sparse_tensor.shape[1]),
+    ).coalesce()
+
+    return downsampled_sparse_tensor
 
 def spatial_downsample(
         image_stack: torch.Tensor, spatial_avg_factor: int
