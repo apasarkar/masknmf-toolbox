@@ -2,6 +2,8 @@ Usage:
 
 To run the training loop for training a neural network denoiser: 
 
+Installation: 
+To use the utils etc. within your masknmf virtual env, just go to ibl_scripts and install it in editable mode (pip install -e .)
 ```
 python train_blindspot_net.py \
     path=/path/to/data/folder/containing/ops_and_bin_files/ \
