@@ -16,10 +16,9 @@ from typing import Tuple
 
 import masknmf.demixing.regression_update
 from .demixing_arrays import (
-    DemixingResults,
     StandardCorrelationImages,
     ResidualCorrelationImages,
-    ResidCorrMode,
+    ResidCorrMode, ACArray, FluctuatingBackgroundArray, ResidualArray, ColorfulACArray,
 )
 
 from .demixing_utils import (
@@ -202,7 +201,7 @@ def _compute_residual_correlation_image(
         corr_term /= curr_resid_norms
         corr_term = torch.nan_to_num(corr_term, nan=0.0)
 
-        final_values.append(corr_term.squeeze())
+        final_values.append(corr_term.squeeze(1))
         final_rows.append(curr_rows)
         final_cols.append(index_select_tensor_net[curr_cols])
 
@@ -2957,18 +2956,276 @@ class DemixingState(SignalProcessingState):
                                                                                      self.frame_batch_size,
                                                                                      device=self.device)
         self._results = DemixingResults(
+            (self.T, self.d1, self.d2),
             self.u_sparse,
-            self.factorized_ring_term,
             self.v,
             self.a,
             self.c,
+            self.factorized_ring_term,
             self.b.squeeze(),
             self.residual_correlation_image,
             self.standard_correlation_image,
             background_to_signal_correlation_image,
             self.data_order,
-            (self.T, self.d1, self.d2),
             "cpu",
         )
 
         return self.results
+
+
+
+class DemixingResults:
+    def __init__(
+        self,
+        data_shape: Tuple[int, int, int],
+        u_sparse: torch.sparse_coo_tensor,
+        v: torch.tensor,
+        a: torch.sparse_coo_tensor,
+        c: torch.tensor,
+        q: Optional[Tuple[torch.tensor, torch.tensor]] = None,
+        b: Optional[torch.tensor] = None,
+        residual_correlation_image: Optional[ResidualCorrelationImages] = None,
+        standard_correlation_image: Optional[StandardCorrelationImages] = None,
+        background_to_signal_correlation_image: Optional[StandardCorrelationImages] = None,
+        order: str = "C",
+        device="cpu",
+        frame_batch_size: int=200,
+    ):
+        """
+        This class provides a convenient way to export all demixing result as array-like objects.
+        Args:
+            data_shape (tuple): (number of frames, field of view dimension 1, field of view dimension 2)
+            u_sparse (torch.sparse_coo_tensor): shape (pixels, rank 1)
+            v (torch.tensor): shape (rank 2, num_frames)
+            a (torch.sparse_coo_tensor): shape (pixels, number of neural signals)
+            c (torch.tensor): shape (number of frames, number of neural signals)
+            q Optional[Tuple[torch.tensor, torch.tensor]]:
+                Pair of tensors, x and y. Product Uxy gives the fluctuating background
+            b (torch.tensor): Optional[torch.tensor]. The per-pixel static baseline.
+                If not provided, the below code will set it so that the residual movie has mean 0.
+                The residual is defined as UV - AC - Fluctuaating background - Static Background
+            residual_correlation_image Optional[ResidualCorrelationImages]):
+                Shape (number of neural signals, FOV dim 1, FOV dim 2) The residual corr img corresponding
+                 to these demixing results.
+            standard_correlation_image Optional[StandardCorrelationImages]: Shape (number of neural signals,
+                FOV dim 1, FOV dim 2): The standard corr img corresponding to these demixing results
+            order (str): order used to reshape data from 2D to 1D
+            device (str): 'cpu' or 'cuda'. used to manage where the tensors reside
+        """
+        self._device = device
+        self._order = order
+        self._shape = data_shape
+        self._u_sparse = u_sparse.to(self.device).float()
+        self._v = v.to(self.device).float()
+        self._a = a.to(self.device).float()
+        self._c = c.to(self.device).float()
+
+        if q is None:
+            self._q = (torch.zeros(self.u.shape[1], 1, dtype=self.u.dtype, device=self.device),
+                       torch.zeros((1, self.v.shape[1]), dtype=self.u.dtype, device=self.device))
+        else:
+            self._q = (q[0].to(self.device), q[1].to(self.device))
+
+        if b is None:
+            display("Static term was not provided, constructing baseline to ensure residual is mean 0")
+            self._b = (torch.sparse.mm(self.u, torch.mean(self.v, dim=1, keepdim=True)) -
+                       torch.sparse.mm(self._a, torch.mean(self._c.T, dim = 1, keepdim=True)) -
+                       torch.sparse.mm(self.u, (self.q[0] @ torch.mean(self.q[1], axis=1, keepdim=True))))
+        else:
+            self._b = b
+
+        if standard_correlation_image is None:
+            display("Standard Corr Image was none. Computing it now")
+            if self.device == "cpu":
+                display("You are running this on CPU, which might be slow.")
+            standard_correlation_image = _compute_standard_correlation_image(self.u,
+                                                                             self.v,
+                                                                             self.c,
+                                                                             (self.shape[1], self.shape[2]),
+                                                                             self.order,
+                                                                             frame_batch_size=frame_batch_size,
+                                                                             device=self.device)
+
+        if residual_correlation_image is None:
+            display("Residual Correlation Image was not specified. Computig it now")
+            if self.device == "cpu":
+                display("You are computing the residual correlation image on CPU; use cuda for much faster results")
+            residual_correlation_image = _compute_residual_correlation_image(self.u,
+                                                                             self.v,
+                                                                             self.q,
+                                                                             self.a,
+                                                                             self.c,
+                                                                             (self.shape[1], self.shape[2]),
+                                                                             data_order=self.order,
+                                                                             batch_size=frame_batch_size,
+                                                                             device=self.device)
+
+        if background_to_signal_correlation_image is None:
+            display("Bkgd to Signal Correlation Image was not specified. Computing it now")
+            if self.device == "cpu":
+                display("You are computing the bkgd to signal correlation image on CPU; use cuda for much faster results")
+            background_to_signal_correlation_image = _compute_standard_correlation_image(self.u,
+                                                                                        self.q[0] @ self.q[1],
+                                                                                        self.c,
+                                                                                        (self.shape[1], self.shape[2]),
+                                                                                        self.order,
+                                                                                        frame_batch_size,
+                                                                                        device=self.device)
+        ## Store the critical values for each of these
+        self._std_corr_img_mean = standard_correlation_image.movie_mean
+        self._std_corr_img_normalizer = standard_correlation_image.movie_normalizer
+
+        self._bkgd_std_corr_img_mean = background_to_signal_correlation_image.movie_mean
+        self._bkgd_std_corr_img_normalizer = background_to_signal_correlation_image.movie_normalizer
+
+        self._resid_corr_img_support_values = residual_correlation_image.support_correlation_values
+        self._resid_corr_img_mean = residual_correlation_image.residual_movie_mean
+        self._resid_corr_img_normalizer = residual_correlation_image.residual_movie_normalizer
+
+        if self.order == "C":
+            self._baseline = self._b.reshape((self.shape[1], self.shape[2]))
+        elif self.order == "F":
+            # Note we swap 1 and 2 here
+            self._baseline = self._b.reshape((self.shape[2], self.shape[1])).T
+
+        #Move all tracked tensors to desired location so everything is on one device
+        self.to(device)
+
+    @property
+    def standard_correlation_image(self) -> StandardCorrelationImages:
+        return StandardCorrelationImages(self._u_sparse,
+                                         self._v,
+                                         self._c,
+                                         self._std_corr_img_mean,
+                                         self._std_corr_img_normalizer,
+                                         (self._shape[1], self._shape[2]),
+                                         order=self.order)
+
+    @property
+    def background_to_signal_correlation_image(self) -> StandardCorrelationImages:
+        return StandardCorrelationImages(self._u_sparse,
+                                         self._q[0] @ self._q[1],
+                                         self._c,
+                                         self._bkgd_std_corr_img_mean,
+                                         self._bkgd_std_corr_img_normalizer,
+                                         (self._shape[1], self._shape[2]),
+                                         order=self.order)
+
+    @property
+    def residual_correlation_image(self) -> ResidualCorrelationImages:
+        return ResidualCorrelationImages(self._u_sparse,
+                                         self._v,
+                                         self._q,
+                                         self._a,
+                                         self._c,
+                                         self._resid_corr_img_support_values,
+                                         self._resid_corr_img_mean,
+                                         self._resid_corr_img_normalizer,
+                                         (self._shape[1], self._shape[2]),
+                                         mode=ResidCorrMode.RESIDUAL,
+                                         order=self._order)
+    @property
+    def shape(self):
+        return self._shape
+
+    @property
+    def order(self):
+        return self._order
+
+    @property
+    def device(self):
+        return self._device
+
+    def to(self, new_device):
+        self._device = new_device
+        self._u_sparse = self._u_sparse.to(self.device)
+        self._q = (self._q[0].to(self.device), self._q[1].to(self.device))
+        self._v = self._v.to(self.device)
+        self._a = self._a.to(self.device)
+        self._c = self._c.to(self.device)
+        self._baseline = self.baseline.to(self.device)
+        self._std_corr_img_mean = self._std_corr_img_mean.to(self.device)
+        self._std_corr_img_normalizer = self._std_corr_img_normalizer.to(self.device)
+
+        self._bkgd_std_corr_img_mean = self._bkgd_std_corr_img_mean.to(self.device)
+        self._bkgd_std_corr_img_normalizer = self._bkgd_std_corr_img_normalizer.to(self.device)
+
+        self._resid_corr_img_support_values = self._resid_corr_img_support_values.to(self.device)
+        self._resid_corr_img_mean = self._resid_corr_img_mean.to(self.device)
+        self._resid_corr_img_normalizer = self._resid_corr_img_normalizer.to(self.device)
+
+    @property
+    def fov_shape(self) -> Tuple[int, int]:
+        return self.shape[1:3]
+
+    @property
+    def num_frames(self) -> int:
+        return self.shape[0]
+
+    @property
+    def u(self) -> torch.sparse_coo_tensor:
+        return self._u_sparse
+
+    @property
+    def baseline(self) -> torch.tensor:
+        return self._baseline
+
+    @property
+    def q(self) -> Tuple[torch.tensor, torch.tensor]:
+        return self._q
+
+    @property
+    def v(self) -> torch.tensor:
+        return self._v
+
+    @property
+    def a(self) -> torch.sparse_coo_tensor:
+        return self._a
+
+    @property
+    def c(self) -> torch.tensor:
+        return self._c
+
+    @property
+    def ac_array(self) -> ACArray:
+        """
+        Returns an ACArray using the tensors stored in this object
+        """
+        return ACArray(self.fov_shape, self.order, self.a, self.c)
+
+    @property
+    def pmd_array(self) -> PMDArray:
+        """
+        Returns a PMDArray using the tensors stored in this object
+        """
+        mean_img = torch.zeros(self.shape[1], self.shape[2], device=self.device)
+        var_img = torch.ones(self.shape[1], self.shape[2], device=self.device)
+        return PMDArray(
+            self.shape,
+            self.u,
+            self.v,
+            mean_img,
+            var_img,
+            device=self.device,
+            rescale=True,
+        )
+
+    @property
+    def fluctuating_background_array(self) -> FluctuatingBackgroundArray:
+        """
+        Returns a PMDArray using the tensors stored in this object
+        """
+        return FluctuatingBackgroundArray(self.fov_shape, self.order, self.u, self.q[0], self.q[1])
+
+    @property
+    def residual_array(self) -> ResidualArray:
+        return ResidualArray(
+            self.pmd_array,
+            self.ac_array,
+            self.fluctuating_background_array,
+            self.baseline,
+        )
+
+    @property
+    def colorful_ac_array(self) -> ColorfulACArray:
+        return ColorfulACArray(self.fov_shape, self.order, self.a, self.c)
