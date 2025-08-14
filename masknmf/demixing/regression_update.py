@@ -206,31 +206,29 @@ def temporal_update_hals(
     return c
 
 
-def _affine_fit_scaling_update(u: torch.sparse_coo_tensor,
-                               v: torch.tensor,
+def _affine_fit_scaling_update(v: torch.tensor,
                                a: torch.tensor,
                                c: torch.tensor,
                                b: torch.tensor,
                                m: torch.tensor,
+                               ctauv: torch.tensor,
+                               ata: torch.tensor,
+                               ata_diag: torch.tensor,
+                               c_sq: torch.tensor,
                                device: str = "cpu",
                                scale_nonneg: Optional[bool] = True,
                                blocks: Optional[Union[torch.tensor, list]] = None):
     """
+    u is no longer needed since all quantities involving u are precomputed
     Args:
-        u: shape (d, rank)
         v: shape (rank, T)
         a: shape (d, num_neurons)
         c: shape (num_frames, num_neurons)
         b: shape (d, 1)
     """
-    # Note: this should only ever be calculated once
-    ctauv = torch.sum(c * ((torch.sparse.mm(u.T, a).T).to_dense() @ v).T, dim=0)  # Shape (num_neurons,)
-    ata = torch.sparse.mm(a.T, a).to_dense()
-    ata_diag = torch.diag(ata)
     catb_one = torch.sum(c * (torch.sparse.mm(a.T, b) @ torch.ones(1, v.shape[1], device=device, dtype=v.dtype)).T,
                          dim=0)  # Shape (num_neurons,)
 
-    c_sq = torch.sum(c * c, dim=0)
     relu_obj = torch.nn.ReLU() if scale_nonneg else lambda x:x
     for index_select_tensor in blocks:
         aitam = ata[index_select_tensor] @ (m * c.T)
@@ -262,10 +260,27 @@ def alternating_least_squares_affine_fit(u: torch.sparse_coo_tensor,
     graph = construct_graph_from_sparse_tensor(adjacency_mat)
     blocks = color_and_get_tensors(graph, v.device)
 
+    ctauv = torch.sum(c * ((torch.sparse.mm(u.T, a).T).to_dense() @ v).T, dim=0)  # Shape (num_neurons,)
+    ata = torch.sparse.mm(a.T, a).to_dense()
+    ata_diag = torch.diag(ata)
+    c_sq = torch.sum(c * c, dim=0)
+
+
     m = torch.ones(c.shape[1], 1, device=u.device, dtype=v.dtype)
     b = torch.ones(a.shape[0], 1, device=v.device, dtype=v.dtype)
     for _ in tqdm(range(num_iters)):
-        m = _affine_fit_scaling_update(u, v, a, c, b, m, device=v.device, scale_nonneg=scale_nonneg, blocks=blocks)
+        m = _affine_fit_scaling_update(v,
+                                       a,
+                                       c,
+                                       b,
+                                       m,
+                                       ctauv,
+                                       ata,
+                                       ata_diag,
+                                       c_sq,
+                                       device=v.device,
+                                       scale_nonneg=scale_nonneg,
+                                       blocks=blocks)
         b = _affine_fit_baseline_update(u, v, a, c, m)
     return c*m.T, b
 
