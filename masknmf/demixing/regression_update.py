@@ -240,13 +240,11 @@ def _affine_fit_scaling_update(v: torch.tensor,
     return m
 
 
-def _affine_fit_baseline_update(u: torch.sparse_coo_tensor,
-                                v: torch.tensor,
+def _affine_fit_baseline_update(uv_mean: torch.tensor,
                                 a: torch.sparse_coo_tensor,
-                                c: torch.tensor,
+                                c_mean: torch.tensor,
                                 m: torch.tensor):
-    uv_mean = torch.sparse.mm(u, torch.mean(v, dim=1, keepdim=True))
-    ac_mean = torch.sparse.mm(a, (m * torch.mean(c.T, dim=1, keepdim=True)))
+    ac_mean = torch.sparse.mm(a, (m * c_mean))
     return uv_mean - ac_mean
 
 
@@ -265,6 +263,9 @@ def alternating_least_squares_affine_fit(u: torch.sparse_coo_tensor,
     ata_diag = torch.diag(ata)
     c_sq = torch.sum(c * c, dim=0)
 
+    uv_mean = torch.sparse.mm(u, torch.mean(v, dim=1, keepdim=True))
+    c_mean = torch.mean(c.T, dim=1, keepdim=True)
+
 
     m = torch.ones(c.shape[1], 1, device=u.device, dtype=v.dtype)
     b = torch.ones(a.shape[0], 1, device=v.device, dtype=v.dtype)
@@ -281,6 +282,6 @@ def alternating_least_squares_affine_fit(u: torch.sparse_coo_tensor,
                                        device=v.device,
                                        scale_nonneg=scale_nonneg,
                                        blocks=blocks)
-        b = _affine_fit_baseline_update(u, v, a, c, m)
+        b = _affine_fit_baseline_update(uv_mean, a, c_mean, m)
     return c*m.T, b
 
