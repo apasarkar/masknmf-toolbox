@@ -2558,7 +2558,7 @@ class DemixingState(SignalProcessingState):
                                                                  background_sketch)
             explained_variance_term = torch.cumsum(s_bkgd ** 2, dim=0) / torch.sum(s_bkgd ** 2)
             min_rank = int(torch.argmax((explained_variance_term >= 0.95).float()).item())
-            self.background_rank = min_rank
+            self.background_rank = min_rank + 1
             display(f"The estimated min rank is {self.background_rank}")
 
         u_bkgd, s_bkgd, v_bkgd = self.lowrank_background_svd(downsampling_factor,
