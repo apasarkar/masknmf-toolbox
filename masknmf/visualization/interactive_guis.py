@@ -77,7 +77,7 @@ class PMDWidget:
         self.rect_selector_kwargs = dict(
             edge_thickness=1,
             edge_color="w",
-            vertex_thickness=3.0,
+            vertex_size=3.0,
             vertex_color="cyan"
         )
 
