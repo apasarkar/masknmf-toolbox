@@ -110,7 +110,7 @@ def compute_general_spatial_correlation_map(
 def compute_pmd_spatial_correlation_maps(raw_stack: Union[np.ndarray, masknmf.LazyFrameLoader, masknmf.FactorizedVideo],
                                          pmd_stack: masknmf.PMDArray,
                                          device='cpu',
-                                         batch_size: int = 200) -> Tuple[torch.tensor, torch.tensor, torch.tensor]:
+                                         batch_size: int = 200) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Computes spatial correlation heatmaps for the raw data, PMD reconstruction, and residuals.
     For each pair of adjacent pixels (in horizontal, vertical, and diagonal directions),
@@ -130,7 +130,7 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[np.ndarray, masknmf.La
         mode (str):
             Currently unused; placeholder for future support of different aggregation modes.
     Returns:
-        Tuple[torch.tensor, torch.tensor, torch.tensor]:
+        Tuple[np.ndarray, np.ndarray, np.ndarray]:
             Three spatial correlation maps (height, width) for:
               - raw video
               - PMD reconstruction
