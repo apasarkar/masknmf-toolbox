@@ -237,7 +237,7 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[np.ndarray, masknmf.La
     pmd_final_img /= counter_matrix
     resid_final_img /= counter_matrix
 
-    return raw_final_img, pmd_final_img, resid_final_img
+    return raw_final_img.cpu().numpy(), pmd_final_img.cpu().numpy(), resid_final_img.cpu().numpy()
 
 
 def pmd_autocovariance_diagnostics(raw_movie: masknmf.LazyFrameLoader,
