@@ -23,14 +23,14 @@ task.device_collection = 'raw_imaging_data_??'
 # Re-run suite2p
 
 ## Comment from Miles: try commenting this out. If the location is remote, it re-downloads. But default is local.
-task.location = 'remote'
+# task.location = 'remote'
 
 # overwrite=True ensures we don't simply use motion registered data
 ## overwrite: if overwrite False -- it will skip tiff extraction + registration and move straight to ROI detection
 ## do_registration is just to run moco
 ## ROI Detection 
 ## rename_files -- whether or not to write the suite2p ROI detection outputs to the ONE/Alf format (mpci etc.) 
-status = task.run(check_hash=False, overwrite=True, do_registration=True, roidetect=True, keep_movie_raw=True, rename_files=False)
+status = task.run(check_hash=False, overwrite=True, do_registration=True, roidetect=True, keep_movie_raw=True, rename_files=True)
 assert status == 0, 'task run failed'
 files = sorted(task.session_path.glob('suite2p/plane*/data.bin'))
 # task.cleanUp() # deletes unarchived tif files
