@@ -267,6 +267,10 @@ def pmd_autocovariance_diagnostics(raw_movie: Union[np.ndarray, masknmf.LazyFram
     num_iters = math.ceil(num_frames / batch_size)
 
     pmd_movie.to(device)
+    if pmd_movie.rescale is False:
+        switch = True
+    else:
+        switch = False
     pmd_movie.rescale = True
     raw_autocov = torch.zeros(fov_dim1, fov_dim2, device=device).float()
     left_raw_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (
@@ -333,4 +337,6 @@ def pmd_autocovariance_diagnostics(raw_movie: Union[np.ndarray, masknmf.LazyFram
     pmd_autocov = np.nan_to_num(pmd_autocov, nan=0.0)
     resid_autocov = np.nan_to_num(resid_autocov, nan=0.0)
 
+    if switch:
+        pmd_movie.rescale = False
     return raw_autocov, pmd_autocov, resid_autocov
