@@ -30,29 +30,42 @@ class ROIManager(ui.EdgeWindow):
 
 class PMDWidget:
     def __init__(self,
-                 comparison_stack: masknmf.arrays.FactorizedVideo,
+                 comparison_stack: Union[np.ndarray, masknmf.LazyFrameLoader],
                  pmd_stack: masknmf.PMDArray,
                  frame_batch_size: int=200,
+                 mean_subtract: bool = False,
                  device="cpu"):
 
         pmd_stack.to(device)
-        self._comparison_stack = comparison_stack
         self._pmd_stack = pmd_stack
-        self._residual_stack = masknmf.PMDResidualArray(self.comparison_stack, self.pmd_stack)
+        if mean_subtract:
+            ref_mean_img = self.pmd_stack.mean_img.cpu().numpy()[None, :, :]
+            self._comparison_stack = masknmf.FilteredArray(comparison_stack,
+                                       lambda x: x - ref_mean_img,
+                                      device='cpu')
+            self._pmd_stack.rescale = False
+        else:
+            self._comparison_stack = comparison_stack
+            self._pmd_stack.rescale = True
+
+        # Tricky: comparison stack is not mean subtracted, which is what we need to pass in to the residual array and to the autocov diagnostic
+        self._residual_stack = masknmf.PMDResidualArray(comparison_stack, self.pmd_stack)
         display('Computing Residual Statistics')
-        raw_lag1, pmd_lag1, resid_lag1 = masknmf.diagnostics.pmd_autocovariance_diagnostics(self.comparison_stack,
+        raw_lag1, pmd_lag1, resid_lag1 = masknmf.diagnostics.pmd_autocovariance_diagnostics(comparison_stack,
                                                                                             self.pmd_stack,
                                                                                             batch_size=frame_batch_size,
                                                                                             device=device)
         display('Residual Statistics: Complete')
+        mcorr_name = "mcorr mean 0" if mean_subtract else "mcorr"
+        pmd_name = "pmd mean 0" if mean_subtract else "pmd"
         self._iw = fpl.ImageWidget([self.comparison_stack,
                                     self.pmd_stack,
                                     self._residual_stack,
                                     raw_lag1,
                                     pmd_lag1,
                                     resid_lag1],
-                                   names=["mcorr",
-                                          "pmd",
+                                   names=[mcorr_name,
+                                          pmd_name,
                                           "residual",
                                           'mcorr lag1 acf',
                                           'pmd lag1 acf',
