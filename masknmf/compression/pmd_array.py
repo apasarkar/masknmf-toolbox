@@ -1,4 +1,4 @@
-from masknmf.arrays.array_interfaces import LazyFrameLoader, FactorizedVideo
+from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
 import torch
 from typing import *
 import numpy as np
@@ -95,7 +95,7 @@ def _construct_identity_torch_sparse_tensor(dimsize: int, device: str = "cpu"):
     sparse_tensor = torch.sparse_coo_tensor(indices, values, (dimsize, dimsize))
     return sparse_tensor
 
-class PMDArray(FactorizedVideo):
+class PMDArray(ArrayLike):
     """
     Factorized demixing array for PMD movie
     """
@@ -507,12 +507,12 @@ class PMDResidualArray(LazyFrameLoader):
 
     def __init__(
         self,
-        raw_arr: Union[LazyFrameLoader, FactorizedVideo],
+        raw_arr: Union[ArrayLike, LazyFrameLoader],
         pmd_arr: PMDArray,
     ):
         """
         Args:
-            raw_arr (LazyFrameLoader): Any object that supports LazyFrameLoder functionality
+            raw_arr (Union: masknmf.ArrayLike, masknmf.LazyFrameLoader): Any object that supports LazyFrameLoder functionality
             pmd_arr (PMDArray)
         """
         self.pmd_arr = pmd_arr

@@ -3,7 +3,6 @@ from typing import List
 
 import masknmf
 from masknmf.compression.pmd_array import PMDArray
-from masknmf.arrays.array_interfaces import LazyFrameLoader
 import math
 import numpy as np
 
@@ -275,7 +274,7 @@ def update_block_sizes(
 
 
 def compute_mean_and_normalizer_dataset(
-        dataset: LazyFrameLoader,
+        dataset: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
         compute_normalizer: bool,
         frame_batch_size: int,
         device: str,
@@ -284,7 +283,7 @@ def compute_mean_and_normalizer_dataset(
     """
     Computes a pixelwise mean and a noise variance estimate. For now, the noise var estimate is turned off
     Args:
-        dataset: masknmf.lazy_data_loader. The dataloader object we use to access the dataset. Anything that supports
+        dataset (Union[masknmf.ArrayLike, masknmf.LazyFrameLoader]): The dataloader object we use to access the dataset. Anything that supports
             numpy-like __getitem__ indexing can be used here.
         compute_normalizer (bool): Whether or not we compute the noise normalizer; for now this variable has no effect.
         frame_batch_size (int): The max number of full frames we load onto the device performing computations at any point.
@@ -312,7 +311,7 @@ def compute_mean_and_normalizer_dataset(
 
 
 def compute_full_fov_spatial_basis(
-        dataset: LazyFrameLoader,
+        dataset: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
         mean_img: torch.tensor,
         noise_variance_img: torch.tensor,
         background_rank: int,
@@ -324,7 +323,7 @@ def compute_full_fov_spatial_basis(
     Routine for approximating a full FOV low-rank spatial basis; useful for estimating full FOV trends
 
     Args:
-        dataset (masknmf.LazyFrameLoader)
+        dataset (Union[masknmf.ArrayLike, masknmf.LazyFrameLoader]): Input dataset
         mean_img (torch.tensor): Shape (fov_dim1, fov_dim2). Mean image of the data
         noise_variance_img (torch.tensor): Shape (fov_dim1, fov_dim2). The noise variance estimate at each pixel
         background_rank (int): The rank of the background term we are trying to estimate
@@ -552,7 +551,7 @@ def compute_lowrank_factorized_svd(
 
 
 def regress_onto_spatial_basis(
-        dataset: LazyFrameLoader,
+        dataset: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
         u_aggregated: torch.sparse_coo_tensor,
         frame_batch_size: int,
         dataset_mean: torch.tensor,
@@ -575,7 +574,7 @@ def regress_onto_spatial_basis(
     In the below routine, we exploit the low rank of u and conduct operations in an order that minimizes data size/number of computations.
 
     Args:
-        dataset (masknmf.LazyFrameLoader): Any array-like object that supports __getitem__ for fast frame retrieval.
+        dataset (Union[masknmf.ArrayLike, masknmf.LazyFrameLoader]): Any array-like object that supports __getitem__ for fast frame retrieval.
         u_aggregated (torch.sparse_coo_tensor): The spatial basis, where components from the same block are orthonormal.
         frame_batch_size (int): The number of frames we load at any point in time
         dataset_mean (torch.tensor): Shape (fov_dim1, fov_dim2). The mean across all pixels
@@ -1001,8 +1000,8 @@ def construct_weighting_scheme(dim1, dim2) -> torch.tensor:
 
 
 def pmd_decomposition(
-        dataset: LazyFrameLoader,
-        block_sizes: tuple[int, int],
+        dataset: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
+        block_sizes: Tuple[int, int],
         frame_range: int,
         max_components: int = 50,
         background_rank: int = 15,
@@ -1021,7 +1020,7 @@ def pmd_decomposition(
     """
     General PMD Compression method
     Args:
-        dataset (masknmf.LazyFrameLoader): An array-like object with shape (frames, fov_dim1, fov_dim2) that loads frames of raw data
+        dataset (Union[masknmf.ArrayLike, masknmf.LazyFrameLoader]): An array-like object with shape (frames, fov_dim1, fov_dim2) that loads frames of raw data
         block_sizes (tuple[int, int]): The block sizes of the compression. Cannot be smaller than 10 in each dimension.
         frame_range (int): Number of frames or raw data used to fit the spatial basis.
             KEY: We assume that your system can store this many frames of raw data in RAM.
@@ -1124,24 +1123,27 @@ def pmd_decomposition(
         display(string_to_disp)
         max_components = int(len(frames) // temporal_avg_factor)
 
-    data_for_spatial_fit = torch.from_numpy(dataset[frames])
-    if frame_batch_size >= data_for_spatial_fit.shape[0]:
-        data_for_spatial_fit = data_for_spatial_fit.to(device).to(dtype)
-
-    if background_rank > 0:
-        full_fov_spatial_basis, full_fov_temporal_basis = compute_full_fov_temporal_basis(
-            data_for_spatial_fit,
-            dataset_mean,
-            dataset_noise_variance,
-            full_fov_spatial_basis,
-            dtype,
-            frame_batch_size,
-            device=device,
-            temporal_denoiser=temporal_denoiser
-        )
-        background_rank = full_fov_temporal_basis.shape[0]
+    # data_for_spatial_fit = torch.from_numpy(dataset[frames])
+    if frame_batch_size >= len(frames):
+        dataset = torch.from_numpy(dataset[frames]).to(device).to(dtype)
+        move_to_torch = False
     else:
-        full_fov_temporal_basis = torch.zeros((1, num_frames), device=device, dtype=full_fov_spatial_basis.dtype)
+        move_to_torch = True
+
+    # if background_rank > 0:
+    #     full_fov_spatial_basis, full_fov_temporal_basis = compute_full_fov_temporal_basis(
+    #         dataset,
+    #         dataset_mean,
+    #         dataset_noise_variance,
+    #         full_fov_spatial_basis,
+    #         dtype,
+    #         frame_batch_size,
+    #         device=device,
+    #         temporal_denoiser=temporal_denoiser
+    #     )
+    #     background_rank = full_fov_temporal_basis.shape[0]
+    # else:
+    full_fov_temporal_basis = torch.zeros((1, num_frames), device=device, dtype=full_fov_spatial_basis.dtype)
 
     #Make sure the number of frames we use matches the size of the dataset
     full_fov_temporal_basis = full_fov_temporal_basis[:, frames]
@@ -1155,28 +1157,28 @@ def pmd_decomposition(
     dim_1_iters = list(
         range(
             0,
-            data_for_spatial_fit.shape[1] - block_sizes[0] + 1,
+            fov_dim1 - block_sizes[0] + 1,
             block_sizes[0] - overlap[0],
         )
     )
     if (
-            dim_1_iters[-1] != data_for_spatial_fit.shape[1] - block_sizes[0]
-            and data_for_spatial_fit.shape[1] - block_sizes[0] != 0
+            dim_1_iters[-1] != fov_dim1 - block_sizes[0]
+            and fov_dim1 - block_sizes[0] != 0
     ):
-        dim_1_iters.append(data_for_spatial_fit.shape[1] - block_sizes[0])
+        dim_1_iters.append(fov_dim1 - block_sizes[0])
 
     dim_2_iters = list(
         range(
             0,
-            data_for_spatial_fit.shape[2] - block_sizes[1] + 1,
+            fov_dim2 - block_sizes[1] + 1,
             block_sizes[1] - overlap[1],
         )
     )
     if (
-            dim_2_iters[-1] != data_for_spatial_fit.shape[2] - block_sizes[1]
-            and data_for_spatial_fit.shape[2] - block_sizes[1] != 0
+            dim_2_iters[-1] != fov_dim2 - block_sizes[1]
+            and fov_dim2 - block_sizes[1] != 0
     ):
-        dim_2_iters.append(data_for_spatial_fit.shape[2] - block_sizes[1])
+        dim_2_iters.append(fov_dim2 - block_sizes[1])
 
     # Define the block weighting matrix
     block_weights = (
@@ -1214,11 +1216,15 @@ def pmd_decomposition(
         for j in dim_2_iters:
             slice_dim1 = slice(k, k + block_sizes[0])
             slice_dim2 = slice(j, j + block_sizes[1])
+            if move_to_torch:
+                current_data_for_fit= torch.from_numpy(dataset[frames, slice_dim1, slice_dim2]).to(device).to(dtype)
+            else:
+                current_data_for_fit = dataset[frames, slice_dim1, slice_dim2]
             (
                 unweighted_local_spatial_basis,
                 local_temporal_basis,
             ) = blockwise_decomposition_with_rank_selection(
-                data_for_spatial_fit[:, slice_dim1, slice_dim2],
+                current_data_for_fit,
                 full_fov_spatial_basis[slice_dim1, slice_dim2, :],
                 full_fov_temporal_basis,
                 dataset_mean[slice_dim1, slice_dim2],
@@ -1293,7 +1299,7 @@ def pmd_decomposition(
         (fov_dim1 * fov_dim2, column_number),
     ).coalesce()
 
-    if data_for_spatial_fit.shape[0] < dataset.shape[0]:
+    if len(frames) < dataset.shape[0]:
         display("Regressing the full dataset onto the learned spatial basis")
         v_regression, full_dataset_temporal_basis = regress_onto_spatial_basis(
             dataset,
@@ -1402,384 +1408,384 @@ def pmd_decomposition(
     display("PMD Objected constructed")
     return final_pmd_arr
 
-
-def pmd_batch(
-        dataset: LazyFrameLoader,
-        batch_dimensions: tuple[int, int],
-        batch_overlaps: tuple[int, int],
-        block_sizes: tuple[int, int],
-        frame_range: int,
-        max_components: int = 50,
-        background_rank: int = 15,
-        sim_conf: int = 5,
-        frame_batch_size: int = 10000,
-        max_consecutive_failures=1,
-        spatial_avg_factor: int = 1,
-        temporal_avg_factor: int = 1,
-        window_chunks: Optional[int] = None,
-        compute_normalizer: bool = True,
-        pixel_weighting: Optional[np.ndarray] = None,
-        spatial_denoiser: Optional[torch.nn.Module] = None,
-        temporal_denoiser: Optional[torch.nn.Module] = None,
-        device: str = "cpu",
-) -> PMDArray:
-    """
-    Method for running PMD across huge fields of view. This method breaks the large FOV into smaller regions (say, 300 x 300 pixels),
-    runs PMD on each smaller region, and pieces the results together to get a fullFOV decomposition.
-
-    Args:
-        dataset (masknmf.LazyFrameLoader): An array-like object with shape (frames, fov_dim1, fov_dim2) that loads frames of raw data
-        block_sizes (tuple[int, int]): The block sizes of the compression. Cannot be smaller than 10 in each dimension.
-        frame_range (int): Number of frames or raw data used to fit the spatial basis.
-            KEY: We assume that your system can store this many frames of raw data in RAM.
-        max_components (int): Max number of components we use to decompose any individual spatial block of the raw data.
-        background_rank (int): Before doing spatial blockwise decompositions, we estimate a full FOV truncated SVD; this often helps estimate global background trends
-            before blockwise decompositions; leading to better compression.
-        sim_conf (int): The percentile value used to define spatial and temporal roughness thresholds for rejecting/keeping SVD components
-        frame_batch_size (int): The maximum number of frames we load onto the computational device (CPU or GPU) at any point in time.
-        max_consecutive_failures (int): In each blockwise decomposition, we stop accepting SVD components after we see this many "bad" components.
-        spatial_avg_factor (int): In the blockwise decompositions, we can spatially downsample the data to estimate a cleaner temporal basis. We can use this to iteratively estimate a better
-            full-resolution basis for the data. If signal sits on only a few pixels, keep this parameter at 1 (spatially downsampling is undesirable in this case).
-        temporaL_avg_factor (int): In the blockwise decompositions, we can temporally downsample the data to estimate a cleaner spatial basis. We can use this to iteratively estimate a better
-            full-resolution basis for the data. If your signal "events" are very sparse (i.e. every event appears for only 1 frame) keep this parameter at 1 (temporal downsampling is undesirable in this case).
-         window_chunks (int): To be removed
-         compute_normalizer (bool): Whether or not we estimate a pixelwise noise variance. If False, the normalizer is set to 1 (no normalization).
-         pixel_weighting (Optional[np.ndarray]): Shape (fov_dim1, fov_dim2). We weight the data by this value to estimate a cleaner spatial basis. The pixel_weighting
-            should intuitively boost the relative variance of pixels containing signal to those that do not contain signal.
-        spatial_denoiser (Optional[torch.nn.Module]): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
-        temporal_denoiser (Optional[torch.nn.Module]): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
-        device (str): Which device the computations should be performed on. Options: "cuda" or "cpu".
-
-    Returns:
-        pmd_arr (PMDArray): A PMDArray capturing the compression results across the full FOV.
-    """
-
-    """
-    How do we interpolate and stitch together the PMD patches? 
-    (1) The u_local_projector and u_global_projector terms need to have their row indices modified. All other
-    concatenation follows easily
-    (2) We should "globally" weight each 300 x 300 patch with an interpolation function. This is important for
-    stitching together actual U matrices. 
-    (3) Stacking V is easy. 
-    
-    Workflow:
-    (1) Just run PMD across all the sub-patches of the data. Return a list of PMD objects. 
-    (2) Once that works, add the weighting functions, combine everything into one file. 
-    (3) Once that works, think about the optimal way to do dataloading. 
-    
-    
-    Design decision: if you have a huge FOV, it does not make sense to keep all of U on the GPU. So moving off GPU is good.
-    
-    Things to circle back on: 
-        Make sure the dataloader is being told to read the right stuff
-        The blockwise iteration scheme creates a lot of redundancy at the boundaries right now. Should improve that. 
-    """
-    num_frames, fov_dim1, fov_dim2 = dataset.shape
-
-    if batch_dimensions[0] < block_sizes[0] or batch_dimensions[1] < block_sizes[1]:
-        raise ValueError(f"Batch dimensions must be larger than the block size used in the PMD algorithm")
-
-    spatial_dim1_start_pts = list(
-        range(
-            0,
-            dataset.shape[1] - batch_dimensions[0] + 1,
-            batch_dimensions[0] - batch_overlaps[0],
-        )
-    )
-    if (
-            spatial_dim1_start_pts[-1] != dataset.shape[1] - batch_dimensions[0]
-            and dataset.shape[1] - batch_dimensions[0] > 0
-    ):
-        last_index = spatial_dim1_start_pts[-1] + batch_dimensions[0]
-        updated_index = last_index - block_sizes[0]
-        spatial_dim1_start_pts.append(updated_index)
-
-    spatial_dim2_start_pts = list(
-        range(
-            0,
-            dataset.shape[2] - batch_dimensions[1] + 1,
-            batch_dimensions[1] - batch_overlaps[1],
-        )
-    )
-    if (
-            spatial_dim2_start_pts[-1] != dataset.shape[2] - batch_dimensions[1]
-            and dataset.shape[2] - batch_dimensions[1] > 0
-    ):
-        last_index = spatial_dim2_start_pts[-1] + batch_dimensions[1]
-        updated_index = last_index - block_sizes[1]
-        spatial_dim2_start_pts.append(updated_index)
-
-    pmd_array_list = []
-    fov_list = []
-    for i in range(len(spatial_dim1_start_pts)):
-        for j in range(len(spatial_dim2_start_pts)):
-            curr_dim1_start_pt = spatial_dim1_start_pts[i]
-            if i == len(spatial_dim1_start_pts) - 1:
-                curr_dim1_end_pt = dataset.shape[1]
-            else:
-                curr_dim1_end_pt = min(spatial_dim1_start_pts[i] + batch_dimensions[0], dataset.shape[1])
-
-            curr_dim2_start_pt = spatial_dim2_start_pts[j]
-            if j == len(spatial_dim2_start_pts):
-                curr_dim2_end_pt = dataset.shape[2]
-            else:
-                curr_dim2_end_pt = min(spatial_dim2_start_pts[j] + batch_dimensions[1], dataset.shape[2])
-
-            slice1 = slice(curr_dim1_start_pt, curr_dim1_end_pt)
-            slice2 = slice(curr_dim2_start_pt, curr_dim2_end_pt)
-            fov_list.append((slice1, slice2))
-
-            display(
-                f"Processing {curr_dim1_start_pt}:{curr_dim1_end_pt} "
-                f"to {curr_dim2_start_pt}:{curr_dim2_end_pt}"
-            )
-            dataset_crop = dataset[
-                           :,
-                           curr_dim1_start_pt:curr_dim1_end_pt,
-                           curr_dim2_start_pt:curr_dim2_end_pt,
-                           ]
-
-            curr_pmd_array = pmd_decomposition(
-                dataset_crop,
-                block_sizes,
-                frame_range,
-                max_components,
-                background_rank,
-                sim_conf,
-                frame_batch_size,
-                max_consecutive_failures,
-                spatial_avg_factor,
-                temporal_avg_factor,
-                window_chunks=window_chunks,
-                compute_normalizer=compute_normalizer,
-                pixel_weighting=pixel_weighting,
-                spatial_denoiser=spatial_denoiser,
-                temporal_denoiser=temporal_denoiser,
-                device=device,
-            )
-
-            pmd_array_list.append(curr_pmd_array)
-
-    final_pmd = stitch_pmd_arrays(
-        pmd_array_list, fov_list, (num_frames, fov_dim1, fov_dim2)
-    )
-    return final_pmd
-
-
-def stitch_pmd_arrays(
-        pmd_list: List[PMDArray],
-        fov_list: List[Tuple[slice, slice]],
-        data_dimensions: Tuple[int, int, int],
-) -> PMDArray:
-    num_frames, fov_dim1, fov_dim2 = data_dimensions
-    pixel_mat = torch.arange(
-        fov_dim1 * fov_dim2, device="cpu", dtype=torch.long
-    ).reshape(fov_dim1, fov_dim2)
-
-    aggregate_local_v = []
-    aggregate_global_v = []
-
-    u_local_projector_values = []
-    u_local_projector_cols = []
-    u_local_projector_rows = []
-
-    u_local_basis_values = []
-    u_local_basis_cols = []
-    u_local_basis_rows = []
-
-    u_global_projector_values = []
-    u_global_projector_cols = []
-    u_global_projector_rows = []
-
-    u_global_basis_values = []
-    u_global_basis_cols = []
-    u_global_basis_rows = []
-
-    local_interpolation_weightings = torch.zeros((fov_dim1, fov_dim2))
-    global_interpolation_weightings = torch.zeros((fov_dim1, fov_dim2))
-
-    dataset_mean_img = torch.zeros((fov_dim1, fov_dim2))
-    dataset_var_img = torch.ones((fov_dim1, fov_dim2))
-
-    local_rank_tracker = 0
-    global_rank_tracker = 0
-    for k in range(len(pmd_list)):
-        curr_pmd = pmd_list[k]
-        curr_pmd.to("cpu")  # Ensure on CPU
-        dim1_slice = fov_list[k][0]
-        dim2_slice = fov_list[k][1]
-
-        weighting_function = construct_weighting_scheme(
-            dim1_slice.stop - dim1_slice.start, dim2_slice.stop - dim2_slice.start
-        )
-
-        local_interpolation_weightings[dim1_slice, dim2_slice] += weighting_function
-        global_interpolation_weightings[dim1_slice, dim2_slice] += weighting_function
-
-        dataset_mean_img[dim1_slice, dim2_slice] = curr_pmd.mean_img
-        dataset_var_img[dim1_slice, dim2_slice] = curr_pmd.var_img
-
-        current_row_map = pixel_mat[dim1_slice, dim2_slice].flatten()
-
-        # Process the local U basis
-        curr_u_local = curr_pmd.u_local_basis
-        curr_u_local_indices = curr_u_local.indices()
-        curr_u_local_rows, curr_u_local_cols = (
-            curr_u_local_indices[0],
-            curr_u_local_indices[1],
-        )
-        curr_u_local_values = curr_u_local.values()
-
-        # First apply the interpolation scheme:
-        curr_u_local_values *= weighting_function.flatten()[curr_u_local_rows]
-        # Then re-assign rows to their actual position on the full FOV
-        curr_u_local_rows = current_row_map[curr_u_local_rows]
-        curr_u_local_cols += local_rank_tracker
-        # Append results
-        u_local_basis_rows.append(curr_u_local_rows)
-        u_local_basis_cols.append(curr_u_local_cols)
-        u_local_basis_values.append(curr_u_local_values)
-
-        # Process local U projector
-        curr_u_local_projector = curr_pmd.u_local_projector
-        curr_u_local_projector_indices = curr_u_local_projector.indices()
-        curr_u_local_projector_rows, curr_u_local_projector_cols = [
-            curr_u_local_projector_indices[i] for i in [0, 1]
-        ]
-        curr_u_local_projector_values = curr_u_local_projector.values()
-        # No interpolation here, so we immediately re-assign rows to actual FOV positions
-        curr_u_local_projector_rows = current_row_map[curr_u_local_projector_rows]
-        curr_u_local_projector_cols += local_rank_tracker
-        # Append results
-        u_local_projector_rows.append(curr_u_local_projector_rows)
-        u_local_projector_cols.append(curr_u_local_projector_cols)
-        u_local_projector_values.append(curr_u_local_projector_values)
-
-        aggregate_local_v.append(curr_pmd.v_local_basis)
-        local_rank_tracker += curr_pmd.local_basis_rank
-
-        # Now process the global spatial/temporal matrices (if they exist)
-        if curr_pmd.global_basis_rank > 0:
-            aggregate_global_v.append(curr_pmd.v_global_basis)
-
-            # Process the global basis first
-            curr_u_global = curr_pmd.u_global_basis
-            curr_u_global_indices = curr_u_global.indices()
-            curr_u_global_rows, curr_u_global_cols = (
-                curr_u_global_indices[0],
-                curr_u_global_indices[1],
-            )
-            curr_u_global_values = curr_u_global.values()
-
-            # First apply the interpolation scheme:
-            curr_u_global_values *= weighting_function.flatten()[curr_u_global_rows]
-            # Then re-assign rows to their actual position on the full FOV
-            curr_u_global_rows = current_row_map[curr_u_global_rows]
-            curr_u_global_cols += global_rank_tracker
-            # Append results
-            u_global_basis_rows.append(curr_u_global_rows)
-            u_global_basis_cols.append(curr_u_global_cols)
-            u_global_basis_values.append(curr_u_global_values)
-
-            # Now process the global projector
-            curr_u_global_projector = curr_pmd.u_global_projector
-            curr_u_global_projector_indices = curr_u_global_projector.indices()
-            curr_u_global_projector_rows, curr_u_global_projector_cols = [
-                curr_u_global_projector_indices[i] for i in [0, 1]
-            ]
-            curr_u_global_projector_values = curr_u_global_projector.values()
-            # No interpolation here, so we immediately re-assign rows to actual FOV positions
-            curr_u_global_projector_rows = current_row_map[curr_u_global_projector_rows]
-            curr_u_global_projector_cols += global_rank_tracker
-            # Append results
-            u_global_projector_rows.append(curr_u_global_projector_rows)
-            u_global_projector_cols.append(curr_u_global_projector_cols)
-            u_global_projector_values.append(curr_u_global_projector_values)
-            global_rank_tracker += curr_pmd.global_basis_rank
-
-    contains_global_flag = len(u_global_projector_values) > 0
-    # Convert things to torch tensors, then reweight the global and local U bases
-    u_local_projector_values = torch.concatenate(u_local_projector_values, dim=0)
-    u_local_projector_cols = torch.concatenate(u_local_projector_cols, dim=0)
-    u_local_projector_rows = torch.concatenate(u_local_projector_rows, dim=0)
-    u_local_projector_final = torch.sparse_coo_tensor(
-        torch.stack([u_local_projector_rows, u_local_projector_cols], dim=0),
-        u_local_projector_values,
-        (fov_dim1 * fov_dim2, local_rank_tracker),
-    ).coalesce()
-
-    aggregate_local_v = torch.concatenate(aggregate_local_v, dim=0)
-
-    u_local_basis_values = torch.concatenate(u_local_basis_values, dim=0)
-    u_local_basis_cols = torch.concatenate(u_local_basis_cols, dim=0)
-    u_local_basis_rows = torch.concatenate(u_local_basis_rows, dim=0)
-    local_reweighting = torch.nan_to_num(
-        torch.reciprocal(local_interpolation_weightings.flatten()), nan=0.0
-    )
-    u_local_basis_values *= local_reweighting[u_local_basis_rows]
-
-    if contains_global_flag:
-        u_global_projector_values = torch.concatenate(u_global_projector_values, dim=0)
-        u_global_projector_cols = torch.concatenate(u_global_projector_cols, dim=0)
-        u_global_projector_rows = torch.concatenate(u_global_projector_rows, dim=0)
-        u_global_projector_final = torch.sparse_coo_tensor(
-            torch.stack([u_global_projector_rows, u_global_projector_cols], dim=0),
-            u_global_projector_values,
-            (fov_dim1 * fov_dim2, global_rank_tracker),
-        ).coalesce()
-
-        u_global_basis_values = torch.concatenate(u_global_basis_values, dim=0)
-        u_global_basis_cols = torch.concatenate(u_global_basis_cols, dim=0)
-        u_global_basis_rows = torch.concatenate(u_global_basis_rows, dim=0)
-        global_reweighting = torch.nan_to_num(
-            torch.reciprocal(global_interpolation_weightings.flatten()), nan=0.0
-        )
-        u_global_basis_values *= global_reweighting[u_global_basis_rows]
-
-        aggregate_global_v = torch.concatenate(aggregate_global_v, dim=0)
-
-        # Need to stack together the u basis in this case and the v basis
-        u_final_cols = torch.concatenate(
-            [u_local_basis_cols, u_global_basis_cols + local_rank_tracker], dim=0
-        )
-        u_final_rows = torch.concatenate(
-            [u_local_basis_rows, u_global_basis_rows], dim=0
-        )
-        u_final_values = torch.concatenate(
-            [u_local_basis_values, u_global_basis_values], dim=0
-        )
-        u_final = torch.sparse_coo_tensor(
-            torch.stack([u_final_rows, u_final_cols], dim=0),
-            u_final_values,
-            (fov_dim1 * fov_dim2, local_rank_tracker + global_rank_tracker),
-        ).coalesce()
-        v_final = torch.concatenate([aggregate_local_v, aggregate_global_v])
-        final_pmd_array = PMDArray(
-            (num_frames, fov_dim1, fov_dim2),
-            u_final,
-            v_final,
-            dataset_mean_img,
-            dataset_var_img,
-            u_local_projector_final,
-            u_global_projector=u_global_projector_final,
-            device="cpu",
-        )
-    else:
-        u_final = torch.sparse_coo_tensor(
-            torch.stack([u_local_basis_rows, u_local_basis_cols], dim=0),
-            u_local_basis_values,
-            (fov_dim1 * fov_dim2, local_rank_tracker),
-        )
-        v_final = aggregate_local_v
-        final_pmd_array = PMDArray(
-            (num_frames, fov_dim1, fov_dim2),
-            u_final,
-            v_final,
-            dataset_mean_img,
-            dataset_var_img,
-            u_local_projector_final,
-            u_global_projector=None,
-            device="cpu",
-        )
-
-    return final_pmd_array
+#
+# def pmd_batch(
+#         dataset: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
+#         batch_dimensions: Tuple[int, int],
+#         batch_overlaps: Tuple[int, int],
+#         block_sizes: Tuple[int, int],
+#         frame_range: int,
+#         max_components: int = 50,
+#         background_rank: int = 15,
+#         sim_conf: int = 5,
+#         frame_batch_size: int = 10000,
+#         max_consecutive_failures=1,
+#         spatial_avg_factor: int = 1,
+#         temporal_avg_factor: int = 1,
+#         window_chunks: Optional[int] = None,
+#         compute_normalizer: bool = True,
+#         pixel_weighting: Optional[np.ndarray] = None,
+#         spatial_denoiser: Optional[torch.nn.Module] = None,
+#         temporal_denoiser: Optional[torch.nn.Module] = None,
+#         device: str = "cpu",
+# ) -> PMDArray:
+#     """
+#     Method for running PMD across huge fields of view. This method breaks the large FOV into smaller regions (say, 300 x 300 pixels),
+#     runs PMD on each smaller region, and pieces the results together to get a fullFOV decomposition.
+#
+#     Args:
+#         dataset (Union[masknmf.ArrayLike, masknmf.LazyFrameLoader]): An array-like object with shape (frames, fov_dim1, fov_dim2) that loads frames of raw data
+#         block_sizes (tuple[int, int]): The block sizes of the compression. Cannot be smaller than 10 in each dimension.
+#         frame_range (int): Number of frames or raw data used to fit the spatial basis.
+#             KEY: We assume that your system can store this many frames of raw data in RAM.
+#         max_components (int): Max number of components we use to decompose any individual spatial block of the raw data.
+#         background_rank (int): Before doing spatial blockwise decompositions, we estimate a full FOV truncated SVD; this often helps estimate global background trends
+#             before blockwise decompositions; leading to better compression.
+#         sim_conf (int): The percentile value used to define spatial and temporal roughness thresholds for rejecting/keeping SVD components
+#         frame_batch_size (int): The maximum number of frames we load onto the computational device (CPU or GPU) at any point in time.
+#         max_consecutive_failures (int): In each blockwise decomposition, we stop accepting SVD components after we see this many "bad" components.
+#         spatial_avg_factor (int): In the blockwise decompositions, we can spatially downsample the data to estimate a cleaner temporal basis. We can use this to iteratively estimate a better
+#             full-resolution basis for the data. If signal sits on only a few pixels, keep this parameter at 1 (spatially downsampling is undesirable in this case).
+#         temporaL_avg_factor (int): In the blockwise decompositions, we can temporally downsample the data to estimate a cleaner spatial basis. We can use this to iteratively estimate a better
+#             full-resolution basis for the data. If your signal "events" are very sparse (i.e. every event appears for only 1 frame) keep this parameter at 1 (temporal downsampling is undesirable in this case).
+#          window_chunks (int): To be removed
+#          compute_normalizer (bool): Whether or not we estimate a pixelwise noise variance. If False, the normalizer is set to 1 (no normalization).
+#          pixel_weighting (Optional[np.ndarray]): Shape (fov_dim1, fov_dim2). We weight the data by this value to estimate a cleaner spatial basis. The pixel_weighting
+#             should intuitively boost the relative variance of pixels containing signal to those that do not contain signal.
+#         spatial_denoiser (Optional[torch.nn.Module]): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
+#         temporal_denoiser (Optional[torch.nn.Module]): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
+#         device (str): Which device the computations should be performed on. Options: "cuda" or "cpu".
+#
+#     Returns:
+#         pmd_arr (PMDArray): A PMDArray capturing the compression results across the full FOV.
+#     """
+#
+#     """
+#     How do we interpolate and stitch together the PMD patches?
+#     (1) The u_local_projector and u_global_projector terms need to have their row indices modified. All other
+#     concatenation follows easily
+#     (2) We should "globally" weight each 300 x 300 patch with an interpolation function. This is important for
+#     stitching together actual U matrices.
+#     (3) Stacking V is easy.
+#
+#     Workflow:
+#     (1) Just run PMD across all the sub-patches of the data. Return a list of PMD objects.
+#     (2) Once that works, add the weighting functions, combine everything into one file.
+#     (3) Once that works, think about the optimal way to do dataloading.
+#
+#
+#     Design decision: if you have a huge FOV, it does not make sense to keep all of U on the GPU. So moving off GPU is good.
+#
+#     Things to circle back on:
+#         Make sure the dataloader is being told to read the right stuff
+#         The blockwise iteration scheme creates a lot of redundancy at the boundaries right now. Should improve that.
+#     """
+#     num_frames, fov_dim1, fov_dim2 = dataset.shape
+#
+#     if batch_dimensions[0] < block_sizes[0] or batch_dimensions[1] < block_sizes[1]:
+#         raise ValueError(f"Batch dimensions must be larger than the block size used in the PMD algorithm")
+#
+#     spatial_dim1_start_pts = list(
+#         range(
+#             0,
+#             dataset.shape[1] - batch_dimensions[0] + 1,
+#             batch_dimensions[0] - batch_overlaps[0],
+#         )
+#     )
+#     if (
+#             spatial_dim1_start_pts[-1] != dataset.shape[1] - batch_dimensions[0]
+#             and dataset.shape[1] - batch_dimensions[0] > 0
+#     ):
+#         last_index = spatial_dim1_start_pts[-1] + batch_dimensions[0]
+#         updated_index = last_index - block_sizes[0]
+#         spatial_dim1_start_pts.append(updated_index)
+#
+#     spatial_dim2_start_pts = list(
+#         range(
+#             0,
+#             dataset.shape[2] - batch_dimensions[1] + 1,
+#             batch_dimensions[1] - batch_overlaps[1],
+#         )
+#     )
+#     if (
+#             spatial_dim2_start_pts[-1] != dataset.shape[2] - batch_dimensions[1]
+#             and dataset.shape[2] - batch_dimensions[1] > 0
+#     ):
+#         last_index = spatial_dim2_start_pts[-1] + batch_dimensions[1]
+#         updated_index = last_index - block_sizes[1]
+#         spatial_dim2_start_pts.append(updated_index)
+#
+#     pmd_array_list = []
+#     fov_list = []
+#     for i in range(len(spatial_dim1_start_pts)):
+#         for j in range(len(spatial_dim2_start_pts)):
+#             curr_dim1_start_pt = spatial_dim1_start_pts[i]
+#             if i == len(spatial_dim1_start_pts) - 1:
+#                 curr_dim1_end_pt = dataset.shape[1]
+#             else:
+#                 curr_dim1_end_pt = min(spatial_dim1_start_pts[i] + batch_dimensions[0], dataset.shape[1])
+#
+#             curr_dim2_start_pt = spatial_dim2_start_pts[j]
+#             if j == len(spatial_dim2_start_pts):
+#                 curr_dim2_end_pt = dataset.shape[2]
+#             else:
+#                 curr_dim2_end_pt = min(spatial_dim2_start_pts[j] + batch_dimensions[1], dataset.shape[2])
+#
+#             slice1 = slice(curr_dim1_start_pt, curr_dim1_end_pt)
+#             slice2 = slice(curr_dim2_start_pt, curr_dim2_end_pt)
+#             fov_list.append((slice1, slice2))
+#
+#             display(
+#                 f"Processing {curr_dim1_start_pt}:{curr_dim1_end_pt} "
+#                 f"to {curr_dim2_start_pt}:{curr_dim2_end_pt}"
+#             )
+#             dataset_crop = dataset[
+#                            :,
+#                            curr_dim1_start_pt:curr_dim1_end_pt,
+#                            curr_dim2_start_pt:curr_dim2_end_pt,
+#                            ]
+#
+#             curr_pmd_array = pmd_decomposition(
+#                 dataset_crop,
+#                 block_sizes,
+#                 frame_range,
+#                 max_components,
+#                 background_rank,
+#                 sim_conf,
+#                 frame_batch_size,
+#                 max_consecutive_failures,
+#                 spatial_avg_factor,
+#                 temporal_avg_factor,
+#                 window_chunks=window_chunks,
+#                 compute_normalizer=compute_normalizer,
+#                 pixel_weighting=pixel_weighting,
+#                 spatial_denoiser=spatial_denoiser,
+#                 temporal_denoiser=temporal_denoiser,
+#                 device=device,
+#             )
+#
+#             pmd_array_list.append(curr_pmd_array)
+#
+#     final_pmd = stitch_pmd_arrays(
+#         pmd_array_list, fov_list, (num_frames, fov_dim1, fov_dim2)
+#     )
+#     return final_pmd
+#
+#
+# def stitch_pmd_arrays(
+#         pmd_list: List[PMDArray],
+#         fov_list: List[Tuple[slice, slice]],
+#         data_dimensions: Tuple[int, int, int],
+# ) -> PMDArray:
+#     num_frames, fov_dim1, fov_dim2 = data_dimensions
+#     pixel_mat = torch.arange(
+#         fov_dim1 * fov_dim2, device="cpu", dtype=torch.long
+#     ).reshape(fov_dim1, fov_dim2)
+#
+#     aggregate_local_v = []
+#     aggregate_global_v = []
+#
+#     u_local_projector_values = []
+#     u_local_projector_cols = []
+#     u_local_projector_rows = []
+#
+#     u_local_basis_values = []
+#     u_local_basis_cols = []
+#     u_local_basis_rows = []
+#
+#     u_global_projector_values = []
+#     u_global_projector_cols = []
+#     u_global_projector_rows = []
+#
+#     u_global_basis_values = []
+#     u_global_basis_cols = []
+#     u_global_basis_rows = []
+#
+#     local_interpolation_weightings = torch.zeros((fov_dim1, fov_dim2))
+#     global_interpolation_weightings = torch.zeros((fov_dim1, fov_dim2))
+#
+#     dataset_mean_img = torch.zeros((fov_dim1, fov_dim2))
+#     dataset_var_img = torch.ones((fov_dim1, fov_dim2))
+#
+#     local_rank_tracker = 0
+#     global_rank_tracker = 0
+#     for k in range(len(pmd_list)):
+#         curr_pmd = pmd_list[k]
+#         curr_pmd.to("cpu")  # Ensure on CPU
+#         dim1_slice = fov_list[k][0]
+#         dim2_slice = fov_list[k][1]
+#
+#         weighting_function = construct_weighting_scheme(
+#             dim1_slice.stop - dim1_slice.start, dim2_slice.stop - dim2_slice.start
+#         )
+#
+#         local_interpolation_weightings[dim1_slice, dim2_slice] += weighting_function
+#         global_interpolation_weightings[dim1_slice, dim2_slice] += weighting_function
+#
+#         dataset_mean_img[dim1_slice, dim2_slice] = curr_pmd.mean_img
+#         dataset_var_img[dim1_slice, dim2_slice] = curr_pmd.var_img
+#
+#         current_row_map = pixel_mat[dim1_slice, dim2_slice].flatten()
+#
+#         # Process the local U basis
+#         curr_u_local = curr_pmd.u_local_basis
+#         curr_u_local_indices = curr_u_local.indices()
+#         curr_u_local_rows, curr_u_local_cols = (
+#             curr_u_local_indices[0],
+#             curr_u_local_indices[1],
+#         )
+#         curr_u_local_values = curr_u_local.values()
+#
+#         # First apply the interpolation scheme:
+#         curr_u_local_values *= weighting_function.flatten()[curr_u_local_rows]
+#         # Then re-assign rows to their actual position on the full FOV
+#         curr_u_local_rows = current_row_map[curr_u_local_rows]
+#         curr_u_local_cols += local_rank_tracker
+#         # Append results
+#         u_local_basis_rows.append(curr_u_local_rows)
+#         u_local_basis_cols.append(curr_u_local_cols)
+#         u_local_basis_values.append(curr_u_local_values)
+#
+#         # Process local U projector
+#         curr_u_local_projector = curr_pmd.u_local_projector
+#         curr_u_local_projector_indices = curr_u_local_projector.indices()
+#         curr_u_local_projector_rows, curr_u_local_projector_cols = [
+#             curr_u_local_projector_indices[i] for i in [0, 1]
+#         ]
+#         curr_u_local_projector_values = curr_u_local_projector.values()
+#         # No interpolation here, so we immediately re-assign rows to actual FOV positions
+#         curr_u_local_projector_rows = current_row_map[curr_u_local_projector_rows]
+#         curr_u_local_projector_cols += local_rank_tracker
+#         # Append results
+#         u_local_projector_rows.append(curr_u_local_projector_rows)
+#         u_local_projector_cols.append(curr_u_local_projector_cols)
+#         u_local_projector_values.append(curr_u_local_projector_values)
+#
+#         aggregate_local_v.append(curr_pmd.v_local_basis)
+#         local_rank_tracker += curr_pmd.local_basis_rank
+#
+#         # Now process the global spatial/temporal matrices (if they exist)
+#         if curr_pmd.global_basis_rank > 0:
+#             aggregate_global_v.append(curr_pmd.v_global_basis)
+#
+#             # Process the global basis first
+#             curr_u_global = curr_pmd.u_global_basis
+#             curr_u_global_indices = curr_u_global.indices()
+#             curr_u_global_rows, curr_u_global_cols = (
+#                 curr_u_global_indices[0],
+#                 curr_u_global_indices[1],
+#             )
+#             curr_u_global_values = curr_u_global.values()
+#
+#             # First apply the interpolation scheme:
+#             curr_u_global_values *= weighting_function.flatten()[curr_u_global_rows]
+#             # Then re-assign rows to their actual position on the full FOV
+#             curr_u_global_rows = current_row_map[curr_u_global_rows]
+#             curr_u_global_cols += global_rank_tracker
+#             # Append results
+#             u_global_basis_rows.append(curr_u_global_rows)
+#             u_global_basis_cols.append(curr_u_global_cols)
+#             u_global_basis_values.append(curr_u_global_values)
+#
+#             # Now process the global projector
+#             curr_u_global_projector = curr_pmd.u_global_projector
+#             curr_u_global_projector_indices = curr_u_global_projector.indices()
+#             curr_u_global_projector_rows, curr_u_global_projector_cols = [
+#                 curr_u_global_projector_indices[i] for i in [0, 1]
+#             ]
+#             curr_u_global_projector_values = curr_u_global_projector.values()
+#             # No interpolation here, so we immediately re-assign rows to actual FOV positions
+#             curr_u_global_projector_rows = current_row_map[curr_u_global_projector_rows]
+#             curr_u_global_projector_cols += global_rank_tracker
+#             # Append results
+#             u_global_projector_rows.append(curr_u_global_projector_rows)
+#             u_global_projector_cols.append(curr_u_global_projector_cols)
+#             u_global_projector_values.append(curr_u_global_projector_values)
+#             global_rank_tracker += curr_pmd.global_basis_rank
+#
+#     contains_global_flag = len(u_global_projector_values) > 0
+#     # Convert things to torch tensors, then reweight the global and local U bases
+#     u_local_projector_values = torch.concatenate(u_local_projector_values, dim=0)
+#     u_local_projector_cols = torch.concatenate(u_local_projector_cols, dim=0)
+#     u_local_projector_rows = torch.concatenate(u_local_projector_rows, dim=0)
+#     u_local_projector_final = torch.sparse_coo_tensor(
+#         torch.stack([u_local_projector_rows, u_local_projector_cols], dim=0),
+#         u_local_projector_values,
+#         (fov_dim1 * fov_dim2, local_rank_tracker),
+#     ).coalesce()
+#
+#     aggregate_local_v = torch.concatenate(aggregate_local_v, dim=0)
+#
+#     u_local_basis_values = torch.concatenate(u_local_basis_values, dim=0)
+#     u_local_basis_cols = torch.concatenate(u_local_basis_cols, dim=0)
+#     u_local_basis_rows = torch.concatenate(u_local_basis_rows, dim=0)
+#     local_reweighting = torch.nan_to_num(
+#         torch.reciprocal(local_interpolation_weightings.flatten()), nan=0.0
+#     )
+#     u_local_basis_values *= local_reweighting[u_local_basis_rows]
+#
+#     if contains_global_flag:
+#         u_global_projector_values = torch.concatenate(u_global_projector_values, dim=0)
+#         u_global_projector_cols = torch.concatenate(u_global_projector_cols, dim=0)
+#         u_global_projector_rows = torch.concatenate(u_global_projector_rows, dim=0)
+#         u_global_projector_final = torch.sparse_coo_tensor(
+#             torch.stack([u_global_projector_rows, u_global_projector_cols], dim=0),
+#             u_global_projector_values,
+#             (fov_dim1 * fov_dim2, global_rank_tracker),
+#         ).coalesce()
+#
+#         u_global_basis_values = torch.concatenate(u_global_basis_values, dim=0)
+#         u_global_basis_cols = torch.concatenate(u_global_basis_cols, dim=0)
+#         u_global_basis_rows = torch.concatenate(u_global_basis_rows, dim=0)
+#         global_reweighting = torch.nan_to_num(
+#             torch.reciprocal(global_interpolation_weightings.flatten()), nan=0.0
+#         )
+#         u_global_basis_values *= global_reweighting[u_global_basis_rows]
+#
+#         aggregate_global_v = torch.concatenate(aggregate_global_v, dim=0)
+#
+#         # Need to stack together the u basis in this case and the v basis
+#         u_final_cols = torch.concatenate(
+#             [u_local_basis_cols, u_global_basis_cols + local_rank_tracker], dim=0
+#         )
+#         u_final_rows = torch.concatenate(
+#             [u_local_basis_rows, u_global_basis_rows], dim=0
+#         )
+#         u_final_values = torch.concatenate(
+#             [u_local_basis_values, u_global_basis_values], dim=0
+#         )
+#         u_final = torch.sparse_coo_tensor(
+#             torch.stack([u_final_rows, u_final_cols], dim=0),
+#             u_final_values,
+#             (fov_dim1 * fov_dim2, local_rank_tracker + global_rank_tracker),
+#         ).coalesce()
+#         v_final = torch.concatenate([aggregate_local_v, aggregate_global_v])
+#         final_pmd_array = PMDArray(
+#             (num_frames, fov_dim1, fov_dim2),
+#             u_final,
+#             v_final,
+#             dataset_mean_img,
+#             dataset_var_img,
+#             u_local_projector_final,
+#             u_global_projector=u_global_projector_final,
+#             device="cpu",
+#         )
+#     else:
+#         u_final = torch.sparse_coo_tensor(
+#             torch.stack([u_local_basis_rows, u_local_basis_cols], dim=0),
+#             u_local_basis_values,
+#             (fov_dim1 * fov_dim2, local_rank_tracker),
+#         )
+#         v_final = aggregate_local_v
+#         final_pmd_array = PMDArray(
+#             (num_frames, fov_dim1, fov_dim2),
+#             u_final,
+#             v_final,
+#             dataset_mean_img,
+#             dataset_var_img,
+#             u_local_projector_final,
+#             u_global_projector=None,
+#             device="cpu",
+#         )
+#
+#     return final_pmd_array
