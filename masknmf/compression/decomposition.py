@@ -836,6 +836,8 @@ def blockwise_decomposition(
         local_temporal_basis = temporal_denoiser(local_temporal_basis)
         if torch.count_nonzero(local_temporal_basis) == 0:
             return empty_values
+        else:
+            local_temporal_basis -= torch.mean(local_temporal_basis, dim=1, keepdims=True)
 
     return local_spatial_basis, local_temporal_basis
 
