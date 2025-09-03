@@ -1,4 +1,4 @@
-from masknmf.arrays.array_interfaces import LazyFrameLoader, FactorizedVideo
+from masknmf.arrays.array_interfaces import LazyFrameLoader, FactorizedVideo, ArrayLike
 import torch
 from typing import *
 import numpy as np
@@ -489,14 +489,14 @@ def convert_dense_image_stack_to_pmd_format(img_stack: Union[torch.tensor, np.nd
 
 
 
-class PMDResidualArray(LazyFrameLoader):
+class PMDResidualArray(ArrayLike):
     """
     Factorized video for the spatial and temporal extracted sources from the data
     """
 
     def __init__(
         self,
-        raw_arr: Union[LazyFrameLoader, FactorizedVideo],
+        raw_arr: Union[ArrayLike],
         pmd_arr: PMDArray,
     ):
         """
@@ -533,13 +533,18 @@ class PMDResidualArray(LazyFrameLoader):
         """
         return len(self.shape)
 
-    def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
+    def __getitem__(
+            self,
+            item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+    ):
         if self.pmd_arr.rescale is False:
             self.pmd_arr.rescale = True
             switch = True
         else:
             switch = False
-        output = self.raw_arr[indices].astype(self.dtype) - self.pmd_arr[indices]
+
+        output = self.raw_arr[item].astype(self.dtype) - self.pmd_arr[item].astype(self.dtype)
+        
         if switch:
             self.pmd_arr.rescale = False
         return output
