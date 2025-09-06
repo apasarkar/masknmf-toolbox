@@ -241,6 +241,7 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[masknmf.ArrayLike, mas
 
 
 
+
 def pmd_autocovariance_diagnostics(raw_movie: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
                                    pmd_movie: PMDArray,
                                    batch_size: int = 200,
