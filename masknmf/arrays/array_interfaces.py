@@ -3,6 +3,43 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 
+class ArrayLike(ABC):
+    """
+    The most general class capturing the minimum functionality a general array needs to support
+    """
+    @property
+    @abstractmethod
+    def dtype(self) -> Union[str, np.dtype]:
+        """
+        data type
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def shape(self) -> Tuple[int, int, int]:
+        """
+        Array shape (n_frames, height, width)
+        """
+        pass
+
+
+    @property
+    def ndim(self) -> int:
+        """
+        Number of dimensions
+        """
+        return len(self.shape)
+
+    @abstractmethod
+    def __getitem__(
+        self,
+        item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+    ):
+        # Step 1: index the frames (dimension 0)
+        pass
+
+
 class FactorizedVideo(ABC):
     """
     This captures the numpy array-like functionality for factorized videos in our NMF model.
@@ -34,15 +71,15 @@ class FactorizedVideo(ABC):
     @abstractmethod
     def __getitem__(
         self,
-        item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+        item: Union[int, list, np.ndarray, slice, range, Tuple[Union[int, np.ndarray, slice, range]]],
     ):
         # Step 1: index the frames (dimension 0)
         pass
 
 
-class LazyFrameLoader(ABC):
+class LazyFrameLoader(ArrayLike):
     """
-    This captures the numpy array-like functionality that all data loaders for motion correction need to contain
+    An array-like object that only supports fast slicing in the temporal domain. Used for motion correction algorithms.
 
     Key: To implement support for a new file type, you just need to specify the key properties below (dtype, shape, ndim)
     and then implement the function _compute_at_indices.
@@ -74,7 +111,7 @@ class LazyFrameLoader(ABC):
 
     def __getitem__(
         self,
-        item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+        item: Union[int, list, np.ndarray, slice, range, Tuple[Union[int, np.ndarray, slice, range]]],
     ):
         # Step 1: index the frames (dimension 0)
 

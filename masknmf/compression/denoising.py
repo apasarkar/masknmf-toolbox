@@ -191,21 +191,22 @@ class TotalVarianceTemporalDenoiser(pl.LightningModule):
 
 
 def train_total_variance_denoiser(
-        time_series,
+        time_series, #num_timeseries x time_series_length
         learning_rate: float = 1e-2,
         input_size: int = 900,
         overlap: int = 600,
         max_epochs: int = 20,
         batch_size: int = 1,
         devices: int = 1,
+        padding: int = 100,
 ):
     """Train a total variance prediction network"""
     model = TotalVarianceTemporalDenoiser(
         learning_rate=learning_rate,
         max_epochs=max_epochs,
     )
-
-    dataset = MultivariateTimeSeriesDataset(time_series, input_size=input_size, overlap=overlap)
+    padded_timeseries = torch.nn.functional.pad(time_series, (padding, padding), mode = 'reflect')
+    dataset = MultivariateTimeSeriesDataset(padded_timeseries, input_size=input_size, overlap=overlap)
     train_loader = DataLoader(
         dataset, batch_size=batch_size, shuffle=True, num_workers=6, pin_memory=True
     )
@@ -513,13 +514,18 @@ class PMDTemporalDenoiser(torch.nn.Module):
 
     def __init__(self,
                  trained_model: torch.nn.Module,
-                 noise_variance_quantile:float = 1):
+                 noise_variance_quantile:float = 1,
+                 padding: int = 100):
         super(PMDTemporalDenoiser, self).__init__()
         self.noise_variance_quantile = noise_variance_quantile
         self.net = trained_model
+        self._padding = padding
 
     def forward(self, traces: torch.tensor):
-        return denoise_batched(self.net,
-                               traces,
+        #F.pad(x, (pad_size, pad_size), mode=mode)
+        padded = torch.nn.functional.pad(traces, (self._padding, self._padding), mode = 'reflect')
+        outputs = denoise_batched(self.net,
+                               padded,
                                noise_variance_quantile=self.noise_variance_quantile,
                                input_size=traces.shape[1])[0]
+        return outputs[:, self._padding:-1*self._padding]

@@ -36,11 +36,13 @@ class PMDWidget:
                  mean_subtract: bool = False,
                  device="cpu"):
 
+        self._mean_subtract = mean_subtract
         pmd_stack.to(device)
         self._pmd_stack = pmd_stack
-        if mean_subtract:
+        self._input_raw_stack = comparison_stack
+        if self._mean_subtract:
             ref_mean_img = self.pmd_stack.mean_img.cpu().numpy()[None, :, :]
-            self._comparison_stack = masknmf.FilteredArray(comparison_stack,
+            self._comparison_stack = masknmf.FilteredArray(self._input_raw_stack,
                                        lambda x: x - ref_mean_img,
                                       device='cpu')
             self._pmd_stack.rescale = False
@@ -51,7 +53,7 @@ class PMDWidget:
         # Tricky: comparison stack is not mean subtracted, which is what we need to pass in to the residual array and to the autocov diagnostic
         self._residual_stack = masknmf.PMDResidualArray(comparison_stack, self.pmd_stack)
         display('Computing Residual Statistics')
-        raw_lag1, pmd_lag1, resid_lag1 = masknmf.diagnostics.pmd_autocovariance_diagnostics(comparison_stack,
+        raw_lag1, pmd_lag1, resid_lag1 = masknmf.diagnostics.pmd_autocovariance_diagnostics(self._input_raw_stack,
                                                                                             self.pmd_stack,
                                                                                             batch_size=frame_batch_size,
                                                                                             device=device)
@@ -219,9 +221,12 @@ class PMDWidget:
 
     def _crop_and_display(self):
 
-        mcorr_temporal = self.comparison_stack[:, self._row_slice, self._col_slice].mean(axis=(1, 2))
-
+        mcorr_temporal = self._input_raw_stack[:, self._row_slice, self._col_slice].mean(axis=(1, 2))
         pmd_temporal = self.pmd_stack[:, self._row_slice, self._col_slice].mean(axis=(1, 2))
+        if self._mean_subtract:
+            mcorr_temporal -= np.mean(mcorr_temporal.flatten())
+            pmd_temporal -= np.mean(pmd_temporal.flatten())
+
         residual_temporal = mcorr_temporal - pmd_temporal
         self.fig_temporal["mcorr"].graphics[0].data[:, 1] = mcorr_temporal
         self.fig_temporal["pmd"].graphics[0].data[:, 1] = pmd_temporal
