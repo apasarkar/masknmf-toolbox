@@ -7,13 +7,13 @@ import math
 from tqdm import tqdm
 
 def compute_general_spatial_correlation_map(
-        stack: Union[np.ndarray, masknmf.LazyFrameLoader, masknmf.FactorizedVideo],
+        stack: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
         device: str = 'cpu',
         batch_size: int = 200) -> torch.tensor:
     """
     General routine to compute a spatial correlation map for a single stack.
     Args:
-        stack (Union[np.ndarray, masknmf.LazyFrameLoader, masknmf.FactorizedVideo]): A (num_frames, fov_dim1, fov_dim2)
+        stack (Union[masknmf.ArrayLike, masknmf.FactorizedVideo]): A (num_frames, fov_dim1, fov_dim2)
             shaped imaging stack
         device (str): Which device we use for computations ('cpu', 'cuda', etc.)
         batch_size (int): The number of frames to process at a time
@@ -107,7 +107,7 @@ def compute_general_spatial_correlation_map(
     return stack_final_img
 
 
-def compute_pmd_spatial_correlation_maps(raw_stack: Union[np.ndarray, masknmf.LazyFrameLoader, masknmf.FactorizedVideo],
+def compute_pmd_spatial_correlation_maps(raw_stack: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
                                          pmd_stack: masknmf.PMDArray,
                                          device='cpu',
                                          batch_size: int = 200) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -119,7 +119,7 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[np.ndarray, masknmf.La
     signals reflect how well PMD decorrelates spatial structure.
 
     Args:
-        raw_stack (Union[np.ndarray, masknmf.LazyFrameLoader, masknmf.FactorizedVideo]):
+        raw_stack (Union[masknmf.ArrayLike, masknmf.FactorizedVideo]):
             The raw video stack with shape (frames, height, width).
         pmd_stack (masknmf.PMDArray):
             The PMD reconstruction object, which includes factorized temporal and spatial components.
@@ -240,14 +240,14 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[np.ndarray, masknmf.La
     return raw_final_img.cpu().numpy(), pmd_final_img.cpu().numpy(), resid_final_img.cpu().numpy()
 
 
-def pmd_autocovariance_diagnostics(raw_movie: Union[np.ndarray, masknmf.LazyFrameLoader],
+def pmd_autocovariance_diagnostics(raw_movie: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
                                    pmd_movie: PMDArray,
                                    batch_size: int = 200,
                                    device: str = 'cpu') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Computes a normalized version of the lag-1 autocovariance for the raw, pmd, and residual stacks.
     Args:
-        raw_movie (masknmf.LazyFrameLoader)
+        raw_movie (masknmf.LazyFrameLoader or ArrayLike): Any array object returning numpy ndarray data which can be indexed in time
         pmd_movie (masknmf.PMDArray)
         batch_size (int): Number of frames we process at a time
         device (str): 'cpu' or 'cuda' depending on where computations occur
