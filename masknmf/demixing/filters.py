@@ -40,7 +40,6 @@ def spatial_filter_pmd(pmd_obj: masknmf.PMDArray,
                                  pmd_obj.mean_img.to(device),
                                  pmd_obj.var_img.to(device),
                                  u_local_projector=pmd_obj.u_local_projector,
-                                 u_global_projector=None,
                                  device='cpu')
 
     if switch:
