@@ -39,10 +39,10 @@ def demix(cfg: DictConfig) -> None:
                                                     spatial_filt_pmd,
                                                     device=device,
                                                     frame_batch_size=cfg.frame_batch_size)
-    
+
     init_kwargs = {
         'mad_correlation_threshold':0.8,
-    
+
         #Mostly stable
         'robust_corr_term':0,
         'mad_threshold':5,
@@ -51,7 +51,7 @@ def demix(cfg: DictConfig) -> None:
         'plot_en':False,
         'text':False,
     }
-    
+
     highpass_pmd_demixer.initialize_signals(**init_kwargs, is_custom = False)
     if highpass_pmd_demixer.results is not None:
         display(f"Identified {highpass_pmd_demixer.results[0].shape[1]} candidate neural signals at initialization step.")
@@ -72,7 +72,7 @@ def demix(cfg: DictConfig) -> None:
         'denoise':False,
         'plot_en': False
     }
-    
+
     with torch.no_grad():
         highpass_pmd_demixer.demix(**localnmf_params)
     display(f"After demixing the high-pas data, there were {highpass_pmd_demixer.results.a.shape[1]} signals identified")
@@ -89,8 +89,8 @@ def demix(cfg: DictConfig) -> None:
                                                     pmd_denoise,
                                                     device=device,
                                                     frame_batch_size=cfg.frame_batch_size)
-    
-    unfiltered_pmd_demixer.initialize_signals(is_custom=True, 
+
+    unfiltered_pmd_demixer.initialize_signals(is_custom=True,
                                               spatial_footprints=a_init,
                                               temporal_footprints=c_init,
                                               c_nonneg = True)
@@ -113,23 +113,18 @@ def demix(cfg: DictConfig) -> None:
         'denoise':False,
         'plot_en': False
     }
-    
+
     with torch.no_grad():
         unfiltered_pmd_demixer.demix(**localnmf_params)
     display(f"after this step {unfiltered_pmd_demixer.results.a.shape[1]} signals identified")
 
-    
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    outdir = os.path.abspath(cfg.outdir)
-    if os.path.isdir(outdir):
-        output_location = os.path.join(os.path.abspath(cfg.outdir), f"demixing_results_{timestamp}.npz")
-    else:
-        output_location = cfg.outdir
 
-    display(f"Saving demixing results to {output_location}")
+    out_path = os.path.abspath(cfg.out_path)
+
+    display(f"Saving demixing results to {out_path}")
     config_to_save = OmegaConf.to_container(cfg, resolve=True)
-    np.savez(output_location, 
+    np.savez(out_path,
              results=unfiltered_pmd_demixer.results,
              metadata = config_to_save)
 
@@ -140,7 +135,7 @@ if __name__ == "__main__":
     config_dict = {
         'data_path': '/path/to/data/',
         'data_field': 'pmd',
-        'outdir': '.',
+        'out_path': '.',
         'spatial_hp_sigma': 4,
         'frame_batch_size':400,
         'device': 'cpu',
