@@ -60,35 +60,34 @@ class MotionBinDataset:
 
     def _compute_shape(self):
         """
-        Loads the suite2p ops file to retrieve the dimensions of the data.bin file.
+        Loads the suite2p ops file to retrieve the dimensions of the data.bin file. This is now lazily loaded from a
+        zip file
 
         Returns
         -------
         (int, int, int)
             number of frames, number of y pixels, number of x pixels.
         """
-        ops_file = self.ops_path
-        if ops_file.exists():
-            ops = np.load(ops_file, allow_pickle=True).item()
-        return ops['nframes'], ops['Ly'], ops['Lx']
+        s2p_ops = np.load(self.ops_path, allow_pickle = True)['ops'].item()
+        return s2p_ops['nframes'], s2p_ops['Ly'], s2p_ops['Lx']
 
     def __getitem__(self, item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]):
         return self.data[item].copy()
+def load_bin_file(s2p_zip_path: Union[str, bytes, os.PathLike],
+                   alf_bin_path: Union[str, bytes, os.PathLike]) -> np.ndarray:
+    my_data = MotionBinDataset(alf_bin_path, s2p_zip_path)[:]
+    return my_data
+
+
 
 
 @hydra.main()
 def compress_and_denoise(cfg: DictConfig) -> None:
-    parent_folder = os.path.abspath(cfg.path)
-    if not os.path.exists(parent_folder):
-        raise ValueError(f"the path {parent_folder} does not seem to exist")
-    bin_path = os.path.join(parent_folder, "data.bin")
-    ops_path = os.path.join(parent_folder, "ops.npy")
-    my_data = MotionBinDataset(bin_path, ops_path)[:]
+    my_data = load_bin_file(cfg.zip_file_path, cfg.bin_file_path)
 
     # Zero out border pixels
     binary_mask = np.zeros((my_data.shape[1], my_data.shape[2]), dtype=my_data.dtype)
     binary_mask[3:-3, 3:-3] = 1.0
-    my_data *= binary_mask[None, :, :]
 
     block_sizes = [cfg.block_size_dim1, cfg.block_size_dim2]
 
@@ -110,10 +109,10 @@ def compress_and_denoise(cfg: DictConfig) -> None:
                                                          max_consecutive_failures=cfg.max_consecutive_failures,
                                                          temporal_avg_factor=cfg.temporal_avg_factor,
                                                          spatial_avg_factor=cfg.spatial_avg_factor,
-                                                         background_rank=cfg.background_rank,
                                                          device=device,
                                                          temporal_denoiser=curr_temporal_denoiser,
-                                                         frame_batch_size=cfg.frame_batch_size)
+                                                         frame_batch_size=cfg.frame_batch_size,
+                                                         pixel_weighting=binary_mask)
 
     pmd_no_denoise = masknmf.compression.pmd_decomposition(my_data,
                                                            block_sizes,
@@ -122,35 +121,30 @@ def compress_and_denoise(cfg: DictConfig) -> None:
                                                            max_consecutive_failures=cfg.max_consecutive_failures,
                                                            temporal_avg_factor=cfg.temporal_avg_factor,
                                                            spatial_avg_factor=cfg.spatial_avg_factor,
-                                                           background_rank=cfg.background_rank,
                                                            device=device,
                                                            temporal_denoiser=None,  # Turn off denoiser
-                                                           frame_batch_size=cfg.frame_batch_size)
+                                                           frame_batch_size=cfg.frame_batch_size,
+                                                           pixel_weighting = binary_mask)
 
     display(
         f"Processing complete. The rank of PMD with denoiser is {pmd_denoised.pmd_rank}. The rank of PMD without denoiser is {pmd_no_denoise.pmd_rank}")
 
-    outdir = os.path.abspath(cfg.outdir)
-    if os.path.isdir(outdir):
-        output_location = os.path.join(os.path.abspath(cfg.outdir), "pmd_results.npz")
-    else:
-        output_location = cfg.outdir
+    out_path = os.path.abspath(cfg.out_path)
 
     # From this, it is easy to load the results into a notebook, visualize things, etc.sl
-    np.savez(output_location,
+    np.savez(out_path,
              pmd_denoise=pmd_denoised,
-             pmd_no_denoise=pmd_no_denoise,
-             raw_path=parent_folder)
+             pmd_no_denoise=pmd_no_denoise)
     display("Results saved")
 
 
 if __name__ == "__main__":
     config_dict = {
-        'path': '/path/to/data/',
-        'outdir': '.',
+        'bin_file_path': '/path/to/data/frames.bin',
+        'zip_file_path': '/path/to/ibl_outputs.zip',
+        'out_path': '.',
         'block_size_dim1': 32,
         'block_size_dim2': 32,
-        'background_rank': 0,
         'max_components': 20,
         'max_consecutive_failures': 1,
         'spatial_avg_factor': 1,
