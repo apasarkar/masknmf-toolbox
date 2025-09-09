@@ -243,7 +243,28 @@ class ACArray(FactorizedVideo):
         if isinstance(item, tuple) and test_spatial_crop_effect(
             item[1:], self.shape[1:]
         ):
-            pixel_space_crop = self.pixel_mat[item[1:]]
+
+            if isinstance(item[1], np.ndarray) and len(item[1]) == 1:
+                term_1 = slice(int(item[1]), int(item[1]) + 1)
+            elif isinstance(item[1], np.integer):
+                term_1 = slice(int(item[1]), int(item[1]) + 1)
+            elif isinstance(item[1], int):
+                term_1 = slice(item[1], item[1] + 1)
+            else:
+                term_1 = item[1]
+
+            if isinstance(item[2], np.ndarray) and len(item[2]) == 1:
+                term_2 = slice(int(item[2]), int(item[2]) + 1)
+            elif isinstance(item[2], np.integer):
+                term_2 = slice(int(item[2]), int(item[2]) + 1)
+            elif isinstance(item[2], int):
+                term_2 = slice(item[2], item[2] + 1)
+            else:
+                term_2 = item[2]
+
+            spatial_crop_terms = (term_1, term_2)
+
+            pixel_space_crop = self.pixel_mat[spatial_crop_terms]
             a_indices = pixel_space_crop.flatten()
             implied_fov = pixel_space_crop.shape
             a_crop = torch.index_select(self._a, 0, a_indices)
@@ -431,11 +452,32 @@ class FluctuatingBackgroundArray(FactorizedVideo):
         if isinstance(item, tuple) and test_spatial_crop_effect(
             item[1:], self.shape[1:]
         ):
-            pixel_space_crop = self.pixel_mat[item[1:]]
+            if isinstance(item[1], np.ndarray) and len(item[1]) == 1:
+                term_1 = slice(int(item[1]), int(item[1]) + 1)
+            elif isinstance(item[1], np.integer):
+                term_1 = slice(int(item[1]), int(item[1]) + 1)
+            elif isinstance(item[1], int):
+                term_1 = slice(item[1], item[1] + 1)
+            else:
+                term_1 = item[1]
+
+            if isinstance(item[2], np.ndarray) and len(item[2]) == 1:
+                term_2 = slice(int(item[2]), int(item[2]) + 1)
+            elif isinstance(item[2], np.integer):
+                term_2 = slice(int(item[2]), int(item[2]) + 1)
+            elif isinstance(item[2], int):
+                term_2 = slice(item[2], item[2] + 1)
+            else:
+                term_2 = item[2]
+
+            spatial_crop_terms = (term_1, term_2)
+
+            pixel_space_crop = self.pixel_mat[spatial_crop_terms]
             u_indices = pixel_space_crop.flatten()
             u_crop = torch.index_select(self._u, 0, u_indices)
             implied_fov = pixel_space_crop.shape
             used_order = "C"  # Torch order here by default is C
+
         else:
             u_crop = self._u
             implied_fov = self.shape[1], self.shape[2]
@@ -455,7 +497,7 @@ class FluctuatingBackgroundArray(FactorizedVideo):
             product = product.permute((0, 2, 1))
         else:  # order is "C"
             product = product.reshape((implied_fov[0], implied_fov[1], -1))
-            product = product.permute(2, 0, 1)
+            product = product.permute(-1, *range(product.ndim - 1))
 
         return product
 
@@ -540,7 +582,7 @@ class ResidualArray(FactorizedVideo):
                 self.pmd_arr.getitem_tensor(item)
                 - self.fluctuating_arr.getitem_tensor(item)
                 - self.ac_arr.getitem_tensor(item)
-                - self.baseline[item[1:]][None, :]
+                - self.baseline[item[1:]][None, ...]
             )
         else:
             output = (
