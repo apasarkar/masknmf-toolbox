@@ -59,6 +59,16 @@ def test_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
     cropping can be an expensive and avoidable operation.
     """
     for k in range(len(my_tuple)):
+        if isinstance(my_tuple[k], np.ndarray):
+            if my_tuple[k].shape[0] < spatial_dims[k]:
+                return True
+
+        if isinstance(my_tuple[k], np.integer):
+            return True
+
+        if isinstance(my_tuple[k], int):
+            return True
+
         if isinstance(my_tuple[k], slice):
             if test_slice_effect(my_tuple[k], spatial_dims[k]):
                 return True
