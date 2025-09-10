@@ -61,9 +61,34 @@ def _run_pipeline(cfg: DictConfig) -> None:
     gcamp_channel = ucla_wf_singlechannel(video_obj, channel=0, mask=mask, num_frames=cfg.num_frames_used)
     blood_channel = ucla_wf_singlechannel(video_obj, channel=1, mask=mask, num_frames=cfg.num_frames_used)
 
+    print(f"type {type(video_obj)}")
     print(gcamp_channel.shape)
-    print(blood_channel.shape)
+    pixel_weighting = None #Update this with mask later
+    block_sizes = [cfg.block_size_dim1, cfg.block_size_dim2]
 
+    pmd_gcamp_no_nn = masknmf.compression.pmd_decomposition(gcamp_channel,
+                                                            block_sizes,
+                                                            gcamp_channel.shape[0],
+                                                            max_components=cfg.max_components,
+                                                            max_consecutive_failures=cfg.max_consecutive_failures,
+                                                            temporal_avg_factor=10,
+                                                            spatial_avg_factor=1,
+                                                            device=cfg.device,
+                                                            temporal_denoiser=None,
+                                                            frame_batch_size=1024,
+                                                            pixel_weighting=pixel_weighting)
+
+    pmd_hemo_no_nn = masknmf.compression.pmd_decomposition(blood_channel,
+                                                           block_sizes,
+                                                           blood_channel.shape[0],
+                                                           max_components=20,
+                                                           max_consecutive_failures=1,
+                                                           temporal_avg_factor=1,
+                                                           spatial_avg_factor=1,
+                                                           device=cfg.device,
+                                                           temporal_denoiser=None,
+                                                           frame_batch_size=1024,
+                                                           pixel_weighting=pixel_weighting)
 
 
 if __name__ == "__main__":
