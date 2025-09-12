@@ -202,13 +202,14 @@ def _run_pipeline(cfg: DictConfig) -> None:
     out_save_dir = os.path.abspath(cfg.out_folder)
     data_path = os.path.abspath(cfg.bin_file_path)
     video_obj = wfield.load_stack(data_path, nchannels=2)
-    mask = None
+    mask = np.load(cfg.mask_file_path).astype("float")
     gcamp_channel = ucla_wf_singlechannel(video_obj, channel=0, mask=mask, num_frames=cfg.num_frames_used)
     blood_channel = ucla_wf_singlechannel(video_obj, channel=1, mask=mask, num_frames=cfg.num_frames_used)
 
 
     pixel_weighting = None #Update this with mask later
     block_sizes = [cfg.block_size_dim1, cfg.block_size_dim2]
+    display(f"Using block sizes {block_sizes}")
 
     pmd_gcamp_no_nn = masknmf.compression.pmd_decomposition(gcamp_channel,
                                                             block_sizes,
@@ -220,7 +221,7 @@ def _run_pipeline(cfg: DictConfig) -> None:
                                                             device=cfg.device,
                                                             temporal_denoiser=None,
                                                             frame_batch_size=1024,
-                                                            pixel_weighting=pixel_weighting)
+                                                            pixel_weighting=mask)
     np.savez(os.path.join(out_save_dir, "gcamp_no_nn.npz"), pmd=pmd_gcamp_no_nn)
 
     pmd_hemo_no_nn = masknmf.compression.pmd_decomposition(blood_channel,
@@ -233,7 +234,7 @@ def _run_pipeline(cfg: DictConfig) -> None:
                                                            device=cfg.device,
                                                            temporal_denoiser=None,
                                                            frame_batch_size=1024,
-                                                           pixel_weighting=pixel_weighting)
+                                                           pixel_weighting=mask)
     np.savez(os.path.join(out_save_dir, "hemo_no_nn.npz"), pmd=pmd_hemo_no_nn)
 
     pmd_gcamp_no_nn.to(cfg.device)
@@ -265,10 +266,6 @@ def _run_pipeline(cfg: DictConfig) -> None:
                                       v_hemo_interp,
                                       regression_coefficients,
                                       device="cpu")
-
-    v_hemocorr = hemocorr_basis(blood_basis,
-                                pmd_gcamp_no_nn.v,
-                                device='cuda')
 
     # You really want to subtract the regression coeff * blood channel (that is the estimate of blood in gcamp channel) from raw
     hemo_corr_est = masknmf.PMDArray((pmd_gcamp_no_nn.shape[0], pmd_gcamp_no_nn.shape[1], pmd_gcamp_no_nn.shape[2]),
@@ -303,7 +300,7 @@ def _run_pipeline(cfg: DictConfig) -> None:
                                                                device=cfg.device,
                                                                temporal_denoiser=None,
                                                                frame_batch_size=1024,
-                                                               pixel_weighting=pixel_weighting)
+                                                               pixel_weighting=mask)
 
     np.savez(os.path.join(out_save_dir, "pmd_hemocorr_no_nn.npz"), pmd=pmd_hemocorr_no_nn)
 
@@ -325,7 +322,7 @@ def _run_pipeline(cfg: DictConfig) -> None:
                                                                device=cfg.device,
                                                                temporal_denoiser=trained_nn_module,
                                                                frame_batch_size=1024,
-                                                               pixel_weighting=pixel_weighting)
+                                                               pixel_weighting=mask)
     np.savez(os.path.join(out_save_dir, "pmd_hemocorr_with_nn.npz"), pmd=pmd_hemocorr_with_nn)
 
 if __name__ == "__main__":
@@ -334,8 +331,8 @@ if __name__ == "__main__":
         'mask_file_path': '/path/to/mask/file/',
         'num_frames_used': 60000,
         'out_folder': '/path/to/output/folder/',
-        'block_size_dim1': 32,
-        'block_size_dim2': 32,
+        'block_size_dim1': 100,
+        'block_size_dim2': 100,
         'max_components': 20,
         'max_consecutive_failures': 1,
         'spatial_avg_factor': 1,
