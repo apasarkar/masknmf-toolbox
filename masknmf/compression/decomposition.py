@@ -1076,8 +1076,9 @@ def pmd_decomposition(
     if temporal_avg_factor >= len(frames):
         raise ValueError("Need at least {} frames".format(temporal_avg_factor))
 
-    frame_cutoff = (len(frames) // temporal_avg_factor) * temporal_avg_factor
-    frames = frames[:frame_cutoff]
+    display("skipping the pruning step for frame cutoff")
+    #frame_cutoff = (len(frames) // temporal_avg_factor) * temporal_avg_factor
+    # frames = frames[:frame_cutoff]
     if len(frames) // temporal_avg_factor <= max_components:
         string_to_disp = (
             f"WARNING: temporal avg factor is too big, max rank per block adjusted to {len(frames) // temporal_avg_factor}.\n"
@@ -1161,7 +1162,7 @@ def pmd_decomposition(
             slice_dim1 = slice(k, k + block_sizes[0])
             slice_dim2 = slice(j, j + block_sizes[1])
             if move_to_torch:
-                current_data_for_fit= torch.from_numpy(dataset[frames, slice_dim1, slice_dim2]).to(device).to(dtype)
+                current_data_for_fit = torch.from_numpy(dataset[frames, slice_dim1, slice_dim2]).to(device).to(dtype)
             else:
                 current_data_for_fit = dataset[frames, slice_dim1, slice_dim2]
             (
@@ -1245,10 +1246,10 @@ def pmd_decomposition(
         (fov_dim1 * fov_dim2, column_number),
     ).coalesce()
 
-    display(f"TESTING {total_temporal_fit[0].shape} and {num_frames}")
-    display(f"Type of dataset is {type(dataset)}")
     if total_temporal_fit[0].shape[1] != num_frames:
-        display("Regressing the full dataset onto the learned spatial basis")
+        display("Regressing the full dataset onto the learned spatial basis."
+                "Note that temporal denoising is not supported here. Submit a feature request if needed."
+                "(Or run the compression algorithm on the full set of frames)")
         v_aggregated = regress_onto_spatial_basis(
             dataset,
             u_spatial_fit,
@@ -1258,8 +1259,6 @@ def pmd_decomposition(
             dtype,
             device,
         )
-        print(f"Shape of dataset is {dataset.shape}")
-        print(f"v_aggregated is {v_aggregated.shape}")
     else:
         v_aggregated = torch.concatenate(total_temporal_fit, dim=0)
 
