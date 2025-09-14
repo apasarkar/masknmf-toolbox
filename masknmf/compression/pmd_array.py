@@ -107,6 +107,7 @@ class PMDArray(FactorizedVideo):
         v: torch.tensor,
         mean_img: torch.tensor,
         var_img: torch.tensor,
+        resid_std: torch.tensor,
         u_local_projector: Optional[torch.sparse_coo_tensor] = None,
         device: str = "cpu",
         rescale: bool = True,
@@ -122,6 +123,7 @@ class PMDArray(FactorizedVideo):
             v (torch.tensor): shape (rank, frames)
             mean_img (torch.tensor): shape (fov_dim1, fov_dim2). The pixelwise mean of the data
             var_img (torch.tensor): shape (fov_dim1, fov_dim2). A pixelwise noise normalizer for the data
+            resid_std (torch.tensor): The residual standard deviation, shape (fov_dim1, fov_dim2)
             u_local_projector (Optional[torch.sparse_coo_tensor]): shape (pixels, rank)
             device (str): The device on which computations occur/data is stored
             rescale (bool): True if we rescale the PMD data (i.e. multiply by the pixelwise normalizer
@@ -143,6 +145,7 @@ class PMDArray(FactorizedVideo):
         self._device = self._u.device
         self._shape = fov_shape
 
+        self._resid_std = resid_std
         self.pixel_mat = torch.arange(
             self.shape[1] * self.shape[2], device=self.device
         ).reshape(self.shape[1], self.shape[2])
@@ -180,6 +183,7 @@ class PMDArray(FactorizedVideo):
         self._device = self._u.device
         if self.u_local_projector is not None:
             self._u_local_projector = self.u_local_projector.to(device)
+        self._resid_std = self._resid_std.to(device)
         # if self.u_global_projector is not None:
         #     self._u_global_projector = self.u_global_projector.to(device)
         #     self._u_global_basis = self.u_global_basis.to(device)
@@ -265,6 +269,13 @@ class PMDArray(FactorizedVideo):
         This is not user-modifiable; "F" ordering is undesirable in PyTorch
         """
         return self._order
+
+    @property
+    def residual_std(self) -> np.ndarray:
+        """
+        The standard deviation of the residual. A simple shot-noise estimator
+        """
+        return self._residual_std
 
     @property
     def ndim(self) -> int:

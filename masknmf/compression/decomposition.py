@@ -605,13 +605,14 @@ def regress_onto_spatial_basis(
     for k in tqdm(range(num_iters)):
         start_pt = k * frame_batch_size
         end_pt = min(start_pt + frame_batch_size, num_frames)
-        curr_data = (
-            torch.from_numpy(dataset[start_pt:end_pt])
-            .to(device)
-            .to(dtype)
-            .permute(1, 2, 0)
-            .reshape((fov_dim1 * fov_dim2, -1))
-        )
+        curr_data = dataset[start_pt:end_pt]
+        if isinstance(curr_data, np.ndarray):
+            curr_data = torch.from_numpy(curr_data).to(device).to(dtype).permute(1, 2, 0).reshape((fov_dim1*fov_dim2,-1))
+        elif isinstance(curr_data, torch.Tensor):
+            curr_data = curr_data.to(device).to(dtype).permute(1, 2, 0).reshape((fov_dim1*fov_dim2,-1))
+        else:
+            raise ValueError(f"Dataset returns data of type {type(curr_data)}. Only valid return types are np.ndarray and torch.tensor")
+
         projection = torch.sparse.mm(u_t_normalized, curr_data)
         projection -= mean_projected
 
@@ -841,6 +842,12 @@ def blockwise_decomposition(
 
     return local_spatial_basis, local_temporal_basis
 
+def residual_std_calculation(spatial_decomposition: torch.tensor,
+                             temporal_decomposition: torch.tensor,
+                             data_block: torch.tensor):
+    output = spatial_decomposition @ temporal_decomposition # shape (block dim1, block dim2, frames)
+    resid = data_block - output.permute(2, 0, 1)
+    return torch.std(resid, dim = 0)
 
 def blockwise_decomposition_with_rank_selection(
         video_subset: torch.tensor,
@@ -1079,9 +1086,8 @@ def pmd_decomposition(
         display(string_to_disp)
         max_components = int(len(frames) // temporal_avg_factor)
 
-    # data_for_spatial_fit = torch.from_numpy(dataset[frames])
-    if frame_batch_size >= len(frames):
-        dataset = torch.from_numpy(dataset[frames]).to(device).to(dtype)
+    if frame_batch_size >= num_frames:
+        dataset = torch.from_numpy(dataset[:]).to(device).to(dtype)
         move_to_torch = False
     else:
         move_to_torch = True
@@ -1148,7 +1154,7 @@ def pmd_decomposition(
         percentile_threshold=sim_conf,
         device=device,
     )
-
+    resid_std_img = torch.zeros(fov_dim1, fov_dim2, dtype=dtype, device=device)
     display("Running Blockwise Decompositions")
     for k in dim_1_iters:
         for j in dim_2_iters:
@@ -1177,6 +1183,10 @@ def pmd_decomposition(
                 temporal_denoiser=temporal_denoiser,
                 device=device,
             )
+            resid_chunk = residual_std_calculation(unweighted_local_spatial_basis,
+                                                    local_temporal_basis,
+                                                    current_data_for_fit)
+            resid_std_img[slice_dim1, slice_dim2] = resid_chunk
 
             total_temporal_fit.append(local_temporal_basis)
 
@@ -1235,9 +1245,11 @@ def pmd_decomposition(
         (fov_dim1 * fov_dim2, column_number),
     ).coalesce()
 
-    if len(frames) < dataset.shape[0]:
+    display(f"TESTING {total_temporal_fit[0].shape} and {num_frames}")
+    display(f"Type of dataset is {type(dataset)}")
+    if total_temporal_fit[0].shape[1] != num_frames:
         display("Regressing the full dataset onto the learned spatial basis")
-        v_regression = regress_onto_spatial_basis(
+        v_aggregated = regress_onto_spatial_basis(
             dataset,
             u_spatial_fit,
             frame_batch_size,
@@ -1246,15 +1258,15 @@ def pmd_decomposition(
             dtype,
             device,
         )
+        print(f"Shape of dataset is {dataset.shape}")
+        print(f"v_aggregated is {v_aggregated.shape}")
     else:
-        v_regression = torch.concatenate(total_temporal_fit, dim=0)
+        v_aggregated = torch.concatenate(total_temporal_fit, dim=0)
 
     interpolation_weightings = torch.reciprocal(
         cumulative_weights.flatten()[final_row_indices]
     )
     spatial_overall_values *= interpolation_weightings
-
-    v_aggregated = [v_regression]
 
     num_cols = column_number
     num_rows = fov_dim1 * fov_dim2
@@ -1266,7 +1278,6 @@ def pmd_decomposition(
     u_aggregated = torch.sparse_coo_tensor(
         final_indices, spatial_overall_values, (num_rows, num_cols)
     )
-    v_aggregated = torch.concatenate(v_aggregated, dim=0)
     display(f"Constructed U matrix. Rank of U is {u_aggregated.shape[1]}")
 
     final_pmd_arr = PMDArray(
@@ -1275,6 +1286,7 @@ def pmd_decomposition(
         v_aggregated.cpu(),
         dataset_mean,
         dataset_noise_variance,
+        resid_std_img,
         u_local_projector=u_local_projector.cpu()
         if u_local_projector is not None
         else None,
