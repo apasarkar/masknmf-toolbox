@@ -275,7 +275,7 @@ class PMDArray(FactorizedVideo):
         """
         The standard deviation of the residual. A simple shot-noise estimator
         """
-        return self._residual_std
+        return self._resid_std
 
     @property
     def ndim(self) -> int:
