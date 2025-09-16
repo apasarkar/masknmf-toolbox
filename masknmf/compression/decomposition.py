@@ -1285,10 +1285,10 @@ def pmd_decomposition(
         v_aggregated.cpu(),
         dataset_mean,
         dataset_noise_variance,
-        resid_std_img,
         u_local_projector=u_local_projector.cpu()
         if u_local_projector is not None
         else None,
+        resid_std=resid_std_img,
         device="cpu",
     )
     display("PMD Objected constructed")
