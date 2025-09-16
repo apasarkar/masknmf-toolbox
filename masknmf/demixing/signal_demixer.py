@@ -234,6 +234,7 @@ def _compute_standard_correlation_image(
         v: torch.tensor,
         temporal_traces: torch.tensor,
         fov_dims: Tuple[int, int],
+        noise_std: Optional[torch.Tensor] = None,
         data_order: str = "F",
         frame_batch_size: int = 1000,
         device: str = "cpu",
@@ -286,6 +287,9 @@ def _compute_standard_correlation_image(
         inds = torch.arange(start, end, device=device, dtype=torch.long)
         curr_u_dense = torch.index_select(u_sparse, 1, inds).to_dense()
         uv_meanzero_norm += torch.sum(curr_uvvt * curr_u_dense, dim=1, keepdim=True)
+
+    if noise_std is not None:
+        uv_meanzero_norm += num_frames * (noise_std.flatten()**2)[None, :]
 
     uv_meanzero_norm = torch.sqrt(uv_meanzero_norm)
     corr_array = StandardCorrelationImages(
@@ -2332,9 +2336,9 @@ class DemixingState(SignalProcessingState):
         self._results = None
         self.pmd_obj = pmd_arr
         if pmd_arr.residual_std is None:
-            self.resid_std = torch.zeros(pmd_arr.shape[1], pmd_arr.shape[2], dtype = pmd_arr.u.dtype, device=device)
+            self.robust_noise_term = torch.zeros(pmd_arr.shape[1], pmd_arr.shape[2], dtype = pmd_arr.u.dtype, device=device)
         else:
-            self.resid_std = torch.sqrt(pmd_arr.mean_img.to(device))
+            self.robust_noise_term = torch.sqrt(pmd_arr.mean_img.to(device))
         self.u_sparse = pmd_arr.u.to(device)
         self.v = pmd_arr.v.to(device)
 
@@ -2443,7 +2447,8 @@ class DemixingState(SignalProcessingState):
             self.v,
             self.c,
             (self.shape[0], self.shape[1]),
-            self.data_order,
+            noise_std = self.robust_noise_term,
+            data_order = self.data_order,
             frame_batch_size=self.frame_batch_size,
             device=self.device,
         )
@@ -2957,8 +2962,8 @@ class DemixingState(SignalProcessingState):
                                                                                      self.factorized_ring_term[0] @ self.factorized_ring_term[1],
                                                                                      self.c,
                                                                                      (self.d1, self.d2),
-                                                                                     self.data_order,
-                                                                                     self.frame_batch_size,
+                                                                                     data_order = self.data_order,
+                                                                                     frame_batch_size = self.frame_batch_size,
                                                                                      device=self.device)
         self._results = DemixingResults(
             (self.T, self.d1, self.d2),
@@ -3047,12 +3052,13 @@ class DemixingResults:
                                                                              self.v,
                                                                              self.c,
                                                                              (self.shape[1], self.shape[2]),
-                                                                             self.order,
+                                                                             noise_std = self.robust_noise_term,
+                                                                             data_order=self.order,
                                                                              frame_batch_size=frame_batch_size,
                                                                              device=self.device)
 
         if residual_correlation_image is None:
-            display("Residual Correlation Image was not specified. Computig it now")
+            display("Residual Correlation Image was not specified. Computing it now")
             if self.device == "cpu":
                 display("You are computing the residual correlation image on CPU; use cuda for much faster results")
             residual_correlation_image = _compute_residual_correlation_image(self.u,
