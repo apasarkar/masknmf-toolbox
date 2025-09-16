@@ -2330,6 +2330,10 @@ class DemixingState(SignalProcessingState):
         self.device = device
         self._results = None
         self.pmd_obj = pmd_arr
+        if pmd_arr.residual_std is None:
+            self.resid_std = torch.ones(pmd_arr.shape[1], pmd_arr.shape[2], dtype = pmd_arr.u.dtype, device=device)
+        else:
+            self.resid_std = pmd_arr.residual_std.to(device)
         self.u_sparse = pmd_arr.u.to(device)
         self.v = pmd_arr.v.to(device)
 
