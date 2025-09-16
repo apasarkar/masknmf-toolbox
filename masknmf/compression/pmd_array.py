@@ -108,7 +108,6 @@ class PMDArray(FactorizedVideo):
         mean_img: torch.tensor,
         var_img: torch.tensor,
         u_local_projector: Optional[torch.sparse_coo_tensor] = None,
-        resid_std: Optional[torch.tensor] = None,
         device: str = "cpu",
         rescale: bool = True,
     ):
@@ -140,7 +139,6 @@ class PMDArray(FactorizedVideo):
         self._device = self._u.device
         self._shape = fov_shape
 
-        self._resid_std = resid_std
         self.pixel_mat = torch.arange(
             self.shape[1] * self.shape[2], device=self.device
         ).reshape(self.shape[1], self.shape[2])
@@ -178,7 +176,6 @@ class PMDArray(FactorizedVideo):
         self._device = self._u.device
         if self.u_local_projector is not None:
             self._u_local_projector = self.u_local_projector.to(device)
-        self._resid_std = self._resid_std.to(device)
 
     @property
     def u(self) -> torch.sparse_coo_tensor:
@@ -217,13 +214,6 @@ class PMDArray(FactorizedVideo):
         This is not user-modifiable; "F" ordering is undesirable in PyTorch
         """
         return self._order
-
-    @property
-    def residual_std(self) -> Optional[np.ndarray]:
-        """
-        The standard deviation of the residual. A simple shot-noise estimator
-        """
-        return self._resid_std
 
     @property
     def ndim(self) -> int:

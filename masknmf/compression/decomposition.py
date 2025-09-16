@@ -1155,7 +1155,7 @@ def pmd_decomposition(
         percentile_threshold=sim_conf,
         device=device,
     )
-    resid_std_img = torch.zeros(fov_dim1, fov_dim2, dtype=dtype, device=device)
+
     display("Running Blockwise Decompositions")
     for k in dim_1_iters:
         for j in dim_2_iters:
@@ -1184,10 +1184,6 @@ def pmd_decomposition(
                 temporal_denoiser=temporal_denoiser,
                 device=device,
             )
-            resid_chunk = residual_std_calculation(unweighted_local_spatial_basis,
-                                                    local_temporal_basis,
-                                                    current_data_for_fit)
-            resid_std_img[slice_dim1, slice_dim2] = resid_chunk
 
             total_temporal_fit.append(local_temporal_basis)
 
@@ -1288,7 +1284,6 @@ def pmd_decomposition(
         u_local_projector=u_local_projector.cpu()
         if u_local_projector is not None
         else None,
-        resid_std=resid_std_img,
         device="cpu",
     )
     display("PMD Objected constructed")
