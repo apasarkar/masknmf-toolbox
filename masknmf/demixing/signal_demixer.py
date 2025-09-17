@@ -234,6 +234,7 @@ def _compute_standard_correlation_image(
         v: torch.tensor,
         temporal_traces: torch.tensor,
         fov_dims: Tuple[int, int],
+        noise_std: Optional[torch.Tensor] = None,
         data_order: str = "F",
         frame_batch_size: int = 1000,
         device: str = "cpu",
@@ -286,6 +287,9 @@ def _compute_standard_correlation_image(
         inds = torch.arange(start, end, device=device, dtype=torch.long)
         curr_u_dense = torch.index_select(u_sparse, 1, inds).to_dense()
         uv_meanzero_norm += torch.sum(curr_uvvt * curr_u_dense, dim=1, keepdim=True)
+
+    if noise_std is not None:
+        uv_meanzero_norm += num_frames * (noise_std.flatten()**2)[None, :]
 
     uv_meanzero_norm = torch.sqrt(uv_meanzero_norm)
     corr_array = StandardCorrelationImages(
@@ -406,7 +410,7 @@ def threshold_data_inplace(movie_chunk, mad_threshold_value: int = 2, dim: int =
     diff = torch.abs(movie_chunk - movie_median)
     mad_values = torch.median(diff, dim=dim, keepdim=True)[0]
 
-    weight_matrix = torch.where(diff > mad_values * mad_threshold_value, 1.0, torch.nan)
+    weight_matrix = torch.where(diff >= mad_values * mad_threshold_value, 1.0, torch.nan)
     # weight_matrix = torch.where(diff > mad_values * mad_threshold_value, 1.0, 0.0)
 
     return movie_chunk * weight_matrix
@@ -435,9 +439,9 @@ def get_local_correlation_structure(
         V: torch.tensor,
         dims: Tuple[int, int, int],
         th: int,
+        noise_std: torch.Tensor,
         order: str = "C",
         batch_size: int = 10000,
-        pseudo: float = 0,
         tol: float = 0.000001,
         a: Optional[torch.sparse_coo_tensor] = None,
         c: torch.tensor = None,
@@ -513,6 +517,7 @@ def get_local_correlation_structure(
             y_end = y_pt + tilesize
 
             indices_curr_2d = ref_mat[x_pt:x_end, y_pt:y_end]
+            robust_corr_values = noise_std[x_pt:x_end, y_pt:y_end]
             x_interval = indices_curr_2d.shape[0]
             y_interval = indices_curr_2d.shape[1]
 
@@ -547,14 +552,15 @@ def get_local_correlation_structure(
                 Yd = torch.sub(Yd, ac_mov)
 
             # Get MAD-thresholded movie in-place
-            Yd = threshold_data_inplace(Yd, th)
+            if not th == 0:
+                Yd = threshold_data_inplace(Yd, th)
 
             # Permute the movie
             Yd = Yd.permute(2, 0, 1)
 
             # Normalize each trace in-place, using robust correlation statistic
             Yd -= torch.nanmean(Yd, dim=0, keepdim=True)
-            divisor = torch.nansum(Yd * Yd, dim=0, keepdim=True) + pseudo ** 2
+            divisor = torch.nansum(Yd * Yd, dim=0, keepdim=True) + robust_corr_values ** 2
             divisor = torch.sqrt(divisor)
             divisor = torch.nan_to_num(divisor, nan=1.0)
             divisor[divisor < 0] = 1.0
@@ -1998,6 +2004,7 @@ class InitializingState(SignalProcessingState):
         """
         self.shape = pmd_arr.shape[1], pmd_arr.shape[2], pmd_arr.shape[0]
         self.d1, self.d2, self.T = dimensions
+        self.robust_noise_term = torch.sqrt(pmd_arr.mean_img.to(device))
         self.pmd_obj = pmd_arr
         self.data_order = pmd_arr.order
         self.device = device
@@ -2028,7 +2035,6 @@ class InitializingState(SignalProcessingState):
 
         # Superpixel-specific initializers, move to new class
         self._th = None
-        self._robust_corr_term = None
         self.dim1_coordinates = None
         self.dim2_coordinates = None
         self.correlations = None
@@ -2087,7 +2093,6 @@ class InitializingState(SignalProcessingState):
             mad_correlation_threshold: float = 0.9,
             residual_threshold: float = 0.3,
             patch_size: Tuple[int, int] = (100, 100),
-            robust_corr_term: float = 0.03,
             text: bool = True,
             plot_en: bool = False,
     ):
@@ -2109,10 +2114,9 @@ class InitializingState(SignalProcessingState):
             text (bool): If plotting the superpixel image, this determines whether we assign numbers to the superpixels.
             plot_en (bool): Used for debugging; whether to plot the superpixels and pure superpixel plots.
         """
-        if mad_threshold != self._th or self._robust_corr_term != robust_corr_term:
+        if mad_threshold != self._th:
             print(
                 f"Computing correlation data structure with MAD threshold  {mad_threshold}"
-                f"and the robust corr term is {robust_corr_term}"
             )
             # This indicates that it is the first time we are running the superpixel init with this set of
             # pre-existing self.a and self.c values, so we need to compute the local correlation data
@@ -2129,15 +2133,13 @@ class InitializingState(SignalProcessingState):
                 bg_subtract_temporal_basis,
                 self.shape,
                 mad_threshold,
+                self.robust_noise_term,
                 order=self.data_order,
                 batch_size=self.pixel_batch_size,
-                pseudo=robust_corr_term,
                 a=self.a,
                 c=self.c,
             )
             self._th = mad_threshold
-            self._robust_corr_term = robust_corr_term
-
         (
             self.a_init,
             self.mask_a_init,
@@ -2330,6 +2332,8 @@ class DemixingState(SignalProcessingState):
         self.device = device
         self._results = None
         self.pmd_obj = pmd_arr
+
+        self.robust_noise_term = torch.sqrt(pmd_arr.mean_img.to(device))
         self.u_sparse = pmd_arr.u.to(device)
         self.v = pmd_arr.v.to(device)
 
@@ -2438,7 +2442,8 @@ class DemixingState(SignalProcessingState):
             self.v,
             self.c,
             (self.shape[0], self.shape[1]),
-            self.data_order,
+            noise_std = self.robust_noise_term,
+            data_order = self.data_order,
             frame_batch_size=self.frame_batch_size,
             device=self.device,
         )
@@ -2952,8 +2957,8 @@ class DemixingState(SignalProcessingState):
                                                                                      self.factorized_ring_term[0] @ self.factorized_ring_term[1],
                                                                                      self.c,
                                                                                      (self.d1, self.d2),
-                                                                                     self.data_order,
-                                                                                     self.frame_batch_size,
+                                                                                     data_order = self.data_order,
+                                                                                     frame_batch_size = self.frame_batch_size,
                                                                                      device=self.device)
         self._results = DemixingResults(
             (self.T, self.d1, self.d2),
@@ -3042,12 +3047,13 @@ class DemixingResults:
                                                                              self.v,
                                                                              self.c,
                                                                              (self.shape[1], self.shape[2]),
-                                                                             self.order,
+                                                                             noise_std = self.robust_noise_term,
+                                                                             data_order=self.order,
                                                                              frame_batch_size=frame_batch_size,
                                                                              device=self.device)
 
         if residual_correlation_image is None:
-            display("Residual Correlation Image was not specified. Computig it now")
+            display("Residual Correlation Image was not specified. Computing it now")
             if self.device == "cpu":
                 display("You are computing the residual correlation image on CPU; use cuda for much faster results")
             residual_correlation_image = _compute_residual_correlation_image(self.u,

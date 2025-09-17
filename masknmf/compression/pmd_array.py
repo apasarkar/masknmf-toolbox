@@ -123,6 +123,7 @@ class PMDArray(FactorizedVideo):
             mean_img (torch.tensor): shape (fov_dim1, fov_dim2). The pixelwise mean of the data
             var_img (torch.tensor): shape (fov_dim1, fov_dim2). A pixelwise noise normalizer for the data
             u_local_projector (Optional[torch.sparse_coo_tensor]): shape (pixels, rank)
+            resid_std (torch.tensor): The residual standard deviation, shape (fov_dim1, fov_dim2)
             device (str): The device on which computations occur/data is stored
             rescale (bool): True if we rescale the PMD data (i.e. multiply by the pixelwise normalizer
                 and add back the mean) in __getitem__
@@ -134,12 +135,7 @@ class PMDArray(FactorizedVideo):
             self._u_local_projector = u_local_projector.to(device).coalesce()
         else:
             self._u_local_projector = None
-        # if u_global_projector is not None:
-            # self._u_global_projector = u_global_projector.to(device).coalesce()
-            # self._u_global_basis = self._compute_global_spatial_basis()
-        # else:
-        #     self._u_global_projector = None
-        #     self._u_global_basis = None
+
         self._device = self._u.device
         self._shape = fov_shape
 
@@ -180,9 +176,6 @@ class PMDArray(FactorizedVideo):
         self._device = self._u.device
         if self.u_local_projector is not None:
             self._u_local_projector = self.u_local_projector.to(device)
-        # if self.u_global_projector is not None:
-        #     self._u_global_projector = self.u_global_projector.to(device)
-        #     self._u_global_basis = self.u_global_basis.to(device)
 
     @property
     def u(self) -> torch.sparse_coo_tensor:
@@ -191,54 +184,10 @@ class PMDArray(FactorizedVideo):
     @property
     def u_local_projector(self) -> Optional[torch.sparse_coo_tensor]:
         return self._u_local_projector
-    #
-    # @property
-    # def u_local_basis(self) -> torch.sparse_coo_tensor:
-    #     indices = torch.arange(
-    #         self.local_basis_rank, device=self.device, dtype=torch.long
-    #     )
-    #     cropped_mat = torch.index_select(self.u, 1, indices).coalesce()
-    #     return cropped_mat
-    #
-    # @property
-    # def u_global_projector(self) -> Optional[torch.sparse_coo_tensor]:
-    #     return self._u_global_projector
-    #
-    # @property
-    # def u_global_basis(self) -> Optional[torch.sparse_coo_tensor]:
-    #     return self._u_global_basis
-    #
-    # @property
-    # def global_basis_rank(self) -> int:
-    #     if self.u_global_projector is None:
-    #         return 0
-    #     else:
-    #         return int(self.u_global_projector.shape[1])
 
     @property
     def pmd_rank(self) -> int:
         return self.u.shape[1]
-    #
-    # @property
-    # def v_local_basis(self) -> torch.tensor:
-    #     return self.v[: self.local_basis_rank]
-    #
-    # @property
-    # def v_global_basis(self) -> torch.tensor:
-    #     return self.v[self.local_basis_rank :]
-    #
-    # def _compute_global_spatial_basis(self) -> Optional[torch.sparse_coo_tensor]:
-    #     if self.global_basis_rank > 0:
-    #         indices = torch.arange(
-    #             self.local_basis_rank,
-    #             self.u.shape[1],
-    #             device=self.device,
-    #             dtype=torch.long,
-    #         )
-    #         cropped_mat = torch.index_select(self.u, 1, indices).coalesce()
-    #         return cropped_mat
-    #     else:
-    #         return None
 
     @property
     def v(self) -> torch.tensor:
