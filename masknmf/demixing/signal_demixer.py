@@ -289,7 +289,7 @@ def _compute_standard_correlation_image(
         uv_meanzero_norm += torch.sum(curr_uvvt * curr_u_dense, dim=1, keepdim=True)
 
     if noise_std is not None:
-        uv_meanzero_norm += num_frames * (noise_std.flatten()**2)[None, :]
+        uv_meanzero_norm += num_frames * (noise_std.flatten()**2)[:, None]
 
     uv_meanzero_norm = torch.sqrt(uv_meanzero_norm)
     corr_array = StandardCorrelationImages(
