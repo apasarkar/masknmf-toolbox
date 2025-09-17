@@ -44,8 +44,7 @@ def demix(cfg: DictConfig) -> None:
         'mad_correlation_threshold':0.8,
 
         #Mostly stable
-        'robust_corr_term':0,
-        'mad_threshold':5,
+        'mad_threshold':0,
         'residual_threshold': 0.3,
         'patch_size':(40, 40),
         'plot_en':False,
