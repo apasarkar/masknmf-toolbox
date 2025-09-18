@@ -1027,12 +1027,6 @@ def pmd_decomposition(
     """
     display("Starting compression")
     num_frames, fov_dim1, fov_dim2 = dataset.shape
-    if frame_batch_size < 1024:
-        raise ValueError(
-            f"frame_batch_size is too small ({frame_batch_size}). "
-            f"Please set it to at 1024. Your device (cpu or cuda) must have space for at least this much data"
-        )
-
     dtype = torch.float32  # This is the target dtype we use for doing computations
     check_fov_size((dataset.shape[1], dataset.shape[2]))
 
