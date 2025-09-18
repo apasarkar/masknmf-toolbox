@@ -27,7 +27,6 @@ class ROIManager(ui.EdgeWindow):
     def update(self):
         _, self.add_rois_mode = imgui.checkbox("Add ROI", self.add_rois_mode)
 
-
 class PMDWidget:
     def __init__(self,
                  comparison_stack: Union[np.ndarray, masknmf.LazyFrameLoader],
@@ -78,16 +77,30 @@ class PMDWidget:
         self.image_graphics = [k for k in self.iw.managed_graphics]
 
         self._fig_temporal = fpl.Figure(shape=(3, 1), names=["mcorr", "pmd", "residual"])
-        self.fig_temporal["mcorr"].add_line(np.zeros(self.pmd_stack.shape[0]))
-        self.fig_temporal["pmd"].add_line(np.zeros(self.pmd_stack.shape[0]))
-        self.fig_temporal["residual"].add_line(np.zeros(self.pmd_stack.shape[0]))
-
-        for subplot in self.fig_temporal:
-            subplot.toolbar = False
+        self._mcorr_line = self.fig_temporal["mcorr"].add_line(np.zeros(self.pmd_stack.shape[0]))
+        self._pmd_line = self.fig_temporal["pmd"].add_line(np.zeros(self.pmd_stack.shape[0]))
+        self._resid_line = self.fig_temporal["residual"].add_line(np.zeros(self.pmd_stack.shape[0]))
 
         self._mcorr_selectors = list()
         self._pmd_selectors = list()
         self._residual_selectors = list()
+
+        self._moco_ls = self._mcorr_line.add_linear_selector()
+        self._pmd_ls = self._pmd_line.add_linear_selector()
+        self._resid_ls= self._resid_line.add_linear_selector()
+
+        self._mcorr_selectors.append(self._moco_ls)
+        self._pmd_selectors.append(self._pmd_ls)
+        self._residual_selectors.append(self._resid_ls)
+
+        self._iw.add_event_handler(self._sync_time, "current_index")
+        self._moco_ls.add_event_handler(self._sync_time, "selection")
+        self._pmd_ls.add_event_handler(self._sync_time, "selection")
+        self._resid_ls.add_event_handler(self._sync_time, "selection")
+
+
+        for subplot in self.fig_temporal:
+            subplot.toolbar = False
 
         self.rect_selector_kwargs = dict(
             edge_thickness=1,
@@ -111,6 +124,18 @@ class PMDWidget:
 
         self.iw.figure.renderer.add_event_handler(self.resize_rect, "pointer_move")
         self.iw.figure.renderer.add_event_handler(self.end_resize, "pointer_up")
+
+
+    def _sync_time(self, ev: dict | fpl.GraphicFeatureEvent):
+        if isinstance(ev, dict):
+            index = ev["t"]  # event from imagewidget
+        else:
+            # event from linear selector
+            index = int(ev.info["value"])
+        self.iw.current_index = {"t": index}
+        self._moco_ls.selection = index
+        self._pmd_ls.selection = index
+        self._resid_ls.selection = index
 
     @property
     def comparison_stack(self):
