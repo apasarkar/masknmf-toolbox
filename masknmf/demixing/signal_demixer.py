@@ -435,8 +435,8 @@ def get_total_edges(d1, d2):
 
 
 def get_local_correlation_structure(
-        U_sparse: torch.sparse_coo_tensor,
-        V: torch.tensor,
+        u_sparse: torch.sparse_coo_tensor,
+        v: torch.tensor,
         dims: Tuple[int, int, int],
         th: int,
         noise_std: torch.Tensor,
@@ -481,13 +481,13 @@ def get_local_correlation_structure(
             dim1_coordinates[i] and dim2_coordinates[i]
     """
 
-    device = V.device
+    device = v.device
     if a is not None and c is not None:
         resid_flag = True
     else:
         resid_flag = False
 
-    dims = (dims[0], dims[1], V.shape[1])
+    dims = (dims[0], dims[1], v.shape[1])
 
     ref_mat = torch.arange(np.prod(dims[:-1]), device=device)
     if order == "F":
@@ -528,14 +528,14 @@ def get_local_correlation_structure(
             else:
                 indices_curr = reshape_c(indices_curr_2d, (x_interval * y_interval,))
 
-            U_sparse_crop = torch.index_select(U_sparse, 0, indices_curr)
+            U_sparse_crop = torch.index_select(u_sparse, 0, indices_curr)
             if order == "F":
                 Yd = reshape_fortran(
-                    torch.sparse.mm(U_sparse_crop, V), (x_interval, y_interval, -1)
+                    torch.sparse.mm(U_sparse_crop, v), (x_interval, y_interval, -1)
                 )
             else:
                 Yd = reshape_c(
-                    torch.sparse.mm(U_sparse_crop, V), (x_interval, y_interval, -1)
+                    torch.sparse.mm(U_sparse_crop, v), (x_interval, y_interval, -1)
                 )
             if resid_flag:
                 a_sparse_crop = torch.index_select(a, 0, indices_curr)
@@ -638,11 +638,11 @@ def get_local_correlation_structure(
             ] = torch.nan_to_num(rho_curr, nan=0.0)
             progress_index = progress_index + point1_curr.shape[0]
 
-    return (
-        point1_indices[:progress_index],
-        point2_indices[:progress_index],
-        correlation_values[:progress_index],
-    )
+    avg_corr_img = local_mad_correlation_mat(point1_indices[:progress_index],
+                                             point2_indices[:progress_index],
+                                             correlation_values[:progress_index],
+                                             dims)
+    return avg_corr_img
 
 
 def find_superpixel_UV(
@@ -1254,7 +1254,7 @@ def local_mad_correlation_mat(
         dim1_coordinates: torch.tensor,
         dim2_coordinates: torch.tensor,
         correlations: torch.tensor,
-        dims: tuple[int, int, Optional[int]],
+        dims: Tuple[int, int, Optional[int]],
         order: str = "C",
 ) -> np.ndarray:
     """
@@ -1409,15 +1409,13 @@ def superpixel_adapter(peak_coords: torch.tensor,
 def superpixel_init(
         u_sparse: torch.sparse_coo_tensor,
         v: torch.Tensor,
+        corr_image: torch.Tensor,
         patch_size: Tuple[int, int],
         data_order: str,
         dims: Tuple[int, int, int],
         cut_off_point: float,
         residual_cut: float,
         device: str,
-        dim1_coordinates: torch.Tensor,
-        dim2_coordinates: torch.Tensor,
-        correlations: torch.Tensor,
         text: bool = True,
         plot_en: bool = False,
         a: Optional[torch.sparse_coo_tensor] = None,
@@ -1434,6 +1432,7 @@ def superpixel_init(
     Args:
         u_sparse (torch.sparse_coo_tensor): Shape (d1*d2, R)
         v (torch.Tensor): dims (R2, T). PMD temporal basis.
+        corr_image (torch.Tensor): dims (d1, d2)
         patch_size (tuple): Patch size that we use to partition the FOV when computing pure superpixels
         data_order (str): "F" or "C" depending on how the field of view "collapsed" into 1D vectors
         dims (tuple): containing (d1, d2, T), the dimensions of the data
@@ -1441,9 +1440,6 @@ def superpixel_init(
         residual_cut (float): between 0 and 1. Threshold used in successive projection to find pure superpixels
         length_cut (int): Minimum allowed sizes of superpixels
         device (string): string used by pytorch to move and construct objects on cpu or gpu
-        dim1_coordinates (torch.tensor): shape number_correlations
-        dim2_coordinates (torch.tensor): shape number_correlations
-        correlations (torch.tensor):
         text (bool): Whether or not to overlay text onto correlation plots (when plotting is enabled)
         plot_en (bool) : Whether or not plotting is enabled (for diagnostic purposes)
         a (torch.sparse_coo_tensor): shape (d1*d2, K) where K is the number of neurons
@@ -1464,13 +1460,6 @@ def superpixel_init(
         first_init_flag = False
     else:
         raise ValueError("Invalid configuration of c and a values were provided")
-
-    display("find superpixels - updated pipeline")
-    corr_image = local_mad_correlation_mat(dim1_coordinates,
-                                           dim2_coordinates,
-                                           correlations,
-                                           dims,
-                                           data_order)
 
     peaks, total_peaks = find_local_peaks_2d(torch.from_numpy(corr_image).to('cuda'),
                                              kernel_radius=3,
@@ -2018,6 +2007,7 @@ class InitializingState(SignalProcessingState):
         self.mask_a_init = None
         self.c_init = None
         self.b_init = None
+        self._curr_corr_image = None
         self.diagnostic_image = None
         self.superpixel_dict = None
 
@@ -2033,11 +2023,7 @@ class InitializingState(SignalProcessingState):
 
         self._results = None
 
-        # Superpixel-specific initializers, move to new class
         self._th = None
-        self.dim1_coordinates = None
-        self.dim2_coordinates = None
-        self.correlations = None
 
     @property
     def frame_batch_size(self):
@@ -2125,9 +2111,7 @@ class InitializingState(SignalProcessingState):
             else:
                 bg_subtract_temporal_basis = self.v
             (
-                self.dim1_coordinates,
-                self.dim2_coordinates,
-                self.correlations,
+                self._curr_corr_image
             ) = get_local_correlation_structure(
                 self.u_sparse,
                 bg_subtract_temporal_basis,
@@ -2150,15 +2134,13 @@ class InitializingState(SignalProcessingState):
         ) = superpixel_init(
             self.u_sparse,
             self.v,
+            self._curr_corr_image,
             patch_size,
             self.data_order,
             self.shape,
             mad_correlation_threshold,
             residual_threshold,
             self.device,
-            self.dim1_coordinates,
-            self.dim2_coordinates,
-            self.correlations,
             text=text,
             plot_en=plot_en,
             a=self.a,
