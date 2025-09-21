@@ -657,6 +657,9 @@ def downsample_sparse(sparse_tensor: torch.sparse_coo_tensor,
     Returns:
         torch.sparse_coo_tensor: Shape ((height//factor) * (width//factor), columns)
     """
+    if not sparse_tensor.is_coalesced():
+        sparse_tensor = sparse_tensor.coalesce()
+
     divisor = downsample_factor ** 2
     height, width = fov_dims[0], fov_dims[1]
     rows, cols = sparse_tensor.indices()
