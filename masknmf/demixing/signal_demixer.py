@@ -560,7 +560,7 @@ def get_local_correlation_structure(
 
             # Normalize each trace in-place, using robust correlation statistic
             Yd -= torch.nanmean(Yd, dim=0, keepdim=True)
-            divisor = torch.nansum(Yd * Yd, dim=0, keepdim=True) + robust_corr_values ** 2
+            divisor = torch.nansum(Yd * Yd, dim=0, keepdim=True) + dims[2] * (robust_corr_values ** 2)[None, :]
             divisor = torch.sqrt(divisor)
             divisor = torch.nan_to_num(divisor, nan=1.0)
             divisor[divisor < 0] = 1.0
@@ -1993,7 +1993,7 @@ class InitializingState(SignalProcessingState):
         """
         self.shape = pmd_arr.shape[1], pmd_arr.shape[2], pmd_arr.shape[0]
         self.d1, self.d2, self.T = dimensions
-        self.robust_noise_term = torch.sqrt(pmd_arr.mean_img.to(device))
+        self.robust_noise_term = torch.sqrt(torch.abs(pmd_arr.mean_img.to(device)))
         self.pmd_obj = pmd_arr
         self.data_order = pmd_arr.order
         self.device = device
@@ -2314,8 +2314,7 @@ class DemixingState(SignalProcessingState):
         self.device = device
         self._results = None
         self.pmd_obj = pmd_arr
-
-        self.robust_noise_term = torch.sqrt(pmd_arr.mean_img.to(device))
+        self.robust_noise_term = torch.sqrt(torch.abs(pmd_arr.mean_img.to(device)))
         self.u_sparse = pmd_arr.u.to(device)
         self.v = pmd_arr.v.to(device)
 
@@ -2338,6 +2337,8 @@ class DemixingState(SignalProcessingState):
         else:
             self._factorized_ring_term_init = (factorized_ring_term[0].to(self.device), factorized_ring_term[1].to(self.device))
             self._validate_factorized_ring_term()
+            self.background_rank = factorized_ring_term[0].shape[1]
+            display(f"Background from previous iteration {self.background_rank}")
         self.factorized_ring_term = None
 
         self.W = None
@@ -2870,7 +2871,7 @@ class DemixingState(SignalProcessingState):
             plot_en (bool): Indicates whether plotting is enabled; this is only used for debugging purposes.
         """
         # Key: precompute_quantities is a setup function which must be run first in this routine
-        self.background_rank = None #Always estimate the background rank each time
+        # self.background_rank = None #Always estimate the background rank each time
         self.precompute_quantities()
         self.W = RingModel(
             self.shape[0], self.shape[1], ring_radius, self.device, self.data_order
