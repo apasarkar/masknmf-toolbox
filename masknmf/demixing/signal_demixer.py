@@ -2940,9 +2940,29 @@ class DemixingState(SignalProcessingState):
                                                                                      self.factorized_ring_term[0] @ self.factorized_ring_term[1],
                                                                                      self.c,
                                                                                      (self.d1, self.d2),
-                                                                                     data_order = self.data_order,
-                                                                                     frame_batch_size = self.frame_batch_size,
+                                                                                     data_order=self.data_order,
+                                                                                     frame_batch_size=self.frame_batch_size,
                                                                                      device=self.device)
+
+        display("Computing residual correlation image")
+        if self.factorized_ring_term is not None:
+            bg_subtract_temporal_basis = self.v - (self.factorized_ring_term[0] @ self.factorized_ring_term[1])
+        else:
+            bg_subtract_temporal_basis = self.v
+        (
+            self._curr_corr_image
+        ) = get_local_correlation_structure(
+            self.u_sparse,
+            bg_subtract_temporal_basis,
+            self.shape,
+            0,
+            self.robust_noise_term,
+            order=self.data_order,
+            batch_size=self.pixel_batch_size,
+            a=self.a,
+            c=self.c,
+        )
+
         self._results = DemixingResults(
             (self.T, self.d1, self.d2),
             self.u_sparse,
@@ -2951,11 +2971,12 @@ class DemixingState(SignalProcessingState):
             self.c,
             self.factorized_ring_term,
             self.b.squeeze(),
-            self.residual_correlation_image,
-            self.standard_correlation_image,
-            background_to_signal_correlation_image,
-            self.data_order,
-            "cpu",
+            residual_correlation_image=self.residual_correlation_image,
+            standard_correlation_image=self.standard_correlation_image,
+            background_to_signal_correlation_image=background_to_signal_correlation_image,
+            global_resid_correlation_image=torch.from_numpy(self._curr_corr_image),
+            order=self.data_order,
+            device="cpu",
         )
 
         return self.results
@@ -2975,6 +2996,7 @@ class DemixingResults:
         residual_correlation_image: Optional[ResidualCorrelationImages] = None,
         standard_correlation_image: Optional[StandardCorrelationImages] = None,
         background_to_signal_correlation_image: Optional[StandardCorrelationImages] = None,
+        global_resid_correlation_image: Optional[torch.Tensor] = None,
         order: str = "C",
         device="cpu",
         frame_batch_size: int=200,
@@ -2995,8 +3017,11 @@ class DemixingResults:
             residual_correlation_image Optional[ResidualCorrelationImages]):
                 Shape (number of neural signals, FOV dim 1, FOV dim 2) The residual corr img corresponding
                  to these demixing results.
-            standard_correlation_image Optional[StandardCorrelationImages]: Shape (number of neural signals,
+            standard_correlation_image (Optional[StandardCorrelationImages]): Shape (number of neural signals,
                 FOV dim 1, FOV dim 2): The standard corr img corresponding to these demixing results
+            background_to_correlation_image: Optional[StandardCorrelationImages]: Correlation of signals with the global background terms.
+                Shape (number of neural signals, FOV dim 1, FOV dim 2).
+            global_resid_correlation_image (torch.Tensor): The global correlation image of the residual. Shape (FOV dim 1, FOV dim 2).
             order (str): order used to reshape data from 2D to 1D
             device (str): 'cpu' or 'cuda'. used to manage where the tensors reside
         """
@@ -3007,6 +3032,11 @@ class DemixingResults:
         self._v = v.to(self.device).float()
         self._a = a.to(self.device).float()
         self._c = c.to(self.device).float()
+
+        if global_resid_correlation_image is None:
+            self._global_residual_corr_img = torch.zeros(self._shape[1], self._shape[2], dtype = self.u.dtype, device = self.device)
+        else:
+            self._global_residual_corr_img = global_resid_correlation_image
 
         if q is None:
             self._q = (torch.zeros(self.u.shape[1], 1, dtype=self.u.dtype, device=self.device),
@@ -3030,7 +3060,6 @@ class DemixingResults:
                                                                              self.v,
                                                                              self.c,
                                                                              (self.shape[1], self.shape[2]),
-                                                                             noise_std = self.robust_noise_term,
                                                                              data_order=self.order,
                                                                              frame_batch_size=frame_batch_size,
                                                                              device=self.device)
@@ -3080,6 +3109,7 @@ class DemixingResults:
         #Move all tracked tensors to desired location so everything is on one device
         self.to(device)
 
+
     @property
     def standard_correlation_image(self) -> StandardCorrelationImages:
         return StandardCorrelationImages(self._u_sparse,
@@ -3113,6 +3143,11 @@ class DemixingResults:
                                          (self._shape[1], self._shape[2]),
                                          mode=ResidCorrMode.RESIDUAL,
                                          order=self._order)
+    
+    @property
+    def global_residual_correlation_image(self) -> Union[None, torch.Tensor]:
+        return self._global_residual_corr_img
+
     @property
     def shape(self):
         return self._shape
@@ -3142,6 +3177,8 @@ class DemixingResults:
         self._resid_corr_img_support_values = self._resid_corr_img_support_values.to(self.device)
         self._resid_corr_img_mean = self._resid_corr_img_mean.to(self.device)
         self._resid_corr_img_normalizer = self._resid_corr_img_normalizer.to(self.device)
+        if self._global_residual_corr_img is not None:
+            self._global_residual_corr_img = self._global_residual_corr_img.to(self.device)
 
     @property
     def fov_shape(self) -> Tuple[int, int]:

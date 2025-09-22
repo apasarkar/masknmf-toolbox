@@ -445,7 +445,7 @@ def get_correlation_widget(image_stack: np.ndarray) -> HBox:
 def make_demixing_video(
     results: DemixingResults,
     device: str,
-    v_range: tuple[float, float],
+    v_range: Tuple[float, float],
     show_histogram: bool = False,
 ) -> ImageWidget:
     results.to(device)
@@ -455,17 +455,17 @@ def make_demixing_video(
     pmd_arr = results.pmd_array
     residual_arr = results.residual_array
     colorful_arr = results.colorful_ac_array
-    static_bg = results.baseline.cpu().numpy()
+    global_residual_img = results.global_residual_correlation_image.cpu().numpy()
 
     iw = ImageWidget(
-        data=[pmd_arr, ac_arr, fluctuating_arr, residual_arr, colorful_arr, static_bg],
+        data=[pmd_arr, ac_arr, fluctuating_arr, residual_arr, colorful_arr, global_residual_img],
         names=[
             "pmd",
             "signals",
             "fluctuating bkgd",
             "residual",
             "colorful signals",
-            "static Bkgd",
+            "global resid corr img",
         ],
         rgb=[False, False, False, False, True, False],
         histogram_widget=show_histogram,
@@ -477,8 +477,13 @@ def make_demixing_video(
     for i, subplot in enumerate(iw.figure):
         if i == 4:
             ig = subplot["image_widget_managed"]
-            iw.vmin = 0
+            ig.vmin = 0
             ig.vmax = 255
+        if i == 5:
+            ig = subplot["image_widget_managed"]
+            ig.vmin = 0.0
+            ig.vmax = 1.0
+
 
     return iw
 
