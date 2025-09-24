@@ -73,6 +73,7 @@ def _compute_residual_correlation_image(
         temporal_comps: torch.tensor,
         fov_dims: Tuple[int, int],
         blocks: Optional[Union[torch.tensor, list]] = None,
+        noise_std: Optional[torch.Tensor] = None,
         data_order: str = "F",
         batch_size: int = 1000,
         device: str = "cpu",
@@ -80,7 +81,7 @@ def _compute_residual_correlation_image(
     """
     Insert docs here
     """
-
+    num_frames = v.shape[1]
     v_new = v - (factorized_ring_term[0] @ factorized_ring_term[1])
 
     residual_movie_norms = torch.zeros(
@@ -147,6 +148,7 @@ def _compute_residual_correlation_image(
                 curr_actc * curr_a_dense, dim=1, keepdim=True
             )
 
+    robust_residual_movie_norms = torch.sqrt(residual_movie_norms + num_frames * noise_std.flatten()[:, None]**2)
     residual_movie_norms = torch.sqrt(residual_movie_norms)
 
     # Now construct the resid corr image
@@ -164,6 +166,7 @@ def _compute_residual_correlation_image(
         curr_rows, curr_cols = [a_curr.indices()[i] for i in [0, 1]]
         curr_values = a_curr.values()
 
+        noise_terms = noise_std[curr_rows][:, None]
         # Need to compute the appropriate pixelwise norms for these sources. Can reuse many previous computations
         # Step 1: Compute pixewise norm of (UV - ac - mean_resid). This is easy - already computed above.
         curr_resid_norms = torch.square(residual_movie_norms[curr_rows, :])
@@ -188,7 +191,7 @@ def _compute_residual_correlation_image(
         curr_resid_norms += (
                 2 * (resid_image_cumulator[curr_rows, curr_cols] * curr_values)[:, None]
         )
-        curr_resid_norms = torch.sqrt(curr_resid_norms)
+        curr_resid_norms = torch.sqrt(curr_resid_norms + num_frames * (noise_terms**2))
 
         corr_term = (
                             resid_image_cumulator / c_meanzero_norms[:, index_select_tensor_net]
@@ -221,7 +224,7 @@ def _compute_residual_correlation_image(
         temporal_comps,
         resid_corr_on_support,
         residual_mean.squeeze(),
-        residual_movie_norms.squeeze(),
+        robust_residual_movie_norms.squeeze(),
         fov_dims,
         mode=ResidCorrMode.DEFAULT,
         order=data_order,
@@ -2440,6 +2443,7 @@ class DemixingState(SignalProcessingState):
             self.c,
             (self.shape[0], self.shape[1]),
             blocks=self.blocks,
+            noise_std=self.robust_noise_term.flatten(),
             data_order=self.data_order,
             batch_size=self.frame_batch_size,
             device=self.device,
