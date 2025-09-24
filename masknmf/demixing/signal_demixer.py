@@ -1471,25 +1471,18 @@ def superpixel_init(
                                                              dims,
                                                              data_order)
 
-    display("New pipeline ran")
-
     c_ini, a_ini = spatial_temporal_ini_uv(u_sparse,
                                            v,
                                            dims,
                                            a_ini,
                                            a=a,
                                            c=c)
-
-    display(f"after spatial temporal ini the shape is {a_ini.shape}")
-
-    display("find pure superpixels!")
     ## cut image into small parts to find pure superpixels ##
     height_num = int(np.ceil(dims[0] / patch_size[0]))
     width_num = int(np.ceil(dims[1] / patch_size[1]))
 
     pure_pix = []
 
-    # connect_mat_2d = connectivity_mat.reshape(dims[0], dims[1], order=data_order)
     for i in range(height_num):
         for j in range(width_num):
             start_height_pt = i * patch_size[0]
