@@ -1419,8 +1419,6 @@ def superpixel_init(
         cut_off_point: float,
         residual_cut: float,
         device: str,
-        text: bool = True,
-        plot_en: bool = False,
         a: Optional[torch.sparse_coo_tensor] = None,
         c: Optional[torch.tensor] = None,
 ) -> Tuple[
@@ -1428,8 +1426,7 @@ def superpixel_init(
     Optional[torch.sparse_coo_tensor],
     torch.Tensor,
     torch.Tensor,
-    Dict[str, torch.Tensor],
-    np.ndarray,
+    Dict[str, torch.Tensor]
 ]:
     """
     Args:
@@ -1443,8 +1440,6 @@ def superpixel_init(
         residual_cut (float): between 0 and 1. Threshold used in successive projection to find pure superpixels
         length_cut (int): Minimum allowed sizes of superpixels
         device (string): string used by pytorch to move and construct objects on cpu or gpu
-        text (bool): Whether or not to overlay text onto correlation plots (when plotting is enabled)
-        plot_en (bool) : Whether or not plotting is enabled (for diagnostic purposes)
         a (torch.sparse_coo_tensor): shape (d1*d2, K) where K is the number of neurons
         c (torch.tensor): shape (T, K) where T is the number of time points, K is number of neurons
 
@@ -1454,7 +1449,6 @@ def superpixel_init(
         c (torch.tensor): Temporal data, shape (T,  K)
         b (torch.Tensor): Pixelwise baseline estimate, shape(d1*d2)
         superpixel_dictionary (dict): Dictionary of key superpixel matrices for this round of initialization
-        superpixel_img (np.ndarray): Shape (d1, d2): Plotted superpixel image
     """
 
     if a is None and c is None:
@@ -1554,23 +1548,12 @@ def superpixel_init(
         uv_mean = get_mean_data(u_sparse, v)
         b = regression_update.baseline_update(uv_mean, a, c)
 
-    # Plot superpixel correlation image
+    # Generate Key Correlation Image Info
     connectivity_mat = connectivity_mat.cpu().numpy()
     unique_pix = unique_pix.cpu().numpy()
     pure_pix = pure_pix.cpu().numpy()
     peaks = peaks.cpu().numpy()
     total_peaks = total_peaks.cpu().numpy()
-    if plot_en:
-        _, superpixel_img = pure_superpixel_corr_compare_plot(
-            connectivity_mat,
-            unique_pix,
-            pure_pix,
-            corr_image,
-            text,
-            order=data_order,
-        )
-    else:
-        superpixel_img = None
 
     superpixel_dict = {
         "superpixel_map": connectivity_mat,
@@ -1581,7 +1564,7 @@ def superpixel_init(
         "correlation_image": corr_image
     }
     display(f'initialized {a.shape[1]} signals')
-    return a, a.bool(), c, b, superpixel_dict, superpixel_img
+    return a, a.bool(), c, b, superpixel_dict
 
 
 def merge_components(
@@ -2011,7 +1994,6 @@ class InitializingState(SignalProcessingState):
         self.c_init = None
         self.b_init = None
         self._curr_corr_image = None
-        self.diagnostic_image = None
         self.superpixel_dict = None
 
         if a is not None:
@@ -2133,7 +2115,6 @@ class InitializingState(SignalProcessingState):
             self.c_init,
             self.b_init,
             self.superpixel_dict,
-            self.diagnostic_image,
         ) = superpixel_init(
             self.u_sparse,
             self.v,
@@ -2144,8 +2125,6 @@ class InitializingState(SignalProcessingState):
             mad_correlation_threshold,
             residual_threshold,
             self.device,
-            text=text,
-            plot_en=plot_en,
             a=self.a,
             c=self.c,
         )
@@ -2261,8 +2240,6 @@ class InitializingState(SignalProcessingState):
             c=temporal_footprints,
             c_nonneg=c_nonneg
         )
-
-        self.diagnostic_image = None
 
     def initialize_signals(
             self,
