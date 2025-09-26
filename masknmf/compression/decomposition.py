@@ -763,6 +763,7 @@ def blockwise_decomposition(
                                                             spatial_denoiser=spatial_denoiser,
                                                             temporal_denoiser=temporal_denoiser,
                                                             device=device)
+
     residual = video_subset.to(device).to(dtype)
     residual -= subset_mean.to(device).to(dtype)[None, :, :]
     residual /= subset_noise_variance.to(device).to(dtype)[None, :, :]
@@ -771,7 +772,7 @@ def blockwise_decomposition(
                                                               torch.zeros_like(subset_mean),
                                                               torch.ones_like(subset_noise_variance),
                                                               subset_pixel_weighting,
-                                                              num_comps,
+                                                              min(1, max_components - first_spatial.shape[2]),
                                                               spatial_avg_factor,
                                                               temporal_avg_factor,
                                                               dtype,
