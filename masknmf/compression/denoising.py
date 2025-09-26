@@ -298,7 +298,6 @@ def denoise_batched(
         model: torch.nn.Module,
         traces: torch.tensor,
         noise_variance_quantile: float = 0.05,
-        var_partition_timesteps: int = 5000,
         input_size: int = 900,
         overlap: int = 200,
 ):
@@ -330,7 +329,7 @@ def denoise_batched(
 
     noise_variance = partition_variance(
         model,
-        traces_normalized[:, :var_partition_timesteps],
+        traces_normalized[:, :],
         quantile=noise_variance_quantile,
     )
 
@@ -364,6 +363,7 @@ def partition_variance(model: torch.nn.Module,
                        quantile: float=0.05):
     """
     Partition the total variance into signal and noise components using quantile regression.
+    For now, a quantile of 0.0 maps to 0 (as opposed to the minimum total noise variance value).
 
     Args:
         model (torch.nn.Module): trained model that predicts means and total variances
@@ -374,20 +374,24 @@ def partition_variance(model: torch.nn.Module,
         noise_variance (torch.tensor): Estimated observation noise variance (for each time series). Shape (number of time series, 1)
     """
     model.eval()
-    input_traces = validation_data.float()
-    input_traces = input_traces[:, None, :]  # [Batch, channels, num_timesteps]
-
-    # Move tensor to the same device as the model parameters
     device = next(model.parameters()).device
-    input_traces = input_traces.to(device)
+    if quantile == 0.0:
+        return torch.zeros(validation_data.shape[0], 1, device=device)
+    else:
 
-    # Get variance prediction to use in percentile calculation
-    with torch.no_grad():
-        _, total_variance = model(input_traces)
+        input_traces = validation_data.float()
+        input_traces = input_traces[:, None, :]  # [Batch, channels, num_timesteps]
 
-    total_variance = total_variance.squeeze(1)
-    noise_var = torch.quantile(total_variance, quantile, dim=1, keepdim=True)
-    return noise_var
+        # Move tensor to the same device as the model parameters
+        input_traces = input_traces.to(device)
+
+        # Get variance prediction to use in percentile calculation
+        with torch.no_grad():
+            _, total_variance = model(input_traces)
+
+        total_variance = total_variance.squeeze(1)
+        noise_var = torch.quantile(total_variance, quantile, dim=1, keepdim=True)
+        return noise_var
 
 
 def _denoise_batched_inner(model: torch.nn.Module,
