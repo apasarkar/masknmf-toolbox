@@ -1419,6 +1419,7 @@ def superpixel_init(
         cut_off_point: float,
         residual_cut: float,
         device: str,
+        min_peak_distance: int = 3,
         a: Optional[torch.sparse_coo_tensor] = None,
         c: Optional[torch.tensor] = None,
 ) -> Tuple[
@@ -1440,6 +1441,7 @@ def superpixel_init(
         residual_cut (float): between 0 and 1. Threshold used in successive projection to find pure superpixels
         length_cut (int): Minimum allowed sizes of superpixels
         device (string): string used by pytorch to move and construct objects on cpu or gpu
+        min_peak_distance (int): The min distance between adjacent peaks
         a (torch.sparse_coo_tensor): shape (d1*d2, K) where K is the number of neurons
         c (torch.tensor): shape (T, K) where T is the number of time points, K is number of neurons
 
@@ -1459,7 +1461,7 @@ def superpixel_init(
         raise ValueError("Invalid configuration of c and a values were provided")
 
     peaks, total_peaks = find_local_peaks_2d(torch.from_numpy(corr_image).to('cuda'),
-                                             kernel_radius=3,
+                                             kernel_radius=min_peak_distance,
                                              correlation_cutoff=cut_off_point,
                                              exclude_border=True)
     display(f" peaks shape is {peaks.shape}")
@@ -2055,10 +2057,9 @@ class InitializingState(SignalProcessingState):
             self,
             mad_threshold: int = 1,
             mad_correlation_threshold: float = 0.9,
+            min_peak_distance: int = 3,
             residual_threshold: float = 0.3,
             patch_size: Tuple[int, int] = (100, 100),
-            text: bool = True,
-            plot_en: bool = False,
     ):
         """
         Args:
@@ -2118,6 +2119,7 @@ class InitializingState(SignalProcessingState):
             mad_correlation_threshold,
             residual_threshold,
             self.device,
+            min_peak_distance=min_peak_distance,
             a=self.a,
             c=self.c,
         )
