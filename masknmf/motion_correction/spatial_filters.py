@@ -1,9 +1,12 @@
 import torch
 import numpy as np
 from typing import *
+import math
+
+from typing import List
 
 
-def compute_highpass_filter_kernel(gaussian_sigma: list[int]) -> torch.tensor:
+def compute_highpass_filter_kernel(gaussian_sigma: List[int]) -> torch.tensor:
     """
     Computes a high-pass filter kernel using a Gaussian filter.
 
@@ -13,16 +16,11 @@ def compute_highpass_filter_kernel(gaussian_sigma: list[int]) -> torch.tensor:
     Returns:
         torch.Tensor: High-pass filter kernel.
     """
-    # Validate input
-    if not isinstance(gaussian_sigma[0], int):
-        raise TypeError(
-            f"gaussian_sigma must be a list containing an integer, but got {type(gaussian_sigma[0])}"
-        )
-    if gaussian_sigma[0] < 1:
+    if gaussian_sigma[0] < 0:
         raise ValueError("gaussian_sigma must contain a positive integer")
 
     # Compute kernel size: ksize = (3 * sigma) rounded to nearest odd integer
-    ksize = [(3 * i) // 2 * 2 + 1 for i in gaussian_sigma]
+    ksize = [(3 * math.ceil(i)) // 2 * 2 + 1 for i in gaussian_sigma]
 
     # Create 1D Gaussian kernel
     x = torch.arange(ksize[0]) - ksize[0] // 2
@@ -39,6 +37,8 @@ def compute_highpass_filter_kernel(gaussian_sigma: list[int]) -> torch.tensor:
     # Modify kernel values for high-pass filtering
     ker2D[nz] -= ker2D[nz].mean()
     ker2D[zz] = 0
+
+    ker2D /= np.sum(ker2D)
 
     return ker2D
 
