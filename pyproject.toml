@@ -29,7 +29,6 @@ dependencies = [
     "icecream",
     # plotting
     "plotly",
-    "fastplotlib @ git+https://github.com/fastplotlib/fastplotlib.git@main",
     # "pygfx @ git+https://github.com/pygfx/pygfx.git@main",
     "matplotlib",
     "jupyter-rfb>=0.5.1",
@@ -43,6 +42,7 @@ dependencies = [
     "glfw",
     "pytorch-lightning>=2.5.2",
     "tensorboard>=2.20.0",
+    "fastplotlib[imgui,notebook]>=0.5.1",
 ]
 
 [dependency-groups]
