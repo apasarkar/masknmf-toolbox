@@ -276,7 +276,7 @@ def update_block_sizes(
 def compute_mean_and_normalizer_dataset(
         dataset: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
         compute_normalizer: bool,
-        frame_batch_size: int,
+        pixel_batch_size: int,
         device: str,
         dtype: torch.dtype,
 ) -> Tuple[torch.tensor, torch.tensor]:
@@ -286,9 +286,7 @@ def compute_mean_and_normalizer_dataset(
         dataset (Union[masknmf.ArrayLike, masknmf.LazyFrameLoader]): The dataloader object we use to access the dataset. Anything that supports
             numpy-like __getitem__ indexing can be used here.
         compute_normalizer (bool): Whether or not we compute the noise normalizer; for now this variable has no effect.
-        frame_batch_size (int): The max number of full frames we load onto the device performing computations at any point.
-        pixel_batch_size (int): The max number of full pixels (length = frames of movie) we load onto the device
-            performing computations ay any point.
+        pixel_batch_size (int): The number of pixels in each dimension to load at a time
         dtype (torch.dtype): The dtype of the data once it has been moved to accelerator.
         device (str): The
     Returns:
@@ -296,18 +294,30 @@ def compute_mean_and_normalizer_dataset(
         var_img (torch.tensor): The (fvo dim1, fov dim2) noise variance image.
     """
     num_frames, fov_dim1, fov_dim2 = dataset.shape
-    noise_normalizer = torch.ones((fov_dim1, fov_dim2), dtype=dtype)
 
-    num_batches = math.ceil(num_frames / frame_batch_size)
-    curr_sum = torch.zeros((fov_dim1, fov_dim2), dtype=dtype, device=device)
-    for k in range(num_batches):
-        start_pt = frame_batch_size * k
-        end_pt = min(start_pt + frame_batch_size, num_frames)
-        curr_data = dataset[start_pt:end_pt]
-        curr_tensor = torch.from_numpy(curr_data).to(device).to(dtype)
-        curr_sum += torch.sum(curr_tensor / num_frames, dim=0)
+    height_iters = math.ceil(fov_dim1 / pixel_batch_size)
+    width_iters = math.ceil(fov_dim2 / pixel_batch_size)
 
-    return curr_sum.cpu(), noise_normalizer.cpu()
+    noise_normalizer = torch.zeros((fov_dim1, fov_dim2), dtype=dtype, device=device)
+    mean_value = torch.zeros((fov_dim1, fov_dim2), dtype=dtype, device=device)
+
+    for i in range(height_iters):
+        for j in range(width_iters):
+            start_height = pixel_batch_size * i
+            end_height = min(fov_dim1, start_height + pixel_batch_size)
+            start_width = pixel_batch_size * j
+            end_width = min(fov_dim2, start_width + pixel_batch_size)
+
+            data_subset = torch.from_numpy(dataset[:, start_height:end_height, start_width:end_width]).to(device)
+            mean_value[start_height:end_height, start_width:end_width] = torch.mean(data_subset, dim=0)
+            if compute_normalizer:
+                data_subset -= mean_value[start_height:end_height, start_width:end_width][None, :, :]
+                noise_term = ((torch.sum(data_subset**2, dim=0)/num_frames) -
+                              (torch.sum(data_subset[1:, :, :]*data_subset[:-1, :, :], dim=0)) / (num_frames-1))
+                noise_normalizer[start_height:end_height, start_width:end_width] = torch.sqrt(noise_term)
+
+    noise_normalizer[noise_normalizer <= 0] = 1.0
+    return mean_value.cpu(), noise_normalizer.cpu()
 
 
 def compute_full_fov_spatial_basis(
@@ -749,49 +759,71 @@ def blockwise_decomposition(
         device: str = "cpu",
 ) -> Tuple[torch.tensor, torch.tensor]:
 
-    num_frames, h, w = video_subset.shape
-    num_comps = min(math.ceil(max_components / 2), 1)
+    if spatial_denoiser is None and temporal_denoiser is None:
+        first_spatial, first_temporal = blockwise_decomposition_singlepass(video_subset,
+                                                                           subset_mean,
+                                                                           subset_noise_variance,
+                                                                           subset_pixel_weighting,
+                                                                           max_components,
+                                                                           spatial_avg_factor,
+                                                                           temporal_avg_factor,
+                                                                           dtype,
+                                                                           spatial_denoiser=spatial_denoiser,
+                                                                           temporal_denoiser=temporal_denoiser,
+                                                                           device=device)
 
-    first_spatial, first_temporal = blockwise_decomposition_singlepass(video_subset,
-                                                            subset_mean,
-                                                            subset_noise_variance,
-                                                            subset_pixel_weighting,
-                                                            num_comps,
-                                                            spatial_avg_factor,
-                                                            temporal_avg_factor,
-                                                            dtype,
-                                                            spatial_denoiser=spatial_denoiser,
-                                                            temporal_denoiser=temporal_denoiser,
-                                                            device=device)
+        return first_spatial, first_temporal
+    else:
+        num_frames, h, w = video_subset.shape
+        num_comps = max(math.ceil(max_components / 2), 1)
 
-    residual = video_subset.to(device).to(dtype)
-    residual -= subset_mean.to(device).to(dtype)[None, :, :]
-    residual /= subset_noise_variance.to(device).to(dtype)[None, :, :]
-    residual -= (first_spatial @ first_temporal).permute(2, 0, 1)
-    second_spatial, second_temporal = blockwise_decomposition_singlepass(residual,
-                                                              torch.zeros_like(subset_mean),
-                                                              torch.ones_like(subset_noise_variance),
-                                                              subset_pixel_weighting,
-                                                              min(1, max_components - first_spatial.shape[2]),
-                                                              spatial_avg_factor,
-                                                              temporal_avg_factor,
-                                                              dtype,
-                                                              spatial_denoiser=spatial_denoiser,
-                                                              temporal_denoiser=temporal_denoiser,
-                                                              device=device)
-    final_spatial = torch.concatenate([first_spatial, second_spatial], dim=2)
-    final_temporal = torch.concatenate([first_temporal, second_temporal], dim = 0)
-    final_spatial = final_spatial.reshape(-1, final_spatial.shape[2])
-    u, s, v = torch.linalg.svd(final_spatial, full_matrices=False)
+        first_spatial, first_temporal = blockwise_decomposition_singlepass(video_subset,
+                                                                subset_mean,
+                                                                subset_noise_variance,
+                                                                subset_pixel_weighting,
+                                                                num_comps,
+                                                                spatial_avg_factor,
+                                                                temporal_avg_factor,
+                                                                dtype,
+                                                                spatial_denoiser=spatial_denoiser,
+                                                                temporal_denoiser=temporal_denoiser,
+                                                                device=device)
+        # return first_spatial, first_temporal
 
-    good_values = s != 0
-    u = u[:, good_values]
-    v = v[good_values, :]
-    s = s[good_values]
+        residual = video_subset.to(device).to(dtype)
+        residual -= subset_mean.to(device).to(dtype)[None, :, :]
+        residual /= subset_noise_variance.to(device).to(dtype)[None, :, :]
+        residual -= (first_spatial @ first_temporal).permute(2, 0, 1)
+        second_spatial, second_temporal = blockwise_decomposition_singlepass(residual,
+                                                                  torch.zeros_like(subset_mean),
+                                                                  torch.ones_like(subset_noise_variance),
+                                                                  subset_pixel_weighting,
+                                                                  max(1, max_components - first_spatial.shape[2]),
+                                                                  spatial_avg_factor,
+                                                                  temporal_avg_factor,
+                                                                  dtype,
+                                                                  spatial_denoiser=spatial_denoiser,
+                                                                  temporal_denoiser=temporal_denoiser,
+                                                                  device=device)
+        final_spatial = torch.concatenate([first_spatial, second_spatial], dim=2)
+        final_temporal = torch.concatenate([first_temporal, second_temporal], dim = 0)
+        # return final_spatial, final_temporal
+        final_spatial = final_spatial.reshape(-1, final_spatial.shape[2])
+        q, r = torch.linalg.qr(final_spatial, mode='reduced')
 
-    final_spatial = u.reshape(h, w, -1)
-    final_temporal = (s[:, None]*v) @ final_temporal
-    return final_spatial, final_temporal
+        #
+        # u, s, v = torch.linalg.svd(final_spatial, full_matrices=False)
+        #
+        # good_values = s != 0
+        # u = u[:, good_values]
+        # v = v[good_values, :]
+        # s = s[good_values]
+        #
+        # final_spatial = u.reshape(h, w, -1)
+        final_spatial = q.reshape(h, w, -1)
+        final_temporal = r @ final_temporal
+        # final_temporal = (s[:, None]*v) @ final_temporal
+        return final_spatial, final_temporal
 def blockwise_decomposition_singlepass(
         video_subset: torch.tensor,
         subset_mean: torch.tensor,
@@ -1119,7 +1151,7 @@ def pmd_decomposition(
     overlap = [math.ceil(block_sizes[0] / 2), math.ceil(block_sizes[1] / 2)]
 
     dataset_mean, dataset_noise_variance = compute_mean_and_normalizer_dataset(
-        dataset, compute_normalizer, frame_batch_size, device, dtype
+        dataset, compute_normalizer, block_sizes[0], device, dtype
     )
 
     dataset_mean = dataset_mean.to(device).to(dtype)
