@@ -1974,7 +1974,7 @@ class InitializingState(SignalProcessingState):
         """
         self.shape = pmd_arr.shape[1], pmd_arr.shape[2], pmd_arr.shape[0]
         self.d1, self.d2, self.T = dimensions
-        self.robust_noise_term = torch.sqrt(torch.abs(pmd_arr.mean_img.to(device)))
+        self.robust_noise_term = torch.zeros_like(pmd_arr.mean_img, device=device) #torch.sqrt(torch.abs(pmd_arr.mean_img.to(device)))
         self.pmd_obj = pmd_arr
         self.data_order = pmd_arr.order
         self.device = device
@@ -2289,7 +2289,7 @@ class DemixingState(SignalProcessingState):
         self.device = device
         self._results = None
         self.pmd_obj = pmd_arr
-        self.robust_noise_term = torch.sqrt(torch.abs(pmd_arr.mean_img.to(device)))
+        self.robust_noise_term = torch.zeros_like(pmd_arr.mean_img, device=device) #torch.sqrt(torch.abs(pmd_arr.mean_img.to(device)))
         self.u_sparse = pmd_arr.u.to(device)
         self.v = pmd_arr.v.to(device)
 
