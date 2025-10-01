@@ -1468,7 +1468,7 @@ def superpixel_init(
     display(f" peaks shape is {peaks.shape}")
     if peaks.shape[0] == 0:
         display("No superpixels found, set lower correlation threshold!")
-        return (None, None, None, None, None, None)
+        return None, None, None, None, None, None
 
     a_ini, connectivity_mat, unique_pix = superpixel_adapter(peaks,
                                                              dims,
