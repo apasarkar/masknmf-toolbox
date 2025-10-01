@@ -148,7 +148,7 @@ def _compute_residual_correlation_image(
                 curr_actc * curr_a_dense, dim=1, keepdim=True
             )
 
-    robust_residual_movie_norms = torch.sqrt(residual_movie_norms + num_frames * noise_std.flatten()[:, None]**2)
+    robust_residual_movie_norms = torch.sqrt(residual_movie_norms + num_frames * noise_std.flatten()[:, None] ** 2)
     residual_movie_norms = torch.sqrt(residual_movie_norms)
 
     # Now construct the resid corr image
@@ -191,7 +191,7 @@ def _compute_residual_correlation_image(
         curr_resid_norms += (
                 2 * (resid_image_cumulator[curr_rows, curr_cols] * curr_values)[:, None]
         )
-        curr_resid_norms = torch.sqrt(curr_resid_norms + num_frames * (noise_terms**2))
+        curr_resid_norms = torch.sqrt(curr_resid_norms + num_frames * (noise_terms ** 2))
 
         corr_term = (
                             resid_image_cumulator / c_meanzero_norms[:, index_select_tensor_net]
@@ -292,7 +292,7 @@ def _compute_standard_correlation_image(
         uv_meanzero_norm += torch.sum(curr_uvvt * curr_u_dense, dim=1, keepdim=True)
 
     if noise_std is not None:
-        uv_meanzero_norm += num_frames * (noise_std.flatten()**2)[:, None]
+        uv_meanzero_norm += num_frames * (noise_std.flatten() ** 2)[:, None]
 
     uv_meanzero_norm = torch.sqrt(uv_meanzero_norm)
     corr_array = StandardCorrelationImages(
@@ -364,8 +364,9 @@ def process_custom_signals(
 
     else:
         message = "nonneg" if c_nonneg else "unconstrained"
-        display(f"temporal footprints provided. Initializing signals. Computing optimal {message} affine transform of signal "
-                f"to match video ")
+        display(
+            f"temporal footprints provided. Initializing signals. Computing optimal {message} affine transform of signal "
+            f"to match video ")
 
         c, b = masknmf.demixing.regression_update.alternating_least_squares_affine_fit(u_sparse,
                                                                                        v,
@@ -1467,7 +1468,7 @@ def superpixel_init(
     display(f" peaks shape is {peaks.shape}")
     if peaks.shape[0] == 0:
         display("No superpixels found, set lower correlation threshold!")
-        return (None, None, None, None, None, None)
+        return None, None, None, None, None
 
     a_ini, connectivity_mat, unique_pix = superpixel_adapter(peaks,
                                                              dims,
@@ -1967,6 +1968,7 @@ class InitializingState(SignalProcessingState):
             pixel_batch_size: int = 40000,
             frame_batch_size: int = 2000,
             factorized_ring_term: Optional[Tuple[torch.tensor, torch.tensor]] = None,
+            robust_noise_term: Optional[float] = None,
     ):
         super().__init__(pixel_batch_size, frame_batch_size)
         """
@@ -1974,7 +1976,6 @@ class InitializingState(SignalProcessingState):
         """
         self.shape = pmd_arr.shape[1], pmd_arr.shape[2], pmd_arr.shape[0]
         self.d1, self.d2, self.T = dimensions
-        self.robust_noise_term = torch.zeros_like(pmd_arr.mean_img, device=device) #torch.sqrt(torch.abs(pmd_arr.mean_img.to(device)))
         self.pmd_obj = pmd_arr
         self.data_order = pmd_arr.order
         self.device = device
@@ -1982,7 +1983,14 @@ class InitializingState(SignalProcessingState):
 
         self.u_sparse = self.pmd_obj.u
         self.v = self.pmd_obj.v
+
         self.factorized_ring_term = factorized_ring_term
+
+        if robust_noise_term is None and factorized_ring_term is None:
+            self.robust_noise_term = self._sketch_robust_variance_term()
+        else:
+            self.robust_noise_term = robust_noise_term
+
 
         self.a_init = None
         self.mask_a_init = None
@@ -2004,6 +2012,44 @@ class InitializingState(SignalProcessingState):
         self._results = None
 
         self._th = None
+
+
+    def _sketch_robust_variance_term(self, num_frames: int = 5000):
+        """
+        Estimate the pixelwise variance of the data
+        :return:
+        """
+        num_frames = min(num_frames, self.v.shape[1])
+        if num_frames == self.v.shape[1]:
+            indices = torch.arange(num_frames, device=self.device)
+        else:
+            indices = torch.from_numpy(np.random.choice(self.v.shape[1], size=num_frames, replace=False)).to(
+                self.device)
+
+        num_iters = math.ceil(indices.shape[0] / self.frame_batch_size)
+        sq_cumulator = torch.zeros(self.u_sparse.shape[0], device=self.device)
+        mean_cumulator = torch.zeros(self.u_sparse.shape[0], device=self.device)
+
+        for k in range(num_iters):
+            start = k * self.frame_batch_size
+            end = min(start + self.frame_batch_size, self.v.shape[1])
+            if self.factorized_ring_term is not None:
+                v_used = self.v[:, indices[start:end]] - self.factorized_ring_term[0] @ self.factorized_ring_term[1]
+            else:
+                v_used = self.v[:, indices[start:end]]
+            curr_subset = torch.sparse.mm(self.u_sparse, v_used)
+            sq_cumulator += torch.sum(curr_subset ** 2, dim=1) / num_frames
+            mean_cumulator = torch.sum(curr_subset, dim=1) / num_frames
+
+        relu_fn = torch.nn.ReLU()
+        variance_cumulator = relu_fn(sq_cumulator - mean_cumulator**2)
+        variance_cumulator = torch.sqrt(variance_cumulator)
+        baseline = torch.quantile(variance_cumulator.flatten(), 0.1)
+        display(f"baseline is {baseline}")
+
+        output = torch.ones_like(variance_cumulator) * baseline
+        return output.reshape(self.pmd_obj.shape[1], self.pmd_obj.shape[2])
+
 
     @property
     def frame_batch_size(self):
@@ -2046,6 +2092,7 @@ class InitializingState(SignalProcessingState):
                 data_order=self.data_order,
                 device=self.device,
                 frame_batch_size=self.frame_batch_size,
+                robust_noise_term=self.robust_noise_term
             )
             print("Now in demixing state")
 
@@ -2212,7 +2259,6 @@ class InitializingState(SignalProcessingState):
             elif isinstance(temporal_footprints, torch.Tensor):
                 temporal_footprints = temporal_footprints.to(self.device).float()
 
-
         if baseline_estimate is not None:
             if baseline_estimate.ndim == 2:
                 pass
@@ -2280,6 +2326,7 @@ class DemixingState(SignalProcessingState):
             device: str = "cpu",
             pixel_batch_size: int = 10000,
             frame_batch_size: int = 10000,
+            robust_noise_term: Optional[float] = None
     ):
         super().__init__(pixel_batch_size, frame_batch_size)
         # Define the data dimensions, data ordering scheme, and device
@@ -2289,7 +2336,7 @@ class DemixingState(SignalProcessingState):
         self.device = device
         self._results = None
         self.pmd_obj = pmd_arr
-        self.robust_noise_term = torch.zeros_like(pmd_arr.mean_img, device=device) #torch.sqrt(torch.abs(pmd_arr.mean_img.to(device)))
+
         self.u_sparse = pmd_arr.u.to(device)
         self.v = pmd_arr.v.to(device)
 
@@ -2307,19 +2354,61 @@ class DemixingState(SignalProcessingState):
         self.background_rank = None
 
         if factorized_ring_term is None:
-            self._factorized_ring_term_init = (torch.zeros(self.v.shape[0], 1, device=self.v.device, dtype=self.v.dtype),
-                                               torch.zeros(1, self.v.shape[1], device=self.v.device, dtype=self.v.dtype))
+            self._factorized_ring_term_init = (
+            torch.zeros(self.v.shape[0], 1, device=self.v.device, dtype=self.v.dtype),
+            torch.zeros(1, self.v.shape[1], device=self.v.device, dtype=self.v.dtype))
         else:
-            self._factorized_ring_term_init = (factorized_ring_term[0].to(self.device), factorized_ring_term[1].to(self.device))
+            self._factorized_ring_term_init = (
+            factorized_ring_term[0].to(self.device), factorized_ring_term[1].to(self.device))
             self._validate_factorized_ring_term()
             self.background_rank = factorized_ring_term[0].shape[1]
             display(f"Background from previous iteration {self.background_rank}")
         self.factorized_ring_term = None
 
+        #Run after factorized ring term has been initialized
+        self.robust_noise_term = self._sketch_robust_variance_term()
+
+
         self.W = None
 
         self.a_summand = torch.ones((self.d1 * self.d2, 1)).to(self.device)
         self.blocks = None
+
+    def _sketch_robust_variance_term(self, num_frames: int = 5000):
+        """
+        Estimate the pixelwise variance of the data
+        :return:
+        """
+        num_frames = min(num_frames, self.v.shape[1])
+        if num_frames == self.v.shape[1]:
+            indices = torch.arange(num_frames, device=self.device)
+        else:
+            indices = torch.from_numpy(np.random.choice(self.v.shape[1], size=num_frames, replace=False)).to(
+                self.device)
+
+        num_iters = math.ceil(indices.shape[0] / self.frame_batch_size)
+        sq_cumulator = torch.zeros(self.u_sparse.shape[0], device=self.device)
+        mean_cumulator = torch.zeros(self.u_sparse.shape[0], device=self.device)
+
+        for k in range(num_iters):
+            start = k * self.frame_batch_size
+            end = min(start + self.frame_batch_size, self.v.shape[1])
+            if self.factorized_ring_term is not None:
+                v_used = self.v[:, indices[start:end]] - self.factorized_ring_term[0] @ self.factorized_ring_term[1]
+            else:
+                v_used = self.v[:, indices[start:end]]
+            curr_subset = torch.sparse.mm(self.u_sparse, v_used)
+            sq_cumulator += torch.sum(curr_subset ** 2, dim=1) / num_frames
+            mean_cumulator = torch.sum(curr_subset, dim=1) / num_frames
+
+        relu_fn = torch.nn.ReLU()
+        variance_cumulator = relu_fn(sq_cumulator - mean_cumulator**2)
+        variance_cumulator = torch.sqrt(variance_cumulator)
+        baseline = torch.quantile(variance_cumulator.flatten(), 0.1)
+        display(f"baseline is {baseline}")
+
+        output = torch.ones_like(variance_cumulator) * baseline
+        return output.reshape(self.pmd_obj.shape[1], self.pmd_obj.shape[2])
 
     @property
     def state_description(self):
@@ -2359,6 +2448,7 @@ class DemixingState(SignalProcessingState):
                 pixel_batch_size=self.pixel_batch_size,
                 frame_batch_size=self.frame_batch_size,
                 factorized_ring_term=background_term,
+                robust_noise_term=self.robust_noise_term
             )
             print("Now in the initialization state")
 
@@ -2380,7 +2470,8 @@ class DemixingState(SignalProcessingState):
         if self.mask_ab is None:
             self.mask_ab = self.a.bool().coalesce()
 
-        self.factorized_ring_term = (self._factorized_ring_term_init[0].clone(), self._factorized_ring_term_init[1].clone())
+        self.factorized_ring_term = (
+        self._factorized_ring_term_init[0].clone(), self._factorized_ring_term_init[1].clone())
 
     def _validate_factorized_ring_term(self):
         """Checks that the factorized ring term at the initialization is valid"""
@@ -2391,8 +2482,8 @@ class DemixingState(SignalProcessingState):
         if not self._factorized_ring_term_init[0].shape[0] == self.v.shape[0]:
             raise ValueError("Left dimensions of factorized ring term needs to have shape equal to the PMD rank")
         if not self._factorized_ring_term_init[1].shape[1] == self.v.shape[1]:
-            raise ValueError("Right dimension of factorized ring term needs to have shape equal to the number of frames")
-
+            raise ValueError(
+                "Right dimension of factorized ring term needs to have shape equal to the number of frames")
 
     def initialize_standard_correlation_image(self):
         self.standard_correlation_image = _compute_standard_correlation_image(
@@ -2400,8 +2491,8 @@ class DemixingState(SignalProcessingState):
             self.v,
             self.c,
             (self.shape[0], self.shape[1]),
-            noise_std = self.robust_noise_term,
-            data_order = self.data_order,
+            noise_std=self.robust_noise_term,
+            data_order=self.data_order,
             frame_batch_size=self.frame_batch_size,
             device=self.device,
         )
@@ -2437,7 +2528,7 @@ class DemixingState(SignalProcessingState):
     def lowrank_background_svd(self,
                                downsampling_factor: int,
                                background_rank: int,
-                               num_oversamples:int = 5):
+                               num_oversamples: int = 5):
         """
         Pipeline that sketches a rank-k SVD of downsampled(UV - AC - b) to get a temporal background estimate
         Regresses this back onto (UV - AC - b) to get the full background estimate
@@ -2446,11 +2537,11 @@ class DemixingState(SignalProcessingState):
         num_frames = self.v.shape[1]
         random_data = torch.randn(num_frames, background_rank + num_oversamples, device=device)
         resid_projection = (torch.sparse.mm(self.u_sparse, self.v @ random_data) -
-                          torch.sparse.mm(self.a, self.c.T @ random_data) -
-                          self.b @ torch.sum(random_data, dim=0, keepdim=True))
+                            torch.sparse.mm(self.a, self.c.T @ random_data) -
+                            self.b @ torch.sum(random_data, dim=0, keepdim=True))
         resid_projection = resid_projection.reshape(self.d1, self.d2, resid_projection.shape[1])
         resid_projection = masknmf.compression.decomposition.spatial_downsample(resid_projection, downsampling_factor)
-        resid_projection = resid_projection.reshape(resid_projection.shape[0]*resid_projection.shape[1],
+        resid_projection = resid_projection.reshape(resid_projection.shape[0] * resid_projection.shape[1],
                                                     resid_projection.shape[2])
         orth_qr, tri_qr = torch.linalg.qr(resid_projection, mode="reduced")
 
@@ -2463,7 +2554,7 @@ class DemixingState(SignalProcessingState):
                                                                            downsampling_factor)
         b_downsample = masknmf.compression.decomposition.spatial_downsample(self.b.reshape(self.d1, self.d2, 1),
                                                                             downsampling_factor).squeeze()
-        b_downsample = b_downsample.reshape(b_downsample.shape[0]*b_downsample.shape[1], 1)
+        b_downsample = b_downsample.reshape(b_downsample.shape[0] * b_downsample.shape[1], 1)
 
         right_term = torch.sparse.mm(u_downsample.t(), orth_qr).T @ self.v
         right_term -= torch.sparse.mm(a_downsample.t(), orth_qr).T @ self.c.T
@@ -2498,17 +2589,16 @@ class DemixingState(SignalProcessingState):
             (self.shape[0] * self.shape[1]), device=self.device
         ).float()
         wx = self.W.forward(x)
-        numerator = torch.sum(wx * x, dim = 1)
-        denominator = torch.sum(wx * wx, dim = 1)
-        weights = torch.nan_to_num(numerator / denominator, nan = 0.0)
+        numerator = torch.sum(wx * x, dim=1)
+        denominator = torch.sum(wx * wx, dim=1)
+        weights = torch.nan_to_num(numerator / denominator, nan=0.0)
         wx *= weights[:, None]
         projection = self.pmd_obj.project_frames(wx, standardize=False)
         return projection
 
-
     def fluctuating_baseline_update(self,
-                                    downsampling_factor: int=20,
-                                    background_sketch: int=300):
+                                    downsampling_factor: int = 20,
+                                    background_sketch: int = 300):
         """
         Args:
             downsampling_factor (int): Spatially downsample the data by this factor (in each dimension) before computing
@@ -2808,7 +2898,7 @@ class DemixingState(SignalProcessingState):
             support_threshold: Union[list, float] = 0.9,
             deletion_threshold: float = 0.2,
             ring_model_start_pt: int = 5,
-            background_downsampling_factor: int=20,
+            background_downsampling_factor: int = 20,
             ring_radius: int = 10,
             merge_threshold: float = 0.8,
             merge_overlap_threshold: float = 0.4,
@@ -2913,7 +3003,8 @@ class DemixingState(SignalProcessingState):
         self.standard_correlation_image.c = self.c
         self.compute_residual_correlation_image()
         background_to_signal_correlation_image = _compute_standard_correlation_image(self.u_sparse,
-                                                                                     self.factorized_ring_term[0] @ self.factorized_ring_term[1],
+                                                                                     self.factorized_ring_term[0] @
+                                                                                     self.factorized_ring_term[1],
                                                                                      self.c,
                                                                                      (self.d1, self.d2),
                                                                                      data_order=self.data_order,
@@ -2958,24 +3049,23 @@ class DemixingState(SignalProcessingState):
         return self.results
 
 
-
 class DemixingResults:
     def __init__(
-        self,
-        data_shape: Tuple[int, int, int],
-        u_sparse: torch.sparse_coo_tensor,
-        v: torch.tensor,
-        a: torch.sparse_coo_tensor,
-        c: torch.tensor,
-        q: Optional[Tuple[torch.tensor, torch.tensor]] = None,
-        b: Optional[torch.tensor] = None,
-        residual_correlation_image: Optional[ResidualCorrelationImages] = None,
-        standard_correlation_image: Optional[StandardCorrelationImages] = None,
-        background_to_signal_correlation_image: Optional[StandardCorrelationImages] = None,
-        global_resid_correlation_image: Optional[torch.Tensor] = None,
-        order: str = "C",
-        device="cpu",
-        frame_batch_size: int=200,
+            self,
+            data_shape: Tuple[int, int, int],
+            u_sparse: torch.sparse_coo_tensor,
+            v: torch.tensor,
+            a: torch.sparse_coo_tensor,
+            c: torch.tensor,
+            q: Optional[Tuple[torch.tensor, torch.tensor]] = None,
+            b: Optional[torch.tensor] = None,
+            residual_correlation_image: Optional[ResidualCorrelationImages] = None,
+            standard_correlation_image: Optional[StandardCorrelationImages] = None,
+            background_to_signal_correlation_image: Optional[StandardCorrelationImages] = None,
+            global_resid_correlation_image: Optional[torch.Tensor] = None,
+            order: str = "C",
+            device="cpu",
+            frame_batch_size: int = 200,
     ):
         """
         This class provides a convenient way to export all demixing result as array-like objects.
@@ -3010,7 +3100,8 @@ class DemixingResults:
         self._c = c.to(self.device).float()
 
         if global_resid_correlation_image is None:
-            self._global_residual_corr_img = torch.zeros(self._shape[1], self._shape[2], dtype = self.u.dtype, device = self.device)
+            self._global_residual_corr_img = torch.zeros(self._shape[1], self._shape[2], dtype=self.u.dtype,
+                                                         device=self.device)
         else:
             self._global_residual_corr_img = global_resid_correlation_image
 
@@ -3023,7 +3114,7 @@ class DemixingResults:
         if b is None:
             display("Static term was not provided, constructing baseline to ensure residual is mean 0")
             self._b = (torch.sparse.mm(self.u, torch.mean(self.v, dim=1, keepdim=True)) -
-                       torch.sparse.mm(self._a, torch.mean(self._c.T, dim = 1, keepdim=True)) -
+                       torch.sparse.mm(self._a, torch.mean(self._c.T, dim=1, keepdim=True)) -
                        torch.sparse.mm(self.u, (self.q[0] @ torch.mean(self.q[1], axis=1, keepdim=True))))
         else:
             self._b = b
@@ -3057,14 +3148,15 @@ class DemixingResults:
         if background_to_signal_correlation_image is None:
             display("Bkgd to Signal Correlation Image was not specified. Computing it now")
             if self.device == "cpu":
-                display("You are computing the bkgd to signal correlation image on CPU; use cuda for much faster results")
+                display(
+                    "You are computing the bkgd to signal correlation image on CPU; use cuda for much faster results")
             background_to_signal_correlation_image = _compute_standard_correlation_image(self.u,
-                                                                                        self.q[0] @ self.q[1],
-                                                                                        self.c,
-                                                                                        (self.shape[1], self.shape[2]),
-                                                                                        self.order,
-                                                                                        frame_batch_size,
-                                                                                        device=self.device)
+                                                                                         self.q[0] @ self.q[1],
+                                                                                         self.c,
+                                                                                         (self.shape[1], self.shape[2]),
+                                                                                         self.order,
+                                                                                         frame_batch_size,
+                                                                                         device=self.device)
         ## Store the critical values for each of these
         self._std_corr_img_mean = standard_correlation_image.movie_mean
         self._std_corr_img_normalizer = standard_correlation_image.movie_normalizer
@@ -3084,7 +3176,6 @@ class DemixingResults:
 
         #Move all tracked tensors to desired location so everything is on one device
         self.to(device)
-
 
     @property
     def standard_correlation_image(self) -> StandardCorrelationImages:
@@ -3119,7 +3210,7 @@ class DemixingResults:
                                          (self._shape[1], self._shape[2]),
                                          mode=ResidCorrMode.RESIDUAL,
                                          order=self._order)
-    
+
     @property
     def global_residual_correlation_image(self) -> Union[None, torch.Tensor]:
         return self._global_residual_corr_img
