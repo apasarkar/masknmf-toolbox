@@ -140,11 +140,22 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[masknmf.ArrayLike, mas
     pmd_stack.rescale = True
     num_frames, fov_dim1, fov_dim2 = raw_stack.shape
 
-    raw_var_img = torch.from_numpy(np.std(raw_stack, axis=0, keepdims=True)).to(device)
-    raw_mean = torch.from_numpy(np.mean(raw_stack, axis=0, keepdims=True)).to(device)
+    num_iters = math.ceil(num_frames / batch_size)
+
+    raw_std_img = torch.zeros(raw_stack.shape[1], raw_stack.shape[2], device=device) #Let's rename to the standard deviation
+    raw_mean = torch.zeros(raw_stack.shape[1], raw_stack.shape[2], device=device)
+
+    for k in tqdm(range(num_iters)):
+        start = batch_size * k
+        end = min(start + batch_size, num_frames)
+        raw_subset = torch.from_numpy(raw_stack[start:end, :, :]).to(device).float()
+        raw_mean += torch.sum(raw_subset, dim=0) / num_frames
+        raw_std_img += torch.sum(raw_subset**2, dim=0) / num_frames
+
+    raw_std_img = torch.sqrt(raw_std_img - (raw_mean**2))
+
     pmd_mean = pmd_stack.mean_img.to(device)[None, :, :] + torch.sparse.mm(pmd_stack.u, torch.mean(pmd_stack.v, dim=1,
-                                                                                                   keepdim=True)).reshape(
-        (1, fov_dim1, fov_dim2)).to(device)
+                                                                                                   keepdim=True)).reshape((1, fov_dim1, fov_dim2)).to(device)
     resid_mean = raw_mean - pmd_mean
 
     top_left_bottom_right = torch.zeros((3, fov_dim1 - 1, fov_dim2 - 1), device=device).float()
@@ -152,12 +163,12 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[masknmf.ArrayLike, mas
     vertical = torch.zeros((3, fov_dim1 - 1, fov_dim2), device=device).float()
     top_right_bottom_left = torch.zeros((3, fov_dim1 - 1, fov_dim2 - 1), device=device).float()
 
-    num_iters = math.ceil(num_frames / batch_size)
+
     for k in tqdm(range(num_iters)):
         start = batch_size * k
         end = min(start + batch_size, num_frames)
-        raw_subset = (torch.from_numpy(raw_stack[start:end, :, :]).to(device) - raw_mean) / raw_var_img
-        pmd_subset = (torch.from_numpy(pmd_stack[start:end, :, :]).to(device) - pmd_mean) / raw_var_img
+        raw_subset = (torch.from_numpy(raw_stack[start:end, :, :]).to(device) - raw_mean) / raw_std_img
+        pmd_subset = (torch.from_numpy(pmd_stack[start:end, :, :]).to(device) - pmd_mean) / raw_std_img
 
         pmd_subset = torch.nan_to_num(pmd_subset, nan=0)
         raw_subset = torch.nan_to_num(raw_subset, nan=0)
