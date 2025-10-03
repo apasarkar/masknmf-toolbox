@@ -308,7 +308,7 @@ def compute_mean_and_normalizer_dataset(
             start_width = pixel_batch_size * j
             end_width = min(fov_dim2, start_width + pixel_batch_size)
 
-            data_subset = torch.from_numpy(dataset[:, start_height:end_height, start_width:end_width]).to(device)
+            data_subset = torch.from_numpy(dataset[:, start_height:end_height, start_width:end_width]).to(device).to(dtype)
             mean_value[start_height:end_height, start_width:end_width] = torch.mean(data_subset, dim=0)
             if compute_normalizer:
                 data_subset -= mean_value[start_height:end_height, start_width:end_width][None, :, :]

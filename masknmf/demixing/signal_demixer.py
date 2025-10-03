@@ -1370,7 +1370,7 @@ def find_local_peaks_2d(greyscale_img: torch.tensor,
 
     #Get the coordinates of all peaks greater than 0
     total_peak = torch.logical_and(image == max_filter.squeeze(0), image > 0.0)
-    total_peak_coords = torch.nonzero(is_peak, as_tuple=False)
+    total_peak_coords = torch.nonzero(total_peak, as_tuple=False)
 
     return selected_peak_coords, total_peak_coords
 
