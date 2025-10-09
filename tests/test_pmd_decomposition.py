@@ -10,8 +10,6 @@ Test categories:
 6. Invalid input behavior (None, NaN, strings, torch.Tensor, large values)
 7. Dummy denoiser integration (dummy pytorch-based spatial and temporal denoisers)
 
-
-
 4 commented out tests:
 
 - Three block_size tests are commented out because current code doesn't handle blocks with no signals.
