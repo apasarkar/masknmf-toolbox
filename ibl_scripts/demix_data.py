@@ -47,8 +47,6 @@ def demix(cfg: DictConfig) -> None:
         'mad_threshold':0,
         'residual_threshold': 0.3,
         'patch_size':(40, 40),
-        'plot_en':False,
-        'text':False,
     }
 
     highpass_pmd_demixer.initialize_signals(**init_kwargs, is_custom = False)
