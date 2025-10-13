@@ -1,4 +1,5 @@
-[![CI](https://github.com/Lindsey-cyber/masknmf-toolbox/actions/workflows/test.yml/badge.svg)](https://github.com/Lindsey-cyber/masknmf-toolbox/actions)
+[![CI](https://github.com/Lindsey-cyber/masknmf-toolbox/actions/workflows/test_install.yml/badge.svg)](https://github.com/Lindsey-cyber/masknmf-toolbox/actions)  
+
 **[Examples](#example-usage) | [Inputs](#input-parameters) | [Output](#output) | [APIs](#api-reference-—-pmd_decomposition)**
 
 Next-gen functional imaging compressor and denoiser built on efficient **[Penalized Matrix Decomposition (PMD)](https://arxiv.org/abs/1807.06203)**.
@@ -101,9 +102,7 @@ Adapted from Buchanan et al., 2018 (bioRxiv) and used in the maskNMF pipeline (P
 
 Built with PyTorch for flexible CPU/GPU performance.
 
-# API Reference — `pmd_decomposition()`
-
-## Parameters
+# API Reference - `pmd_decomposition()` parameters
 
 ### 🗂️ Data Input
 - **`dataset`** *(masknmf.ArrayLike | masknmf.LazyFrameLoader)*  
