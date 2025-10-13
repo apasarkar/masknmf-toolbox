@@ -2,9 +2,9 @@
 
 **[Examples](#example-usage) | [Inputs](#input-parameters) | [Output](#output) | [APIs](#api-reference-—-pmd_decomposition)**
 
-Next-gen functional imaging compressor and denoiser built on efficient **[Penalized Matrix Decomposition (PMD)](https://arxiv.org/abs/1807.06203)**.
+Next-gen **large-scale functional imaging** compression and denoising using **[Penalized Matrix Decomposition (PMD)](https://arxiv.org/abs/1807.06203)**.
 
-`pmd_decomposition()` automatically partitions large imaging datasets into overlapping spatial blocks, performs randomized local SVD for low-rank decomposition, removes noise adaptively, and stitches results into a clean, global representation — ready for downstream analysis.
+**`pmd_decomposition()`** automatically partitions large functional imaging datasets(e.g., calcium imaging or voltage imaging) into overlapping spatial blocks, performs randomized local SVD for low-rank decomposition, removes noise adaptively, and stitches results into a clean, global representation ready for downstream analysis.
 
 # What can I do with `pmd_decomposition()`?
 
@@ -19,15 +19,19 @@ $$
 * **U** — spatial basis matrix (sparse, `[H×W, n_components]`)  
 * **V** — temporal basis matrix (dense, `[n_components, T]`)  
 
-Together they represent a compressed and denoised form of your movie by:
+Together they represent a compressed and denoised form of your movie.
+
+The process:
 
 1. Split large field of view into overlapping spatial blocks 
 
 2. Perform truncated randomized SVD on each block to capture local low-rank signals
 
-3. Estimates roughness thresholds from simulated noise; discards noisy components and merges valid ones into a global sparse representation (U, V)
+3. Optionally apply temporal and spatial denoisers (from previous neural network training) that smooth the extracted time traces and spatial components
 
-4. Outputs a lightweight [PMDArray](#output) object for downstream demixing
+4. Estimates roughness thresholds from simulated noise; discards noisy components and merges valid ones into a global sparse representation (U, V)
+
+5. Outputs a lightweight [PMDArray](#output) object for downstream demixing
 
 # Example Usage
 
@@ -53,7 +57,7 @@ print("U:", U.shape, "V:", V.shape)
 
 # Inputs
 
-**`dataset`** : `np.ndarray` or `torch.Tensor`  
+**`dataset`** : `np.ndarray` or `torch.Tensor` or `masknmf.ArrayLike` or `masknmf.LazyFrameLoader`  
 Input movie with shape `(T, H, W)`
 
 **`block_sizes`** : `(int, int)`  
