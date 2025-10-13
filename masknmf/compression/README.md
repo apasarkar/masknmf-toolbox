@@ -1,55 +1,73 @@
-# PMD Decomposition
+[Inputs](#input-parameters) | [Output](#output) | [Examples](#example-usage) | [APIs](#api-reference-—-pmd_decomposition)
 
-Efficient Penalized Matrix Decomposition (PMD) for compressing and denoising large-scale functional imaging datasets (e.g., calcium imaging or voltage imaging).
+Efficient **Penalized Matrix Decomposition (PMD)** function `pmd_decomposition()` for compressing and denoising large-scale functional imaging datasets (e.g., calcium imaging or voltage imaging).
 
 `pmd_decomposition()` automatically divides data into overlapping spatial blocks, performs truncated randomized local SVD to get low-rank spatial and temporal decompositions, filters out noisy components, and stitches results together into a global clean, low-rank representation of your data ready for analysis.
 
----
-
-## Table of Contents
-
-[Inputs](#input-parameters) | [Output](#output) | [Examples](#example-usage) | [APIs](#api-reference-—-pmd_decomposition)
-
-# What does pmd_decomposition() do?
+# What can I do with `pmd_decomposition()`?
 
 `pmd_decomposition()` performs a blockwise localized low-rank factorization of your dataset:
 
+
 $$
-data \approx U \times V
+\large data \approx U \times V
 $$
 
-- **U** — spatial basis matrix (sparse, `[H×W, n_components]`)  
-- **V** — temporal basis matrix (dense, `[n_components, T]`)  
 
-Together they represent a compressed and denoised form of your movie.
+* **U** — spatial basis matrix (sparse, `[H×W, n_components]`)  
+* **V** — temporal basis matrix (dense, `[n_components, T]`)  
 
----
+Together they represent a compressed and denoised form of your movie by:
 
-# Key Features
+1. Split large field of view into overlapping spatial blocks 
 
-- **Block-wise processing:** Splits large FOVs into overlapping spatial blocks for efficient local analysis.  
-- **Automatic calibration:** Simulates random noise to set smoothness (roughness) thresholds automatically before decomposition.  
-- **Localized low-rank decomposition:** Runs fast truncated randomized SVDs on each block to find local low-rank signal bases.  
-- **Optional neural denoising:** Can apply spatial or temporal neural-network-based denoisers before or after decomposition.  
-- **Adaptive component selection:** Each block automatically chooses its rank by rejecting components that fail smoothness tests.  
-- **Smooth merging:** Combines block results into a global sparse representation (`U, V`) with pixelwise mean and variance estimates.  
-- **Compact and fast:** Outputs a lightweight `PMDArray` object for rapid downstream demixing or neural signal extraction.  
-- **GPU-ready:** Fully compatible with PyTorch, enabling real-time or near-real-time processing.  
+2. Perform truncated randomized SVD on each block to capture local low-rank signals
 
----
+3. Estimates roughness thresholds from simulated noise; discards noisy components and merges valid ones into a global sparse representation (U, V)
 
-# Input Parameters
+4. Outputs a lightweight PMDArray object for downstream demixing
 
-| Argument | Type | Description |
-|----------|------|------------|
-| `dataset` | `np.ndarray` or `torch.Tensor` | Input movie with shape `(T, H, W)` |
-| `block_sizes` | `(int, int)` | Spatial block size used for local decomposition |
-| `frame_range` | `int` | Number of frames to process (subset of total frames) |
-| `max_components` | `int` | Maximum number of components per block |
-| `device` | `"cpu"` or `"cuda"` | Compute device |
-| `(optional) spatial_denoiser, temporal_denoiser` | `Callable` | Optional denoiser from previous neural network training |
+# Example Usage
 
----
+```python
+import numpy as np
+from masknmf.compression import pmd_decomposition
+
+# Example dataset
+data = (np.random.rand(2000, 128, 128) * 255).astype(np.float32)
+
+result = pmd_decomposition(
+    dataset=data,
+    block_sizes=(16, 16),
+    frame_range=150,
+    max_components=10,
+    device="cuda"
+)
+
+U = result.u.to_dense()
+V = result.v
+print("U:", U.shape, "V:", V.shape)
+```
+
+# Inputs
+
+**`dataset`** : `np.ndarray` or `torch.Tensor`  
+Input movie with shape `(T, H, W)`
+
+**`block_sizes`** : `(int, int)`  
+Spatial block size used for local decomposition
+
+**`frame_range`** : `int`  
+Number of frames to process (subset of total frames)
+
+**`max_components`** : `int`  
+Maximum number of components per block
+
+**`device`** : `"cpu"` or `"cuda"`  
+Compute device
+
+**`spatial_denoiser, temporal_denoiser`** (optional) : `torch.nn.Module`  
+Optional denoiser from previous neural network training
 
 # Output
 
@@ -64,28 +82,6 @@ Example reconstruction:
 
 ```python
 reconstructed = (pmd_result.u.to_dense() @ pmd_result.v).reshape(T, H, W)
-```
-
-# Example Usage
-
-```python
-import numpy as np
-from masknmf.compression import pmd_decomposition
-
-# Example dataset
-data = (np.random.rand(200, 64, 64) * 255).astype(np.float32)
-
-result = pmd_decomposition(
-    dataset=data,
-    block_sizes=(16, 16),
-    frame_range=150,
-    max_components=10,
-    device="cuda"
-)
-
-U = result.u.to_dense()
-V = result.v
-print("U:", U.shape, "V:", V.shape)
 ```
 
 # Notes for Developers
@@ -104,21 +100,64 @@ Adapted from Buchanan et al., 2018 (bioRxiv) and used in the maskNMF pipeline (P
 
 Built with PyTorch for flexible CPU/GPU performance.
 
-# API Reference — pmd_decomposition()
-| Parameter                  | Type                                             | Default | Description                                                                      |
-| -------------------------- | ------------------------------------------------ | ------- | -------------------------------------------------------------------------------- |
-| `dataset`                  | `masknmf.ArrayLike` or `masknmf.LazyFrameLoader` | —       | Input dataset of shape `(frames, height, width)`                                 |
-| `block_sizes`              | `Tuple[int, int]`                                | —       | Spatial block size for local decomposition. Each dimension must be ≥10.          |
-| `frame_range`              | `int`                                            | —       | Number of frames used to estimate spatial and temporal bases.                    |
-| `max_components`           | `int`                                            | 20      | Maximum number of components per spatial block.                                  |
-| `sim_conf`                 | `int`                                            | 5       | Percentile value defining roughness thresholds for keeping/rejecting components. |
-| `frame_batch_size`         | `int`                                            | 10000   | Max frames loaded into memory at one time.                                       |
-| `max_consecutive_failures` | `int`                                            | 1       | Stops accepting new components after this many failures.                         |
-| `spatial_avg_factor`       | `int`                                            | 1       | Optional spatial downsampling factor.                                            |
-| `temporal_avg_factor`      | `int`                                            | 1       | Optional temporal downsampling factor.                                           |
-| `compute_normalizer`       | `bool`                                           | True    | If True, estimates per-pixel noise variance (`var_img`).                         |
-| `pixel_weighting`          | `Optional[np.ndarray]`                           | None    | Optional spatial weighting map `(H, W)` to upweight signal pixels.               |
-| `spatial_denoiser`         | `Optional[torch.nn.Module]`                      | None    | Optional callable applied to spatial components.                                 |
-| `temporal_denoiser`        | `Optional[torch.nn.Module]`                      | None    | Optional callable applied to temporal traces.                                    |
-| `device`                   | `str`                                            | `"cpu"` | Compute device: `"cpu"` or `"cuda"`.                                             |
+# API Reference — `pmd_decomposition()`
+
+## Parameters
+
+### 🗂️ Data Input
+- **`dataset`** *(masknmf.ArrayLike | masknmf.LazyFrameLoader)*  
+  Input dataset of shape `(frames, height, width)`.
+
+- **`block_sizes`** *(Tuple[int, int])*  
+  Spatial block size for local decomposition. Each dimension must be ≥10.
+
+- **`frame_range`** *(int)*  
+  Number of frames used to estimate spatial and temporal bases.
+
 ---
+
+### ⚙️ Model & Components
+- **`max_components`** *(int, default=20)*  
+  Maximum number of components per spatial block.
+
+- **`sim_conf`** *(int, default=5)*  
+  Percentile value defining roughness thresholds for keeping/rejecting components.
+
+- **`max_consecutive_failures`** *(int, default=1)*  
+  Stops accepting new components after this many failures.
+
+---
+
+### 💾 Performance & Memory
+- **`frame_batch_size`** *(int, default=10000)*  
+  Max frames loaded into memory at one time.
+
+- **`spatial_avg_factor`** *(int, default=1)*  
+  Optional spatial downsampling factor.
+
+- **`temporal_avg_factor`** *(int, default=1)*  
+  Optional temporal downsampling factor.
+
+---
+
+### 🧮 Normalization & Weighting
+- **`compute_normalizer`** *(bool, default=True)*  
+  If True, estimates per-pixel noise variance (`var_img`).
+
+- **`pixel_weighting`** *(Optional[np.ndarray], default=None)*  
+  Optional spatial weighting map `(H, W)` to upweight signal pixels.
+
+---
+
+### 🧠 Denoisers
+- **`spatial_denoiser`** *(Optional[torch.nn.Module], default=None)*  
+  Optional callable applied to spatial components.
+
+- **`temporal_denoiser`** *(Optional[torch.nn.Module], default=None)*  
+  Optional callable applied to temporal traces.
+
+---
+
+### 🖥️ Device
+- **`device`** *(str, default="cpu")*  
+  Compute device: `"cpu"` or `"cuda"`.
