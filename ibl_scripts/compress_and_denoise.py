@@ -68,11 +68,18 @@ class MotionBinDataset:
         (int, int, int)
             number of frames, number of y pixels, number of x pixels.
         """
-        s2p_ops = np.load(self.ops_path, allow_pickle = True)['ops'].item()
+        _, ext_path = os.path.splitext(self.ops_path)
+        if ext_path == ".zip":  
+            s2p_ops = np.load(self.ops_path, allow_pickle = True)['ops'].item()
+        elif ext_path == ".npy":
+            s2p_ops = np.load(self.ops_path, allow_pickle = True).item()
+        else:
+            raise ValueError("The file name should either be zip or npy")
         return s2p_ops['nframes'], s2p_ops['Ly'], s2p_ops['Lx']
 
     def __getitem__(self, item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]):
         return self.data[item].copy()
+
 def load_bin_file(s2p_zip_path: Union[str, bytes, os.PathLike],
                    alf_bin_path: Union[str, bytes, os.PathLike]) -> np.ndarray:
     my_data = MotionBinDataset(alf_bin_path, s2p_zip_path)[:]
@@ -83,7 +90,7 @@ def load_bin_file(s2p_zip_path: Union[str, bytes, os.PathLike],
 
 @hydra.main()
 def compress_and_denoise(cfg: DictConfig) -> None:
-    my_data = load_bin_file(cfg.zip_file_path, cfg.bin_file_path)
+    my_data = load_bin_file(cfg.ops_file_path, cfg.bin_file_path)
 
     # Zero out border pixels
     binary_mask = np.zeros((my_data.shape[1], my_data.shape[2]), dtype=my_data.dtype)
@@ -95,25 +102,8 @@ def compress_and_denoise(cfg: DictConfig) -> None:
     if device == 'cpu':
         display("Running PMD to generate training data on CPU")
 
-    if cfg.neural_network is not None:
-        net_path = os.path.abspath(cfg.neural_network)
-        trained_model = np.load(net_path, allow_pickle=True)['model'].item()
-        curr_temporal_denoiser = masknmf.compression.PMDTemporalDenoiser(trained_model)
-    else:
-        curr_temporal_denoiser = None
 
-    pmd_denoised = masknmf.compression.pmd_decomposition(my_data,
-                                                         block_sizes,
-                                                         my_data.shape[0],
-                                                         max_components=cfg.max_components,
-                                                         max_consecutive_failures=cfg.max_consecutive_failures,
-                                                         temporal_avg_factor=cfg.temporal_avg_factor,
-                                                         spatial_avg_factor=cfg.spatial_avg_factor,
-                                                         device=device,
-                                                         temporal_denoiser=curr_temporal_denoiser,
-                                                         frame_batch_size=cfg.frame_batch_size,
-                                                         pixel_weighting=binary_mask)
-
+    
     pmd_no_denoise = masknmf.compression.pmd_decomposition(my_data,
                                                            block_sizes,
                                                            my_data.shape[0],
@@ -125,6 +115,33 @@ def compress_and_denoise(cfg: DictConfig) -> None:
                                                            temporal_denoiser=None,  # Turn off denoiser
                                                            frame_batch_size=cfg.frame_batch_size,
                                                            pixel_weighting = binary_mask)
+
+    if cfg.neural_network is not None:
+        net_path = os.path.abspath(cfg.neural_network)
+        trained_model = np.load(net_path, allow_pickle=True)['model'].item()
+        
+    else:
+        v = pmd_no_denoise.v.cpu()
+        trained_model, _ = masknmf.compression.denoising.train_total_variance_denoiser(v,
+                                                               max_epochs = 5,
+                                                               batch_size = 128,
+                                                                learning_rate=1e-4)
+    
+    curr_temporal_denoiser = masknmf.compression.PMDTemporalDenoiser(trained_model, 0.7)
+
+    
+    pmd_denoised = masknmf.compression.pmd_decomposition(my_data,
+                                                         block_sizes,
+                                                         my_data.shape[0],
+                                                         max_components=cfg.max_components,
+                                                         max_consecutive_failures=cfg.max_consecutive_failures,
+                                                         temporal_avg_factor=cfg.temporal_avg_factor,
+                                                         spatial_avg_factor=cfg.spatial_avg_factor,
+                                                         device=device,
+                                                         temporal_denoiser=curr_temporal_denoiser,
+                                                         frame_batch_size=cfg.frame_batch_size,
+                                                         pixel_weighting=binary_mask)
+        
 
     display(
         f"Processing complete. The rank of PMD with denoiser is {pmd_denoised.pmd_rank}. The rank of PMD without denoiser is {pmd_no_denoise.pmd_rank}")
@@ -141,7 +158,7 @@ def compress_and_denoise(cfg: DictConfig) -> None:
 if __name__ == "__main__":
     config_dict = {
         'bin_file_path': '/path/to/data/frames.bin',
-        'zip_file_path': '/path/to/ibl_outputs.zip',
+        'ops_file_path': '/path/to/ibl_outputs.zip',
         'out_path': '.',
         'block_size_dim1': 32,
         'block_size_dim2': 32,
