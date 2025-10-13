@@ -111,36 +111,38 @@ Built with PyTorch for flexible CPU/GPU performance.
 ### 🗂️ Data Input
 - **`dataset`** *(masknmf.ArrayLike | masknmf.LazyFrameLoader)*  
   Input dataset of shape `(frames, height, width)`.
+  Can be a NumPy array, PyTorch tensor, or a lazy loader that streams frames from disk.
 
 - **`block_sizes`** *(Tuple[int, int])*  
   Spatial block size for local decomposition. Each dimension must be ≥10.
+  Smaller blocks increase locality but reduce global context.
 
 - **`frame_range`** *(int)*  
   Number of frames used to estimate spatial and temporal bases.
 
 ### ⚙️ Model & Components
 - **`max_components`** *(int, default=20)*  
-  Maximum number of components per spatial block.
+  Maximum number of components to extract from each spatial block.
 
 - **`sim_conf`** *(int, default=5)*  
-  Percentile value defining roughness thresholds for keeping/rejecting components.
+  Percentile value (0–100) defining spatial and temporal roughness thresholds for keeping or rejecting components. Smaller values → stricter noise rejection.
 
 - **`max_consecutive_failures`** *(int, default=1)*  
-  Stops accepting new components after this many failures.
+  Stops accepting new components for a block after this many consecutive components fail the roughness test. Prevents overfitting to noise.
 
 ### 💾 Performance & Memory
 - **`frame_batch_size`** *(int, default=10000)*  
   Max frames loaded into memory at one time.
 
 - **`spatial_avg_factor`** *(int, default=1)*  
-  Optional spatial downsampling factor.
+  Optional spatial downsampling factor. Values >1 improve robustness but may blur fine spatial signals. Keep 1 if neurons occupy few pixels.
 
 - **`temporal_avg_factor`** *(int, default=1)*  
-  Optional temporal downsampling factor.
+  Optional temporal downsampling factor. Values >1 improve temporal smoothness but may lose single-frame events. Keep 1 for sparse signals.
 
 ### 🧮 Normalization & Weighting
 - **`compute_normalizer`** *(bool, default=True)*  
-  If True, estimates per-pixel noise variance (`var_img`).
+  If True, estimates per-pixel noise variance (`var_img`). If False, normalization is skipped (set to 1).
 
 - **`pixel_weighting`** *(Optional[np.ndarray], default=None)*  
   Optional spatial weighting map `(H, W)` to upweight signal pixels.
