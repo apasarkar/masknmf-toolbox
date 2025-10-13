@@ -1,8 +1,9 @@
-[Inputs](#input-parameters) | [Output](#output) | [Examples](#example-usage) | [APIs](#api-reference-—-pmd_decomposition)
+[![CI](https://github.com/Lindsey-cyber/masknmf-toolbox/actions/workflows/test.yml/badge.svg)](https://github.com/Lindsey-cyber/masknmf-toolbox/actions)
+**[Examples](#example-usage) | [Inputs](#input-parameters) | [Output](#output) | [APIs](#api-reference-—-pmd_decomposition)**
 
-Efficient **Penalized Matrix Decomposition (PMD)** function `pmd_decomposition()` for compressing and denoising large-scale functional imaging datasets (e.g., calcium imaging or voltage imaging).
+Next-gen functional imaging compressor and denoiser built on efficient **[Penalized Matrix Decomposition (PMD)](https://arxiv.org/abs/1807.06203)**.
 
-`pmd_decomposition()` automatically divides data into overlapping spatial blocks, performs truncated randomized local SVD to get low-rank spatial and temporal decompositions, filters out noisy components, and stitches results together into a global clean, low-rank representation of your data ready for analysis.
+`pmd_decomposition()` automatically partitions large imaging datasets into overlapping spatial blocks, performs randomized local SVD for low-rank decomposition, removes noise adaptively, and stitches results into a clean, global representation — ready for downstream analysis.
 
 # What can I do with `pmd_decomposition()`?
 
@@ -25,7 +26,7 @@ Together they represent a compressed and denoised form of your movie by:
 
 3. Estimates roughness thresholds from simulated noise; discards noisy components and merges valid ones into a global sparse representation (U, V)
 
-4. Outputs a lightweight PMDArray object for downstream demixing
+4. Outputs a lightweight [PMDArray](#output) object for downstream demixing
 
 # Example Usage
 
@@ -86,13 +87,13 @@ reconstructed = (pmd_result.u.to_dense() @ pmd_result.v).reshape(T, H, W)
 
 # Notes for Developers
 
-This implementation omits explicit spatial/temporal penalties from the original PMD (Buchanan et al., 2018) and instead uses roughness-based thresholds to reject noisy components.
+* This implementation omits explicit spatial/temporal penalties from the original PMD (Buchanan et al., 2018) and instead uses roughness-based thresholds to reject noisy components.
 
-A randomized SVD algorithm (Halko et al., 2011) is used for efficient local decomposition.
+* A randomized SVD algorithm (Halko et al., 2011) is used for efficient local decomposition.
 
-Each block adaptively selects its rank based on smoothness statistics, stopping when components become too noisy.
+* Each block adaptively selects its rank based on smoothness statistics, stopping when components become too noisy.
 
-Use .coalesce() to merge duplicate indices in sparse COO tensors.
+* Use .coalesce() to merge duplicate indices in sparse COO tensors.
 
 # Credits
 
@@ -114,8 +115,6 @@ Built with PyTorch for flexible CPU/GPU performance.
 - **`frame_range`** *(int)*  
   Number of frames used to estimate spatial and temporal bases.
 
----
-
 ### ⚙️ Model & Components
 - **`max_components`** *(int, default=20)*  
   Maximum number of components per spatial block.
@@ -125,8 +124,6 @@ Built with PyTorch for flexible CPU/GPU performance.
 
 - **`max_consecutive_failures`** *(int, default=1)*  
   Stops accepting new components after this many failures.
-
----
 
 ### 💾 Performance & Memory
 - **`frame_batch_size`** *(int, default=10000)*  
@@ -138,8 +135,6 @@ Built with PyTorch for flexible CPU/GPU performance.
 - **`temporal_avg_factor`** *(int, default=1)*  
   Optional temporal downsampling factor.
 
----
-
 ### 🧮 Normalization & Weighting
 - **`compute_normalizer`** *(bool, default=True)*  
   If True, estimates per-pixel noise variance (`var_img`).
@@ -147,16 +142,12 @@ Built with PyTorch for flexible CPU/GPU performance.
 - **`pixel_weighting`** *(Optional[np.ndarray], default=None)*  
   Optional spatial weighting map `(H, W)` to upweight signal pixels.
 
----
-
 ### 🧠 Denoisers
 - **`spatial_denoiser`** *(Optional[torch.nn.Module], default=None)*  
   Optional callable applied to spatial components.
 
 - **`temporal_denoiser`** *(Optional[torch.nn.Module], default=None)*  
   Optional callable applied to temporal traces.
-
----
 
 ### 🖥️ Device
 - **`device`** *(str, default="cpu")*  
