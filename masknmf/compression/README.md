@@ -8,24 +8,15 @@ Efficient Penalized Matrix Decomposition (PMD) for compressing and denoising lar
 
 ## Table of Contents
 
-- [What does pmd_decomposition() do?](#what-does-pmd_decomposition-do)
-- [Key Features](#key-features)
-- [Input Parameters](#input-parameters)
-- [Output](#output)
-- [Example Usage](#example-usage)
-- [Notes for Developers](#notes-for-developers)
-- [Credits](#credits)
-- [API Reference — pmd_decomposition()](#api-reference-—-pmd_decomposition)
+[Inputs](#input-parameters) | [Output](#output) | [Examples](#example-usage) | [APIs](#api-reference-—-pmd_decomposition)
 
----
-
-## What does pmd_decomposition() do?
+# What does pmd_decomposition() do?
 
 `pmd_decomposition()` performs a blockwise localized low-rank factorization of your dataset:
 
-\[
-\text{data} \approx U \times V
-\]
+$$
+data \approx U \times V
+$$
 
 - **U** — spatial basis matrix (sparse, `[H×W, n_components]`)  
 - **V** — temporal basis matrix (dense, `[n_components, T]`)  
@@ -34,7 +25,7 @@ Together they represent a compressed and denoised form of your movie.
 
 ---
 
-## Key Features
+# Key Features
 
 - **Block-wise processing:** Splits large FOVs into overlapping spatial blocks for efficient local analysis.  
 - **Automatic calibration:** Simulates random noise to set smoothness (roughness) thresholds automatically before decomposition.  
@@ -47,7 +38,7 @@ Together they represent a compressed and denoised form of your movie.
 
 ---
 
-## Input Parameters
+# Input Parameters
 
 | Argument | Type | Description |
 |----------|------|------------|
@@ -60,7 +51,7 @@ Together they represent a compressed and denoised form of your movie.
 
 ---
 
-## Output
+# Output
 
 Returns a `PMDArray` object containing:
 
@@ -75,7 +66,7 @@ Example reconstruction:
 reconstructed = (pmd_result.u.to_dense() @ pmd_result.v).reshape(T, H, W)
 ```
 
-## Example Usage
+# Example Usage
 
 ```python
 import numpy as np
@@ -97,7 +88,7 @@ V = result.v
 print("U:", U.shape, "V:", V.shape)
 ```
 
-## Notes for Developers
+# Notes for Developers
 
 This implementation omits explicit spatial/temporal penalties from the original PMD (Buchanan et al., 2018) and instead uses roughness-based thresholds to reject noisy components.
 
@@ -107,13 +98,13 @@ Each block adaptively selects its rank based on smoothness statistics, stopping 
 
 Use .coalesce() to merge duplicate indices in sparse COO tensors.
 
-## Credits
+# Credits
 
 Adapted from Buchanan et al., 2018 (bioRxiv) and used in the maskNMF pipeline (Pasarkar et al., 2023).
 
 Built with PyTorch for flexible CPU/GPU performance.
 
-## API Reference — pmd_decomposition()
+# API Reference — pmd_decomposition()
 | Parameter                  | Type                                             | Default | Description                                                                      |
 | -------------------------- | ------------------------------------------------ | ------- | -------------------------------------------------------------------------------- |
 | `dataset`                  | `masknmf.ArrayLike` or `masknmf.LazyFrameLoader` | —       | Input dataset of shape `(frames, height, width)`                                 |
