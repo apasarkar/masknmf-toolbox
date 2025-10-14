@@ -98,7 +98,7 @@ reconstructed = (pmd_result.u.to_dense() @ pmd_result.v).reshape(T, H, W)
 
 * Each block adaptively selects its rank based on smoothness statistics, stopping when components become too noisy.
 
-* Use .coalesce() to merge duplicate indices in sparse COO tensors.
+* Use `.coalesce()` to merge duplicate indices in sparse COO tensors.
 
 # Credits
 
