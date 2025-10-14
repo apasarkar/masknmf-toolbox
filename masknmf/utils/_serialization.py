@@ -1,8 +1,11 @@
-import numpy as np
-import h5py
 import os
+from pathlib import Path
 import traceback
 from warnings import warn
+
+import numpy as np
+import h5py
+import torch
 
 
 def save_dict(d, filename, group, raise_type_fail=True):
@@ -47,10 +50,35 @@ def save_dict(d, filename, group, raise_type_fail=True):
 
 
 def _dicts_to_group(h5file, path, d, raise_meta_fail):
-
     for key, item in d.items():
+        if isinstance(item, torch.Tensor):
+            if item.layout is torch.sparse_coo:
+                # store this in a new group
+                sparse_dict = {
+                    "indices": item.indices(),
+                    "values": item.values(),
+                }
 
-        if isinstance(item, np.ndarray):
+                # save to a group with indices and values arrays
+                _dicts_to_group(
+                    h5file,
+                    "{}{}/".format(path, key),
+                    sparse_dict,
+                    True
+                )
+
+                h5file[path + key].attrs["layout"] = "sparse_coo"
+
+            elif item.layout is torch.strided:
+                h5file[path + key] = item.cpu().numpy()
+                h5file[path + key].attrs["layout"] = "strided"
+
+            else:
+                raise TypeError(
+                    f"Serialization of Tensor layout: {item.layout} not supported, this should be fixed."
+                )
+
+        elif isinstance(item, np.ndarray):
 
             if item.dtype == np.dtype('O'):
                 # see if h5py is ok with it
@@ -79,7 +107,6 @@ def _dicts_to_group(h5file, path, d, raise_meta_fail):
             # other types
             else:
                 h5file[path + key] = item
-                # h5file[path + key].attrs['dtype'] = item.dtype.str
 
         # single pieces of data
         elif isinstance(item, (str, int, np.int8,
@@ -140,43 +167,59 @@ def load_dict(filename, group):
 def _dicts_from_group(h5file, path):
     ans = {}
     for key, item in h5file[path].items():
-        if isinstance(item, h5py._hl.dataset.Dataset):
+        if "layout" in item.attrs:
+            # it's a torch tensor
+            match item.attrs["layout"]:
+                case "sparse_coo":
+                    # reconstruct sparse_coo
+                    indices = item["indices"][()]
+                    values = item["values"][()]
+                    ans[key] = torch.sparse_coo_tensor(
+                        indices=indices,
+                        values=values,
+                    )
+                case "strided":
+                    ans[key] = torch.from_numpy(item[()])
+
+                case _:
+                    raise TypeError
+
+        elif isinstance(item, h5py.Dataset):
             if item.attrs.__contains__('dtype'):
                 ans[key] = item[()].astype(item.attrs['dtype'])
             else:
                 ans[key] = item[()]
-        elif isinstance(item, h5py._hl.group.Group):
+        elif isinstance(item, h5py.Group):
             ans[key] = _dicts_from_group(h5file, path + key + '/')
     return ans
 
 
 class Serializer:
-    def _is_fitted(self):
-        """
-        Implement this method in a subclass to check
-        if the model has been fit.
+    # should specify set of serialized attributes
+    _serialized = {}
 
-        Usually implements a model specific call to
-        sklearn.utils.validation.check_is_fitted
+    def _to_dict(self) -> dict:
+        d = {}
 
-        Returns
-        -------
-        bool
-        """
-        pass
+        for key in self._serialized:
+            val = getattr(self, key)
 
-    def _to_dict(self):
-        raise NotImplemented
+            # skip None so we don't have to deal with serializing them.
+            # HDF5 has no None type, and it can create headaches to properly
+            # serialize and de-serialize them. To get around this, any attributes
+            # that are None and required for de-serialization should be default None
+            # kwargs in the constructor of the class they are serialized from.
+            if val is None:
+                continue
 
-    def _none_to_str(self, mp):
-        """Use str to store Nones. Used for HDF5"""
-        for k in mp.keys():
-            if mp[k] is None:
-                mp[k] = 'None'
+            if isinstance(val, (tuple, list)):
+                val = np.asarray(val)
 
-        return mp
+            d[key] = val
 
-    def export(self, path):
+        return d
+
+    def export(self, path: str | Path):
         """
         Export to an HDF5 file.
         Requires ``h5py`` http://docs.h5py.org/
@@ -193,11 +236,9 @@ class Serializer:
         """
 
         d = self._to_dict()
-        save_dict(d, path, 'data')
+        save_dict(d, filename=path, group="data")
 
     @classmethod
     def from_hdf5(cls, path):
         d = load_dict(path, 'data')
-
-    def _from_dict(self, d):
-        raise NotImplemented
+        return cls(**d)
