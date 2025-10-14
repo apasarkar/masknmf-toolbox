@@ -57,6 +57,7 @@ def _dicts_to_group(h5file, path, d, raise_meta_fail):
                 sparse_dict = {
                     "indices": item.indices(),
                     "values": item.values(),
+                    "size": np.asarray(item.size()) # size must be specified
                 }
 
                 # save to a group with indices and values arrays
@@ -174,10 +175,16 @@ def _dicts_from_group(h5file, path):
                     # reconstruct sparse_coo
                     indices = item["indices"][()]
                     values = item["values"][()]
+                    size = item["size"][()]
+                    # needs to a tuple[int] for `torch.sparse_coo_tensor` to be happy
+                    size = tuple(size)
+
                     ans[key] = torch.sparse_coo_tensor(
                         indices=indices,
                         values=values,
+                        size=size
                     )
+
                 case "strided":
                     ans[key] = torch.from_numpy(item[()])
 
