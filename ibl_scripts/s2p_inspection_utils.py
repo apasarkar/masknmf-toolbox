@@ -59,7 +59,6 @@ def demix_with_s2p_outputs(folder: str,
 
 
     num_frames, fov_dim1, fov_dim2 = pmd_object.shape
-    device = 'cuda'
     frame_batch_size = 300
     unfiltered_pmd_demixer = masknmf.demixing.signal_demixer.SignalDemixer(
                                                     pmd_object,
@@ -145,4 +144,42 @@ def build_s2p_demixingresults(folder: str,
                                   b=b_rescale,
                                   device=device)
     return results
-    
+
+
+
+######
+## Below code is for matching neurons between suite2p and masknmf results
+######
+
+def find_unmatched_neurons(first_a: np.ndarray,
+                           first_c: np.ndarray,
+                           second_a: np.ndarray,
+                           second_c: np.ndarray,
+                           spatial_similarity_ceiling: float=0.6,
+                           temporal_similarity_ceiling: float=0.6):
+    """"
+    Args:
+        first_a (np.ndarray): Shape (height, width, num_neurons_from_pipeline1)
+        first_c (np.ndarray): Shape (num_frames, num_neurons_from_pipeline1)
+        second_a (np.ndarray): Shape (height, width, num_neurons_from_pipeline2)
+        second_c (np.ndarray): Shape (num_frames, num_neurons_from_pipeline2)
+        spatial_similarity_ceiling (float): All similarities for neuron "i" should below this value to declare it unmatched
+        temporal_similarity_ceiling (float): All similarities for neuron "i" should be below this value to declare it unmatched
+    Returns:
+        unmatched_indices (np.ndarray): A boolean array of shape (num_neurons_from_pipeline1) indicating whether a neuron is unmatched
+    """
+    first_a_norm = first_a / np.linalg.norm(first_a, axis = (0, 1))
+    first_b_norm = second_a / np.linalg.norm(second_a, axis = (0, 1))
+
+    spatial_similarity_mat = np.einsum('hwt,hws->ts', first_a_norm, first_b_norm)
+
+    first_c_norm = first_c / np.linalg.norm(first_c, axis = 0)
+    second_c_norm = second_c / np.linalg.norm(second_c, axis=0)
+
+    temporal_similarity_mat = first_c_norm.T @ second_c_norm
+
+    max_spatial_sim = np.amax(spatial_similarity_mat, axis = 1)
+    max_temporal_sim = np.amax(temporal_similarity_mat, axis = 1)
+
+    misses = np.logical_and(max_spatial_sim < spatial_similarity_ceiling, max_temporal_sim < temporal_similarity_ceiling)
+    return misses
