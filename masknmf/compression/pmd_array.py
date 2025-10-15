@@ -101,7 +101,7 @@ class PMDArray(FactorizedVideo, Serializer):
     Factorized demixing array for PMD movie
     """
     _serialized = {
-        "fov_shape",
+        "shape",
         "u",
         "v",
         "u_local_projector",
@@ -111,7 +111,7 @@ class PMDArray(FactorizedVideo, Serializer):
 
     def __init__(
         self,
-        fov_shape: Tuple[int, int, int],
+        shape: Tuple[int, int, int] | np.ndarray,
         u: torch.sparse_coo_tensor,
         v: torch.tensor,
         mean_img: torch.tensor,
@@ -126,7 +126,7 @@ class PMDArray(FactorizedVideo, Serializer):
         as a global spatial basis for the data).
 
         Args:
-            fov_shape (tuple): (num_frames, fov_dim1, fov_dim2)
+            shape (tuple): (num_frames, fov_dim1, fov_dim2)
             u (torch.sparse_coo_tensor): shape (pixels, rank)
             v (torch.tensor): shape (rank, frames)
             mean_img (torch.tensor): shape (fov_dim1, fov_dim2). The pixelwise mean of the data
@@ -146,7 +146,7 @@ class PMDArray(FactorizedVideo, Serializer):
             self._u_local_projector = None
 
         self._device = self._u.device
-        self._shape = tuple(fov_shape)
+        self._shape = tuple(shape)
 
         self.pixel_mat = torch.arange(
             self.shape[1] * self.shape[2], device=self.device
@@ -208,10 +208,6 @@ class PMDArray(FactorizedVideo, Serializer):
         data type, default np.float32
         """
         return np.float32
-
-    @property
-    def fov_shape(self) -> Tuple[int, int, int]:
-        return self.shape
 
     @property
     def shape(self) -> Tuple[int, int, int]:

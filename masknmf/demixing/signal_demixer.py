@@ -3054,17 +3054,17 @@ class DemixingState(SignalProcessingState):
 
 class DemixingResults(Serializer):
     _serialized = {
-        "data_shape",
-        "u_sparse",
+        "shape",
+        "u",
         "v",
         "a",
-        "v"
+        "c"
     }
 
     def __init__(
             self,
-            data_shape: Tuple[int, int, int],
-            u_sparse: torch.sparse_coo_tensor,
+            shape: Tuple[int, int, int] | np.ndarray,
+            u: torch.sparse_coo_tensor,
             v: torch.tensor,
             a: torch.sparse_coo_tensor,
             c: torch.tensor,
@@ -3082,8 +3082,8 @@ class DemixingResults(Serializer):
         """
         This class provides a convenient way to export all demixing result as array-like objects.
         Args:
-            data_shape (tuple): (number of frames, field of view dimension 1, field of view dimension 2)
-            u_sparse (torch.sparse_coo_tensor): shape (pixels, rank 1)
+            shape (tuple): (number of frames, field of view dimension 1, field of view dimension 2)
+            u (torch.sparse_coo_tensor): shape (pixels, rank 1)
             v (torch.tensor): shape (rank 2, num_frames)
             a (torch.sparse_coo_tensor): shape (pixels, number of neural signals)
             c (torch.tensor): shape (number of frames, number of neural signals)
@@ -3105,8 +3105,8 @@ class DemixingResults(Serializer):
         """
         self._device = device
         self._order = order
-        self._shape = data_shape
-        self._u_sparse = u_sparse.to(self.device).float()
+        self._shape = tuple(shape)
+        self._u_sparse = u.to(self.device).float()
         self._v = v.to(self.device).float()
         self._a = a.to(self.device).float()
         self._c = c.to(self.device).float()
@@ -3245,11 +3245,6 @@ class DemixingResults(Serializer):
         return self._global_residual_corr_img
 
     @property
-    def data_shape(self):
-        """alias for shape"""
-        return self.shape
-
-    @property
     def shape(self):
         return self._shape
 
@@ -3288,11 +3283,6 @@ class DemixingResults(Serializer):
     @property
     def num_frames(self) -> int:
         return self.shape[0]
-
-    @property
-    def u_sparse(self):
-        """alias for u"""
-        return self.u
 
     @property
     def u(self) -> torch.sparse_coo_tensor:
