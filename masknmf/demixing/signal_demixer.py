@@ -81,6 +81,8 @@ def _compute_residual_correlation_image(
     """
     Insert docs here
     """
+    if noise_std is None:
+        noise_std = torch.zeros(fov_dims[0], fov_dims[1], device=device, dtype=u_sparse.dtype).flatten()
     num_frames = v.shape[1]
     v_new = v - (factorized_ring_term[0] @ factorized_ring_term[1])
 
@@ -3066,6 +3068,7 @@ class DemixingResults:
             order: str = "C",
             device="cpu",
             frame_batch_size: int = 200,
+            pixel_batch_size: int = 400
     ):
         """
         This class provides a convenient way to export all demixing result as array-like objects.
@@ -3099,17 +3102,33 @@ class DemixingResults:
         self._a = a.to(self.device).float()
         self._c = c.to(self.device).float()
 
-        if global_resid_correlation_image is None:
-            self._global_residual_corr_img = torch.zeros(self._shape[1], self._shape[2], dtype=self.u.dtype,
-                                                         device=self.device)
-        else:
-            self._global_residual_corr_img = global_resid_correlation_image
-
         if q is None:
             self._q = (torch.zeros(self.u.shape[1], 1, dtype=self.u.dtype, device=self.device),
                        torch.zeros((1, self.v.shape[1]), dtype=self.u.dtype, device=self.device))
         else:
             self._q = (q[0].to(self.device), q[1].to(self.device))
+
+
+        if global_resid_correlation_image is None:
+            display("Computing residual")
+            bg_subtract_temporal_basis = self.v - (self.q[0] @ self.q[1])
+            (
+                self._global_residual_corr_img
+            ) = get_local_correlation_structure(
+                self._u_sparse,
+                bg_subtract_temporal_basis,
+                (self.shape[1], self.shape[2], self.shape[0]),
+                0,
+                torch.zeros(self.shape[1], self.shape[2], device=self.device, dtype=self._u_sparse.dtype),
+                order=self._order,
+                batch_size=pixel_batch_size,
+                a=self.a,
+                c=self.c,
+            )
+            self._global_residual_corr_img = torch.from_numpy(self._global_residual_corr_img).to(self.device)
+        else:
+            self._global_residual_corr_img = global_resid_correlation_image
+
 
         if b is None:
             display("Static term was not provided, constructing baseline to ensure residual is mean 0")
@@ -3154,9 +3173,10 @@ class DemixingResults:
                                                                                          self.q[0] @ self.q[1],
                                                                                          self.c,
                                                                                          (self.shape[1], self.shape[2]),
-                                                                                         self.order,
-                                                                                         frame_batch_size,
+                                                                                         data_order=self.order,
+                                                                                         frame_batch_size=frame_batch_size,
                                                                                          device=self.device)
+
         ## Store the critical values for each of these
         self._std_corr_img_mean = standard_correlation_image.movie_mean
         self._std_corr_img_normalizer = standard_correlation_image.movie_normalizer

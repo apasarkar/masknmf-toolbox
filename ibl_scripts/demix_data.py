@@ -44,7 +44,7 @@ def demix(cfg: DictConfig) -> None:
         'mad_correlation_threshold':0.8,
 
         #Mostly stable
-        'mad_threshold':0,
+        'mad_threshold':1,
         'residual_threshold': 0.3,
         'patch_size':(40, 40),
     }
@@ -98,13 +98,13 @@ def demix(cfg: DictConfig) -> None:
     ## Now run demixing...
     localnmf_params = {
         'maxiter':num_iters,
-        'support_threshold':np.linspace(0.99, 0.7, num_iters).tolist(),
-        'deletion_threshold':0.5,
+        'support_threshold':np.linspace(0.95, 0.5, num_iters).tolist(),
+        'deletion_threshold':0.2,
         'ring_model_start_pt':0,
         'ring_radius':cfg.ring_radius,
         'background_downsampling_factor': cfg.background_downsampling_factor,
-        'merge_threshold':0.6,
-        'merge_overlap_threshold':0.6,
+        'merge_threshold':0.8,
+        'merge_overlap_threshold':0.8,
         'update_frequency':4,
         'c_nonneg':True,
         'denoise':False,
@@ -116,7 +116,45 @@ def demix(cfg: DictConfig) -> None:
     display(f"after this step {unfiltered_pmd_demixer.results.a.shape[1]} signals identified")
 
 
+    unfiltered_pmd_demixer.lock_results_and_continue(carry_background=True)
 
+    init_kwargs = {
+        'mad_correlation_threshold':0.4,
+    
+        #Mostly stable
+        'mad_threshold':1,
+        'residual_threshold': 0.3,
+        'patch_size':(40, 40),
+    }
+    
+    unfiltered_pmd_demixer.initialize_signals(**init_kwargs, is_custom = False)
+    if unfiltered_pmd_demixer.results is not None:
+        display(f"Identified {unfiltered_pmd_demixer.results[0].shape[1]} candidate neural signals at initialization step.")
+
+    unfiltered_pmd_demixer.lock_results_and_continue()
+
+    num_iters = 25
+    ## Now run demixing...
+    localnmf_params = {
+        'maxiter':num_iters,
+        'support_threshold':np.linspace(0.95, 0.2, num_iters).tolist(),
+        'deletion_threshold':0.2,
+        'ring_model_start_pt':0,
+        'ring_radius':cfg.ring_radius,
+        'background_downsampling_factor': cfg.background_downsampling_factor,
+        'merge_threshold':0.8,
+        'merge_overlap_threshold':0.8,
+        'update_frequency':4,
+        'c_nonneg':True,
+        'denoise':False,
+        'plot_en': False
+    }
+
+    with torch.no_grad():
+        unfiltered_pmd_demixer.demix(**localnmf_params)
+    display(f"after this step {unfiltered_pmd_demixer.results.a.shape[1]} signals identified")
+
+    
     out_path = os.path.abspath(cfg.out_path)
 
     display(f"Saving demixing results to {out_path}")
