@@ -12,35 +12,29 @@ def save_dict(d, filename, group, raise_type_fail=True):
     """
     Recursively save a dict to an hdf5 group in a new file.
 
-    Parameters
-    ----------
-    d: dict
-        dict to save as an hdf5 file
+    Args:
+        d (dict): dict to save as an hdf5 file
 
-    filename : str
-        Full path to save the file to. File must not already exist.
+        filename (str | Path): Full path to save the file to. File must not already exist.
 
-    group : str
-        group name to save the dict to
+        group (str): group name to save the dict to
 
-    raise_type_fail : bool
-        If True: raise an exception if saving a part of the dict fails.
+        raise_type_fail (bool): If True: raise an exception if saving a part of the dict fails.
         If False: prints a warning instead and saves the
         object's __str__() return value.
 
-    Returns
-    -------
-    None
+    Returns:
+        None
 
     Raises
-    ------
-    FileExistsError
-        If the path specified by the `filename` parameter already exists.
+        FileExistsError
+            If the path specified by the `filename` parameter already exists.
 
-    TypeError
-        If a particular entry within the dict cannot be saved to hdf5 AND
-        the argument `raise_type_fail` is set to `True`
+        TypeError
+            If a particular entry within the dict cannot be saved to hdf5 AND
+            the argument `raise_type_fail` is set to `True`
     """
+
     if os.path.isfile(filename):
         raise FileExistsError
 
@@ -231,15 +225,12 @@ class Serializer:
         Export to an HDF5 file.
         Requires ``h5py`` http://docs.h5py.org/
 
-        Parameters
-        ----------
-        path : str
-            Full file path. File must not already exist.
+        Args:
+            path (str): Full file path. File must not already exist.
 
         Raises
-        ------
-        FileExistsError
-            If a file with the same path already exists.
+            FileExistsError
+                If a file with the same path already exists.
         """
 
         d = self._to_dict()
