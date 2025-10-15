@@ -32,6 +32,7 @@ from . import regression_update
 from .background_estimation import RingModel
 from masknmf.compression import PMDArray
 from .. import display
+from masknmf.utils import Serializer
 
 
 def make_mask_dynamic(
@@ -3051,7 +3052,15 @@ class DemixingState(SignalProcessingState):
         return self.results
 
 
-class DemixingResults:
+class DemixingResults(Serializer):
+    _serialized = {
+        "data_shape",
+        "u_sparse",
+        "v",
+        "a",
+        "v"
+    }
+
     def __init__(
             self,
             data_shape: Tuple[int, int, int],
@@ -3236,6 +3245,11 @@ class DemixingResults:
         return self._global_residual_corr_img
 
     @property
+    def data_shape(self):
+        """alias for shape"""
+        return self.shape
+
+    @property
     def shape(self):
         return self._shape
 
@@ -3274,6 +3288,11 @@ class DemixingResults:
     @property
     def num_frames(self) -> int:
         return self.shape[0]
+
+    @property
+    def u_sparse(self):
+        """alias for u"""
+        return self.u
 
     @property
     def u(self) -> torch.sparse_coo_tensor:
