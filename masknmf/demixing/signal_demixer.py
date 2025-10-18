@@ -3281,11 +3281,11 @@ class DemixingResults(Serializer):
         return self._bkgd_corr_img_normalizer
 
     @property
-    def factorized_bkgd_term1(self) -> Optional[torch.Tensor]:
+    def factorized_bkgd_term1(self) ->Union[None, torch.Tensor]:
         return self._factorized_bkgd_term1
 
     @property
-    def factorized_bkgd_term2(self) -> Optional[torch.Tensor]:
+    def factorized_bkgd_term2(self) -> Union[None, torch.Tensor]:
         return self._factorized_bkgd_term2
 
     @property
