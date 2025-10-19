@@ -105,7 +105,7 @@ class ACArray(FactorizedVideo):
             raise ValueError(f"Spatial and Temporal matrices are not on same device")
         self._device = self._a.device
         t = c.shape[0]
-        self._shape = (t,) + fov_shape
+        self._shape = (t, *fov_shape)
         self.pixel_mat = np.arange(np.prod(self.shape[1:])).reshape(
             [self.shape[1], self.shape[2]], order=order
         )
