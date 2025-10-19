@@ -1,13 +1,13 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
 
 [project]
 name = "masknmf-toolbox"
 version = "0.1.0"
 description = "masknmf pipeline for motion correction, denoising, compression, and demixing of functional neuroimaging data"
 readme = "README.md"
-license = "MIT"
+license = { file = "LICENSE" }
 requires-python = ">=3.11, <3.13"  # ">=3.10"
 authors = [
     { name = "Amol Pasarkar" },
@@ -20,43 +20,36 @@ dependencies = [
     "h5py",
     "scikit-image",
     "cvxpy>=1.6.5",
-    "ipykernel",
-    "future",
-    "line-profiler",
     "networkx",
     "tqdm",
-    "hydra-core",
-    "icecream",
-    # plotting
     "plotly",
-    # "pygfx @ git+https://github.com/pygfx/pygfx.git@main",
     "matplotlib",
-    "jupyter-rfb>=0.5.1",
     "jupyterlab",
-    "simplejpeg",
-    "imgui-bundle",
-    "PyQt5==5.15.11",
-    "pyqt5-qt5==5.15.2; sys_platform == 'win32'",
-    "pyqt5-qt5==5.15.16; sys_platform == 'darwin' or sys_platform == 'linux'",
-    "ipywidgets>=8.0.0,<9",
-    "glfw",
     "pytorch-lightning>=2.5.2",
     "tensorboard>=2.20.0",
     "fastplotlib[imgui,notebook]>=0.5.1",
+    "simplejpeg",
 ]
 
-[dependency-groups]
+[project.optional-dependencies]
+docs = [
+    "sphinx",
+    "sphinx-gallery",
+    "pydata-sphinx-theme",
+    "sphinx-copybutton",
+    "sphinx-design",
+    "pandoc",
+    "imageio[ffmpeg]",
+]
+
 dev = [
     "pytest>=8.4.0",
     "ruff>=0.11.13",
+    "nbmake",
+    "masknmf[docs]",
 ]
 
 [project.urls]
 Homepage = "https://github.com/apasarkar/masknmf-toolbox"
 Repository = "https://github.com/apasarkar/masknmf-toolbox"
 Issues = "https://github.com/apasarkar/masknmf-toolbox/issues"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["masknmf", "masknmf.*"] 
-
