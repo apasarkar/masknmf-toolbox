@@ -1,4 +1,5 @@
 from masknmf.arrays.array_interfaces import LazyFrameLoader, FactorizedVideo, ArrayLike
+from masknmf.utils import Serializer
 import torch
 from typing import *
 import numpy as np
@@ -95,14 +96,22 @@ def _construct_identity_torch_sparse_tensor(dimsize: int, device: str = "cpu"):
     sparse_tensor = torch.sparse_coo_tensor(indices, values, (dimsize, dimsize))
     return sparse_tensor
 
-class PMDArray(FactorizedVideo):
+class PMDArray(FactorizedVideo, Serializer):
     """
     Factorized demixing array for PMD movie
     """
+    _serialized = {
+        "shape",
+        "u",
+        "v",
+        "u_local_projector",
+        "mean_img",
+        "var_img"
+    }
 
     def __init__(
         self,
-        fov_shape: Tuple[int, int, int],
+        shape: Tuple[int, int, int] | np.ndarray,
         u: torch.sparse_coo_tensor,
         v: torch.tensor,
         mean_img: torch.tensor,
@@ -117,7 +126,7 @@ class PMDArray(FactorizedVideo):
         as a global spatial basis for the data).
 
         Args:
-            fov_shape (tuple): (num_frames, fov_dim1, fov_dim2)
+            shape (tuple): (num_frames, fov_dim1, fov_dim2)
             u (torch.sparse_coo_tensor): shape (pixels, rank)
             v (torch.tensor): shape (rank, frames)
             mean_img (torch.tensor): shape (fov_dim1, fov_dim2). The pixelwise mean of the data
@@ -137,7 +146,7 @@ class PMDArray(FactorizedVideo):
             self._u_local_projector = None
 
         self._device = self._u.device
-        self._shape = fov_shape
+        self._shape = tuple(shape)
 
         self.pixel_mat = torch.arange(
             self.shape[1] * self.shape[2], device=self.device

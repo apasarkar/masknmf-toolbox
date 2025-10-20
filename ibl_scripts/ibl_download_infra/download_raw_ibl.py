@@ -10,8 +10,8 @@ Raw Data --> Tiff (decompresses first) --> bin file
 
 one = ONE()
 print(f'Location of data: {one.cache_dir}')
-print('temp')
-eid = 'SP067/2025-06-03/001'
+print('temp REMOTE')
+eid = 'SP058/2024-07-18/001'
 
 # Load experiment description (used to determine pipeline tasks)
 one.load_dataset(eid, '_ibl_experiment.description.yaml', download_only=True)
@@ -19,18 +19,18 @@ one.load_dataset(eid, '_ibl_experiment.description.yaml', download_only=True)
 dyn._get_trials_tasks = lambda *args, **kwargs: dict()  # ignore trials preprocessing
 pipeline = dyn.make_pipeline(one.eid2path(eid), one=one)
 task = pipeline.tasks['MesoscopePreprocess']  # suite2p preprocessing task
-task.device_collection = 'raw_imaging_data_??'
+task.device_collection = 'raw_imaging_data_00'
 # Re-run suite2p
 
 ## Comment from Miles: try commenting this out. If the location is remote, it re-downloads. But default is local.
-# task.location = 'remote'
+task.location = 'remote'
 
 # overwrite=True ensures we don't simply use motion registered data
 ## overwrite: if overwrite False -- it will skip tiff extraction + registration and move straight to ROI detection
 ## do_registration is just to run moco
 ## ROI Detection 
 ## rename_files -- whether or not to write the suite2p ROI detection outputs to the ONE/Alf format (mpci etc.) 
-status = task.run(check_hash=False, overwrite=True, do_registration=True, roidetect=True, keep_movie_raw=True, rename_files=True)
+status = task.run(check_hash=False, overwrite=True, do_registration=True, roidetect=True, keep_movie_raw=True, rename_files=False)
 assert status == 0, 'task run failed'
 files = sorted(task.session_path.glob('suite2p/plane*/data.bin'))
 # task.cleanUp() # deletes unarchived tif files

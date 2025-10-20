@@ -38,7 +38,7 @@ def compute_highpass_filter_kernel(gaussian_sigma: List[int]) -> torch.tensor:
     ker2D[nz] -= ker2D[nz].mean()
     ker2D[zz] = 0
 
-    ker2D /= np.sum(ker2D)
+    # ker2D /= torch.sum(ker2D)
 
     return ker2D
 
