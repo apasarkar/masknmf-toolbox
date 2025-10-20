@@ -13,6 +13,7 @@ authors = [
     { name = "Amol Pasarkar" },
 ]
 keywords = ["neuroimaging", "motion correction", "demixing", "calcium imaging"]
+
 dependencies = [
     "torch>2",
     "numpy",
@@ -48,6 +49,10 @@ dev = [
     "nbmake",
     "masknmf[docs]",
 ]
+
+[tool.flit.module]
+name = "masknmf"
+
 
 [project.urls]
 Homepage = "https://github.com/apasarkar/masknmf-toolbox"
