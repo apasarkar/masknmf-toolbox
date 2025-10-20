@@ -1,8 +1,10 @@
-[Inputs](#input-parameters) | [Output](#output) | [Examples](#example-usage) | [APIs](#api-reference-—-pmd_decomposition)
+[![CI](https://github.com/Lindsey-cyber/masknmf-toolbox/actions/workflows/test_install.yml/badge.svg)](https://github.com/Lindsey-cyber/masknmf-toolbox/actions)  
 
-Efficient **Penalized Matrix Decomposition (PMD)** function `pmd_decomposition()` for compressing and denoising large-scale functional imaging datasets (e.g., calcium imaging or voltage imaging).
+**[Examples](#example-usage) | [Inputs](#input-parameters) | [Output](#output) | [APIs](#api-reference-—-pmd_decomposition)**
 
-`pmd_decomposition()` automatically divides data into overlapping spatial blocks, performs truncated randomized local SVD to get low-rank spatial and temporal decompositions, filters out noisy components, and stitches results together into a global clean, low-rank representation of your data ready for analysis.
+Next-gen **large-scale functional imaging** compression and denoising using **[Penalized Matrix Decomposition (PMD)](https://arxiv.org/abs/1807.06203)**.
+
+**`pmd_decomposition()`** automatically partitions large functional imaging datasets(e.g., calcium imaging or voltage imaging) into overlapping spatial blocks, performs randomized local SVD for low-rank decomposition, removes noise adaptively, and stitches results into a clean, global representation ready for downstream analysis.
 
 # What can I do with `pmd_decomposition()`?
 
@@ -17,15 +19,19 @@ $$
 * **U** — spatial basis matrix (sparse, `[H×W, n_components]`)  
 * **V** — temporal basis matrix (dense, `[n_components, T]`)  
 
-Together they represent a compressed and denoised form of your movie by:
+Together they represent a compressed and denoised form of your movie.
+
+The process:
 
 1. Split large field of view into overlapping spatial blocks 
 
 2. Perform truncated randomized SVD on each block to capture local low-rank signals
 
-3. Estimates roughness thresholds from simulated noise; discards noisy components and merges valid ones into a global sparse representation (U, V)
+3. Optionally apply temporal and spatial denoisers (from previous neural network training) that smooth the extracted time traces and spatial components
 
-4. Outputs a lightweight PMDArray object for downstream demixing
+4. Estimates roughness thresholds from simulated noise; discards noisy components and merges valid ones into a global sparse representation (U, V)
+
+5. Outputs a lightweight [PMDArray](#output) object for downstream demixing
 
 # Example Usage
 
@@ -51,7 +57,7 @@ print("U:", U.shape, "V:", V.shape)
 
 # Inputs
 
-**`dataset`** : `np.ndarray` or `torch.Tensor`  
+**`dataset`** : `np.ndarray` or `torch.Tensor` or `masknmf.ArrayLike` or `masknmf.LazyFrameLoader`  
 Input movie with shape `(T, H, W)`
 
 **`block_sizes`** : `(int, int)`  
@@ -86,13 +92,13 @@ reconstructed = (pmd_result.u.to_dense() @ pmd_result.v).reshape(T, H, W)
 
 # Notes for Developers
 
-This implementation omits explicit spatial/temporal penalties from the original PMD (Buchanan et al., 2018) and instead uses roughness-based thresholds to reject noisy components.
+* This implementation omits explicit spatial/temporal penalties from the original PMD (Buchanan et al., 2018) and instead uses roughness-based thresholds to reject noisy components.
 
-A randomized SVD algorithm (Halko et al., 2011) is used for efficient local decomposition.
+* A randomized SVD algorithm (Halko et al., 2011) is used for efficient local decomposition.
 
-Each block adaptively selects its rank based on smoothness statistics, stopping when components become too noisy.
+* Each block adaptively selects its rank based on smoothness statistics, stopping when components become too noisy.
 
-Use .coalesce() to merge duplicate indices in sparse COO tensors.
+* Use `.coalesce()` to merge duplicate indices in sparse COO tensors.
 
 # Credits
 
@@ -100,54 +106,46 @@ Adapted from Buchanan et al., 2018 (bioRxiv) and used in the maskNMF pipeline (P
 
 Built with PyTorch for flexible CPU/GPU performance.
 
-# API Reference — `pmd_decomposition()`
-
-## Parameters
+# API Reference - `pmd_decomposition()` parameters
 
 ### 🗂️ Data Input
 - **`dataset`** *(masknmf.ArrayLike | masknmf.LazyFrameLoader)*  
   Input dataset of shape `(frames, height, width)`.
+  Can be a NumPy array, PyTorch tensor, or a lazy loader that streams frames from disk.
 
 - **`block_sizes`** *(Tuple[int, int])*  
   Spatial block size for local decomposition. Each dimension must be ≥10.
+  Smaller blocks increase locality but reduce global context.
 
 - **`frame_range`** *(int)*  
   Number of frames used to estimate spatial and temporal bases.
 
----
-
 ### ⚙️ Model & Components
 - **`max_components`** *(int, default=20)*  
-  Maximum number of components per spatial block.
+  Maximum number of components to extract from each spatial block.
 
 - **`sim_conf`** *(int, default=5)*  
-  Percentile value defining roughness thresholds for keeping/rejecting components.
+  Percentile value (0–100) defining spatial and temporal roughness thresholds for keeping or rejecting components. Smaller values → stricter noise rejection.
 
 - **`max_consecutive_failures`** *(int, default=1)*  
-  Stops accepting new components after this many failures.
-
----
+  Stops accepting new components for a block after this many consecutive components fail the roughness test. Prevents overfitting to noise.
 
 ### 💾 Performance & Memory
 - **`frame_batch_size`** *(int, default=10000)*  
   Max frames loaded into memory at one time.
 
 - **`spatial_avg_factor`** *(int, default=1)*  
-  Optional spatial downsampling factor.
+  Optional spatial downsampling factor. Values >1 improve robustness but may blur fine spatial signals. Keep 1 if neurons occupy few pixels.
 
 - **`temporal_avg_factor`** *(int, default=1)*  
-  Optional temporal downsampling factor.
-
----
+  Optional temporal downsampling factor. Values >1 improve temporal smoothness but may lose single-frame events. Keep 1 for sparse signals.
 
 ### 🧮 Normalization & Weighting
 - **`compute_normalizer`** *(bool, default=True)*  
-  If True, estimates per-pixel noise variance (`var_img`).
+  If True, estimates per-pixel noise variance (`var_img`). If False, normalization is skipped (set to 1).
 
 - **`pixel_weighting`** *(Optional[np.ndarray], default=None)*  
   Optional spatial weighting map `(H, W)` to upweight signal pixels.
-
----
 
 ### 🧠 Denoisers
 - **`spatial_denoiser`** *(Optional[torch.nn.Module], default=None)*  
@@ -155,8 +153,6 @@ Built with PyTorch for flexible CPU/GPU performance.
 
 - **`temporal_denoiser`** *(Optional[torch.nn.Module], default=None)*  
   Optional callable applied to temporal traces.
-
----
 
 ### 🖥️ Device
 - **`device`** *(str, default="cpu")*  
