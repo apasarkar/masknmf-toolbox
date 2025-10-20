@@ -3,7 +3,7 @@ requires = ["flit_core >=3.2,<4"]
 build-backend = "flit_core.buildapi"
 
 [project]
-name = "masknmf-toolbox"
+name = "masknmf"
 version = "0.1.0"
 description = "masknmf pipeline for motion correction, denoising, compression, and demixing of functional neuroimaging data"
 readme = "README.md"
@@ -50,8 +50,6 @@ dev = [
     "masknmf[docs]",
 ]
 
-[tool.flit.module]
-name = "masknmf"
 
 
 [project.urls]
