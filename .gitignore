@@ -164,3 +164,5 @@ cython_debug/
 *.npz
 *.npy
 *.tif*
+docs/source/_gallery/
+docs/source/sg_execution_times.rst
