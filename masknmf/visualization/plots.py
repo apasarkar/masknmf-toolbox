@@ -5,7 +5,7 @@ import numpy as np
 import os
 import plotly.graph_objects as go
 import plotly.subplots as sp
-
+import matplotlib.pyplot as plt
 import masknmf
 from masknmf.demixing import ResidCorrMode
 
@@ -160,6 +160,7 @@ def plot_ith_roi(
             f"folder {folder} does not exist; please make it then run this code"
         )
 
+    background_to_signal_corr_image = results.background_to_signal_correlation_image
     order = results.order
     current_a = (
         torch.index_select(results.a, 1, torch.arange(i, i + 1).to(results.device))
@@ -206,6 +207,10 @@ def plot_ith_roi(
         i, lb_dim1:ub_dim1, lb_dim2:ub_dim2
     ]
 
+    curr_background_to_signal_corr = background_to_signal_corr_image[
+        i, lb_dim1:ub_dim1, lb_dim2:ub_dim2
+    ]
+
     # Create x and y axes that match the p1 and p2 coordinates
     x_ticks = np.arange(lb_dim2, ub_dim2)
     y_ticks = np.arange(lb_dim1, ub_dim1)
@@ -213,13 +218,14 @@ def plot_ith_roi(
     # Create a Plotly subplot
     fig = sp.make_subplots(
         rows=5,
-        cols=5,
+        cols=6,
         subplot_titles=[
             "Spatial Footprint",
             "Residual Std Dev Image",
             "PMD Std Dev Image",
             "Corr(PMD, c_i)",
             "Corr(Resid, c_i)",
+            "Corr(Bkgd, c_i)",
             "Temporal Trace",
             "Background Trace",
             "Residual",
@@ -232,11 +238,12 @@ def plot_ith_roi(
                 {"type": "heatmap"},
                 {"type": "heatmap"},
                 {"type": "heatmap"},
+                {"type": "heatmap"},
             ],
-            [{"colspan": 5}, None, None, None, None],
-            [{"colspan": 5}, None, None, None, None],
-            [{"colspan": 5}, None, None, None, None],
-            [{"colspan": 5}, None, None, None, None],
+            [{"colspan": 6}, None, None, None, None, None],
+            [{"colspan": 6}, None, None, None, None, None],
+            [{"colspan": 6}, None, None, None, None, None],
+            [{"colspan": 6}, None, None, None, None, None],
         ],
     )
 
@@ -295,6 +302,18 @@ def plot_ith_roi(
         col=5,
     )
 
+    fig.add_trace(
+        go.Heatmap(
+            z=curr_background_to_signal_corr,
+            x=x_ticks,
+            y=y_ticks,
+            showscale=False,
+            colorscale="Viridis",
+        ),
+        row=1,
+        col=6,
+    )
+
     # Temporal Trace
     fig.add_trace(
         go.Scatter(y=signal_roi_avg, mode="lines", name="Signal"), row=2, col=1
@@ -348,6 +367,8 @@ def plot_ith_roi(
         yaxis4=dict(matches="y1", scaleanchor="x1", scaleratio=1),
         xaxis5=dict(matches="x1", scaleanchor="y1", scaleratio=1),
         yaxis5=dict(matches="y1", scaleanchor="x1", scaleratio=1),
+        xaxis6=dict(matches="x1", scaleanchor="y1", scaleratio=1),
+        yaxis6=dict(matches="y1", scaleanchor="x1", scaleratio=1),
     )
 
     # Save to an HTML file
@@ -591,3 +612,115 @@ def pmd_spike_diagnostic(moco_stack: np.ndarray,
     )
 
     return fig
+
+
+
+def pmd_temporal_denoiser_trace_plot(raw_trace: np.ndarray,
+                             network_prediction: np.ndarray,
+                             mixed_prediction: np.ndarray,
+                             signal_weight: np.ndarray,
+                             observation_weight: np.ndarray,
+                             total_var: np.ndarray,
+                             noise_variance: np.ndarray,
+                             out_folder: Optional[str]=None,
+                             out_name: Optional[str]=None,
+                             ground_truth: Optional[np.ndarray] = None):
+    """
+    Plots information related to the temporal PMD denoiser
+
+    Args:
+        raw_trace (np.ndarray): The raw input signal trace, shape (num_timesteps,).
+        network_prediction (np.ndarray): The predicted signal from the neural network, shape (num_timesteps,).
+        mixed_prediction (np.ndarray): The final mixed prediction after combining held out observation data with
+            the neural network output, shape (num_timesteps,).
+        signal_weight (np.ndarray): Weight given to the neural network prediction at each time step. Values in [0, 1], shape (num_timesteps,)
+        observation_weight (np.ndarray): Weight given to the observed data when forming a mixed prediction. Values in [0, 1], shape (num_timesteps,)
+        total_var (np.ndarray): The total variance estimate at each time point. shape (num_timesteps,)
+        noise_variance (np.ndarray): Estimated noise variance in the raw signal.
+        out_folder (Optional[str], optional): Directory path where the plot should be saved. If None, the plot is shown instead.
+        out_name (Optional[str], optional): File name for saving the plot. Only used if `out_folder` is specified.
+        ground_truth (Optional[np.ndarray], optional): Ground truth signal for comparison, if available.
+
+    Returns:
+        None
+
+    Raises:
+        ValueError: If input arrays have incompatible shapes.
+        OSError: If `out_folder` is specified but the path is invalid or not writable.
+    """
+    residual = raw_trace - mixed_prediction
+
+    if ground_truth is not None:
+        signals = [
+            ground_truth,
+            raw_trace,
+            network_prediction,
+            mixed_prediction,
+            residual,
+            signal_weight,
+            observation_weight,
+            total_var
+        ]
+
+        titles = [
+            "Ground Truth",
+            "Noisy Trace",
+            "Network Prediction",
+            "Mixed Prediction",
+            "Residual (Noisy - Mixed)",
+            "Signal Weight",
+            "Observation Weight",
+            f"Total Variance. NoiseVar = {float(noise_variance[0]):.2}"
+        ]
+        noisy_index = 1
+        mixed_index = 3
+    else:
+        signals = [
+            raw_trace,
+            network_prediction,
+            mixed_prediction,
+            residual,
+            signal_weight,
+            observation_weight,
+            total_var
+        ]
+
+        titles = [
+            "Noisy Trace",
+            "Network Prediction",
+            "Mixed Prediction",
+            "Residual (Noisy - Mixed)",
+            "Signal Weight",
+            "Observation Weight",
+            f"Total Variance. NoiseVar = {float(noise_variance[0]):.2}"
+        ]
+        noisy_index = 0
+        mixed_index = 2
+
+    n_signals = len(signals)
+    fig, axes = plt.subplots(n_signals, 1, figsize=(10, 2 * n_signals), sharex=True)
+
+    if n_signals == 1:
+        axes = [axes]
+
+    for i, (ax, title) in enumerate(zip(axes, titles)):
+        if i == noisy_index:
+            # Plot both noisy trace and mixed prediction
+            trace_1 = signals[noisy_index]
+            trace_2 = signals[mixed_index]
+            ax.plot(trace_1, label="Noisy", lw=1.5)
+            ax.plot(trace_2, label="Mixed", lw=1.5, color='orange')
+            ax.legend()
+        else:
+            ax.plot(signals[i], lw=1.5)
+        ax.set_title(title)
+        ax.grid(True)
+
+    axes[-1].set_xlabel("Time")
+    plt.tight_layout()
+    if out_folder is not None and out_name is not None:
+        final_path = os.path.join(out_folder, out_name)
+        print(final_path)
+        plt.savefig(final_path, bbox_inches="tight")
+    else:
+        plt.show()

@@ -27,32 +27,46 @@ class ROIManager(ui.EdgeWindow):
     def update(self):
         _, self.add_rois_mode = imgui.checkbox("Add ROI", self.add_rois_mode)
 
-
 class PMDWidget:
     def __init__(self,
-                 comparison_stack: masknmf.arrays.FactorizedVideo,
+                 comparison_stack: Union[np.ndarray, masknmf.LazyFrameLoader],
                  pmd_stack: masknmf.PMDArray,
                  frame_batch_size: int=200,
+                 mean_subtract: bool = False,
                  device="cpu"):
 
+        self._mean_subtract = mean_subtract
         pmd_stack.to(device)
-        self._comparison_stack = comparison_stack
         self._pmd_stack = pmd_stack
-        self._residual_stack = masknmf.PMDResidualArray(self.comparison_stack, self.pmd_stack)
+        self._input_raw_stack = comparison_stack
+        if self._mean_subtract:
+            ref_mean_img = self.pmd_stack.mean_img.cpu().numpy()[None, :, :]
+            self._comparison_stack = masknmf.FilteredArray(self._input_raw_stack,
+                                       lambda x: x - ref_mean_img,
+                                      device='cpu')
+            self._pmd_stack.rescale = False
+        else:
+            self._comparison_stack = comparison_stack
+            self._pmd_stack.rescale = True
+
+        # Tricky: comparison stack is not mean subtracted, which is what we need to pass in to the residual array and to the autocov diagnostic
+        self._residual_stack = masknmf.PMDResidualArray(comparison_stack, self.pmd_stack)
         display('Computing Residual Statistics')
-        raw_lag1, pmd_lag1, resid_lag1 = masknmf.diagnostics.pmd_autocovariance_diagnostics(self.comparison_stack,
+        raw_lag1, pmd_lag1, resid_lag1 = masknmf.diagnostics.pmd_autocovariance_diagnostics(self._input_raw_stack,
                                                                                             self.pmd_stack,
                                                                                             batch_size=frame_batch_size,
                                                                                             device=device)
         display('Residual Statistics: Complete')
+        mcorr_name = "mcorr mean 0" if mean_subtract else "mcorr"
+        pmd_name = "pmd mean 0" if mean_subtract else "pmd"
         self._iw = fpl.ImageWidget([self.comparison_stack,
                                     self.pmd_stack,
                                     self._residual_stack,
                                     raw_lag1,
                                     pmd_lag1,
                                     resid_lag1],
-                                   names=["mcorr",
-                                          "pmd",
+                                   names=[mcorr_name,
+                                          pmd_name,
                                           "residual",
                                           'mcorr lag1 acf',
                                           'pmd lag1 acf',
@@ -63,21 +77,35 @@ class PMDWidget:
         self.image_graphics = [k for k in self.iw.managed_graphics]
 
         self._fig_temporal = fpl.Figure(shape=(3, 1), names=["mcorr", "pmd", "residual"])
-        self.fig_temporal["mcorr"].add_line(np.zeros(self.pmd_stack.shape[0]))
-        self.fig_temporal["pmd"].add_line(np.zeros(self.pmd_stack.shape[0]))
-        self.fig_temporal["residual"].add_line(np.zeros(self.pmd_stack.shape[0]))
-
-        for subplot in self.fig_temporal:
-            subplot.toolbar = False
+        self._mcorr_line = self.fig_temporal["mcorr"].add_line(np.zeros(self.pmd_stack.shape[0]))
+        self._pmd_line = self.fig_temporal["pmd"].add_line(np.zeros(self.pmd_stack.shape[0]))
+        self._resid_line = self.fig_temporal["residual"].add_line(np.zeros(self.pmd_stack.shape[0]))
 
         self._mcorr_selectors = list()
         self._pmd_selectors = list()
         self._residual_selectors = list()
 
+        self._moco_ls = self._mcorr_line.add_linear_selector()
+        self._pmd_ls = self._pmd_line.add_linear_selector()
+        self._resid_ls= self._resid_line.add_linear_selector()
+
+        self._mcorr_selectors.append(self._moco_ls)
+        self._pmd_selectors.append(self._pmd_ls)
+        self._residual_selectors.append(self._resid_ls)
+
+        self._iw.add_event_handler(self._sync_time, "current_index")
+        self._moco_ls.add_event_handler(self._sync_time, "selection")
+        self._pmd_ls.add_event_handler(self._sync_time, "selection")
+        self._resid_ls.add_event_handler(self._sync_time, "selection")
+
+
+        for subplot in self.fig_temporal:
+            subplot.toolbar = False
+
         self.rect_selector_kwargs = dict(
             edge_thickness=1,
             edge_color="w",
-            vertex_thickness=3.0,
+            vertex_size=3.0,
             vertex_color="cyan"
         )
 
@@ -96,6 +124,18 @@ class PMDWidget:
 
         self.iw.figure.renderer.add_event_handler(self.resize_rect, "pointer_move")
         self.iw.figure.renderer.add_event_handler(self.end_resize, "pointer_up")
+
+
+    def _sync_time(self, ev: dict | fpl.GraphicFeatureEvent):
+        if isinstance(ev, dict):
+            index = ev["t"]  # event from imagewidget
+        else:
+            # event from linear selector
+            index = int(ev.info["value"])
+        self.iw.current_index = {"t": index}
+        self._moco_ls.selection = index
+        self._pmd_ls.selection = index
+        self._resid_ls.selection = index
 
     @property
     def comparison_stack(self):
@@ -206,9 +246,12 @@ class PMDWidget:
 
     def _crop_and_display(self):
 
-        mcorr_temporal = self.comparison_stack[:, self._row_slice, self._col_slice].mean(axis=(1, 2))
-
+        mcorr_temporal = self._input_raw_stack[:, self._row_slice, self._col_slice].mean(axis=(1, 2))
         pmd_temporal = self.pmd_stack[:, self._row_slice, self._col_slice].mean(axis=(1, 2))
+        if self._mean_subtract:
+            mcorr_temporal -= np.mean(mcorr_temporal.flatten())
+            pmd_temporal -= np.mean(pmd_temporal.flatten())
+
         residual_temporal = mcorr_temporal - pmd_temporal
         self.fig_temporal["mcorr"].graphics[0].data[:, 1] = mcorr_temporal
         self.fig_temporal["pmd"].graphics[0].data[:, 1] = pmd_temporal
@@ -228,40 +271,33 @@ class PMDWidget:
         return VBox([self.iw.show(), self.fig_temporal.show(maintain_aspect=False)])
 
 
-def signal_space_demixing(
-    demixing_results: DemixingResults, pmd_array: PMDArray, v_range: tuple
-):
-    mean_img = pmd_array.mean_img
-    dense_ac_movie = demixing_results.ac_array[:]
-
-    num_frames, fov_dim1, fov_dim2 = dense_ac_movie.shape
+def signal_space_demixing(demixing_results: masknmf.DemixingResults,
+                          v_range: tuple,
+                          device: str = 'cpu'):
+    demixing_results.to(device)
+    pmd_arr = demixing_results.pmd_array
+    pmd_arr.rescale = False
+    ac_arr = demixing_results.ac_array
+    num_frames, fov_dim1, fov_dim2 = pmd_arr.shape
 
     data_order = demixing_results.ac_array.order
-    a_dense = (
-        demixing_results.ac_array.a.cpu()
-        .to_dense()
-        .numpy()
-        .reshape((fov_dim1, fov_dim2, -1), order=data_order)
-    )
-    c_numpy = demixing_results.ac_array.c.cpu().numpy()
+    a_dense = demixing_results.ac_array.export_a()
+    c_numpy = demixing_results.ac_array.export_c()
+    print(c_numpy.shape)
     colors = demixing_results.colorful_ac_array.colors.cpu().numpy()
 
     color_projection_img = np.tensordot(a_dense, colors, axes=(2, 0))
 
-    normalized_ac_movie = dense_ac_movie / np.amax(dense_ac_movie)
-    normalized_mean_img = mean_img / np.amax(mean_img)
-
-    superimposed_movie = normalized_ac_movie + 5 * normalized_mean_img[None, :, :]
     iw = fpl.ImageWidget(
-        data=[color_projection_img, dense_ac_movie, superimposed_movie],
-        names=["Signal Img", "Signal Movie", "Superimposed"],
-        rgb=[True, False, False],
+        data=[pmd_arr, ac_arr, color_projection_img],
+        names=["pmd", "ac_movie", "color projection"],
+        rgb=[False, False, True],
         figure_shape=(1, 3),
         histogram_widget=True,
         graphic_kwargs={"vmin": v_range[0], "vmax": v_range[1]},
     )
 
-    ig = iw.figure[0, 0]["image_widget_managed"]
+    ig = iw.figure[0, 2]["image_widget_managed"]
     iw.vmin = 0
     ig.vmax = 255
 
@@ -273,21 +309,21 @@ def signal_space_demixing(
 
     def clickEvent(ev):
         dim2_coord, dim1_coord = ev.pick_info["index"]
+        print(type(dim2_coord))
+        print(dim2_coord)
+        print(isinstance(dim2_coord, np.integer))
 
         a_identified = a_dense[dim1_coord, dim2_coord, :] != 0
         num_neurons = np.sum(a_identified.astype("int"))
         if num_neurons == 0:
             line_fig[0, 0].clear()
             line_fig[0, 0].add_line(data=placeholder)
-            line_fig[0, 0].set_title(f"No Signals at {dim2_coord, dim2_coord}")
+            line_fig[0, 0].title = f"No Signals at {dim2_coord, dim2_coord}"
             line_fig[1, 0].clear()
-            trace_to_show = (
-                pmd_array[:, dim1_coord, dim2_coord]
-                - pmd_array.mean_img[dim1_coord, dim2_coord]
-            ) / pmd_array.var_img[dim1_coord, dim2_coord]
+            trace_to_show = pmd_arr[:, slice(dim1_coord, dim1_coord + 1), slice(dim2_coord, dim2_coord + 1)]
             mean_pmd_trace = np.column_stack([np.arange(num_frames), trace_to_show])
             line_fig[1, 0].add_line(mean_pmd_trace)
-            line_fig[1, 0].set_title(f"PMD Signal")
+            line_fig[1, 0].title = f"PMD Signal"
         else:
             line_fig[0, 0].clear()
             line_fig[1, 0].clear()
@@ -316,14 +352,11 @@ def signal_space_demixing(
             line_fig[0, 0].add_line_stack(
                 list_elts, colors=rgba_colors.squeeze(), separation=2
             )
-            line_fig[0, 0].set_title(f"Signals at {dim2_coord, dim1_coord}.")
-            trace_to_show = (
-                pmd_array[:, dim1_coord, dim2_coord]
-                - pmd_array.mean_img[dim1_coord, dim2_coord]
-            ) / pmd_array.var_img[dim1_coord, dim2_coord]
+            line_fig[0, 0].title = f"Signals at {dim2_coord, dim1_coord}."
+            trace_to_show = pmd_arr[:, dim1_coord, dim2_coord]
             mean_pmd_trace = np.column_stack([np.arange(num_frames), trace_to_show])
             line_fig[1, 0].add_line(mean_pmd_trace)
-            line_fig[1, 0].set_title(f"PMD Signal")
+            line_fig[1, 0].title = f"PMD Signal"
 
         line_fig[1, 0].auto_scale(maintain_aspect=False)
         line_fig[0, 0].auto_scale(maintain_aspect=False)
@@ -333,7 +366,6 @@ def signal_space_demixing(
     iw.figure[0, 2].graphics[0].add_event_handler(clickEvent, "click")
 
     return VBox([iw.show(), line_fig.show()])
-
 
 def stack_comparison_interface(
     stack_1: Union[np.ndarray, PMDArray],
@@ -413,7 +445,7 @@ def get_correlation_widget(image_stack: np.ndarray) -> HBox:
 def make_demixing_video(
     results: DemixingResults,
     device: str,
-    v_range: tuple[float, float],
+    v_range: Tuple[float, float],
     show_histogram: bool = False,
 ) -> ImageWidget:
     results.to(device)
@@ -423,17 +455,17 @@ def make_demixing_video(
     pmd_arr = results.pmd_array
     residual_arr = results.residual_array
     colorful_arr = results.colorful_ac_array
-    static_bg = results.baseline.cpu().numpy()
+    global_residual_img = results.global_residual_correlation_image.cpu().numpy()
 
     iw = ImageWidget(
-        data=[pmd_arr, ac_arr, fluctuating_arr, residual_arr, colorful_arr, static_bg],
+        data=[pmd_arr, ac_arr, fluctuating_arr, residual_arr, colorful_arr, global_residual_img],
         names=[
             "pmd",
             "signals",
             "fluctuating bkgd",
             "residual",
             "colorful signals",
-            "static Bkgd",
+            "global resid corr img",
         ],
         rgb=[False, False, False, False, True, False],
         histogram_widget=show_histogram,
@@ -445,7 +477,31 @@ def make_demixing_video(
     for i, subplot in enumerate(iw.figure):
         if i == 4:
             ig = subplot["image_widget_managed"]
-            iw.vmin = 0
+            ig.vmin = 0
             ig.vmax = 255
+        if i == 5:
+            ig = subplot["image_widget_managed"]
+            ig.vmin = 0.0
+            ig.vmax = 1.0
 
+
+    return iw
+
+
+def visualize_superpixels_peaks(superpixel_results: dict):
+    superpixel_map = superpixel_results['superpixel_map']
+    pure_superpixel_map = superpixel_results['pure_superpixel_map']
+    correlation_image = superpixel_results['correlation_image']
+
+    superpixel_img = np.stack([correlation_image.copy()] * 3, axis=-1)
+    superpixel_img[superpixel_map > 0] = [4, 0, 0]
+
+    pure_superpixel_img = np.stack([correlation_image.copy()] * 3, axis=-1)
+    pure_superpixel_img[pure_superpixel_map > 0] = [4, 0, 0]
+    iw = fpl.ImageWidget(data=[np.stack([correlation_image] * 3, axis=-1),
+                               superpixel_img,
+                               pure_superpixel_img],
+                         rgb=[True, True, True],
+                         figure_shape=(1, 3),
+                         names=['corr', 'superpix', 'pure superpix'])
     return iw

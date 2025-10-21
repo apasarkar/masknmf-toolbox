@@ -1,0 +1,106 @@
+# use same docs build & deploy system as fastplotlib as of October 2025
+name: Deploy docs
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+  release:
+    types: [published]
+
+jobs:
+  build-docs:
+    name: "Build and deploy docs"
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.pull_request.draft }}
+    permissions:
+      pull-requests: write
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.12
+      - name: Install llvmpipe and lavapipe for offscreen canvas
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install --no-install-recommends -y ffmpeg libegl1-mesa-dev libgl1-mesa-dri libxcb-xfixes0-dev mesa-vulkan-drivers
+      - name: Install doc dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e ".[docs]"
+      - name: Show wgpu backend
+        run:
+          python -c "from examples.tests.testutils import wgpu_backend; print(wgpu_backend)"
+      - name: build docs
+        # RTD_BUILD=1 will cause the ImageWidget to auto-play so an animation/video will appear in the docs
+        run: |
+          cd docs
+          RTD_BUILD=1 make html SPHINXOPTS="-W --keep-going"
+
+      # set environment variable `DOCS_VERSION_DIR` to either the pr-branch name, "dev", or the release version tag
+      - name: set output pr
+        if: ${{ github.ref != 'refs/heads/main' }}
+        # sets dir to the branch name when it's a PR
+        # ex: masknmf.org/ver/feature-branch
+        run: echo "DOCS_VERSION_DIR=$GITHUB_HEAD_REF" >> "$GITHUB_ENV"
+
+      - name: set output release
+        if: ${{ github.ref_type == 'tag' }}
+        # sets dir to the release version tag, ex. v0.3.0 (I think...)
+        # ex: masknmf.org/ver/v0.3.0
+        run: echo "DOCS_VERSION_DIR=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+
+      - name: set output dev
+        if: ${{ github.ref == 'refs/heads/main' }}
+        # any push to main goes to masknmf.org/ver/dev
+        run: echo "DOCS_VERSION_DIR=dev" >> "$GITHUB_ENV"
+
+      # upload docs via SCP
+      - name: Deploy docs
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DOCS_SERVER }}
+          username: ${{ secrets.DOCS_USERNAME }}
+          port: ${{ secrets.DOCS_PORT }}
+          key: ${{ secrets.DOCS_KEY }}
+          passphrase: ${{ secrets.DOCS_PASS }}
+          source: "docs/build/html/*"
+          # without strip_components it creates dirs docs/build/html within /ver on the server
+          strip_components: 3
+          target: /home/${{ secrets.DOCS_USERNAME }}/public_html/ver/${{ env.DOCS_VERSION_DIR }}/
+
+      # comment on PR to provide link to built docs
+      - name: Add PR link in comment
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: mshick/add-pr-comment@v2
+        with:
+          message: |
+            📚 Docs preview built and uploaded! https://www.masknmf.org/ver/${{ env.DOCS_VERSION_DIR }}
+
+      # upload docs via SCP
+      - name: Deploy docs release
+        if: ${{ github.ref_type == 'tag' }}
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DOCS_SERVER }}
+          username: ${{ secrets.DOCS_USERNAME }}
+          port: ${{ secrets.DOCS_PORT }}
+          key: ${{ secrets.DOCS_KEY }}
+          passphrase: ${{ secrets.DOCS_PASS }}
+          source: "docs/build/html/*"
+          # without strip_components it creates dirs docs/build/html within /ver on the server
+          strip_components: 3
+          target: /home/${{ secrets.DOCS_USERNAME }}/public_html/

@@ -1,0 +1,12 @@
+[
+    {
+        "name": "release",
+        "version": "v0.1.0",
+        "url": "http://www.masknmf.org/"
+    },
+    {
+        "name": "dev/main",
+        "version": "dev",
+        "url": "http://www.masknmf.org/ver/dev"
+    },
+]

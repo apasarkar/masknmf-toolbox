@@ -1,4 +1,5 @@
-from masknmf.arrays.array_interfaces import LazyFrameLoader, FactorizedVideo
+from masknmf.arrays.array_interfaces import LazyFrameLoader, FactorizedVideo, ArrayLike
+from masknmf.utils import Serializer
 import torch
 from typing import *
 import numpy as np
@@ -55,6 +56,16 @@ def test_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
     cropping can be an expensive and avoidable operation.
     """
     for k in range(len(my_tuple)):
+        if isinstance(my_tuple[k], np.ndarray):
+            if my_tuple[k].shape[0] < spatial_dims[k]:
+                return True
+
+        if isinstance(my_tuple[k], np.integer):
+            return True
+
+        if isinstance(my_tuple[k], int):
+            return True
+
         if isinstance(my_tuple[k], slice):
             if test_slice_effect(my_tuple[k], spatial_dims[k]):
                 return True
@@ -85,58 +96,27 @@ def _construct_identity_torch_sparse_tensor(dimsize: int, device: str = "cpu"):
     sparse_tensor = torch.sparse_coo_tensor(indices, values, (dimsize, dimsize))
     return sparse_tensor
 
-
-def convert_dense_image_stack_to_pmd_format(img_stack: Union[torch.tensor, np.ndarray]):
-    """
-    Adapter for converting a dense np.ndarray image stack into a pmd_array. Note that this does not
-    run PMD compression; it simply reformats the data into the SVD format needed to construct a PMDArray object.
-    The resulting PMDArray should contain identical data to img_stack (up to numerical precision errors).
-    All computations are done in numpy on CPU here because that is the only approach that produces an SVD of the
-    raw data that is exactly equal to img_stack.
-
-    Args:
-        img_stack (Union[np.ndarray, torch.tensor]): A (frames, fov_dim1, fov_dim2) shaped image stack
-    Returns:
-        pmd_array (masknmf.compression.PMDArray): img_stack expressed in the pmd_array format. pmd_array contains the
-            same data as img_stack.
-    """
-
-    if isinstance(img_stack, torch.Tensor):
-        img_stack = img_stack.cpu().numpy()
-
-    if isinstance(img_stack, np.ndarray):
-        num_frames, fov_dim1, fov_dim2 = img_stack.shape
-        img_stack_t = img_stack.transpose(1, 2, 0).reshape(
-            (fov_dim1 * fov_dim2, num_frames)
-        )
-        r, s, v = [
-            torch.tensor(k).float()
-            for k in np.linalg.svd(img_stack_t, full_matrices=False)
-        ]
-        u = _construct_identity_torch_sparse_tensor(fov_dim1 * fov_dim2, device="cpu")
-        mean_img = torch.zeros(fov_dim1, fov_dim2, device="cpu", dtype=torch.float32)
-        var_img = torch.ones(fov_dim1, fov_dim2, device="cpu", dtype=torch.float32)
-
-        return PMDArray(img_stack.shape, u, r, s, v, mean_img, var_img, device="cpu")
-
-    else:
-        raise ValueError(f"{type(img_stack)} not a supported type")
-
-
-class PMDArray(FactorizedVideo):
+class PMDArray(FactorizedVideo, Serializer):
     """
     Factorized demixing array for PMD movie
     """
+    _serialized = {
+        "shape",
+        "u",
+        "v",
+        "u_local_projector",
+        "mean_img",
+        "var_img"
+    }
 
     def __init__(
         self,
-        fov_shape: Tuple[int, int, int],
+        shape: Tuple[int, int, int] | np.ndarray,
         u: torch.sparse_coo_tensor,
         v: torch.tensor,
         mean_img: torch.tensor,
         var_img: torch.tensor,
         u_local_projector: Optional[torch.sparse_coo_tensor] = None,
-        u_global_projector: Optional[torch.sparse_coo_tensor] = None,
         device: str = "cpu",
         rescale: bool = True,
     ):
@@ -146,13 +126,13 @@ class PMDArray(FactorizedVideo):
         as a global spatial basis for the data).
 
         Args:
-            fov_shape (tuple): (num_frames, fov_dim1, fov_dim2)
+            shape (tuple): (num_frames, fov_dim1, fov_dim2)
             u (torch.sparse_coo_tensor): shape (pixels, rank)
             v (torch.tensor): shape (rank, frames)
             mean_img (torch.tensor): shape (fov_dim1, fov_dim2). The pixelwise mean of the data
             var_img (torch.tensor): shape (fov_dim1, fov_dim2). A pixelwise noise normalizer for the data
             u_local_projector (Optional[torch.sparse_coo_tensor]): shape (pixels, rank)
-            u_global_projector  (Optional[torch.sparse_coo_tensor]): shape (pixels, background_rank).
+            resid_std (torch.tensor): The residual standard deviation, shape (fov_dim1, fov_dim2)
             device (str): The device on which computations occur/data is stored
             rescale (bool): True if we rescale the PMD data (i.e. multiply by the pixelwise normalizer
                 and add back the mean) in __getitem__
@@ -164,14 +144,9 @@ class PMDArray(FactorizedVideo):
             self._u_local_projector = u_local_projector.to(device).coalesce()
         else:
             self._u_local_projector = None
-        if u_global_projector is not None:
-            self._u_global_projector = u_global_projector.to(device).coalesce()
-            self._u_global_basis = self._compute_global_spatial_basis()
-        else:
-            self._u_global_projector = None
-            self._u_global_basis = None
+
         self._device = self._u.device
-        self._shape = fov_shape
+        self._shape = tuple(shape)
 
         self.pixel_mat = torch.arange(
             self.shape[1] * self.shape[2], device=self.device
@@ -210,9 +185,6 @@ class PMDArray(FactorizedVideo):
         self._device = self._u.device
         if self.u_local_projector is not None:
             self._u_local_projector = self.u_local_projector.to(device)
-        if self.u_global_projector is not None:
-            self._u_global_projector = self.u_global_projector.to(device)
-            self._u_global_basis = self.u_global_basis.to(device)
 
     @property
     def u(self) -> torch.sparse_coo_tensor:
@@ -223,52 +195,8 @@ class PMDArray(FactorizedVideo):
         return self._u_local_projector
 
     @property
-    def u_local_basis(self) -> torch.sparse_coo_tensor:
-        indices = torch.arange(
-            self.local_basis_rank, device=self.device, dtype=torch.long
-        )
-        cropped_mat = torch.index_select(self.u, 1, indices).coalesce()
-        return cropped_mat
-
-    @property
-    def u_global_projector(self) -> Optional[torch.sparse_coo_tensor]:
-        return self._u_global_projector
-
-    @property
-    def u_global_basis(self) -> Optional[torch.sparse_coo_tensor]:
-        return self._u_global_basis
-
-    @property
-    def global_basis_rank(self) -> int:
-        if self.u_global_projector is None:
-            return 0
-        else:
-            return int(self.u_global_projector.shape[1])
-
-    @property
-    def local_basis_rank(self) -> int:
-        return self.u.shape[1] - self.global_basis_rank
-
-    @property
-    def local_temporal_basis(self) -> torch.tensor:
-        return self.v[: self.local_basis_rank]
-
-    @property
-    def global_temporal_basis(self) -> torch.tensor:
-        return self.v[self.local_basis_rank :]
-
-    def _compute_global_spatial_basis(self) -> Optional[torch.sparse_coo_tensor]:
-        if self.global_basis_rank > 0:
-            indices = torch.arange(
-                self.local_basis_rank,
-                self.u.shape[1],
-                device=self.device,
-                dtype=torch.long,
-            )
-            cropped_mat = torch.index_select(self.u, 1, indices).coalesce()
-            return cropped_mat
-        else:
-            return None
+    def pmd_rank(self) -> int:
+        return self.u.shape[1]
 
     @property
     def v(self) -> torch.tensor:
@@ -328,7 +256,7 @@ class PMDArray(FactorizedVideo):
                 Frames which we want to project onto the spatial basis.
             standardize (Optional[bool]): Indicates whether the frames of data are standardized before projection is performed
         Returns:
-            projected_frames (torch.tensor). Shape (fov_dim1, fov_dim2, num_frames).
+            projected_frames (torch.tensor). Shape (fov_dim1 * fov_dim2, num_frames).
         """
         if self.u_local_projector is None:
             raise ValueError(
@@ -349,13 +277,8 @@ class PMDArray(FactorizedVideo):
                     frames - self.mean_img.flatten()[..., None]
                 ) / self.var_img.flatten()[..., None]
                 frames = torch.nan_to_num(frames, nan=0.0)
-        if self.u_global_projector is not None:
-            projection_global = torch.sparse.mm(self.u_global_projector.T, frames)
-            frames -= torch.sparse.mm(self.u_global_basis, projection_global)
-            projection_local = torch.sparse.mm(self.u_local_projector.T, frames)
-            projection = torch.concatenate([projection_local, projection_global], dim=0)
-        else:
-            projection = torch.sparse.mm(self.u_local_projector.T, frames)
+
+        projection = torch.sparse.mm(self.u_local_projector.T, frames)
         return projection.to(orig_device)
 
     def getitem_tensor(
@@ -426,13 +349,34 @@ class PMDArray(FactorizedVideo):
         if v_crop.ndim < self._v.ndim:
             v_crop = v_crop.unsqueeze(1)
 
+
         # Step 4: Deal with remaining indices after lazy computing the frame(s)
         if isinstance(item, tuple) and test_spatial_crop_effect(
             item[1:], self.shape[1:]
         ):
-            pixel_space_crop = self.pixel_mat[item[1:]]
-            mean_img_crop = self.mean_img[item[1:]].flatten()
-            var_img_crop = self.var_img[item[1:]].flatten()
+            if isinstance(item[1], np.ndarray) and len(item[1]) == 1:
+                term_1 = slice(int(item[1]), int(item[1]) + 1)
+            elif isinstance(item[1], np.integer):
+                term_1 = slice(int(item[1]), int(item[1]) + 1)
+            elif isinstance(item[1], int):
+                term_1 = slice(item[1], item[1] + 1)
+            else:
+                term_1 = item[1]
+
+            if isinstance(item[2], np.ndarray) and len(item[2]) == 1:
+                term_2 = slice(int(item[2]), int(item[2]) + 1)
+            elif isinstance(item[2], np.integer):
+                term_2 = slice(int(item[2]), int(item[2]) + 1)
+            elif isinstance(item[2], int):
+                term_2 = slice(item[2], item[2] + 1)
+            else:
+                term_2 = item[2]
+
+            spatial_crop_terms = (term_1, term_2)
+
+            pixel_space_crop = self.pixel_mat[spatial_crop_terms]
+            mean_img_crop = self.mean_img[spatial_crop_terms].flatten()
+            var_img_crop = self.var_img[spatial_crop_terms].flatten()
             u_indices = pixel_space_crop.flatten()
             u_crop = torch.index_select(self._u, 0, u_indices)
             implied_fov = pixel_space_crop.shape
@@ -442,9 +386,9 @@ class PMDArray(FactorizedVideo):
             var_img_crop = self.var_img.flatten()
             implied_fov = self.shape[1], self.shape[2]
 
-        product = torch.sparse.mm(u_crop, v_crop)
+        product = torch.sparse.mm(u_crop, v_crop) * var_img_crop.unsqueeze(1)
         if self.rescale:
-            product = (product * var_img_crop.unsqueeze(1)) + mean_img_crop.unsqueeze(1)
+            product += mean_img_crop.unsqueeze(1)
 
         product = product.reshape((implied_fov[0], implied_fov[1], -1))
         product = product.permute(2, 0, 1)
@@ -460,15 +404,57 @@ class PMDArray(FactorizedVideo):
         return product
 
 
+def convert_dense_image_stack_to_pmd_format(img_stack: Union[torch.tensor, np.ndarray]) -> PMDArray:
+    """
+    Adapter for converting a dense np.ndarray image stack into a pmd_array. Note that this does not
+    run PMD compression; it simply reformats the data into the SVD format needed to construct a PMDArray object.
+    The resulting PMDArray should contain identical data to img_stack (up to numerical precision errors).
+    All computations are done in numpy on CPU here because that is the only approach that produces an SVD of the
+    raw data that is exactly equal to img_stack.
 
-class PMDResidualArray(LazyFrameLoader):
+    Args:
+        img_stack (Union[np.ndarray, torch.tensor]): A (frames, fov_dim1, fov_dim2) shaped image stack
+    Returns:
+        pmd_array (masknmf.compression.PMDArray): img_stack expressed in the pmd_array format. pmd_array contains the
+            same data as img_stack.
+    """
+
+    if isinstance(img_stack, np.ndarray):
+        img_stack = torch.from_numpy(img_stack)
+
+    if isinstance(img_stack, torch.Tensor):
+        num_frames, fov_dim1, fov_dim2 = img_stack.shape
+        img_stack_t = img_stack.permute(1, 2, 0).reshape(
+            (fov_dim1 * fov_dim2, num_frames)
+        )
+
+        u = _construct_identity_torch_sparse_tensor(fov_dim1 * fov_dim2, device="cpu")
+        mean_img = torch.zeros(fov_dim1, fov_dim2, device="cpu", dtype=torch.float32)
+        var_img = torch.ones(fov_dim1, fov_dim2, device="cpu", dtype=torch.float32)
+
+        return PMDArray(img_stack.shape,
+                        u,
+                        img_stack_t,
+                        mean_img,
+                        var_img,
+                        u_local_projector=None,
+                        u_global_projector=None,
+                        device="cpu")
+
+    else:
+        raise ValueError(f"{type(img_stack)} not a supported type")
+
+
+
+
+class PMDResidualArray(ArrayLike):
     """
     Factorized video for the spatial and temporal extracted sources from the data
     """
 
     def __init__(
         self,
-        raw_arr: Union[LazyFrameLoader, FactorizedVideo],
+        raw_arr: Union[ArrayLike],
         pmd_arr: PMDArray,
     ):
         """
@@ -505,5 +491,18 @@ class PMDResidualArray(LazyFrameLoader):
         """
         return len(self.shape)
 
-    def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
-        return self.raw_arr[indices].astype(self.dtype) - self.pmd_arr[indices]
+    def __getitem__(
+            self,
+            item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+    ):
+        if self.pmd_arr.rescale is False:
+            self.pmd_arr.rescale = True
+            switch = True
+        else:
+            switch = False
+
+        output = self.raw_arr[item].astype(self.dtype) - self.pmd_arr[item].astype(self.dtype)
+        
+        if switch:
+            self.pmd_arr.rescale = False
+        return output
