@@ -14,3 +14,11 @@ from .plots import (
     roi_compare_pmd_raw,
     pmd_temporal_denoiser_trace_plot
 )
+
+__all__ = [
+    "PMDWidget",
+    "visualize_superpixels_peaks",
+    "plot_ith_roi",
+    "construct_index",
+    "make_demixing_video"
+]
