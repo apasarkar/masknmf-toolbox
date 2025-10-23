@@ -2,7 +2,7 @@ from typing import *
 import numpy as np
 from masknmf import display
 from masknmf.compression import PMDArray
-from masknmf.demixing.demixing_arrays import ACArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulACArray, FluctuatingBackgroundArray, ResidualArray
+from masknmf.demixing.demixing_arrays import ACArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulACArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode
 import torch
 from masknmf.utils import Serializer
 
@@ -116,8 +116,6 @@ class DemixingResults(Serializer):
             global_residual_correlation_image: Optional[torch.Tensor] = None,
             order: str = "C",
             device="cpu",
-            frame_batch_size: int = 200,
-            pixel_batch_size: int = 400
     ):
         """
         This class provides a convenient way to export all demixing result as array-like objects.
@@ -163,22 +161,7 @@ class DemixingResults(Serializer):
             self._factorized_bkgd_term2 = factorized_bkgd_term2.to(self.device)
 
         if global_residual_correlation_image is None:
-            display("Computing residual")
-            bg_subtract_temporal_basis = self.v - (self.factorized_bkgd_term1 @ self.factorized_bkgd_term2)
-            (
-                self._global_residual_corr_img
-            ) = get_local_correlation_structure(
-                self._u_sparse,
-                bg_subtract_temporal_basis,
-                (self.shape[1], self.shape[2], self.shape[0]),
-                0,
-                torch.zeros(self.shape[1], self.shape[2], device=self.device, dtype=self._u_sparse.dtype),
-                order=self._order,
-                batch_size=pixel_batch_size,
-                a=self.a,
-                c=self.c,
-            )
-            self._global_residual_corr_img = torch.from_numpy(self._global_residual_corr_img).to(self.device)
+            self._global_residual_corr_img = torch.zeros(self.shape[1], self.shape[2], device=self.device, dtype=self._u_sparse.dtype)
         else:
             self._global_residual_corr_img = global_residual_correlation_image
 
@@ -193,62 +176,24 @@ class DemixingResults(Serializer):
             self._b = b
 
         if std_corr_img_mean is None or std_corr_img_normalizer is None:
-            display("std_corr_img_mean or std_corr_img_normalizer were empty. Re-computing.")
-            if self.device == "cpu":
-                display("You are running this on CPU, which might be slow.")
-            ## TODO: Add a way to fill this in with empty data
-            # standard_correlation_image = _compute_standard_correlation_image(self.u,
-            #                                                                  self.v,
-            #                                                                  self.c,
-            #                                                                  (self.shape[1], self.shape[2]),
-            #                                                                  data_order=self.order,
-            #                                                                  frame_batch_size=frame_batch_size,
-            #                                                                  device=self.device)
-            # ## Store the critical values for each of these
-            # self._std_corr_img_mean = standard_correlation_image.movie_mean
-            # self._std_corr_img_normalizer = standard_correlation_image.movie_normalizer
+            self._std_corr_img_mean = None
+            self._std_corr_img_normalizer = None
         else:
             self._std_corr_img_mean = std_corr_img_mean  # standard_correlation_image.movie_mean
             self._std_corr_img_normalizer = std_corr_img_normalizer  # standard_correlation_image.movie_normalizer
 
         if resid_corr_img_mean is None or resid_corr_img_support_values is None or resid_corr_img_normalizer is None:
-            display("Residual Correlation data was not fully specified. Computing it now")
-            if self.device == "cpu":
-                display("You are computing the residual correlation image on CPU; use cuda for much faster results")
-            ## TODO: Return an empty residual correlation image here
-            # residual_correlation_image = _compute_residual_correlation_image(self.u,
-            #                                                                  self.v,
-            #                                                                  (self.factorized_bkgd_term1,
-            #                                                                   self.factorized_bkgd_term1),
-            #                                                                  self.a,
-            #                                                                  self.c,
-            #                                                                  (self.shape[1], self.shape[2]),
-            #                                                                  data_order=self.order,
-            #                                                                  batch_size=frame_batch_size,
-            #                                                                  device=self.device)
-            # self._resid_corr_img_support_values = residual_correlation_image.support_correlation_values
-            # self._resid_corr_img_mean = residual_correlation_image.residual_movie_mean
-            # self._resid_corr_img_normalizer = residual_correlation_image.residual_movie_normalizer
+            self._resid_corr_img_support_values = None
+            self._resid_corr_img_mean = None
+            self._resid_corr_img_normalizer = None
         else:
             self._resid_corr_img_support_values = resid_corr_img_support_values
             self._resid_corr_img_mean = resid_corr_img_mean
             self._resid_corr_img_normalizer = resid_corr_img_normalizer
 
         if bkgd_corr_img_mean is None or bkgd_corr_img_normalizer is None:
-            display("Bkgd to Signal Correlation data was not fully specified. Computing it now")
-            if self.device == "cpu":
-                display(
-                    "You are computing the bkgd to signal correlation image on CPU; use cuda for much faster results")
-            ## TODO: Add a way to fill this in with empty data
-            # background_to_signal_correlation_image = _compute_standard_correlation_image(self.u,
-            #                                                                              self.factorized_bkgd_term1 @ self.factorized_bkgd_term2,
-            #                                                                              self.c,
-            #                                                                              (self.shape[1], self.shape[2]),
-            #                                                                              data_order=self.order,
-            #                                                                              frame_batch_size=frame_batch_size,
-            #                                                                              device=self.device)
-            # self._bkgd_corr_img_mean = background_to_signal_correlation_image.movie_mean
-            # self._bkgd_corr_img_normalizer = background_to_signal_correlation_image.movie_normalizer
+            self._bkgd_corr_img_mean = None
+            self._bkgd_corr_img_normalizer = None
         else:
             self._bkgd_corr_img_mean = bkgd_corr_img_mean
             self._bkgd_corr_img_normalizer = bkgd_corr_img_normalizer
@@ -256,51 +201,6 @@ class DemixingResults(Serializer):
         # Move all tracked tensors to desired location so everything is on one device
         self.to(self.device)
 
-    @property
-    def standard_correlation_image(self) -> StandardCorrelationImages:
-        return StandardCorrelationImages(self._u_sparse,
-                                         self._v,
-                                         self._c,
-                                         self._std_corr_img_mean,
-                                         self._std_corr_img_normalizer,
-                                         (self._shape[1], self._shape[2]),
-                                         order=self.order)
-
-    @property
-    def background_to_signal_correlation_image(self) -> StandardCorrelationImages:
-        return StandardCorrelationImages(self._u_sparse,
-                                         self.factorized_bkgd_term1 @ self.factorized_bkgd_term2,
-                                         self._c,
-                                         self._bkgd_corr_img_mean,
-                                         self._bkgd_corr_img_normalizer,
-                                         (self._shape[1], self._shape[2]),
-                                         order=self.order)
-
-    @property
-    def residual_correlation_image(self) -> ResidualCorrelationImages:
-        return ResidualCorrelationImages(self.u,
-                                         self.v,
-                                         (self.factorized_bkgd_term1, self.factorized_bkgd_term2),
-                                         self.a,
-                                         self.c,
-                                         self.resid_corr_img_support_values,
-                                         self.resid_corr_img_mean,
-                                         self.resid_corr_img_normalizer,
-                                         (self.shape[1], self.shape[2]),
-                                         mode=ResidCorrMode.RESIDUAL,
-                                         order=self._order)
-
-    @property
-    def global_residual_correlation_image(self) -> Union[None, torch.Tensor]:
-        return self._global_residual_corr_img
-
-    @property
-    def bkgd_corr_img_mean(self) -> Union[None, torch.Tensor]:
-        return self._bkgd_corr_img_mean
-
-    @property
-    def bkgd_corr_img_normalizer(self) -> Union[None, torch.Tensor]:
-        return self._bkgd_corr_img_normalizer
 
     @property
     def factorized_bkgd_term1(self) -> Union[None, torch.Tensor]:
@@ -331,15 +231,20 @@ class DemixingResults(Serializer):
         self._a = self._a.to(self.device)
         self._c = self._c.to(self.device)
         self._b = self._b.to(self.device)
-        self._std_corr_img_mean = self._std_corr_img_mean.to(self.device)
-        self._std_corr_img_normalizer = self._std_corr_img_normalizer.to(self.device)
 
-        self._bkgd_corr_img_mean = self._bkgd_corr_img_mean.to(self.device)
-        self._bkgd_corr_img_normalizer = self._bkgd_corr_img_normalizer.to(self.device)
+        if self._std_corr_img_mean is not None: #This means all the std corr img data is not None from init logic
+            self._std_corr_img_mean = self._std_corr_img_mean.to(self.device)
+            self._std_corr_img_normalizer = self._std_corr_img_normalizer.to(self.device)
 
-        self._resid_corr_img_support_values = self._resid_corr_img_support_values.to(self.device)
-        self._resid_corr_img_mean = self._resid_corr_img_mean.to(self.device)
-        self._resid_corr_img_normalizer = self._resid_corr_img_normalizer.to(self.device)
+        if self._bkgd_corr_img_mean is not None: #This means all the bkgd corr img data is not None from init logic
+            self._bkgd_corr_img_mean = self._bkgd_corr_img_mean.to(self.device)
+            self._bkgd_corr_img_normalizer = self._bkgd_corr_img_normalizer.to(self.device)
+
+        if self._resid_corr_img_mean is not None: #This means all the resid corr img data is not None from init logic
+            self._resid_corr_img_support_values = self._resid_corr_img_support_values.to(self.device)
+            self._resid_corr_img_mean = self._resid_corr_img_mean.to(self.device)
+            self._resid_corr_img_normalizer = self._resid_corr_img_normalizer.to(self.device)
+
         if self._global_residual_corr_img is not None:
             self._global_residual_corr_img = self._global_residual_corr_img.to(self.device)
 
@@ -390,6 +295,63 @@ class DemixingResults(Serializer):
     @property
     def resid_corr_img_normalizer(self) -> Union[None, torch.Tensor]:
         return self._resid_corr_img_normalizer
+
+
+    @property
+    def global_residual_correlation_image(self) -> Union[None, torch.Tensor]:
+        return self._global_residual_corr_img
+
+    @property
+    def bkgd_corr_img_mean(self) -> Union[None, torch.Tensor]:
+        return self._bkgd_corr_img_mean
+
+    @property
+    def bkgd_corr_img_normalizer(self) -> Union[None, torch.Tensor]:
+        return self._bkgd_corr_img_normalizer
+
+
+    @property
+    def standard_correlation_image(self) -> Union[None, StandardCorrelationImages]:
+        if self.std_corr_img_mean is not None:
+            return StandardCorrelationImages(self._u_sparse,
+                                             self._v,
+                                             self._c,
+                                             self.std_corr_img_mean,
+                                             self.std_corr_img_normalizer,
+                                             (self._shape[1], self._shape[2]),
+                                             order=self.order)
+        else:
+            return None
+
+    @property
+    def background_to_signal_correlation_image(self) -> Union[None, StandardCorrelationImages]:
+        if self.bkgd_corr_img_mean is not None:
+            return StandardCorrelationImages(self._u_sparse,
+                                             self.factorized_bkgd_term1 @ self.factorized_bkgd_term2,
+                                             self._c,
+                                             self.bkgd_corr_img_mean,
+                                             self.bkgd_corr_img_normalizer,
+                                             (self._shape[1], self._shape[2]),
+                                             order=self.order)
+        else:
+            return None
+
+    @property
+    def residual_correlation_image(self) -> Union[None, ResidualCorrelationImages]:
+        if self.resid_corr_img_mean is not None:
+            return ResidualCorrelationImages(self.u,
+                                             self.v,
+                                             (self.factorized_bkgd_term1, self.factorized_bkgd_term2),
+                                             self.a,
+                                             self.c,
+                                             self.resid_corr_img_support_values,
+                                             self.resid_corr_img_mean,
+                                             self.resid_corr_img_normalizer,
+                                             (self.shape[1], self.shape[2]),
+                                             mode=ResidCorrMode.RESIDUAL,
+                                             order=self._order)
+        else:
+            return None
 
     @property
     def ac_array(self) -> ACArray:
