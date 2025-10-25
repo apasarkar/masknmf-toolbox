@@ -84,6 +84,9 @@ class DemixingResults(Serializer):
         "a",
         "c",
         "b",
+        "pmd_mean_img",
+        "pmd_var_img",
+        "pmd_u_projector",
         "factorized_bkgd_term1",
         "factorized_bkgd_term2",
         "global_residual_correlation_image",
@@ -103,6 +106,9 @@ class DemixingResults(Serializer):
             v: torch.tensor,
             a: torch.sparse_coo_tensor,
             c: torch.tensor,
+            pmd_mean_img: Optional[torch.Tensor] = None,
+            pmd_var_img: Optional[torch.Tensor] = None,
+            pmd_u_projector: Optional[torch.sparse_coo_tensor] = None,
             factorized_bkgd_term1: Optional[torch.Tensor] = None,
             factorized_bkgd_term2: Optional[torch.Tensor] = None,
             b: Optional[torch.tensor] = None,
@@ -125,6 +131,9 @@ class DemixingResults(Serializer):
             v (torch.tensor): shape (rank 2, num_frames)
             a (torch.sparse_coo_tensor): shape (pixels, number of neural signals)
             c (torch.tensor): shape (number of frames, number of neural signals)
+            pmd_mean_img (Optional[torch.tensor]): The mean image of the imaging data, used for reconstructing PMD Arrays
+            pmd_var_img (Optional[torch.tensor]): The pixelwise noise variance image of the data, used for reconstructing PMD Arrays
+            pmd_u_projector (Optional[torch.sparse_coo_tensor]): A projection matrix used to project frames of data onto the PMD U subspace
             factorized_bkgd_term1: Optional[torch.Tensor]: tensor used to express low-rank background estimate
             factorized_bkgd_term2: Optioal[torch.Tensor]: tensor used to express low-rank background estimate
             b (torch.tensor): Optional[torch.tensor]. The per-pixel static baseline.
@@ -151,6 +160,17 @@ class DemixingResults(Serializer):
         self._v = v.to(self.device).float()
         self._a = a.to(self.device).float()
         self._c = c.to(self.device).float()
+
+        if pmd_mean_img is not None:
+            self._pmd_mean_img = pmd_mean_img
+        else:
+            self._pmd_mean_img = torch.zeros(self.shape[1], self.shape[2], device=self.device)
+        if pmd_var_img is not None:
+            self._pmd_var_img = pmd_var_img
+        else:
+            self._pmd_var_img= torch.ones(self.shape[1], self.shape[2], device=self.device)
+
+        self._pmd_u_projector = pmd_u_projector
 
         if factorized_bkgd_term1 is None or factorized_bkgd_term2 is None:
             display("Background term empty")
@@ -201,6 +221,17 @@ class DemixingResults(Serializer):
         # Move all tracked tensors to desired location so everything is on one device
         self.to(self.device)
 
+    @property
+    def pmd_mean_img(self) -> Union[None, torch.Tensor]:
+        return self._pmd_mean_img
+
+    @property
+    def pmd_var_img(self) -> Union[None, torch.Tensor]:
+        return self._pmd_var_img
+
+    @property
+    def pmd_u_projector(self) -> Union[None, torch.Tensor]:
+        return self._pmd_u_projector
 
     @property
     def factorized_bkgd_term1(self) -> Union[None, torch.Tensor]:
@@ -231,6 +262,13 @@ class DemixingResults(Serializer):
         self._a = self._a.to(self.device)
         self._c = self._c.to(self.device)
         self._b = self._b.to(self.device)
+
+        if self._pmd_mean_img is not None:
+            self._pmd_mean_img = self._pmd_mean_img.to(self.device)
+        if self._pmd_var_img is not None:
+            self._pmd_var_img = self._pmd_var_img.to(self.device)
+        if self._pmd_u_projector is not None:
+            self._pmd_u_projector.to(self.device)
 
         if self._std_corr_img_mean is not None: #This means all the std corr img data is not None from init logic
             self._std_corr_img_mean = self._std_corr_img_mean.to(self.device)
@@ -365,14 +403,13 @@ class DemixingResults(Serializer):
         """
         Returns a PMDArray using the tensors stored in this object
         """
-        mean_img = torch.zeros(self.shape[1], self.shape[2], device=self.device)
-        var_img = torch.ones(self.shape[1], self.shape[2], device=self.device)
         return PMDArray(
             self.shape,
             self.u,
             self.v,
-            mean_img,
-            var_img,
+            self.pmd_mean_img,
+            self.pmd_var_img,
+            u_local_projector=self.pmd_u_projector,
             device=self.device,
             rescale=True,
         )

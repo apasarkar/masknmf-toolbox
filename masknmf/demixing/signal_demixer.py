@@ -3033,10 +3033,13 @@ class DemixingState(SignalProcessingState):
 
         self._results = DemixingResults(
             (self.T, self.d1, self.d2),
-            self.u_sparse,
-            self.v,
+            self.pmd_obj.u,
+            self.pmd_obj.v,
             self.a,
             self.c,
+            pmd_mean_img=self.pmd_obj.mean_img,
+            pmd_var_img=self.pmd_obj.var_img,
+            pmd_u_projector=self.pmd_obj.u_local_projector,
             factorized_bkgd_term1 = self.factorized_ring_term[0],
             factorized_bkgd_term2 = self.factorized_ring_term[1],
             b = self.b.squeeze(),
