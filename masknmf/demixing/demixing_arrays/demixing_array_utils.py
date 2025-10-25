@@ -1,7 +1,7 @@
 from typing import *
 import numpy as np
 
-def test_slice_effect(my_slice: slice, spatial_dim: int) -> bool:
+def check_slice_effect(my_slice: slice, spatial_dim: int) -> bool:
     """
     Returns True if slice will actually have an effect
     """
@@ -23,7 +23,7 @@ def test_slice_effect(my_slice: slice, spatial_dim: int) -> bool:
     return False
 
 
-def test_range_effect(my_range: range, spatial_dim: int) -> bool:
+def check_range_effect(my_range: range, spatial_dim: int) -> bool:
     """
     Returns True if the range will actually have an effect.
 
@@ -46,7 +46,7 @@ def test_range_effect(my_range: range, spatial_dim: int) -> bool:
     return False
 
 
-def test_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
+def check_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
     """
     Returns true if the tuple used for spatial cropping actually has an effect on the underlying data. Otherwise
     cropping can be an expensive and avoidable operation.
@@ -63,9 +63,9 @@ def test_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
             return True
 
         if isinstance(my_tuple[k], slice):
-            if test_slice_effect(my_tuple[k], spatial_dims[k]):
+            if check_slice_effect(my_tuple[k], spatial_dims[k]):
                 return True
         if isinstance(my_tuple[k], range):
-            if test_range_effect(my_tuple[k], spatial_dims[k]):
+            if check_range_effect(my_tuple[k], spatial_dims[k]):
                 return True
     return False

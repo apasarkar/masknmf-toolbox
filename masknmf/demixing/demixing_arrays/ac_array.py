@@ -2,7 +2,7 @@ from typing import *
 import numpy as np
 from masknmf.arrays.array_interfaces import FactorizedVideo
 import torch
-from masknmf.demixing.demixing_arrays.demixing_array_utils import test_spatial_crop_effect
+from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
 
 class ACArray(FactorizedVideo):
     """
@@ -165,7 +165,7 @@ class ACArray(FactorizedVideo):
             c_crop = c_crop.unsqueeze(0)
 
         # Step 4: First do spatial subselection before multiplying by c
-        if isinstance(item, tuple) and test_spatial_crop_effect(
+        if isinstance(item, tuple) and check_spatial_crop_effect(
             item[1:], self.shape[1:]
         ):
 

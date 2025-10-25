@@ -2,7 +2,7 @@ from typing import *
 import numpy as np
 from masknmf.arrays.array_interfaces import FactorizedVideo
 import torch
-from masknmf.demixing.demixing_arrays.demixing_array_utils import test_spatial_crop_effect
+from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
 
 
 class StandardCorrelationImages(FactorizedVideo):
@@ -172,7 +172,7 @@ class StandardCorrelationImages(FactorizedVideo):
         ones_crop = self._ones_frames @ c_crop
 
         # Step 4: Deal with remaining indices after lazy computing the frame(s)
-        if isinstance(item, tuple) and test_spatial_crop_effect(
+        if isinstance(item, tuple) and check_spatial_crop_effect(
             item[1:], self.shape[1:]
         ):
             pixel_space_crop = self.pixel_mat[item[1:]]
