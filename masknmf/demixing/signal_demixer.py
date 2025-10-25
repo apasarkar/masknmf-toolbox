@@ -1948,18 +1948,15 @@ class SignalDemixer:
     def results(self):
         return self.state.results
 
-    def initialize_signals(self, **kwargs):
+    def initialize_signals(self, carry_background: bool = False, **kwargs):
+        if isinstance(self.state, DemixingState):
+            self._state.lock_results_and_continue(self, carry_background=carry_background)
         return self._state.initialize_signals(**kwargs)
 
-    def demix(self, **kwargs):
+    def demix(self, carry_background: bool = False, **kwargs):
+        if isinstance(self.state, InitializingState):
+            self._state.lock_results_and_continue(self, carry_background=carry_background)
         self._state.demix(**kwargs)
-
-    def lock_results_and_continue(self, carry_background: bool = False):
-        """
-        The state initiates the transition to a new state, updating this object via its state setter
-        """
-        self._state.lock_results_and_continue(self, carry_background=carry_background)
-
 
 class InitializingState(SignalProcessingState):
     def __init__(
