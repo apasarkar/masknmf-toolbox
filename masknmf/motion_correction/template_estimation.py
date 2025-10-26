@@ -56,7 +56,7 @@ def compute_template(
         slices_sampled = random.sample(slice_list, num_splits_to_sample)
         template_list = []
         for j in tqdm(range(num_splits_to_sample)):
-            corrected_frames = current_registration_array.index_frames_tensor(
+            corrected_frames = current_registration_array._index_frames_tensor(
                 slices_sampled[j]
             )[0]
             template = torch.mean(corrected_frames, dim=0)
@@ -76,7 +76,7 @@ def compute_template(
             slices_sampled = random.sample(slice_list, num_splits_to_sample)
             template_list = []
             for j in tqdm(range(num_splits_to_sample)):
-                corrected_frames = current_registration_array.index_frames_tensor(
+                corrected_frames = current_registration_array._index_frames_tensor(
                     slices_sampled[j]
                 )[0]
                 template = torch.mean(corrected_frames, dim=0)

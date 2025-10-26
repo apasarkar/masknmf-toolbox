@@ -37,6 +37,8 @@ class RegistrationArray(LazyFrameLoader):
 
         self._shape = self.reference_dataset.shape
         self._ndim = self.reference_dataset.ndim
+        self._shifts = self._Shifts(self)
+
 
     @property
     def ndim(self) -> int:
@@ -57,6 +59,10 @@ class RegistrationArray(LazyFrameLoader):
     @property
     def target_dataset(self) -> Optional[LazyFrameLoader]:
         return self._target_dataset
+
+    @property
+    def shifts(self) -> "_Shifts":
+        return self._shifts
 
     @property
     def strategy(self) -> MotionCorrectionStrategy:
@@ -93,9 +99,9 @@ class RegistrationArray(LazyFrameLoader):
         Returns:
             np.ndarray: array at the indexed slice
         """
-        return self.index_frames_tensor(indices)[0].cpu().numpy()
+        return self._index_frames_tensor(indices)[0].cpu().numpy()
 
-    def index_frames_tensor(
+    def _index_frames_tensor(
         self,
         idx: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
     ) -> Tuple[torch.tensor, torch.tensor]:
@@ -152,6 +158,13 @@ class RegistrationArray(LazyFrameLoader):
             moco_output = torch.concatenate(registered_frame_outputs, dim=0)
             shift_output = torch.concatenate(frame_shift_outputs, dim=0)
         return moco_output, shift_output
+
+    class _Shifts:
+        def __init__(self, reg_arr):
+            self.reg = reg_arr
+
+        def __getitem__(self, ind):
+            return self.reg._index_frames_tensor(ind)[1].cpu().numpy()
 
 
 class FilteredArray(LazyFrameLoader):
@@ -262,3 +275,4 @@ class FilteredArray(LazyFrameLoader):
                 output.append(self.filter_function(curr_frames).cpu())
 
             return torch.concatenate(output, dim=0).numpy()
+
