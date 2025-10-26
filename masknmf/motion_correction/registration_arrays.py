@@ -1,5 +1,4 @@
 from masknmf.arrays.array_interfaces import LazyFrameLoader
-from .strategies import MotionCorrectionStrategy
 import torch
 from typing import *
 from .strategies import MotionCorrectionStrategy

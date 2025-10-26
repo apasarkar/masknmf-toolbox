@@ -8,8 +8,8 @@ from .registration_methods import (
     register_frames_rigid,
 )
 from .strategies import (
-    RigidMotionCorrection,
-    PiecewiseRigidMotionCorrection,
+    RigidMotionCorrector,
+    PiecewiseRigidMotionCorrector,
     MotionCorrectionStrategy,
 )
 from .template_estimation import compute_template
@@ -30,8 +30,8 @@ __all__ = [
     "RegistrationArray",
     "FilteredArray",
     "compute_template",
-    "RigidMotionCorrection",
-    "PiecewiseRigidMotionCorrection",
+    "RigidMotionCorrector",
+    "PiecewiseRigidMotionCorrector",
     "MotionCorrectionStrategy",
     "register_frames_rigid",
     "register_frames_pwrigid",

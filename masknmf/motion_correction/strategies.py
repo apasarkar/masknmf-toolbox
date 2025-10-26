@@ -35,7 +35,7 @@ class MotionCorrectionStrategy(ABC):
         pass
 
 
-class RigidMotionCorrection(MotionCorrectionStrategy):
+class RigidMotionCorrector(MotionCorrectionStrategy):
     def __init__(
         self,
         max_shifts: Tuple[int, int],
@@ -84,7 +84,7 @@ class RigidMotionCorrection(MotionCorrectionStrategy):
             )
 
 
-class PiecewiseRigidMotionCorrection(MotionCorrectionStrategy):
+class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
     def __init__(
         self,
         num_blocks: Tuple[int, int],
