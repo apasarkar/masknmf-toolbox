@@ -6,8 +6,10 @@ import os
 import plotly.graph_objects as go
 import plotly.subplots as sp
 import matplotlib.pyplot as plt
-import masknmf
-from masknmf.demixing import ResidCorrMode
+
+from masknmf.compression import PMDArray
+from masknmf.arrays import FactorizedVideo, ArrayLike, LazyFrameLoader
+from masknmf.demixing.demixing_arrays import ResidCorrMode
 
 # Custom sorting function to sort based on the numerical part after 'neuron_'
 
@@ -430,8 +432,8 @@ def plot_pmd_vs_raw_stack_diagnostic(raw_trace: np.ndarray,
 
     return fig
 
-def roi_compare_pmd_raw(raw_stack: np.ndarray,
-                        pmd_movie: masknmf.arrays.FactorizedVideo,
+def roi_compare_pmd_raw(raw_stack: ArrayLike,
+                        pmd_movie: PMDArray,
                         spatial_footprint: np.ndarray):
     """
     Args:
@@ -448,8 +450,8 @@ def roi_compare_pmd_raw(raw_stack: np.ndarray,
     return raw_roi_avg, pmd_roi_avg
 
 
-def generate_raw_vs_resid_plot_folder(raw_stack: masknmf.arrays.LazyFrameLoader,
-                                      pmd_movie: masknmf.arrays.FactorizedVideo,
+def generate_raw_vs_resid_plot_folder(raw_stack: LazyFrameLoader,
+                                      pmd_movie: FactorizedVideo,
                                       spatial_matrix: np.ndarray,
                                       folder_location: str,
                                       timeslice: Optional[slice]=None,
@@ -500,7 +502,7 @@ def generate_raw_vs_resid_plot_folder(raw_stack: masknmf.arrays.LazyFrameLoader,
                     index_name="index.html")
 
 def pmd_spike_diagnostic(moco_stack: np.ndarray,
-                         pmd_object: masknmf.PMDArray,
+                         pmd_object: PMDArray,
                          roi_footprint: np.ndarray,
                          raw_autocorr: np.ndarray,
                          pmd_autocorr: np.ndarray,

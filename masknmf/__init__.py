@@ -1,8 +1,8 @@
 from ._version import __version__, version_info
-from .arrays import *
-from .utils import *
-from .compression import *
-from .motion_correction import *
-from .demixing import *
-from .visualization import *
-from .diagnostics import *
+## TODO: Update the arrays import
+from masknmf.arrays import *
+from masknmf.utils import display
+from masknmf.compression import *
+from masknmf.motion_correction import *
+from masknmf.demixing import *
+from masknmf.visualization import *

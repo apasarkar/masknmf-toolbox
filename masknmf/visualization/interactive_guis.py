@@ -11,7 +11,8 @@ from ipywidgets import VBox, HBox
 from collections import OrderedDict
 import masknmf.arrays
 from masknmf.utils import display
-from masknmf import DemixingResults, PMDArray
+from masknmf.demixing import DemixingResults
+from masknmf.compression import PMDArray
 
 
 class ROIManager(ui.EdgeWindow):
