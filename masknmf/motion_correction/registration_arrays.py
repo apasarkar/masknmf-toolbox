@@ -21,7 +21,6 @@ class RegistrationArray(LazyFrameLoader):
             reference_dataset (LazyFrameLoder): Image stack that we use to compute motion correction transform relative to template
             strategy (masknmf.MotionCorrectionStrategy): The method used to register each frame to the template
             device (torch.tensor): The device on which computations are performed (for e.g. 'cuda' or 'cpu')
-            batch_size (int): The number of frames we load onto the computation device at a time to do motion correction.
             target_dataset (Optional[LazyFrameLoader]): Once we learn the motion correction transform by aligning reference_dataset
                 with template, we actually apply the transform to target_dataset, if it is specified. If None, we apply the
                 transform to reference_dataset

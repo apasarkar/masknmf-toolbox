@@ -1,6 +1,8 @@
 import math
 from abc import ABC, abstractmethod
 import torch
+
+import masknmf
 from .registration_methods import register_frames_rigid, register_frames_pwrigid
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from typing import *
@@ -19,11 +21,13 @@ class MotionCorrectionStrategy(ABC):
         self._batch_size = batch_size
 
     @property
-    def template(self) -> Optional[torch.tensor]:
+    def template(self) -> Union[None, torch.tensor]:
         return self._template
 
     @template.setter
-    def template(self, new_template):
+    def template(self, new_template: Union[np.ndarray, torch.Tensor]):
+        if isinstance(new_template, np.ndarray):
+            new_template = torch.from_numpy(new_template).float()
         self._template = new_template
 
     @property
@@ -32,7 +36,7 @@ class MotionCorrectionStrategy(ABC):
 
     @property
     @abstractmethod
-    def pixel_weighting(self):
+    def pixel_weighting(self) -> Union[None, torch.Tensor]:
         pass
 
     @abstractmethod
@@ -98,6 +102,59 @@ class MotionCorrectionStrategy(ABC):
         moco_output = np.concatenate(registered_frame_outputs, axis=0)
         shift_output = np.concatenate(frame_shift_outputs, axis=0)
         return moco_output, shift_output
+
+    def compute_template(self,
+                         frames: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
+                         num_splits_per_iteration: int=10,
+                         num_frames_per_split: int = 200,
+                         num_iterations: int = 3,
+                         device:str = "cpu"):
+
+        if num_iterations <= 0:
+            raise ValueError(f"Must have at least one pass of rigid registration")
+        # Step 1: Initial Template (Mean Image)
+        if self.template is None:
+            frames_loaded = frames[:500]
+            template = torch.from_numpy(np.median(frames_loaded, axis=0))
+            self.template = template
+
+        ## Prepare the template estimation pipeline by establishing the chunks of data to sample
+        slice_list = self._compute_frame_chunks(frames.shape[0], num_frames_per_split)
+        num_splits_to_sample = min(num_splits_per_iteration, len(slice_list))
+
+        for pass_iter_rigid in range(num_iterations):
+            slices_sampled = random.sample(slice_list, num_splits_to_sample)
+            template_list = []
+            for j in tqdm(range(num_splits_to_sample)):
+                corrected_frames = self.correct(frames[slices_sampled[j]],
+                                                device=device)[0]
+                template = np.mean(corrected_frames, axis=0)
+                template_list.append(template)
+
+            self.template = np.median(
+                np.stack(template_list, axis=0), axis=0
+            )
+
+    def _compute_frame_chunks(self, num_frames: int, frames_per_split: int) -> list:
+        """
+        Sets a partition of the frames into individual contiguous chunks of frames.
+
+        Args:
+            num_frames (int): The number of frames in the dataset
+            frames_per_split (int): The number of frames in each chunk of data which we use to estimate a local template
+        Returns:
+            slice_list (list): A list of slices, each describing a start and end for a given chunk of data which can be used to
+                refine the template estimate.
+        """
+        start_pts = list(range(0, num_frames, frames_per_split))
+        if start_pts[-1] > num_frames - frames_per_split and start_pts[-1] > 0:
+            start_pts[-1] = num_frames - frames_per_split
+
+        slice_list = [
+            slice(start_pts[i], min(num_frames, start_pts[i] + frames_per_split))
+            for i in range(len(start_pts))
+        ]
+        return slice_list
 
 
 class RigidMotionCorrector(MotionCorrectionStrategy):
