@@ -60,8 +60,8 @@ class MotionCorrectionStrategy(ABC):
 
     def correct(
         self,
-        reference_frames: np.ndarray,
-        target_frames: Optional[np.ndarray] = None,
+        reference_movie_frames: np.ndarray,
+        target_movie_frames: Optional[np.ndarray] = None,
         device: str='cpu',
         **kwargs
     ) -> Tuple[np.ndarray, np.ndarray]:
@@ -72,20 +72,20 @@ class MotionCorrectionStrategy(ABC):
 
         Two returned values: (1) the motion corrected data (2) the shift (or displacement field information).
         The data format for (2) varies based on method used"""
-        if reference_frames.ndim == 2:
-            reference_frames = reference_frames[None, ...]
-            if target_frames is not None:
-                target_frames = target_frames[None, ...]
+        if reference_movie_frames.ndim == 2:
+            reference_movie_frames = reference_movie_frames[None, ...]
+            if target_movie_frames is not None:
+                target_movie_frames = target_movie_frames[None, ...]
 
-        num_iters = math.ceil(reference_frames.shape[0] / self.batch_size)
+        num_iters = math.ceil(reference_movie_frames.shape[0] / self.batch_size)
         registered_frame_outputs = []
         frame_shift_outputs = []
         for k in range(num_iters):
             start = k * self.batch_size
-            end = min(start + self.batch_size, reference_frames.shape[0])
-            reference_subset = reference_frames[start:end]
-            if target_frames is not None:
-                target_subset = target_frames[start:end]
+            end = min(start + self.batch_size, reference_movie_frames.shape[0])
+            reference_subset = reference_movie_frames[start:end]
+            if target_movie_frames is not None:
+                target_subset = target_movie_frames[start:end]
             else:
                 target_subset = None
 

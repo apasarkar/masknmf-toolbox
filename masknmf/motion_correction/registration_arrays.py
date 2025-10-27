@@ -9,30 +9,30 @@ import numpy as np
 class RegistrationArray(LazyFrameLoader):
     def __init__(
         self,
-        reference_dataset: LazyFrameLoader,
+        reference_movie: LazyFrameLoader,
         strategy: MotionCorrectionStrategy,
         device: str = "cpu",
-        target_dataset: Optional[LazyFrameLoader] = None,
+        target_movie: Optional[LazyFrameLoader] = None,
     ):
         """
         Array-like motion correction representation that support on-the-fly motion correction
 
         Args:
-            reference_dataset (LazyFrameLoder): Image stack that we use to compute motion correction transform relative to template
+            reference_movie (LazyFrameLoder): Image stack that we use to compute motion correction transform relative to template
             strategy (masknmf.MotionCorrectionStrategy): The method used to register each frame to the template
             device (torch.tensor): The device on which computations are performed (for e.g. 'cuda' or 'cpu')
-            target_dataset (Optional[LazyFrameLoader]): Once we learn the motion correction transform by aligning reference_dataset
+            target_movie (Optional[LazyFrameLoader]): Once we learn the motion correction transform by aligning reference_dataset
                 with template, we actually apply the transform to target_dataset, if it is specified. If None, we apply the
                 transform to reference_dataset
         """
-        self._reference_dataset = reference_dataset
+        self._reference_movie = reference_movie
         self._strategy = strategy
         self._template = strategy.template
         self._device = device
-        self._target_dataset = target_dataset
+        self._target_movie = target_movie
 
-        self._shape = self.reference_dataset.shape
-        self._ndim = self.reference_dataset.ndim
+        self._shape = self.reference_movie.shape
+        self._ndim = self.reference_movie.ndim
         self._shifts = self._Shifts(self)
 
 
@@ -49,12 +49,12 @@ class RegistrationArray(LazyFrameLoader):
         return "float32"
 
     @property
-    def reference_dataset(self) -> LazyFrameLoader:
-        return self._reference_dataset
+    def reference_movie(self) -> LazyFrameLoader:
+        return self._reference_movie
 
     @property
-    def target_dataset(self) -> Optional[LazyFrameLoader]:
-        return self._target_dataset
+    def target_movie(self) -> Optional[LazyFrameLoader]:
+        return self._target_movie
 
     @property
     def shifts(self) -> "_Shifts":
@@ -94,11 +94,11 @@ class RegistrationArray(LazyFrameLoader):
         idx: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Retrieve motion-corrected frame at index `idx`."""
-        reference_data_frames = self._reference_dataset[idx]
-        target_data_frames = None if self.target_dataset is None else self.target_dataset[idx]
+        reference_data_frames = self.reference_movie[idx]
+        target_data_frames = None if self.target_movie is None else self.target_movie[idx]
 
-        return self.strategy.correct(reference_frames=reference_data_frames,
-                                     target_frames=target_data_frames,
+        return self.strategy.correct(reference_movie_frames=reference_data_frames,
+                                     target_movie_frames=target_data_frames,
                                      device=self.device)
 
     class _Shifts:

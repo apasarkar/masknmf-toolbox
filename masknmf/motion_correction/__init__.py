@@ -12,7 +12,6 @@ from .strategies import (
     PiecewiseRigidMotionCorrector,
     MotionCorrectionStrategy,
 )
-from .template_estimation import compute_template
 from .registration_arrays import RegistrationArray, FilteredArray
 from .spatial_filters import (
     image_filter,
@@ -29,7 +28,6 @@ from .moco_preprocessing import (
 __all__ = [
     "RegistrationArray",
     "FilteredArray",
-    "compute_template",
     "RigidMotionCorrector",
     "PiecewiseRigidMotionCorrector",
     "MotionCorrectionStrategy",
