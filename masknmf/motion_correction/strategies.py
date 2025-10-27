@@ -264,3 +264,22 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
             pixel_weighting=self.pixel_weighting.to(device) if self.pixel_weighting is not None else None
         )
         return outputs[0].cpu().numpy(), outputs[1].cpu().numpy()
+
+    def compute_template(self,
+                         frames: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
+                         num_splits_per_iteration: int = 10,
+                         num_frames_per_split: int = 200,
+                         num_iterations:int = 1,
+                         device: str = "cpu"):
+        rigid_strategy = RigidMotionCorrector(self.max_rigid_shifts,
+                                              template=self.template.cpu().numpy() if self.template is not None else None,
+                                              pixel_weighting=self.pixel_weighting,
+                                              batch_size=self.batch_size)
+        rigid_strategy.compute_template(frames,
+                                        device=device)
+        self.template = rigid_strategy.template
+        super().compute_template(frames,
+                                  num_splits_per_iteration=num_splits_per_iteration,
+                                  num_frames_per_split=num_frames_per_split,
+                                  num_iterations=num_iterations,
+                                  device=device)
