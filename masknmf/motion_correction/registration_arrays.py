@@ -12,7 +12,6 @@ class RegistrationArray(LazyFrameLoader):
         reference_dataset: LazyFrameLoader,
         strategy: MotionCorrectionStrategy,
         device: str = "cpu",
-        batch_size: int = 200,
         target_dataset: Optional[LazyFrameLoader] = None,
     ):
         """
@@ -31,7 +30,6 @@ class RegistrationArray(LazyFrameLoader):
         self._strategy = strategy
         self._template = strategy.template
         self._device = device
-        self._batch_size = batch_size
         self._target_dataset = target_dataset
 
         self._shape = self.reference_dataset.shape
@@ -79,14 +77,6 @@ class RegistrationArray(LazyFrameLoader):
     def device(self, new_device: str):
         self._device = new_device
 
-    @property
-    def batch_size(self) -> int:
-        return self._batch_size
-
-    @batch_size.setter
-    def batch_size(self, new_batch_size: int):
-        self._batch_size = new_batch_size
-
     def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
         """
         Lazy computation logic goes here to return frames. Slices the array over time (dimension 0) at the desired indices.
@@ -98,72 +88,26 @@ class RegistrationArray(LazyFrameLoader):
         Returns:
             np.ndarray: array at the indexed slice
         """
-        return self._index_frames_tensor(indices)[0].cpu().numpy()
+        return self._index_frames_tensor(indices)[0]
 
     def _index_frames_tensor(
         self,
         idx: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
-    ) -> Tuple[torch.tensor, torch.tensor]:
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """Retrieve motion-corrected frame at index `idx`."""
-        reference_data_indexed = self._reference_dataset[idx]
-        if self.target_dataset is None:
-            target_data_indexed = reference_data_indexed
-        else:
-            target_data_indexed = self.target_dataset[idx]
+        reference_data_frames = self._reference_dataset[idx]
+        target_data_frames = None if self.target_dataset is None else self.target_dataset[idx]
 
-        if reference_data_indexed.ndim == 2:
-            reference_data_indexed = reference_data_indexed[None, ...]
-            target_data_indexed = target_data_indexed[None, ...]
-
-        if self.batch_size > reference_data_indexed.shape[0]:
-            # Directly motion correct the data
-            reference_subset = (
-                torch.from_numpy(reference_data_indexed).to(self.device).float()
-            )
-            target_data_subset = (
-                torch.from_numpy(target_data_indexed).to(self.device).float()
-            )
-            moco_output, shift_output = self.strategy.correct(
-                reference_subset, target_frames=target_data_subset, device=self.device
-            )
-
-        else:
-            num_iters = math.ceil(reference_data_indexed.shape[0] / self.batch_size)
-            registered_frame_outputs = []
-            frame_shift_outputs = []
-            for k in range(num_iters):
-                start = k * self.batch_size
-                end = min(start + self.batch_size, reference_data_indexed.shape[0])
-
-                reference_subset = (
-                    torch.from_numpy(reference_data_indexed[start:end])
-                    .to(self.device)
-                    .float()
-                )
-                target_subset = (
-                    torch.from_numpy(target_data_indexed[start:end])
-                    .to(self.device)
-                    .float()
-                )
-
-                if reference_subset.ndim == 2:
-                    reference_subset = reference_subset.expand(1, -1, -1)
-                    target_subset = target_subset.expand(1, -1, -1)
-                subset_output = self.strategy.correct(
-                    reference_subset, target_frames=target_subset, device=self.device
-                )
-                registered_frame_outputs.append(subset_output[0].cpu())
-                frame_shift_outputs.append(subset_output[1].cpu())
-            moco_output = torch.concatenate(registered_frame_outputs, dim=0)
-            shift_output = torch.concatenate(frame_shift_outputs, dim=0)
-        return moco_output, shift_output
+        return self.strategy.correct(reference_frames=reference_data_frames,
+                                     target_frames=target_data_frames,
+                                     device=self.device)
 
     class _Shifts:
         def __init__(self, reg_arr):
             self.reg = reg_arr
 
         def __getitem__(self, ind):
-            return self.reg._index_frames_tensor(ind)[1].cpu().numpy()
+            return self.reg._index_frames_tensor(ind)[1]
 
 
 class FilteredArray(LazyFrameLoader):

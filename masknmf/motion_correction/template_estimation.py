@@ -5,7 +5,6 @@ from .registration_arrays import RegistrationArray
 from masknmf.arrays.array_interfaces import LazyFrameLoader
 from tqdm import tqdm
 from typing import *
-from masknmf import display
 import random
 
 
