@@ -1,9 +1,33 @@
-from masknmf.arrays.array_interfaces import LazyFrameLoader
-import torch
-from typing import *
-from .strategies import MotionCorrectionStrategy
 import math
+from typing import *
+
+import torch
 import numpy as np
+
+from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
+from masknmf.utils import torch_select_device
+from .strategies import MotionCorrectionStrategy, RigidMotionCorrector, PiecewiseRigidMotionCorrector
+from .registration_methods import compute_pwrigid_patch_midpoints
+
+
+class Shifts(ArrayLike):
+    def __init__(self, reg_arr):
+        self._reg = reg_arr
+
+    @property
+    def dtype(self) -> str:
+        return self._reg.dtype
+
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        return self._reg.shape
+
+    @property
+    def ndim(self) -> int:
+        return self._reg.ndim
+
+    def __getitem__(self, ind):
+        return self._reg._index_frames_tensor(ind)[1].squeeze()
 
 
 class RegistrationArray(LazyFrameLoader):
@@ -11,7 +35,7 @@ class RegistrationArray(LazyFrameLoader):
         self,
         reference_movie: LazyFrameLoader,
         strategy: MotionCorrectionStrategy,
-        device: str = "cpu",
+        device: str = "auto",
         target_movie: Optional[LazyFrameLoader] = None,
     ):
         """
@@ -20,21 +44,36 @@ class RegistrationArray(LazyFrameLoader):
         Args:
             reference_movie (LazyFrameLoder): Image stack that we use to compute motion correction transform relative to template
             strategy (masknmf.MotionCorrectionStrategy): The method used to register each frame to the template
-            device (torch.tensor): The device on which computations are performed (for e.g. 'cuda' or 'cpu')
+            device (torch.tensor): The device on which computations are performed (for e.g. 'cuda' or 'cpu'). "auto" selectors for cuda if present.
             target_movie (Optional[LazyFrameLoader]): Once we learn the motion correction transform by aligning reference_dataset
                 with template, we actually apply the transform to target_dataset, if it is specified. If None, we apply the
                 transform to reference_dataset
         """
         self._reference_movie = reference_movie
+
+        if not isinstance(strategy, MotionCorrectionStrategy):
+            raise TypeError(
+                f"`strategy` must be a `MotionCorrectionStrategy` type. "
+                f"Usually `RigidMotionCorrector` or `PiecewiseRigidMotionCorrector`"
+            )
+
         self._strategy = strategy
         self._template = strategy.template
-        self._device = device
+        self._device = torch_select_device(device)
         self._target_movie = target_movie
-
         self._shape = self.reference_movie.shape
         self._ndim = self.reference_movie.ndim
-        self._shifts = self._Shifts(self)
+        self._shifts = Shifts(self)
 
+        if isinstance(self.strategy, PiecewiseRigidMotionCorrector):
+            self._block_centers = compute_pwrigid_patch_midpoints(
+                num_blocks=self.strategy.num_blocks,
+                overlaps=self.strategy.overlaps,
+                fov_height=self.strategy.template.shape[0],
+                fov_width=self.strategy.template.shape[1]
+            )
+        else:
+            self._block_centers = None
 
     @property
     def ndim(self) -> int:
@@ -57,11 +96,11 @@ class RegistrationArray(LazyFrameLoader):
         return self._target_movie
 
     @property
-    def shifts(self) -> "_Shifts":
+    def shifts(self) -> Shifts:
         return self._shifts
 
     @property
-    def strategy(self) -> MotionCorrectionStrategy:
+    def strategy(self) -> PiecewiseRigidMotionCorrector | RigidMotionCorrector:
         return self._strategy
 
     @property
@@ -69,12 +108,17 @@ class RegistrationArray(LazyFrameLoader):
         return self._template
 
     @property
+    def block_centers(self) -> np.ndarray | None:
+        """centers of the blocks when using ``PiecewiseRigidMotionCorrector``, ``None`` otherwise"""
+        return self._block_centers
+
+    @property
     def device(self) -> str:
         return self._device
 
     @device.setter
     def device(self, new_device: str):
-        self._device = new_device
+        self._device = torch_select_device(new_device)
 
     def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
         """
@@ -97,16 +141,11 @@ class RegistrationArray(LazyFrameLoader):
         reference_data_frames = self.reference_movie[idx]
         target_data_frames = None if self.target_movie is None else self.target_movie[idx]
 
-        return self.strategy.correct(reference_movie_frames=reference_data_frames,
-                                     target_movie_frames=target_data_frames,
-                                     device=self.device)
-
-    class _Shifts:
-        def __init__(self, reg_arr):
-            self.reg = reg_arr
-
-        def __getitem__(self, ind):
-            return self.reg._index_frames_tensor(ind)[1]
+        return self.strategy.correct(
+            reference_movie_frames=reference_data_frames,
+            target_movie_frames=target_data_frames,
+            device=self.device
+        )
 
 
 class FilteredArray(LazyFrameLoader):
@@ -217,4 +256,3 @@ class FilteredArray(LazyFrameLoader):
                 output.append(self.filter_function(curr_frames).cpu())
 
             return torch.concatenate(output, dim=0).numpy()
-

@@ -959,7 +959,7 @@ def compute_pwrigid_patch_midpoints(num_blocks, overlaps, fov_height, fov_width)
     dim2_midpoints = (dim2_start_pts + dim2_end_pts) / 2
 
     dim1_coords, dim2_coords = torch.meshgrid(dim1_midpoints, dim2_midpoints, indexing='ij')
-    return dim1_coords, dim2_coords
+    return np.dstack([dim1_coords, dim2_coords])
 
 def weighted_alignment_loss(
     template: torch.tensor,

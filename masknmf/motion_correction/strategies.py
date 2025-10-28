@@ -1,17 +1,18 @@
 import math
-from abc import ABC, abstractmethod
-import torch
-
-import masknmf
-from .registration_methods import register_frames_rigid, register_frames_pwrigid
-from masknmf.arrays import LazyFrameLoader, ArrayLike
-from typing import *
 import random
+import torch
+from typing import *
+
 import numpy as np
 from tqdm import tqdm
 
-class MotionCorrectionStrategy(ABC):
-    """Abstract base class for motion correction strategies."""
+import masknmf
+from masknmf.arrays import LazyFrameLoader, ArrayLike
+from masknmf.utils import torch_select_device
+from .registration_methods import register_frames_rigid, register_frames_pwrigid
+
+class MotionCorrectionStrategy:
+    """base class for motion correction strategies."""
 
     def __init__(self,
                  template: Optional[np.ndarray] = None,
@@ -35,16 +36,15 @@ class MotionCorrectionStrategy(ABC):
         return self._batch_size
 
     @property
-    @abstractmethod
     def pixel_weighting(self) -> Union[None, torch.Tensor]:
-        pass
+        raise NotImplementedError
 
-    @abstractmethod
-    def _correct_singlebatch(self,
-                             reference_frames: np.ndarray,
-                             target_frames: Optional[np.ndarray] = None,
-                             device: str='cpu',
-                             **kwargs) -> Tuple[np.ndarray, np.ndarray]:
+    def _correct_singlebatch(
+            self,
+            reference_frames: np.ndarray,
+            target_frames: Optional[np.ndarray] | None,
+            device: str,
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
         This function should contain the core logic for motion correcting "n" frames, without any batching logic needed.
         Args:
@@ -56,22 +56,27 @@ class MotionCorrectionStrategy(ABC):
             - shifts (np.ndarray). Shape depends on what information needs to be conveyed here. Dimension 0 should
                 still be number of frames though.
         """
-        pass
+        raise NotImplementedError
 
     def correct(
         self,
         reference_movie_frames: np.ndarray,
         target_movie_frames: Optional[np.ndarray] = None,
-        device: str='cpu',
-        **kwargs
+        device: str = "auto",
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Apply motion correction. Reference frames is the set of frames that we align to the template (to learn
+
+        """
+        Apply motion correction. Reference frames is the set of frames that we align to the template (to learn
         shifts, motion displacement fields, etc.) and target_frames is the image stack to which we apply the
         motion stabilization transformation. If target_frames is unspecified, the motion correction is applied to
         reference_frames.
 
         Two returned values: (1) the motion corrected data (2) the shift (or displacement field information).
-        The data format for (2) varies based on method used"""
+        The data format for (2) varies based on method used
+        """
+
+        device = torch_select_device(device)
+
         if reference_movie_frames.ndim == 2:
             reference_movie_frames = reference_movie_frames[None, ...]
             if target_movie_frames is not None:
@@ -80,6 +85,7 @@ class MotionCorrectionStrategy(ABC):
         num_iters = math.ceil(reference_movie_frames.shape[0] / self.batch_size)
         registered_frame_outputs = []
         frame_shift_outputs = []
+
         for k in range(num_iters):
             start = k * self.batch_size
             end = min(start + self.batch_size, reference_movie_frames.shape[0])
@@ -93,25 +99,34 @@ class MotionCorrectionStrategy(ABC):
                 reference_subset = reference_subset[None, :, :]
             if target_subset is not None and target_subset.ndim == 2:
                 target_subset = target_subset[None, :, :]
-            reg_output = self._correct_singlebatch(reference_subset,
-                                                   target_subset,
-                                                   device=device,
-                                                   **kwargs)
+
+            reg_output = self._correct_singlebatch(
+                reference_frames=reference_subset,
+                target_frames=target_subset,
+                device=device,
+            )
+
             registered_frame_outputs.append(reg_output[0])
             frame_shift_outputs.append(reg_output[1])
+
         moco_output = np.concatenate(registered_frame_outputs, axis=0)
         shift_output = np.concatenate(frame_shift_outputs, axis=0)
         return moco_output, shift_output
 
-    def compute_template(self,
-                         frames: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
-                         num_splits_per_iteration: int=10,
-                         num_frames_per_split: int = 200,
-                         num_iterations: int = 3,
-                         device:str = "cpu"):
+    def compute_template(
+            self,
+            frames: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
+            num_splits_per_iteration: int = 10,
+            num_frames_per_split: int = 200,
+            num_iterations: int = 3,
+            device: str = "auto"
+        ):
 
         if num_iterations <= 0:
-            raise ValueError(f"Must have at least one pass of rigid registration")
+            raise ValueError(f"`num_iterations` must be >= 1`, you passed: {num_iterations}")
+
+        device = torch_select_device(device)
+
         # Step 1: Initial Template (Mean Image)
         if self.template is None:
             frames_loaded = frames[:500]
@@ -126,8 +141,7 @@ class MotionCorrectionStrategy(ABC):
             slices_sampled = random.sample(slice_list, num_splits_to_sample)
             template_list = []
             for j in tqdm(range(num_splits_to_sample)):
-                corrected_frames = self.correct(frames[slices_sampled[j]],
-                                                device=device)[0]
+                corrected_frames = self.correct(frames[slices_sampled[j]], device=device)[0]
                 template = np.mean(corrected_frames, axis=0)
                 template_list.append(template)
 
@@ -146,6 +160,7 @@ class MotionCorrectionStrategy(ABC):
             slice_list (list): A list of slices, each describing a start and end for a given chunk of data which can be used to
                 refine the template estimate.
         """
+
         start_pts = list(range(0, num_frames, frames_per_split))
         if start_pts[-1] > num_frames - frames_per_split and start_pts[-1] > 0:
             start_pts[-1] = num_frames - frames_per_split
@@ -178,15 +193,20 @@ class RigidMotionCorrector(MotionCorrectionStrategy):
     def pixel_weighting(self) -> Union[None, torch.tensor]:
         return self._pixel_weighting
 
-    def _correct_singlebatch(self,
-                             reference_frames: np.ndarray,
-                             target_frames: Optional[np.ndarray] = None,
-                             device: str="cpu",
-                             **kwargs) -> Tuple[np.ndarray, np.ndarray]:
+    def _correct_singlebatch(
+            self,
+            reference_frames: np.ndarray,
+            target_frames: Optional[np.ndarray],
+            device,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+
         if self.template is None:
             raise ValueError(
                 "Template is uninitialized"
             )
+
+        device = torch_select_device(device)
+
         if target_frames is not None:
             target_frames = target_frames.to(device).float()
 
@@ -239,15 +259,18 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
     def max_deviation_rigid(self) -> Tuple[int, int]:
         return self._max_deviation_rigid
 
-    def _correct_singlebatch(self,
-                             reference_frames: np.ndarray,
-                             target_frames: Optional[np.ndarray] = None,
-                             device: str="cpu",
-                             **kwargs) -> Tuple[np.ndarray, np.ndarray]:
+    def _correct_singlebatch(
+            self,
+            reference_frames: np.ndarray,
+            target_frames: Optional[np.ndarray],
+            device: str,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+
         if self.template is None:
             raise ValueError(
                 "Template is uninitialized"
             )
+
         if target_frames is not None:
             target_frames = torch.from_numpy(target_frames).to(device).float()
 
@@ -265,21 +288,34 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
         )
         return outputs[0].cpu().numpy(), outputs[1].cpu().numpy()
 
-    def compute_template(self,
-                         frames: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
-                         num_splits_per_iteration: int = 10,
-                         num_frames_per_split: int = 200,
-                         num_iterations:int = 1,
-                         device: str = "cpu"):
-        rigid_strategy = RigidMotionCorrector(self.max_rigid_shifts,
-                                              template=self.template.cpu().numpy() if self.template is not None else None,
-                                              pixel_weighting=self.pixel_weighting,
-                                              batch_size=self.batch_size)
-        rigid_strategy.compute_template(frames,
-                                        device=device)
+    def compute_template(
+            self,
+            frames: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
+            num_splits_per_iteration: int = 10,
+            num_frames_per_split: int = 200,
+            num_iterations:int = 1,
+            device: str = "auto"
+    ):
+        device = torch_select_device(device)
+
+        rigid_strategy = RigidMotionCorrector(
+            self.max_rigid_shifts,
+            template=self.template.cpu().numpy() if self.template is not None else None,
+            pixel_weighting=self.pixel_weighting,
+            batch_size=self.batch_size
+        )
+
+        rigid_strategy.compute_template(
+            frames,
+            device=device
+        )
+
         self.template = rigid_strategy.template
-        super().compute_template(frames,
-                                  num_splits_per_iteration=num_splits_per_iteration,
-                                  num_frames_per_split=num_frames_per_split,
-                                  num_iterations=num_iterations,
-                                  device=device)
+
+        super().compute_template(
+            frames,
+            num_splits_per_iteration=num_splits_per_iteration,
+            num_frames_per_split=num_frames_per_split,
+            num_iterations=num_iterations,
+            device=device
+        )
