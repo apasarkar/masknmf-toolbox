@@ -31,6 +31,4 @@ __all__ = [
     "RigidMotionCorrector",
     "PiecewiseRigidMotionCorrector",
     "MotionCorrectionStrategy",
-    "register_frames_rigid",
-    "register_frames_pwrigid",
 ]
