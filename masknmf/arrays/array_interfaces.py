@@ -3,6 +3,16 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 
+def is_arraylike(obj):
+    """Returns if the object is sufficiently array-like for lazy compute or loading"""
+    for attr in ["dtype", "shape", "ndim", "__getitem__"]:
+        if not hasattr(obj, attr):
+            raise TypeError(
+                f"The object you have passed is not sufficiently array like, "
+                f"it lacks the following property or method: {attr}."
+            )
+
+
 class ArrayLike(ABC):
     """
     The most general class capturing the minimum functionality a general array needs to support

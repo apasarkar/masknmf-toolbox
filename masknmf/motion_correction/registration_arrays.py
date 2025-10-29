@@ -1,42 +1,76 @@
-from masknmf.arrays.array_interfaces import LazyFrameLoader
-from .strategies import MotionCorrectionStrategy
-import torch
-from typing import *
-from .strategies import MotionCorrectionStrategy
 import math
+from typing import *
+
+import torch
 import numpy as np
+
+from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
+from masknmf.utils import torch_select_device
+from .strategies import MotionCorrectionStrategy, RigidMotionCorrector, PiecewiseRigidMotionCorrector
+from .registration_methods import compute_pwrigid_patch_midpoints
+
+
+class Shifts(ArrayLike):
+    def __init__(self, reg_arr):
+        self._reg = reg_arr
+
+    @property
+    def dtype(self) -> str:
+        return self._reg.dtype
+
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        return self._reg.shape
+
+    @property
+    def ndim(self) -> int:
+        return self._reg.ndim
+
+    def __getitem__(self, ind):
+        return self._reg._index_frames_tensor(ind)[1].squeeze()
 
 
 class RegistrationArray(LazyFrameLoader):
     def __init__(
         self,
-        reference_dataset: LazyFrameLoader,
+        reference_movie: LazyFrameLoader,
         strategy: MotionCorrectionStrategy,
-        device: str = "cpu",
-        batch_size: int = 200,
-        target_dataset: Optional[LazyFrameLoader] = None,
+        target_movie: Optional[LazyFrameLoader] = None,
     ):
         """
         Array-like motion correction representation that support on-the-fly motion correction
 
         Args:
-            reference_dataset (LazyFrameLoder): Image stack that we use to compute motion correction transform relative to template
+            reference_movie (LazyFrameLoder): Image stack that we use to compute motion correction transform relative to template
             strategy (masknmf.MotionCorrectionStrategy): The method used to register each frame to the template
-            device (torch.tensor): The device on which computations are performed (for e.g. 'cuda' or 'cpu')
-            batch_size (int): The number of frames we load onto the computation device at a time to do motion correction.
-            target_dataset (Optional[LazyFrameLoader]): Once we learn the motion correction transform by aligning reference_dataset
+            target_movie (Optional[LazyFrameLoader]): Once we learn the motion correction transform by aligning reference_dataset
                 with template, we actually apply the transform to target_dataset, if it is specified. If None, we apply the
                 transform to reference_dataset
         """
-        self._reference_dataset = reference_dataset
+        self._reference_movie = reference_movie
+
+        if not isinstance(strategy, MotionCorrectionStrategy):
+            raise TypeError(
+                f"`strategy` must be a `MotionCorrectionStrategy` type. "
+                f"Usually `RigidMotionCorrector` or `PiecewiseRigidMotionCorrector`"
+            )
+
         self._strategy = strategy
         self._template = strategy.template
-        self._device = device
-        self._batch_size = batch_size
-        self._target_dataset = target_dataset
+        self._target_movie = target_movie
+        self._shape = self.reference_movie.shape
+        self._ndim = self.reference_movie.ndim
+        self._shifts = Shifts(self)
 
-        self._shape = self.reference_dataset.shape
-        self._ndim = self.reference_dataset.ndim
+        if isinstance(self.strategy, PiecewiseRigidMotionCorrector):
+            self._block_centers = compute_pwrigid_patch_midpoints(
+                num_blocks=self.strategy.num_blocks,
+                overlaps=self.strategy.overlaps,
+                fov_height=self.strategy.template.shape[0],
+                fov_width=self.strategy.template.shape[1]
+            )
+        else:
+            self._block_centers = None
 
     @property
     def ndim(self) -> int:
@@ -51,15 +85,19 @@ class RegistrationArray(LazyFrameLoader):
         return "float32"
 
     @property
-    def reference_dataset(self) -> LazyFrameLoader:
-        return self._reference_dataset
+    def reference_movie(self) -> LazyFrameLoader:
+        return self._reference_movie
 
     @property
-    def target_dataset(self) -> Optional[LazyFrameLoader]:
-        return self._target_dataset
+    def target_movie(self) -> Optional[LazyFrameLoader]:
+        return self._target_movie
 
     @property
-    def strategy(self) -> MotionCorrectionStrategy:
+    def shifts(self) -> Shifts:
+        return self._shifts
+
+    @property
+    def strategy(self) -> PiecewiseRigidMotionCorrector | RigidMotionCorrector:
         return self._strategy
 
     @property
@@ -67,20 +105,9 @@ class RegistrationArray(LazyFrameLoader):
         return self._template
 
     @property
-    def device(self) -> str:
-        return self._device
-
-    @device.setter
-    def device(self, new_device: str):
-        self._device = new_device
-
-    @property
-    def batch_size(self) -> int:
-        return self._batch_size
-
-    @batch_size.setter
-    def batch_size(self, new_batch_size: int):
-        self._batch_size = new_batch_size
+    def block_centers(self) -> np.ndarray | None:
+        """centers of the blocks when using ``PiecewiseRigidMotionCorrector``, ``None`` otherwise"""
+        return self._block_centers
 
     def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
         """
@@ -93,65 +120,20 @@ class RegistrationArray(LazyFrameLoader):
         Returns:
             np.ndarray: array at the indexed slice
         """
-        return self.index_frames_tensor(indices)[0].cpu().numpy()
+        return self._index_frames_tensor(indices)[0]
 
-    def index_frames_tensor(
+    def _index_frames_tensor(
         self,
         idx: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
-    ) -> Tuple[torch.tensor, torch.tensor]:
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """Retrieve motion-corrected frame at index `idx`."""
-        reference_data_indexed = self._reference_dataset[idx]
-        if self.target_dataset is None:
-            target_data_indexed = reference_data_indexed
-        else:
-            target_data_indexed = self.target_dataset[idx]
+        reference_data_frames = self.reference_movie[idx]
+        target_data_frames = None if self.target_movie is None else self.target_movie[idx]
 
-        if reference_data_indexed.ndim == 2:
-            reference_data_indexed = reference_data_indexed[None, ...]
-            target_data_indexed = target_data_indexed[None, ...]
-
-        if self.batch_size > reference_data_indexed.shape[0]:
-            # Directly motion correct the data
-            reference_subset = (
-                torch.from_numpy(reference_data_indexed).to(self.device).float()
-            )
-            target_data_subset = (
-                torch.from_numpy(target_data_indexed).to(self.device).float()
-            )
-            moco_output, shift_output = self.strategy.correct(
-                reference_subset, target_frames=target_data_subset, device=self.device
-            )
-
-        else:
-            num_iters = math.ceil(reference_data_indexed.shape[0] / self.batch_size)
-            registered_frame_outputs = []
-            frame_shift_outputs = []
-            for k in range(num_iters):
-                start = k * self.batch_size
-                end = min(start + self.batch_size, reference_data_indexed.shape[0])
-
-                reference_subset = (
-                    torch.from_numpy(reference_data_indexed[start:end])
-                    .to(self.device)
-                    .float()
-                )
-                target_subset = (
-                    torch.from_numpy(target_data_indexed[start:end])
-                    .to(self.device)
-                    .float()
-                )
-
-                if reference_subset.ndim == 2:
-                    reference_subset = reference_subset.expand(1, -1, -1)
-                    target_subset = target_subset.expand(1, -1, -1)
-                subset_output = self.strategy.correct(
-                    reference_subset, target_frames=target_subset, device=self.device
-                )
-                registered_frame_outputs.append(subset_output[0].cpu())
-                frame_shift_outputs.append(subset_output[1].cpu())
-            moco_output = torch.concatenate(registered_frame_outputs, dim=0)
-            shift_output = torch.concatenate(frame_shift_outputs, dim=0)
-        return moco_output, shift_output
+        return self.strategy.correct(
+            reference_movie_frames=reference_data_frames,
+            target_movie_frames=target_data_frames,
+        )
 
 
 class FilteredArray(LazyFrameLoader):

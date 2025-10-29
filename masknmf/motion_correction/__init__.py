@@ -8,11 +8,10 @@ from .registration_methods import (
     register_frames_rigid,
 )
 from .strategies import (
-    RigidMotionCorrection,
-    PiecewiseRigidMotionCorrection,
+    RigidMotionCorrector,
+    PiecewiseRigidMotionCorrector,
     MotionCorrectionStrategy,
 )
-from .template_estimation import compute_template
 from .registration_arrays import RegistrationArray, FilteredArray
 from .spatial_filters import (
     image_filter,
@@ -29,10 +28,7 @@ from .moco_preprocessing import (
 __all__ = [
     "RegistrationArray",
     "FilteredArray",
-    "compute_template",
-    "RigidMotionCorrection",
-    "PiecewiseRigidMotionCorrection",
+    "RigidMotionCorrector",
+    "PiecewiseRigidMotionCorrector",
     "MotionCorrectionStrategy",
-    "register_frames_rigid",
-    "register_frames_pwrigid",
 ]

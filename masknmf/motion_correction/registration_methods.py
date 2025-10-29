@@ -941,6 +941,28 @@ def register_frames_pwrigid(
     )
 
 
+def compute_pwrigid_patch_midpoints(num_blocks, overlaps, fov_height, fov_width):
+    """
+    Computes the midpoints of all pwrigid patches.
+    Args:
+        num_blocks (tuple[int, int]): The number of blocks which we partition the height/width into, respectively
+        overlaps (tuple[int, int]): The number of pixels of overlap between adjacent blocks (in each spatial dimension)
+        fov_height (int): The fov height
+        fov_width (int): The fov width
+    Returns:
+        dim1_midpoints (torch.tensor): Shape (num_blocks[0], num_blocks[1]): The height-dimension midpoint coordinate for each block
+        dim2_midpoints (torch.tensor): Shape (num_blocks[0], num_blocks[1]): The width dimension midpoint coordinate for each block
+    """
+    strides, dim1_start_pts, dim2_start_pts = compute_stride_routine((1, fov_height, fov_width), num_blocks, overlaps)
+    dim1_end_pts = torch.clip(dim1_start_pts + strides[0], min=0, max=fov_height)
+    dim2_end_pts = torch.clip(dim2_start_pts + strides[1], min=0, max=fov_width)
+    dim1_midpoints = (dim1_start_pts + dim1_end_pts) / 2
+    dim2_midpoints = (dim2_start_pts + dim2_end_pts) / 2
+
+    dim1_coords, dim2_coords = torch.meshgrid(dim1_midpoints, dim2_midpoints, indexing='ij')
+    return np.dstack([dim1_coords.cpu().numpy(), dim2_coords.cpu().numpy()])
+
+
 def weighted_alignment_loss(
     template: torch.tensor,
     registered_images: torch.tensor,

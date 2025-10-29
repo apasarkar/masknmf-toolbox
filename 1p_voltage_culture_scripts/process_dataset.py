@@ -63,8 +63,8 @@ def _crop_and_motion_correct(data: np.ndarray,
         data = data[cfg.frames_crop:cfg.frames_crop*-1]
         
     my_template = torch.from_numpy(data[0])
-    rigid_strategy = masknmf.RigidMotionCorrection(max_shifts = [5, 5],
-                                                   template = my_template,
+    rigid_strategy = masknmf.RigidMotionCorrector(max_shifts = [5, 5],
+                                                  template = my_template,
                                                   pixel_weighting=None)
                                                         
     full_moco_arr = masknmf.motion_correction.RegistrationArray(data,
@@ -72,7 +72,7 @@ def _crop_and_motion_correct(data: np.ndarray,
                                                            device = cfg.device,
                                                            batch_size = 800)
     
-    full_moco_dense, full_moco_dense_shifts = [i.numpy() for i in full_moco_arr.index_frames_tensor(slice(0, data.shape[0]))]
+    full_moco_dense, full_moco_dense_shifts = [i.numpy() for i in full_moco_arr._index_frames_tensor(slice(0, data.shape[0]))]
     return full_moco_dense, full_moco_dense_shifts
 
 def _train_network(mov: np.ndarray,
