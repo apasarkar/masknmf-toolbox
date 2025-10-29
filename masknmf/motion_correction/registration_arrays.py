@@ -35,7 +35,6 @@ class RegistrationArray(LazyFrameLoader):
         self,
         reference_movie: LazyFrameLoader,
         strategy: MotionCorrectionStrategy,
-        device: str = "auto",
         target_movie: Optional[LazyFrameLoader] = None,
     ):
         """
@@ -44,7 +43,6 @@ class RegistrationArray(LazyFrameLoader):
         Args:
             reference_movie (LazyFrameLoder): Image stack that we use to compute motion correction transform relative to template
             strategy (masknmf.MotionCorrectionStrategy): The method used to register each frame to the template
-            device (torch.tensor): The device on which computations are performed (for e.g. 'cuda' or 'cpu'). "auto" selectors for cuda if present.
             target_movie (Optional[LazyFrameLoader]): Once we learn the motion correction transform by aligning reference_dataset
                 with template, we actually apply the transform to target_dataset, if it is specified. If None, we apply the
                 transform to reference_dataset
@@ -59,7 +57,6 @@ class RegistrationArray(LazyFrameLoader):
 
         self._strategy = strategy
         self._template = strategy.template
-        self._device = torch_select_device(device)
         self._target_movie = target_movie
         self._shape = self.reference_movie.shape
         self._ndim = self.reference_movie.ndim
@@ -112,14 +109,6 @@ class RegistrationArray(LazyFrameLoader):
         """centers of the blocks when using ``PiecewiseRigidMotionCorrector``, ``None`` otherwise"""
         return self._block_centers
 
-    @property
-    def device(self) -> str:
-        return self._device
-
-    @device.setter
-    def device(self, new_device: str):
-        self._device = torch_select_device(new_device)
-
     def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
         """
         Lazy computation logic goes here to return frames. Slices the array over time (dimension 0) at the desired indices.
@@ -144,7 +133,6 @@ class RegistrationArray(LazyFrameLoader):
         return self.strategy.correct(
             reference_movie_frames=reference_data_frames,
             target_movie_frames=target_data_frames,
-            device=self.device
         )
 
 

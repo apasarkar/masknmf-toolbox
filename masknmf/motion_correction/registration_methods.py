@@ -940,6 +940,7 @@ def register_frames_pwrigid(
         num_frames, patch_grid_dim1, patch_grid_dim2, 2
     )
 
+
 def compute_pwrigid_patch_midpoints(num_blocks, overlaps, fov_height, fov_width):
     """
     Computes the midpoints of all pwrigid patches.
@@ -959,7 +960,8 @@ def compute_pwrigid_patch_midpoints(num_blocks, overlaps, fov_height, fov_width)
     dim2_midpoints = (dim2_start_pts + dim2_end_pts) / 2
 
     dim1_coords, dim2_coords = torch.meshgrid(dim1_midpoints, dim2_midpoints, indexing='ij')
-    return np.dstack([dim1_coords, dim2_coords])
+    return np.dstack([dim1_coords.cpu().numpy(), dim2_coords.cpu().numpy()])
+
 
 def weighted_alignment_loss(
     template: torch.tensor,
