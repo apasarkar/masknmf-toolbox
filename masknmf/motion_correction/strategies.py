@@ -158,6 +158,7 @@ class MotionCorrectionStrategy:
                     np.stack(template_list, axis=0), axis=0
                 )
             )
+        torch.cuda.empty_cache()
 
     def _compute_frame_chunks(self, num_frames: int, frames_per_split: int) -> list:
         """
@@ -334,3 +335,4 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
             num_frames_per_split=num_frames_per_split,
             num_iterations=num_iterations,
         )
+        torch.cuda.empty_cache()
