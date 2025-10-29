@@ -404,49 +404,6 @@ class PMDArray(FactorizedVideo, Serializer):
         return product
 
 
-def convert_dense_image_stack_to_pmd_format(img_stack: Union[torch.tensor, np.ndarray]) -> PMDArray:
-    """
-    Adapter for converting a dense np.ndarray image stack into a pmd_array. Note that this does not
-    run PMD compression; it simply reformats the data into the SVD format needed to construct a PMDArray object.
-    The resulting PMDArray should contain identical data to img_stack (up to numerical precision errors).
-    All computations are done in numpy on CPU here because that is the only approach that produces an SVD of the
-    raw data that is exactly equal to img_stack.
-
-    Args:
-        img_stack (Union[np.ndarray, torch.tensor]): A (frames, fov_dim1, fov_dim2) shaped image stack
-    Returns:
-        pmd_array (masknmf.compression.PMDArray): img_stack expressed in the pmd_array format. pmd_array contains the
-            same data as img_stack.
-    """
-
-    if isinstance(img_stack, np.ndarray):
-        img_stack = torch.from_numpy(img_stack)
-
-    if isinstance(img_stack, torch.Tensor):
-        num_frames, fov_dim1, fov_dim2 = img_stack.shape
-        img_stack_t = img_stack.permute(1, 2, 0).reshape(
-            (fov_dim1 * fov_dim2, num_frames)
-        )
-
-        u = _construct_identity_torch_sparse_tensor(fov_dim1 * fov_dim2, device="cpu")
-        mean_img = torch.zeros(fov_dim1, fov_dim2, device="cpu", dtype=torch.float32)
-        var_img = torch.ones(fov_dim1, fov_dim2, device="cpu", dtype=torch.float32)
-
-        return PMDArray(img_stack.shape,
-                        u,
-                        img_stack_t,
-                        mean_img,
-                        var_img,
-                        u_local_projector=None,
-                        u_global_projector=None,
-                        device="cpu")
-
-    else:
-        raise ValueError(f"{type(img_stack)} not a supported type")
-
-
-
-
 class PMDResidualArray(ArrayLike):
     """
     Factorized video for the spatial and temporal extracted sources from the data
