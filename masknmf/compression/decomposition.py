@@ -1064,7 +1064,7 @@ def construct_weighting_scheme(dim1, dim2) -> torch.tensor:
 
 
 def pmd_decomposition(
-        dataset: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
+        dataset: Union[np.ndarray, masknmf.ArrayLike],
         block_sizes: Tuple[int, int],
         frame_range: int,
         max_components: int = 20,
@@ -1083,9 +1083,11 @@ def pmd_decomposition(
     """
     General PMD Compression method
     Args:
-        dataset (Union[masknmf.ArrayLike, masknmf.LazyFrameLoader]): An array-like object with shape (frames, fov_dim1, fov_dim2) that loads frames of raw data
-        block_sizes (tuple[int, int]): The block sizes of the compression. Cannot be smaller than 10 in each dimension.
-        frame_range (int): Number of frames or raw data used to fit the spatial basis.
+        dataset (Union[np.ndarray, masknmf.ArrayLike]): An array-like object that supports fast slicing in all dimensions
+            with shape (frames, fov_dim1, fov_dim2) that loads frames of raw data
+        block_sizes (tuple[int, int]): The block sizes of the compression. Block size should be big enough to fit around the largest
+            somatic signal in your data (roughly).
+        frame_range (int): Number of frames of raw data used to fit the spatial basis.
             KEY: We assume that your system can store this many frames of raw data in RAM.
         max_components (int): Max number of components we use to decompose any individual spatial block of the raw data.
         sim_conf (int): The percentile value used to define spatial and temporal roughness thresholds for rejecting/keeping SVD components
