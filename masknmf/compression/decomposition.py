@@ -1,5 +1,4 @@
 import torch
-from typing import List
 
 import masknmf
 from masknmf.compression.pmd_array import PMDArray
@@ -9,6 +8,7 @@ import numpy as np
 from tqdm import tqdm
 
 from masknmf import display
+from masknmf.utils import torch_select_device
 from typing import *
 
 
@@ -1066,7 +1066,7 @@ def construct_weighting_scheme(dim1, dim2) -> torch.tensor:
 def pmd_decomposition(
         dataset: Union[np.ndarray, masknmf.ArrayLike],
         block_sizes: Tuple[int, int],
-        frame_range: int,
+        frame_range: int | None = None,
         max_components: int = 20,
         sim_conf: int = 5,
         frame_batch_size: int = 10000,
@@ -1078,7 +1078,7 @@ def pmd_decomposition(
         pixel_weighting: Optional[np.ndarray] = None,
         spatial_denoiser: Optional[torch.nn.Module] = None,
         temporal_denoiser: Optional[torch.nn.Module] = None,
-        device: str = "cpu",
+        device: Literal["auto", "cuda", "cpu"] = "auto",
 ) -> PMDArray:
     """
     General PMD Compression method
@@ -1103,11 +1103,14 @@ def pmd_decomposition(
             should intuitively boost the relative variance of pixels containing signal to those that do not contain signal.
         spatial_denoiser (Optional[torch.nn.Module]): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
         temporal_denoiser (Optional[torch.nn.Module]): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
-        device (str): Which device the computations should be performed on. Options: "cuda" or "cpu".
+        device ("auto" | "cuda" | "cpu"): Which device the computations should be performed on.
 
     Returns:
         pmd_arr (masknmf.PMDArray): A PMD Array object capturing the compression results.
     """
+
+    device = torch_select_device(device)
+
     display("Starting compression")
     num_frames, fov_dim1, fov_dim2 = dataset.shape
     dtype = torch.float32  # This is the target dtype we use for doing computations
@@ -1122,6 +1125,9 @@ def pmd_decomposition(
     if window_chunks is None:
         window_chunks = frame_range
     # Decide which chunks of the data you will use for the spatial PMD blockwise fits
+    if frame_range is None:
+        frame_range = dataset.shape[0]
+
     if dataset.shape[0] < frame_range:
         display("WARNING: Specified using more frames than there are in the dataset.")
         frame_range = dataset.shape[0]
