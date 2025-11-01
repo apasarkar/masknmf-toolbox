@@ -454,6 +454,9 @@ def make_demixing_video(
     ac_arr = results.ac_array
     fluctuating_arr = results.fluctuating_background_array
     pmd_arr = results.pmd_array
+
+    # Demixing is run on the U/V representation, without rescaling, so we set rescale = False here to make sure scales match
+    pmd_arr.rescale = False
     residual_arr = results.residual_array
     colorful_arr = results.colorful_ac_array
     global_residual_img = results.global_residual_correlation_image.cpu().numpy()

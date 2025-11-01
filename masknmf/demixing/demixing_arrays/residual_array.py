@@ -26,6 +26,8 @@ class ResidualArray(FactorizedVideo):
             baseline (torch.tensor): Shape (fov dim 1, fov dim 2)
         """
         self.pmd_arr = pmd_arr
+        # Demixing is run on the U/V representation, without rescaling, so we set rescale = False here to make sure scales match
+        self.pmd_arr.rescale = False
         self.ac_arr = ac_arr
         self.baseline = baseline
         self.fluctuating_arr = fluctuating_arr
