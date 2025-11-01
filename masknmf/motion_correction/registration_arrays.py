@@ -97,8 +97,8 @@ class RegistrationArray(LazyFrameLoader):
             self._block_centers = compute_pwrigid_patch_midpoints(
                 num_blocks=self.strategy.num_blocks,
                 overlaps=self.strategy.overlaps,
-                fov_height=self.strategy.template.shape[0],
-                fov_width=self.strategy.template.shape[1]
+                fov_height=self.reference_movie.shape[1],
+                fov_width=self.reference_movie.shape[2]
             )
         else:
             self._block_centers = None
