@@ -25,6 +25,15 @@ class MotionCorrectionStrategy:
         self._template = torch.from_numpy(template).float() if template is not None else None
         self._batch_size = batch_size
 
+    def _validate_tuple_int_int(self, param, value):
+        value = tuple(map(int, value))
+        if len(value) != 2:
+            raise TypeError(
+                f"`{param}` must a tuple of 2 integers, you have passed: {value}"
+            )
+
+        return value
+
     @property
     def template(self) -> None | torch.Tensor:
         """registration template to map raw frames onto"""
@@ -37,6 +46,8 @@ class MotionCorrectionStrategy:
 
     @batch_size.setter
     def batch_size(self, value: int):
+        if not isinstance(value, int):
+            raise ValueError(f"`batch_size` must be an <int>, you passed: {value}")
         self._batch_size = value
 
     @property
@@ -220,11 +231,7 @@ class RigidMotionCorrector(MotionCorrectionStrategy):
 
     @max_shifts.setter
     def max_shifts(self, value: tuple[int, int]):
-        value = tuple(map(int, value))
-        if len(value) != 2:
-            raise ValueError(
-                f"`max_shifts` must be a tuple of int, i.e. (int, int), of size 2. You have passed: {value}"
-            )
+        value = self._validate_tuple_int_int("max_shifts", value)
 
         self._template = None
         self._max_shifts = value
@@ -287,6 +294,8 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
 
     @num_blocks.setter
     def num_blocks(self, value):
+        value = self._validate_tuple_int_int("num_blocks", value)
+
         self._template = None
         self._num_blocks = value
 
@@ -300,6 +309,8 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
 
     @overlaps.setter
     def overlaps(self, value):
+        value = self._validate_tuple_int_int("overlaps", value)
+
         self._template = None
         self._overlaps = value
 
@@ -309,6 +320,8 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
 
     @max_rigid_shifts.setter
     def max_rigid_shifts(self, value: tuple[int, int]):
+        value = self._validate_tuple_int_int("max_rigid_shifts", value)
+
         self._template = None
         self._max_rigid_shifts = value
 
@@ -318,6 +331,8 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
 
     @max_deviation_rigid.setter
     def max_deviation_rigid(self, value):
+        value = self._validate_tuple_int_int("max_deviation_rigid", value)
+
         self._template = None
         self._max_deviation_rigid = value
 
