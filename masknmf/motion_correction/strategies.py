@@ -226,6 +226,7 @@ class RigidMotionCorrector(MotionCorrectionStrategy):
                 f"`max_shifts` must be a tuple of int, i.e. (int, int), of size 2. You have passed: {value}"
             )
 
+        self._template = None
         self._max_shifts = value
 
     @property
