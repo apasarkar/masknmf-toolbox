@@ -287,7 +287,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
     @property
     def num_blocks(self) -> tuple[int, int]:
         """
-        Number of blocks that the image plane is split into.
+        Number of blocks that the image plane is split into, [rows, cols].
         Motion is estimated in each block and then interpolated in 2D space across the entire image plane.
         """
         return self._num_blocks
