@@ -34,6 +34,10 @@ class MotionCorrectionStrategy:
     def batch_size(self) -> int:
         return self._batch_size
 
+    @batch_size.setter
+    def batch_size(self, value: int):
+        self._batch_size = value
+
     @property
     def device(self) -> str:
         return self._device
@@ -243,10 +247,10 @@ class RigidMotionCorrector(MotionCorrectionStrategy):
 class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
     def __init__(
         self,
-        num_blocks: Tuple[int, int],
-        overlaps: Tuple[int, int],
-        max_rigid_shifts: Tuple[int, int],
-        max_deviation_rigid: Tuple[int, int],
+        num_blocks: tuple[int, int] = (12, 12),
+        overlaps: tuple[int, int] = (5, 5),
+        max_rigid_shifts: tuple[int, int] = (15, 15),
+        max_deviation_rigid: tuple[int, int] = (2, 2),
         template: Optional[np.ndarray] = None,
         pixel_weighting: Optional[np.ndarray] = None,
         batch_size: int = 200,
@@ -263,6 +267,11 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
     def num_blocks(self) -> Tuple[int, int]:
         return self._num_blocks
 
+    @num_blocks.setter
+    def num_blocks(self, value):
+        self._template = None
+        self._num_blocks = value
+
     @property
     def pixel_weighting(self) -> Optional[torch.tensor]:
         return self._pixel_weighting
@@ -271,13 +280,28 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
     def overlaps(self) -> Tuple[int, int]:
         return self._overlaps
 
+    @overlaps.setter
+    def overlaps(self, value):
+        self._template = None
+        self._overlaps = value
+
     @property
     def max_rigid_shifts(self) -> Tuple[int, int]:
         return self._max_rigid_shifts
 
+    @max_rigid_shifts.setter
+    def max_rigid_shifts(self, value: Tuple[int, int]):
+        self._template = None
+        self._max_rigid_shifts = value
+
     @property
     def max_deviation_rigid(self) -> Tuple[int, int]:
         return self._max_deviation_rigid
+
+    @max_deviation_rigid.setter
+    def max_deviation_rigid(self, value):
+        self._template = None
+        self._max_deviation_rigid = value
 
     def _correct_singlebatch(
             self,

@@ -55,22 +55,12 @@ class RegistrationArray(LazyFrameLoader):
                 f"Usually `RigidMotionCorrector` or `PiecewiseRigidMotionCorrector`"
             )
 
-        self._strategy = strategy
+        self.strategy = strategy
         self._template = strategy.template
         self._target_movie = target_movie
         self._shape = self.reference_movie.shape
         self._ndim = self.reference_movie.ndim
         self._shifts = Shifts(self)
-
-        if isinstance(self.strategy, PiecewiseRigidMotionCorrector):
-            self._block_centers = compute_pwrigid_patch_midpoints(
-                num_blocks=self.strategy.num_blocks,
-                overlaps=self.strategy.overlaps,
-                fov_height=self.strategy.template.shape[0],
-                fov_width=self.strategy.template.shape[1]
-            )
-        else:
-            self._block_centers = None
 
     @property
     def ndim(self) -> int:
@@ -88,6 +78,7 @@ class RegistrationArray(LazyFrameLoader):
     def reference_movie(self) -> LazyFrameLoader:
         return self._reference_movie
 
+
     @property
     def target_movie(self) -> Optional[LazyFrameLoader]:
         return self._target_movie
@@ -97,8 +88,22 @@ class RegistrationArray(LazyFrameLoader):
         return self._shifts
 
     @property
-    def strategy(self) -> PiecewiseRigidMotionCorrector | RigidMotionCorrector:
+    def strategy(self) -> PiecewiseRigidMotionCorrector | RigidMotionCorrector | None:
         return self._strategy
+
+    @strategy.setter
+    def strategy(self, corrector: PiecewiseRigidMotionCorrector | RigidMotionCorrector | None):
+        self._strategy = corrector
+
+        if isinstance(self.strategy, PiecewiseRigidMotionCorrector):
+            self._block_centers = compute_pwrigid_patch_midpoints(
+                num_blocks=self.strategy.num_blocks,
+                overlaps=self.strategy.overlaps,
+                fov_height=self.strategy.template.shape[0],
+                fov_width=self.strategy.template.shape[1]
+            )
+        else:
+            self._block_centers = None
 
     @property
     def template(self) -> torch.tensor:
