@@ -386,8 +386,9 @@ class PMDArray(FactorizedVideo, Serializer):
             var_img_crop = self.var_img.flatten()
             implied_fov = self.shape[1], self.shape[2]
 
-        product = torch.sparse.mm(u_crop, v_crop) * var_img_crop.unsqueeze(1)
+        product = torch.sparse.mm(u_crop, v_crop)
         if self.rescale:
+            product *= var_img_crop.unsqueeze(1)
             product += mean_img_crop.unsqueeze(1)
 
         product = product.reshape((implied_fov[0], implied_fov[1], -1))

@@ -1122,11 +1122,12 @@ def pmd_decomposition(
     if spatial_denoiser is not None:
         spatial_denoiser.to(device)
 
-    if window_chunks is None:
-        window_chunks = frame_range
     # Decide which chunks of the data you will use for the spatial PMD blockwise fits
     if frame_range is None:
         frame_range = dataset.shape[0]
+
+    if window_chunks is None:
+        window_chunks = frame_range
 
     if dataset.shape[0] < frame_range:
         display("WARNING: Specified using more frames than there are in the dataset.")
