@@ -3,13 +3,12 @@ import random
 import warnings
 
 import torch
-from typing import *
+from typing import Optional
 
 import numpy as np
 from tqdm import tqdm
 
 import masknmf
-from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.utils import torch_select_device
 from .registration_methods import register_frames_rigid, register_frames_pwrigid
 
@@ -27,11 +26,13 @@ class MotionCorrectionStrategy:
         self._batch_size = batch_size
 
     @property
-    def template(self) -> Union[None, torch.tensor]:
+    def template(self) -> None | torch.tensor:
+        """registration template to map raw frames onto"""
         return self._template
 
     @property
     def batch_size(self) -> int:
+        """get or set the batch size, the number of frames sent to the GPU in batches for motion correction"""
         return self._batch_size
 
     @batch_size.setter
@@ -40,17 +41,25 @@ class MotionCorrectionStrategy:
 
     @property
     def device(self) -> str:
+        """hardware device used for motion correction, 'cuda' | 'cpu'"""
         return self._device
 
     @property
-    def pixel_weighting(self) -> Union[None, torch.Tensor]:
+    def pixel_weighting(self) -> None | torch.Tensor:
+        """
+        Weight pixels with larger values to indicate these pixels carry useful information for motion correction.
+
+        Useful for correcting voltage imaging data, zero out the weights of pixels that in the plain/homogeous
+        background since they do not carry useful 'landmarks' for image registration.
+
+        """
         raise NotImplementedError
 
     def _correct_singlebatch(
             self,
             reference_frames: np.ndarray,
-            target_frames: Optional[np.ndarray] | None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+            target_frames: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         This function should contain the core logic for motion correcting "n" frames, without any batching logic needed.
 
@@ -73,7 +82,7 @@ class MotionCorrectionStrategy:
         self,
         reference_movie_frames: np.ndarray,
         target_movie_frames: Optional[np.ndarray] = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
 
         """
         Apply motion correction. Reference frames is the set of frames that we align to the template (to learn
@@ -122,11 +131,14 @@ class MotionCorrectionStrategy:
 
     def compute_template(
             self,
-            frames: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
+            frames: masknmf.ArrayLike | masknmf.LazyFrameLoader,
             num_splits_per_iteration: int = 10,
             num_frames_per_split: int = 200,
             num_iterations: int = 3,
         ):
+        """
+        Compute the registration template from the given frames. Raw frames will be mapped onto this template.
+        """
 
         if num_iterations <= 0:
             raise ValueError(f"`num_iterations` must be >= 1`, you passed: {num_iterations}")
@@ -190,7 +202,7 @@ class MotionCorrectionStrategy:
 class RigidMotionCorrector(MotionCorrectionStrategy):
     def __init__(
         self,
-        max_shifts: Tuple[int, int],
+        max_shifts: tuple[int, int] = (15, 15),
         template: Optional[np.ndarray] = None,
         pixel_weighting: Optional[np.ndarray] = None,
         batch_size: int = 200,
@@ -202,11 +214,12 @@ class RigidMotionCorrector(MotionCorrectionStrategy):
         self._pixel_weighting = torch.from_numpy(pixel_weighting).float() if pixel_weighting is not None else None
 
     @property
-    def max_shifts(self) -> Tuple[int, int]:
+    def max_shifts(self) -> tuple[int, int]:
+        """max allowed shift in [row, cols] dim"""
         return self._max_shifts
 
     @max_shifts.setter
-    def max_shifts(self, value: Tuple[int, int]):
+    def max_shifts(self, value: tuple[int, int]):
         value = tuple(map(int, value))
         if len(value) != 2:
             raise ValueError(
@@ -216,14 +229,14 @@ class RigidMotionCorrector(MotionCorrectionStrategy):
         self._max_shifts = value
 
     @property
-    def pixel_weighting(self) -> Union[None, torch.tensor]:
+    def pixel_weighting(self) -> None | torch.tensor:
         return self._pixel_weighting
 
     def _correct_singlebatch(
             self,
             reference_frames: np.ndarray,
             target_frames: Optional[np.ndarray] | None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
 
         if self.template is None:
             raise ValueError(
@@ -264,7 +277,11 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
         self._pixel_weighting = torch.from_numpy(pixel_weighting).float() if pixel_weighting is not None else None
 
     @property
-    def num_blocks(self) -> Tuple[int, int]:
+    def num_blocks(self) -> tuple[int, int]:
+        """
+        Number of blocks that the image plane is split into.
+        Motion is estimated in each block and then interpolated in 2D space across the entire image plane.
+        """
         return self._num_blocks
 
     @num_blocks.setter
@@ -277,7 +294,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
         return self._pixel_weighting
 
     @property
-    def overlaps(self) -> Tuple[int, int]:
+    def overlaps(self) -> tuple[int, int]:
         return self._overlaps
 
     @overlaps.setter
@@ -286,16 +303,16 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
         self._overlaps = value
 
     @property
-    def max_rigid_shifts(self) -> Tuple[int, int]:
+    def max_rigid_shifts(self) -> tuple[int, int]:
         return self._max_rigid_shifts
 
     @max_rigid_shifts.setter
-    def max_rigid_shifts(self, value: Tuple[int, int]):
+    def max_rigid_shifts(self, value: tuple[int, int]):
         self._template = None
         self._max_rigid_shifts = value
 
     @property
-    def max_deviation_rigid(self) -> Tuple[int, int]:
+    def max_deviation_rigid(self) -> tuple[int, int]:
         return self._max_deviation_rigid
 
     @max_deviation_rigid.setter
@@ -307,7 +324,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
             self,
             reference_frames: np.ndarray,
             target_frames: Optional[np.ndarray],
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
 
         if self.template is None:
             raise ValueError(
@@ -334,7 +351,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
 
     def compute_template(
             self,
-            frames: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
+            frames: masknmf.ArrayLike | masknmf.LazyFrameLoader,
             num_splits_per_iteration: int = 10,
             num_frames_per_split: int = 200,
             num_iterations:int = 1,
