@@ -26,7 +26,7 @@ class MotionCorrectionStrategy:
         self._batch_size = batch_size
 
     @property
-    def template(self) -> None | torch.tensor:
+    def template(self) -> None | torch.Tensor:
         """registration template to map raw frames onto"""
         return self._template
 
@@ -229,7 +229,7 @@ class RigidMotionCorrector(MotionCorrectionStrategy):
         self._max_shifts = value
 
     @property
-    def pixel_weighting(self) -> None | torch.tensor:
+    def pixel_weighting(self) -> None | torch.Tensor:
         return self._pixel_weighting
 
     def _correct_singlebatch(
@@ -290,7 +290,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
         self._num_blocks = value
 
     @property
-    def pixel_weighting(self) -> Optional[torch.tensor]:
+    def pixel_weighting(self) -> None | torch.Tensor:
         return self._pixel_weighting
 
     @property

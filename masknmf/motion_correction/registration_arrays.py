@@ -104,7 +104,7 @@ class RegistrationArray(LazyFrameLoader):
             self._block_centers = None
 
     @property
-    def block_centers(self) -> np.ndarray | None:
+    def block_centers(self) -> None | np.ndarray:
         """centers of the blocks when using ``PiecewiseRigidMotionCorrector``, ``None`` otherwise"""
         return self._block_centers
 
