@@ -305,6 +305,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
 
     @property
     def overlaps(self) -> tuple[int, int]:
+        """Number of pixels that overlap between adjacent blocks"""
         return self._overlaps
 
     @overlaps.setter
@@ -316,6 +317,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
 
     @property
     def max_rigid_shifts(self) -> tuple[int, int]:
+        """maximum shift for rigid iterations, [rows, cols] before piece-wise rigid registration"""
         return self._max_rigid_shifts
 
     @max_rigid_shifts.setter
@@ -327,6 +329,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
 
     @property
     def max_deviation_rigid(self) -> tuple[int, int]:
+        """maximum shift allowed in each piece-wise block relative to the rigid registered frame"""
         return self._max_deviation_rigid
 
     @max_deviation_rigid.setter
