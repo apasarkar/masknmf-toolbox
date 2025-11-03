@@ -12,6 +12,12 @@ Welcome to masknmf's documentation!
    :maxdepth: 1
 
    _gallery/index
+   
+.. toctree::
+   :caption: Tutorials
+   :maxdepth: 1
+
+   getting_frames
 
 Summary
 =======
