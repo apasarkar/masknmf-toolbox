@@ -44,7 +44,8 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx_copybutton",
     "sphinx_design",
-    "sphinx_gallery.gen_gallery"
+    "sphinx_gallery.gen_gallery",
+    "myst_parser"
 ]
 
 sphinx_gallery_conf = {

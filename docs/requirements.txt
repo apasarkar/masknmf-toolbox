@@ -1,0 +1,11 @@
+sphinx
+pydata-sphinx-theme
+sphinx_gallery
+sphinx_design
+sphinx_copybutton
+myst-parser
+
+fastplotlib
+pygfx
+masknmf
+imageio
