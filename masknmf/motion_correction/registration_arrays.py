@@ -3,8 +3,9 @@ from typing import Optional, Callable
 import torch
 import numpy as np
 
+import masknmf
 from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
-from .strategies import MotionCorrectionStrategy, RigidMotionCorrector, PiecewiseRigidMotionCorrector
+from .strategies import MotionCorrectionStrategy, RigidMotionCorrector, PiecewiseRigidMotionCorrector, DummyMotionCorrector
 from .registration_methods import compute_pwrigid_patch_midpoints
 
 
@@ -48,13 +49,10 @@ class RegistrationArray(LazyFrameLoader):
         """
         self._reference_movie = reference_movie
 
-        if not isinstance(strategy, MotionCorrectionStrategy):
-            raise TypeError(
-                f"`strategy` must be a `MotionCorrectionStrategy` type. "
-                f"Usually `RigidMotionCorrector` or `PiecewiseRigidMotionCorrector`"
-            )
-
-        self.strategy = strategy
+        if strategy is None:
+            self.strategy = DummyMotionCorrector()
+        else:
+            self.strategy = strategy
 
         self._target_movie = target_movie
         self._shape = self.reference_movie.shape
@@ -90,7 +88,7 @@ class RegistrationArray(LazyFrameLoader):
         return self._strategy
 
     @strategy.setter
-    def strategy(self, corrector: PiecewiseRigidMotionCorrector | RigidMotionCorrector | None):
+    def strategy(self, corrector: PiecewiseRigidMotionCorrector | RigidMotionCorrector | DummyMotionCorrector | None):
         self._strategy = corrector
 
         if isinstance(self.strategy, PiecewiseRigidMotionCorrector):

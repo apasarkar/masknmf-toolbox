@@ -12,6 +12,7 @@ import masknmf
 from masknmf.utils import torch_select_device
 from .registration_methods import register_frames_rigid, register_frames_pwrigid
 
+
 class MotionCorrectionStrategy:
     """base class for motion correction strategies."""
 
@@ -90,9 +91,9 @@ class MotionCorrectionStrategy:
         raise NotImplementedError
 
     def correct(
-        self,
-        reference_movie_frames: np.ndarray,
-        target_movie_frames: Optional[np.ndarray] = None,
+            self,
+            reference_movie_frames: np.ndarray,
+            target_movie_frames: Optional[np.ndarray] = None,
     ) -> tuple[np.ndarray, np.ndarray]:
 
         """
@@ -146,14 +147,13 @@ class MotionCorrectionStrategy:
             num_splits_per_iteration: int = 10,
             num_frames_per_split: int = 200,
             num_iterations: int = 3,
-        ):
+    ):
         """
         Compute the registration template from the given frames. Raw frames will be mapped onto this template.
         """
 
         if num_iterations <= 0:
             raise ValueError(f"`num_iterations` must be >= 1`, you passed: {num_iterations}")
-
 
         # Step 1: Initial Template (Mean Image)
         if self.template is None:
@@ -210,14 +210,40 @@ class MotionCorrectionStrategy:
         return slice_list
 
 
+class DummyMotionCorrector(MotionCorrectionStrategy):
+
+    def __init__(self):
+        super().__init__()
+        self._device = "cpu"
+        self.batch_size = 100
+        self._template = None
+
+    def correct(self,
+                reference_movie_frames: np.ndarray,
+                target_movie_frames: Optional[np.ndarray] = None,
+                ) -> tuple[np.ndarray, np.ndarray]:
+        if target_movie_frames is not None:
+            return target_movie_frames, np.zeros((target_movie_frames.shape[0], 2))
+        else:
+            return reference_movie_frames, np.zeros((reference_movie_frames.shape[0], 2))
+
+    def compute_template(self,
+                         frames: masknmf.ArrayLike | masknmf.LazyFrameLoader,
+                         num_splits_per_iteration: int = 10,
+                         num_frames_per_split: int = 200,
+                         num_iterations: int = 3,
+                         ):
+        self._template = None
+
+
 class RigidMotionCorrector(MotionCorrectionStrategy):
     def __init__(
-        self,
-        max_shifts: tuple[int, int] = (15, 15),
-        template: Optional[np.ndarray] = None,
-        pixel_weighting: Optional[np.ndarray] = None,
-        batch_size: int = 200,
-        device: str = "auto",
+            self,
+            max_shifts: tuple[int, int] = (15, 15),
+            template: Optional[np.ndarray] = None,
+            pixel_weighting: Optional[np.ndarray] = None,
+            batch_size: int = 200,
+            device: str = "auto",
     ):
         super().__init__(template, batch_size=batch_size, device=device)
 
@@ -265,17 +291,18 @@ class RigidMotionCorrector(MotionCorrectionStrategy):
         )
         return outputs[0].cpu().numpy(), outputs[1].cpu().numpy()
 
+
 class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
     def __init__(
-        self,
-        num_blocks: tuple[int, int] = (12, 12),
-        overlaps: tuple[int, int] = (5, 5),
-        max_rigid_shifts: tuple[int, int] = (15, 15),
-        max_deviation_rigid: tuple[int, int] = (2, 2),
-        template: Optional[np.ndarray] = None,
-        pixel_weighting: Optional[np.ndarray] = None,
-        batch_size: int = 200,
-        device: str = "auto",
+            self,
+            num_blocks: tuple[int, int] = (12, 12),
+            overlaps: tuple[int, int] = (5, 5),
+            max_rigid_shifts: tuple[int, int] = (15, 15),
+            max_deviation_rigid: tuple[int, int] = (2, 2),
+            template: Optional[np.ndarray] = None,
+            pixel_weighting: Optional[np.ndarray] = None,
+            batch_size: int = 200,
+            device: str = "auto",
     ):
         super().__init__(template, batch_size=batch_size, device=device)
         self._num_blocks = num_blocks
@@ -373,7 +400,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
             frames: masknmf.ArrayLike | masknmf.LazyFrameLoader,
             num_splits_per_iteration: int = 10,
             num_frames_per_split: int = 200,
-            num_iterations:int = 1,
+            num_iterations: int = 1,
     ):
         rigid_strategy = RigidMotionCorrector(
             self.max_rigid_shifts,
