@@ -1,12 +1,11 @@
-import math
-from typing import *
+from typing import Optional, Callable
 
 import torch
 import numpy as np
 
+import masknmf
 from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
-from masknmf.utils import torch_select_device
-from .strategies import MotionCorrectionStrategy, RigidMotionCorrector, PiecewiseRigidMotionCorrector
+from .strategies import MotionCorrectionStrategy, RigidMotionCorrector, PiecewiseRigidMotionCorrector, DummyMotionCorrector
 from .registration_methods import compute_pwrigid_patch_midpoints
 
 
@@ -34,7 +33,7 @@ class RegistrationArray(LazyFrameLoader):
     def __init__(
         self,
         reference_movie: LazyFrameLoader,
-        strategy: MotionCorrectionStrategy,
+        strategy: MotionCorrectionStrategy | None = None,
         target_movie: Optional[LazyFrameLoader] = None,
     ):
         """
@@ -42,42 +41,30 @@ class RegistrationArray(LazyFrameLoader):
 
         Args:
             reference_movie (LazyFrameLoder): Image stack that we use to compute motion correction transform relative to template
-            strategy (masknmf.MotionCorrectionStrategy): The method used to register each frame to the template
+            strategy (masknmf.MotionCorrectionStrategy): The method used to register each frame to the template.
+                Can initialize as ``None``, but must be set before slicing frames
             target_movie (Optional[LazyFrameLoader]): Once we learn the motion correction transform by aligning reference_dataset
                 with template, we actually apply the transform to target_dataset, if it is specified. If None, we apply the
                 transform to reference_dataset
         """
         self._reference_movie = reference_movie
 
-        if not isinstance(strategy, MotionCorrectionStrategy):
-            raise TypeError(
-                f"`strategy` must be a `MotionCorrectionStrategy` type. "
-                f"Usually `RigidMotionCorrector` or `PiecewiseRigidMotionCorrector`"
-            )
+        if strategy is None:
+            self.strategy = DummyMotionCorrector()
+        else:
+            self.strategy = strategy
 
-        self._strategy = strategy
-        self._template = strategy.template
         self._target_movie = target_movie
         self._shape = self.reference_movie.shape
         self._ndim = self.reference_movie.ndim
         self._shifts = Shifts(self)
-
-        if isinstance(self.strategy, PiecewiseRigidMotionCorrector):
-            self._block_centers = compute_pwrigid_patch_midpoints(
-                num_blocks=self.strategy.num_blocks,
-                overlaps=self.strategy.overlaps,
-                fov_height=self.strategy.template.shape[0],
-                fov_width=self.strategy.template.shape[1]
-            )
-        else:
-            self._block_centers = None
 
     @property
     def ndim(self) -> int:
         return self._ndim
 
     @property
-    def shape(self) -> Tuple[int, int, int]:
+    def shape(self) -> tuple[int, int, int]:
         return self._shape
 
     @property
@@ -89,7 +76,7 @@ class RegistrationArray(LazyFrameLoader):
         return self._reference_movie
 
     @property
-    def target_movie(self) -> Optional[LazyFrameLoader]:
+    def target_movie(self) -> LazyFrameLoader | None:
         return self._target_movie
 
     @property
@@ -97,19 +84,29 @@ class RegistrationArray(LazyFrameLoader):
         return self._shifts
 
     @property
-    def strategy(self) -> PiecewiseRigidMotionCorrector | RigidMotionCorrector:
+    def strategy(self) -> PiecewiseRigidMotionCorrector | RigidMotionCorrector | None:
         return self._strategy
 
-    @property
-    def template(self) -> torch.tensor:
-        return self._template
+    @strategy.setter
+    def strategy(self, corrector: PiecewiseRigidMotionCorrector | RigidMotionCorrector | DummyMotionCorrector | None):
+        self._strategy = corrector
+
+        if isinstance(self.strategy, PiecewiseRigidMotionCorrector):
+            self._block_centers = compute_pwrigid_patch_midpoints(
+                num_blocks=self.strategy.num_blocks,
+                overlaps=self.strategy.overlaps,
+                fov_height=self.reference_movie.shape[1],
+                fov_width=self.reference_movie.shape[2]
+            )
+        else:
+            self._block_centers = None
 
     @property
-    def block_centers(self) -> np.ndarray | None:
+    def block_centers(self) -> None | np.ndarray:
         """centers of the blocks when using ``PiecewiseRigidMotionCorrector``, ``None`` otherwise"""
         return self._block_centers
 
-    def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
+    def _compute_at_indices(self, indices: list | int | slice) -> np.ndarray:
         """
         Lazy computation logic goes here to return frames. Slices the array over time (dimension 0) at the desired indices.
 
@@ -124,9 +121,10 @@ class RegistrationArray(LazyFrameLoader):
 
     def _index_frames_tensor(
         self,
-        idx: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Retrieve motion-corrected frame at index `idx`."""
+        idx: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """(corrected_frames, shifts) at index `idx`."""
+
         reference_data_frames = self.reference_movie[idx]
         target_data_frames = None if self.target_movie is None else self.target_movie[idx]
 
@@ -198,7 +196,7 @@ class FilteredArray(LazyFrameLoader):
         return self.raw_data_loader.dtype
 
     @property
-    def shape(self) -> Tuple[int, int, int]:
+    def shape(self) -> tuple[int, int, int]:
         """
         Array shape (n_frames, dims_x, dims_y)
         """
@@ -211,7 +209,7 @@ class FilteredArray(LazyFrameLoader):
         """
         return len(self.shape)
 
-    def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
+    def _compute_at_indices(self, indices: list | int | slice) -> np.ndarray:
         """
         Lazy computation logic goes here to return frames. Slices the array over time (dimension 0) at the desired indices.
 
