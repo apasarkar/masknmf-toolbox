@@ -82,7 +82,7 @@ class MotionBinDataset:
 
 def load_bin_file(s2p_zip_path: Union[str, bytes, os.PathLike],
                    alf_bin_path: Union[str, bytes, os.PathLike]) -> np.ndarray:
-    my_data = MotionBinDataset(alf_bin_path, s2p_zip_path)[:]
+    my_data = MotionBinDataset(alf_bin_path, s2p_zip_path)
     return my_data
 
 
@@ -98,20 +98,13 @@ def compress_and_denoise(cfg: DictConfig) -> None:
 
     block_sizes = [cfg.block_size_dim1, cfg.block_size_dim2]
 
-    device = cfg.device
-    if device == 'cpu':
-        display("Running PMD to generate training data on CPU")
-
-
     
     pmd_no_denoise = masknmf.compression.pmd_decomposition(my_data,
                                                            block_sizes,
-                                                           my_data.shape[0],
                                                            max_components=cfg.max_components,
                                                            max_consecutive_failures=cfg.max_consecutive_failures,
                                                            temporal_avg_factor=cfg.temporal_avg_factor,
                                                            spatial_avg_factor=cfg.spatial_avg_factor,
-                                                           device=device,
                                                            temporal_denoiser=None,  # Turn off denoiser
                                                            frame_batch_size=cfg.frame_batch_size,
                                                            pixel_weighting = binary_mask)
@@ -132,12 +125,10 @@ def compress_and_denoise(cfg: DictConfig) -> None:
     
     pmd_denoised = masknmf.compression.pmd_decomposition(my_data,
                                                          block_sizes,
-                                                         my_data.shape[0],
                                                          max_components=cfg.max_components,
                                                          max_consecutive_failures=cfg.max_consecutive_failures,
                                                          temporal_avg_factor=cfg.temporal_avg_factor,
                                                          spatial_avg_factor=cfg.spatial_avg_factor,
-                                                         device=device,
                                                          temporal_denoiser=curr_temporal_denoiser,
                                                          frame_batch_size=cfg.frame_batch_size,
                                                          pixel_weighting=binary_mask)
@@ -148,10 +139,7 @@ def compress_and_denoise(cfg: DictConfig) -> None:
 
     out_path = os.path.abspath(cfg.out_path)
 
-    # From this, it is easy to load the results into a notebook, visualize things, etc.sl
-    np.savez(out_path,
-             pmd_denoise=pmd_denoised,
-             pmd_no_denoise=pmd_no_denoise)
+    pmd_denoised.export(out_path)
     display("Results saved")
 
 
@@ -166,7 +154,6 @@ if __name__ == "__main__":
         'max_consecutive_failures': 1,
         'spatial_avg_factor': 1,
         'temporal_avg_factor': 1,
-        'device': 'cpu',
         'frame_batch_size': 1024,
         'neural_network': None
     }

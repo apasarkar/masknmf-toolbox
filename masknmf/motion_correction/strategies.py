@@ -23,7 +23,7 @@ class MotionCorrectionStrategy:
             device: str = "auto",
     ):
         self._device = torch_select_device(device)
-        self._template = torch.from_numpy(template).float() if template is not None else None
+        self._template = template
         self._batch_size = batch_size
 
     def _validate_tuple_int_int(self, param, value):
@@ -36,7 +36,7 @@ class MotionCorrectionStrategy:
         return value
 
     @property
-    def template(self) -> None | torch.Tensor:
+    def template(self) -> None | np.ndarray:
         """registration template to map raw frames onto"""
         return self._template
 
@@ -57,7 +57,7 @@ class MotionCorrectionStrategy:
         return self._device
 
     @property
-    def pixel_weighting(self) -> None | torch.Tensor:
+    def pixel_weighting(self) -> None | np.ndarray:
         """
         Weight pixels with larger values to indicate these pixels carry useful information for motion correction.
 
@@ -248,7 +248,7 @@ class RigidMotionCorrector(MotionCorrectionStrategy):
         super().__init__(template, batch_size=batch_size, device=device)
 
         self._max_shifts = max_shifts
-        self._pixel_weighting = torch.from_numpy(pixel_weighting).float() if pixel_weighting is not None else None
+        self._pixel_weighting = pixel_weighting
 
     @property
     def max_shifts(self) -> tuple[int, int]:
@@ -263,8 +263,11 @@ class RigidMotionCorrector(MotionCorrectionStrategy):
         self._max_shifts = value
 
     @property
-    def pixel_weighting(self) -> None | torch.Tensor:
-        return self._pixel_weighting
+    def pixel_weighting(self) -> None | np.ndarray:
+        if self._pixel_weighting is not None:
+            return self._pixel_weighting
+        else:
+            return None
 
     def _correct_singlebatch(
             self,
@@ -277,17 +280,22 @@ class RigidMotionCorrector(MotionCorrectionStrategy):
                 "Template is uninitialized"
             )
 
+        #Move appropriate data to cuda
         if target_frames is not None:
             target_frames = torch.from_numpy(target_frames).to(self.device).float()
-
         reference_frames = torch.from_numpy(reference_frames).to(self.device).float()
+        template = torch.from_numpy(self.template).to(self.device).float()
+        if self.pixel_weighting is not None:
+            pixel_weighting = torch.from_numpy(self.pixel_weighting).to(self.device).float()
+        else:
+            pixel_weighting = None
 
         outputs = register_frames_rigid(
-            reference_frames.to(self.device).float(),
-            self.template.to(self.device).float(),
+            reference_frames,
+            template,
             self.max_shifts,
             target_frames=target_frames,
-            pixel_weighting=self.pixel_weighting.to(self.device).float() if self.pixel_weighting is not None else None,
+            pixel_weighting=pixel_weighting
         )
         return outputs[0].cpu().numpy(), outputs[1].cpu().numpy()
 
