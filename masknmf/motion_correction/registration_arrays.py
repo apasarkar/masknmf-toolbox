@@ -163,9 +163,9 @@ class RegistrationArray(LazyFrameLoader, Serializer):
 
         with h5py.File(path, 'w') as f:
             num_frames = self.shape[0]
-            moco_dset = f.create_dataset("motion_corrected", data_output_shape)
+            moco_dset = f.create_dataset(self._motion_export_name, data_output_shape)
             if shifts_output_shape is not None:
-                shifts_dset = f.create_dataset("shifts", shifts_output_shape)
+                shifts_dset = f.create_dataset(self._shifts_export_name, shifts_output_shape)
             else:
                 shifts_dset = None
             batch_size = self.strategy.batch_size
