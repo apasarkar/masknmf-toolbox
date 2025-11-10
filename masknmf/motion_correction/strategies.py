@@ -314,7 +314,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
         "max_rigid_shifts",
         "max_deviation_rigid",
         "template",
-        "pixel_weighting"
+        "pixel_weighting",
         "batch_size"
     }
     
