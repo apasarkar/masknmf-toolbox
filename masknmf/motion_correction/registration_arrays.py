@@ -1,3 +1,4 @@
+import math
 from typing import Optional, Callable
 
 import torch
@@ -7,6 +8,10 @@ import masknmf
 from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
 from .strategies import MotionCorrectionStrategy, RigidMotionCorrector, PiecewiseRigidMotionCorrector, DummyMotionCorrector
 from .registration_methods import compute_pwrigid_patch_midpoints
+from masknmf.utils import Serializer
+from pathlib import Path
+import h5py
+import os
 
 
 class Shifts(ArrayLike):
@@ -29,18 +34,23 @@ class Shifts(ArrayLike):
         return self._reg._index_frames_tensor(ind)[1].squeeze()
 
 
-class RegistrationArray(LazyFrameLoader):
+class RegistrationArray(LazyFrameLoader, Serializer):
+
+    _motion_export_name = "motion_corrected"
+    _shifts_export_name = "shifts"
+
     def __init__(
         self,
         reference_movie: LazyFrameLoader,
         strategy: MotionCorrectionStrategy | None = None,
         target_movie: Optional[LazyFrameLoader] = None,
+        shifts: Shifts | np.ndarray | None = None,
     ):
         """
         Array-like motion correction representation that support on-the-fly motion correction
 
         Args:
-            reference_movie (LazyFrameLoder): Image stack that we use to compute motion correction transform relative to template
+            reference_movie (LazyFrameLoader): Image stack that we use to compute motion correction transform relative to template
             strategy (masknmf.MotionCorrectionStrategy): The method used to register each frame to the template.
                 Can initialize as ``None``, but must be set before slicing frames
             target_movie (Optional[LazyFrameLoader]): Once we learn the motion correction transform by aligning reference_dataset
@@ -57,7 +67,12 @@ class RegistrationArray(LazyFrameLoader):
         self._target_movie = target_movie
         self._shape = self.reference_movie.shape
         self._ndim = self.reference_movie.ndim
-        self._shifts = Shifts(self)
+
+        if shifts is None:
+            self._shifts = Shifts(self)
+        else:
+            #Here the shifts are pre-computed
+            self._shifts = shifts
 
     @property
     def ndim(self) -> int:
@@ -132,6 +147,48 @@ class RegistrationArray(LazyFrameLoader):
             reference_movie_frames=reference_data_frames,
             target_movie_frames=target_data_frames,
         )
+
+    def export(self, path: str | Path):
+        data_output_shape = self.shape
+        if isinstance(self.strategy, masknmf.PiecewiseRigidMotionCorrector):
+            shifts_output_shape = self.shape[0], self.block_centers.shape[0], self.block_centers.shape[1], 2
+        elif isinstance(self.strategy, masknmf.RigidMotionCorrector):
+            shifts_output_shape = self.shape[0], 2
+        elif isinstance(self.strategy, masknmf.DummyMotionCorrector):
+            shifts_output_shape = None
+        else:
+            raise ValueError("Strategy not valid")
+        if os.path.isfile(path):
+            raise FileExistsError
+
+        with h5py.File(path, 'w') as f:
+            num_frames = self.shape[0]
+            moco_dset = f.create_dataset("motion_corrected", data_output_shape)
+            if shifts_output_shape is not None:
+                shifts_dset = f.create_dataset("shifts", shifts_output_shape)
+            else:
+                shifts_dset = None
+            batch_size = self.strategy.batch_size
+            for k in range(math.ceil(num_frames / batch_size)):
+                start = k * batch_size
+                end = min(start + batch_size, num_frames)
+                moco_subset, shifts_subset = self._index_frames_tensor(slice(start, end))
+                moco_dset[start:end, :, :] = moco_subset
+                if shifts_dset is not None:
+                    shifts_dset[start:end, ...] = shifts_subset
+
+    @classmethod
+    def from_hdf5(cls, path, **kwargs):
+        """Load result from a hdf5 file. Any additional kwargs are passed to the constructor"""
+        registered_array = h5py.File(path, "r")[cls._motion_export_name]
+        with h5py.File(path, "r") as f:
+            if cls._shifts_export_name in f:
+                shifts = f[cls._shifts_export_name][()]
+            else:
+                shifts = None
+
+        return cls(reference_movie=registered_array,
+                   shifts=shifts)
 
 
 class FilteredArray(LazyFrameLoader):
