@@ -165,7 +165,7 @@ class MotionCorrectionStrategy:
             num_frames_template = min(frames.shape[0], 500)
 
             frames_loaded = frames[:num_frames_template]
-            template = torch.from_numpy(np.median(frames_loaded, axis=0))
+            template = np.median(frames_loaded, axis=0)
             self._template = template
 
         ## Prepare the template estimation pipeline by establishing the chunks of data to sample
@@ -180,11 +180,8 @@ class MotionCorrectionStrategy:
                 template = np.mean(corrected_frames, axis=0)
                 template_list.append(template)
 
-            self._template = torch.from_numpy(
-                np.median(
-                    np.stack(template_list, axis=0), axis=0
-                )
-            )
+            self._template = np.median(np.stack(template_list, axis=0), axis=0)
+            
         torch.cuda.empty_cache()
 
     def _compute_frame_chunks(self, num_frames: int, frames_per_split: int) -> list:
