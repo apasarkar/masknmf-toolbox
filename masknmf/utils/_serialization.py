@@ -6,9 +6,17 @@ from warnings import warn
 import numpy as np
 import h5py
 import torch
+from typing import Optional
 
+def _is_serializable(obj):
+    for attr in ["from_hdf5", "export"]:
+        if not hasattr(obj, attr):
+            raise TypeError(
+                f"The object you have passed is not sufficiently array like, "
+                f"it lacks the following property or method: {attr}."
+            )
 
-def save_dict(d, filename, group, raise_type_fail=True):
+def save_dict(d, group: str, filename: Optional[str | Path] = None, hdf5file: Optional[h5py.File] = None,  raise_type_fail=True):
     """
     Recursively save a dict to an hdf5 group in a new file.
 
@@ -34,13 +42,12 @@ def save_dict(d, filename, group, raise_type_fail=True):
             If a particular entry within the dict cannot be saved to hdf5 AND
             the argument `raise_type_fail` is set to `True`
     """
-
-    if os.path.isfile(filename):
-        raise FileExistsError
-
-    with h5py.File(filename, 'w') as h5file:
-        _dicts_to_group(h5file, "{}/".format(group), d,
-                        raise_meta_fail=raise_type_fail)
+    if hdf5file is None:
+        with h5py.File(filename, 'w') as h5file:
+            _dicts_to_group(h5file, f"{group}/", d,
+                            raise_meta_fail=raise_type_fail)
+    else:
+        _dicts_to_group(hdf5file, f"{group}/", d, raise_meta_fail=raise_type_fail)
 
 
 def _dicts_to_group(h5file, path, d, raise_meta_fail):
@@ -114,6 +121,11 @@ def _dicts_to_group(h5file, path, d, raise_meta_fail):
                 h5file, "{}{}/".format(path, key), item, raise_meta_fail
             )
 
+        #Support recursive serialization
+        elif _is_serializable(item):
+            ## We want to recursively serialize this
+            item.export(hdf5file=h5file, group=path, parameter_name=key)
+            
         # last resort, try to convert this object
         # to a dict and save its attributes
         elif hasattr(item, '__dict__'):
@@ -137,7 +149,9 @@ def _dicts_to_group(h5file, path, d, raise_meta_fail):
                      "".format(msg))
 
 
-def load_dict(filename, group):
+def load_dict(group: str,
+              filename: str | Path | None = None,  
+              hdf5file: Optional[h5py.File]=None):
     """
     Recursively load a dict from an hdf5 group in a file.
 
@@ -154,15 +168,27 @@ def load_dict(filename, group):
     d : dict
         dict loaded from the specified hdf5 group.
     """
-
-    with h5py.File(filename, 'r') as h5file:
-        return _dicts_from_group(h5file, "{}/".format(group))
+    if hdf5file is not None:
+        return _dicts_from_group(hdf5file, group)
+    with h5py.File(filename, 'r') as hdf5file:
+        return _dicts_from_group(hdf5file, "{}/".format(group))
 
 
 def _dicts_from_group(h5file, path):
     ans = {}
     for key, item in h5file[path].items():
-        if "layout" in item.attrs:
+        if key.startswith("masknmf."):
+            #This means we are recursively loading an object, so we need to find the module and load it here
+            ## Step 1: Take the key string and parse it into a module + a parameter name
+            class_path, param_name = key.split(Serializer.ending_str, 1)
+            module_path, class_name = class_path.rsplit(".", 1)
+            print(f"the module is {module_path} and the class name is {class_name} and the param name is {param_name}")
+            module = importlib.import_module(module_path)
+            cls = getattr(module, class_name)
+            subgroup = "{}{}/".format(path, key)
+            ans[param_name] = cls.from_hdf5(hdf5file=h5file, group=subgroup)            
+            
+        elif "layout" in item.attrs:
             # it's a torch tensor
             match item.attrs["layout"]:
                 case "sparse_coo":
@@ -198,6 +224,7 @@ def _dicts_from_group(h5file, path):
 class Serializer:
     # should specify set of serialized attributes
     _serialized = {}
+    ending_str = "___"
 
     def _to_dict(self) -> dict:
         d = {}
@@ -220,10 +247,23 @@ class Serializer:
 
         return d
 
-    def export(self, path: str | Path):
+    @classmethod
+    def canonical_groupname(cls, parameter_name: str = None):
+        final_str = f"{__class__.__module__}.{__class__.__name__}{__class__.ending_str}"
+        if parameter_name is not None:
+            final_str = final_str + parameter_name
+        return final_str
+
+    def export(self, 
+               path: str | Path | None = None, 
+               hdf5file: Optional[h5py.File] = None, 
+               group: str = None,
+               parameter_name: str = None):
         """
         Export to an HDF5 file.
         Requires ``h5py`` http://docs.h5py.org/
+
+        Exactly one of path or hdf5file must not be None
 
         Args:
             path (str): Full file path. File must not already exist.
@@ -232,12 +272,46 @@ class Serializer:
             FileExistsError
                 If a file with the same path already exists.
         """
-
-        d = self._to_dict()
-        save_dict(d, filename=path, group=__class__.__name__)
+        if path is None and hdf5file is not None:
+            d = self._to_dict()
+            current_group = self.canonical_groupname(parameter_name=parameter_name)
+            if group is not None:
+                group = f"{group}{current_group}/"
+            else:
+                group = current_group
+            save_dict(d, group=group, hdf5file=hdf5file)
+            
+        elif path is not None and hdf5file is None:
+            if os.path.isfile(path):
+                raise FileExistsError
+            d = self._to_dict()
+            current_group = self.canonical_groupname(parameter_name=parameter_name)
+            save_dict(d, group=current_group, filename=path)
+        else:
+            ValueError("Specify exactly one of: path and hdf5file")
 
     @classmethod
-    def from_hdf5(cls, path, **kwargs):
-        """Load result from an hdf5 file. Any additional kwargs are passed to the constructor"""
-        d = load_dict(path, __class__.__name__)
+    def from_hdf5(cls, 
+                  path: str | Path | None = None, 
+                  hdf5file: Optional[h5py.File]=None, 
+                  group: Optional[str] = None, 
+                  **kwargs):
+        """Load result from an hdf5 file. Any additional kwargs are passed to the constructor
+        
+        Args:
+            path (Optional[str | Path]): A filepath to a hdf5 from which results are loaded
+            hdf5file (Optional[h5py.File]): A hdf5 file reader with "read" permissions to an existing file
+            group (Optional[str]): A group path specifying where in the hdf5 file hierarchy the object is located. 
+        """
+        if group is None:
+            group = cls.canonical_groupname()
+
+        if path is None and hdf5file is not None:
+            d = load_dict(group, hdf5file=hdf5file)
+        elif path is not None and hdf5file is None:
+            d = load_dict(group, filename=path)
+        else:
+            raise ValueError("Specify exactly one of: path and hdf5file")
+        
         return cls(**d, **kwargs)
+

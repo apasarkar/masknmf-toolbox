@@ -11,6 +11,7 @@ from tqdm import tqdm
 import masknmf
 from masknmf.utils import torch_select_device
 from .registration_methods import register_frames_rigid, register_frames_pwrigid
+from masknmf.utils import Serializer
 
 
 class MotionCorrectionStrategy:
@@ -208,7 +209,7 @@ class MotionCorrectionStrategy:
 
 
 class DummyMotionCorrector(MotionCorrectionStrategy):
-
+    
     def __init__(self):
         super().__init__()
         self._device = "cpu"
@@ -233,7 +234,15 @@ class DummyMotionCorrector(MotionCorrectionStrategy):
         self._template = None
 
 
-class RigidMotionCorrector(MotionCorrectionStrategy):
+class RigidMotionCorrector(MotionCorrectionStrategy, Serializer):
+
+    _serialized = {
+        "max_shifts",
+        "template",
+        "pixel_weighting",
+        "batch_size"
+    }
+    
     def __init__(
             self,
             max_shifts: tuple[int, int] = (15, 15),
@@ -297,7 +306,18 @@ class RigidMotionCorrector(MotionCorrectionStrategy):
         return outputs[0].cpu().numpy(), outputs[1].cpu().numpy()
 
 
-class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
+class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
+    
+    _serialized = {
+        "num_blocks",
+        "overlaps",
+        "max_rigid_shifts",
+        "max_deviation_rigid",
+        "template",
+        "pixel_weighting"
+        "batch_size"
+    }
+    
     def __init__(
             self,
             num_blocks: tuple[int, int] = (12, 12),
@@ -332,7 +352,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
         self._num_blocks = value
 
     @property
-    def pixel_weighting(self) -> None | torch.Tensor:
+    def pixel_weighting(self) -> None | np.ndarray:
         return self._pixel_weighting
 
     @property
@@ -386,16 +406,22 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy):
             target_frames = torch.from_numpy(target_frames).to(self.device).float()
 
         reference_frames = torch.from_numpy(reference_frames).to(self.device).float()
+        
+        template = torch.from_numpy(self.template).to(self.device).float()
+        if self.pixel_weighting is not None:
+            pixel_weighting = torch.from_numpy(self.pixel_weighting).to(self.device).float()
+        else:
+            pixel_weighting = None
 
         outputs = register_frames_pwrigid(
             reference_frames.to(self.device),
-            self.template.to(self.device),
+            template,
             self.num_blocks,
             self.overlaps,
             self.max_rigid_shifts,
             self.max_deviation_rigid,
             target_frames=target_frames,
-            pixel_weighting=self.pixel_weighting.to(self.device) if self.pixel_weighting is not None else None
+            pixel_weighting=pixel_weighting
         )
 
         return outputs[0].cpu().numpy(), outputs[1].cpu().numpy()
