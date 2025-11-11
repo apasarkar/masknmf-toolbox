@@ -10,7 +10,7 @@ class CompressStrategy:
 
     def __init__(self,
                  dataset: ArrayLike | None,
-                 block_sizes: tuple[int, int],
+                 block_sizes: tuple[int, int] = [32, 32],
                  frame_range: int | None  = None,
                  max_components: int = 20,
                  sim_conf: int = 5,
@@ -134,7 +134,7 @@ class CompressDenoiseStrategy(CompressStrategy):
 
     def __init__(self,
                  dataset: ArrayLike | None,
-                 block_sizes: tuple[int, int],
+                 block_sizes: tuple[int, int] = [32, 32],
                  frame_range: int | None  = None,
                  max_components: int = 20,
                  sim_conf: int = 5,
@@ -146,6 +146,7 @@ class CompressDenoiseStrategy(CompressStrategy):
                  pixel_weighting: Optional[np.ndarray] = None,
                  device: Literal["auto", "cpu", "cuda"] = "auto",
                  noise_variance_quantile: float = 0.7,
+                 num_epochs: int = 5
                  ):
 
         super().__init__(dataset,
@@ -160,8 +161,16 @@ class CompressDenoiseStrategy(CompressStrategy):
                          compute_normalizer,
                          pixel_weighting,
                          device)
+        self._num_epochs = num_epochs
         self._noise_variance_quantile = noise_variance_quantile
 
+    @property
+    def num_epochs(self) -> int:
+        return self._num_epochs
+
+    @num_epochs.setter
+    def num_epochs(self, new_num_epochs: int):
+        self._num_epochs = new_num_epochs
 
     @property
     def noise_variance_quantile(self) -> float:
@@ -192,7 +201,7 @@ class CompressDenoiseStrategy(CompressStrategy):
 
         v = pmd_no_denoiser.v.cpu()
         trained_model, _ = masknmf.compression.denoising.train_total_variance_denoiser(v,
-                                                                                       max_epochs=5,
+                                                                                       max_epochs=self.num_epochs,
                                                                                        batch_size=128,
                                                                                        learning_rate=1e-4)
 
