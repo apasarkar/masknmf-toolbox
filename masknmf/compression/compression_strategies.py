@@ -122,6 +122,7 @@ class CompressStrategy:
     def device(self, new_device: str):
         self._device = new_device
 
+    @property
     def results(self) -> PMDArray | None:
         return self._results
 
