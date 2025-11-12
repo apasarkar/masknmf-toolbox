@@ -10,6 +10,7 @@ from .registration_methods import (
 from .strategies import (
     RigidMotionCorrector,
     PiecewiseRigidMotionCorrector,
+    DummyMotionCorrector,
     MotionCorrectionStrategy,
 )
 from .registration_arrays import RegistrationArray, FilteredArray
@@ -30,5 +31,6 @@ __all__ = [
     "FilteredArray",
     "RigidMotionCorrector",
     "PiecewiseRigidMotionCorrector",
+    "DummyMotionCorrector",
     "MotionCorrectionStrategy",
 ]
