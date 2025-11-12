@@ -10,7 +10,7 @@ class CompressStrategy:
 
     def __init__(self,
                  dataset: ArrayLike | None,
-                 block_sizes: tuple[int, int] = [32, 32],
+                 block_sizes: tuple[int, int] = (32, 32),
                  frame_range: int | None  = None,
                  max_components: int = 20,
                  sim_conf: int = 5,
@@ -66,6 +66,14 @@ class CompressStrategy:
     def frame_range(self, new_frame_range: int):
         self._frame_range = new_frame_range
 
+    @property
+    def max_consecutive_failures(self) -> int:
+        return self._max_consecutive_failures
+
+    @max_consecutive_failures.setter
+    def max_consecutive_failures(self, new_num: int):
+        self._max_consecutive_failures = new_num
+        
     @property
     def max_components(self):
         return self._max_components
@@ -134,7 +142,7 @@ class CompressDenoiseStrategy(CompressStrategy):
 
     def __init__(self,
                  dataset: ArrayLike | None,
-                 block_sizes: tuple[int, int] = [32, 32],
+                 block_sizes: tuple[int, int] = (32, 32),
                  frame_range: int | None  = None,
                  max_components: int = 20,
                  sim_conf: int = 5,
