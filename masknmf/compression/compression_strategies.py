@@ -73,7 +73,15 @@ class CompressStrategy:
     @max_consecutive_failures.setter
     def max_consecutive_failures(self, new_num: int):
         self._max_consecutive_failures = new_num
-        
+
+    @property
+    def sim_conf(self) -> int:
+        return self._sim_conf
+
+    @sim_conf.setter
+    def sim_conf(self, new_sim_conf: int):
+        self._sim_conf = new_sim_conf
+
     @property
     def max_components(self):
         return self._max_components
