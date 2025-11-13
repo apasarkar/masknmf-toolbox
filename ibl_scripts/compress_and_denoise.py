@@ -6,16 +6,13 @@ from masknmf import display
 import tifffile
 import torch
 import numpy as np
+import argparse
 
 import matplotlib.pyplot as plt
 import time
 from typing import *
 import pathlib
 from pathlib import Path
-
-from omegaconf import DictConfig, OmegaConf
-import hydra
-
 
 class MotionBinDataset:
     """Load a suite2p data.bin imaging registration file."""
@@ -87,58 +84,42 @@ def load_bin_file(s2p_zip_path: Union[str, bytes, os.PathLike],
 
 
 
-
-@hydra.main()
-def compress_and_denoise(cfg: DictConfig) -> None:
-    my_data = load_bin_file(cfg.ops_file_path, cfg.bin_file_path)
+def compress_and_denoise(ops_file_path: str | Path,
+                         bin_file_path: str | Path,
+                         block_size_dim1: int,
+                         block_size_dim2: int,
+                         max_components: int,
+                         max_consecutive_failures: int,
+                         temporal_avg_factor: int,
+                         spatial_avg_factor: int,
+                         frame_batch_size: int,
+                         noise_variance_quantile: float,
+                         out_path: str | Path) -> None:
+    my_data = load_bin_file(ops_file_path, bin_file_path)
 
     # Zero out border pixels
     binary_mask = np.zeros((my_data.shape[1], my_data.shape[2]), dtype=my_data.dtype)
     binary_mask[3:-3, 3:-3] = 1.0
 
-    block_sizes = [cfg.block_size_dim1, cfg.block_size_dim2]
+    block_sizes = [block_size_dim1, block_size_dim2]
 
-    
-    pmd_no_denoise = masknmf.compression.pmd_decomposition(my_data,
-                                                           block_sizes,
-                                                           max_components=cfg.max_components,
-                                                           max_consecutive_failures=cfg.max_consecutive_failures,
-                                                           temporal_avg_factor=cfg.temporal_avg_factor,
-                                                           spatial_avg_factor=cfg.spatial_avg_factor,
-                                                           temporal_denoiser=None,  # Turn off denoiser
-                                                           frame_batch_size=cfg.frame_batch_size,
-                                                           pixel_weighting = binary_mask)
+    compress_strat = masknmf.CompressDenoiseStrategy(my_data,
+                                                     block_sizes=block_sizes,
+                                                     max_components=max_components,
+                                                     max_consecutive_failures=max_consecutive_failures,
+                                                     temporal_avg_factor=temporal_avg_factor,
+                                                     spatial_avg_factor=spatial_avg_factor,
+                                                     frame_batch_size=frame_batch_size,
+                                                     pixel_weighting=binary_mask,
+                                                     noise_variance_quantile=noise_variance_quantile
+                                                     )
 
-    if cfg.neural_network is not None:
-        net_path = os.path.abspath(cfg.neural_network)
-        trained_model = np.load(net_path, allow_pickle=True)['model'].item()
-        
-    else:
-        v = pmd_no_denoise.v.cpu()
-        trained_model, _ = masknmf.compression.denoising.train_total_variance_denoiser(v,
-                                                               max_epochs = 5,
-                                                               batch_size = 128,
-                                                                learning_rate=1e-4)
-    
-    curr_temporal_denoiser = masknmf.compression.PMDTemporalDenoiser(trained_model, 0.7)
-
-    
-    pmd_denoised = masknmf.compression.pmd_decomposition(my_data,
-                                                         block_sizes,
-                                                         max_components=cfg.max_components,
-                                                         max_consecutive_failures=cfg.max_consecutive_failures,
-                                                         temporal_avg_factor=cfg.temporal_avg_factor,
-                                                         spatial_avg_factor=cfg.spatial_avg_factor,
-                                                         temporal_denoiser=curr_temporal_denoiser,
-                                                         frame_batch_size=cfg.frame_batch_size,
-                                                         pixel_weighting=binary_mask)
-        
+    pmd_denoised = compress_strat.compress()
 
     display(
         f"Processing complete. The rank of PMD with denoiser is {pmd_denoised.pmd_rank}. The rank of PMD without denoiser is {pmd_no_denoise.pmd_rank}")
 
-    out_path = os.path.abspath(cfg.out_path)
-
+    out_path = os.path.abspath(out_path)
     pmd_denoised.export(out_path)
     display("Results saved")
 
@@ -155,11 +136,17 @@ if __name__ == "__main__":
         'spatial_avg_factor': 1,
         'temporal_avg_factor': 1,
         'frame_batch_size': 1024,
-        'neural_network': None
+        'noise_variance_quantile': 0.7,
     }
 
-    cfg = OmegaConf.create(config_dict)
-    cli_conf = OmegaConf.from_cli()
-    cfg = OmegaConf.merge(cfg, cli_conf)
+    parser = argparse.ArgumentParser()
+    for key in config_dict.keys():
+        curr_key = "--"+key
+        parser.add_argument("--"+key)
 
-    compress_and_denoise(cfg)
+    args = vars(parser.parse_args())
+    #Delete none values. key[2:] gets rid of the --
+    print(args)
+    args = {key:val for key, val in args.items() if val is not None}
+    final_inputs = {**config_dict, **args}
+    compress_and_denoise(**final_inputs)
