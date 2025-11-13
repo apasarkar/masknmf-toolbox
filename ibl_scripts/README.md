@@ -1,35 +1,21 @@
-Usage: 
+These scripts show how to process a single plane of imaging data. Going from a data_raw.bin file to masknmf demixing outputs. 
 
-To run the training loop for training a neural network denoiser: 
-
-Installation: 
-To use the utils etc. within your masknmf virtual env, just go to ibl_scripts and install it in editable mode (pip install -e .)
+(1) To run the motion correction pipeline on a data_raw.bin file do: 
 ```
-python train_blindspot_net.py \
-    path=/path/to/data/folder/containing/ops_and_bin_files/ \
-    outdir=/path/to/output_dir/ \
-    device=cuda
+Some stuff
 ```
+The output of this step will be a motion_corrected.hdf5 file, which contains a dense motion corrected movie and the piecewise rigid shift information
 
-This will output a file called "neural_net.npz" in the outdir folder.
-
-To compress and denoise datasets using a pre-trained network obtained from the above script: 
-
+(2) To compress and denoise this motion corrected dataset, do: 
 ```
-python compress_and_denoise.py \
-    path=/path/to/data/folder/containing/ops_and_bin_files/ \
-    outdir=/path/to/output_dir/ \
-    device=cuda \
-    neural_network=neural_net.npz
+python compress_and_denoise.py --bin_file_path /path/to/data.bin --ops_file_path /path/to/ops.npy --out_path /path/to/desired/outputs.hdf5
 ```
 
-To run the demixing pipeline: 
+The output of this step will be the standard compression outputs written to a hdf5 file.
 
+(3) Demixing. Demixing takes as input the path to the compression results file (hdf5 file) from step 2, loads the compression arrays runs demixing
 ```
-python demix_data.py \
-    data_path=/path/to/pmd_results.npz\
-     data_field=field_within_npz_containing_pmdarray\
-      outdir=/path/to/output/directory/
+python demix_data.py --data_path /path/to/compression_results.hdf5 --out_path /path/to/demixing_results.hdf5 --device cuda
 ```
 
-The script will write out a timestamped file to the specified directory. 
+The output will be a .hdf5 file containing the serialized demixing results.

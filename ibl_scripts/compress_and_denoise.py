@@ -116,9 +116,6 @@ def compress_and_denoise(ops_file_path: str | Path,
 
     pmd_denoised = compress_strat.compress()
 
-    display(
-        f"Processing complete. The rank of PMD with denoiser is {pmd_denoised.pmd_rank}. The rank of PMD without denoiser is {pmd_no_denoise.pmd_rank}")
-
     out_path = os.path.abspath(out_path)
     pmd_denoised.export(out_path)
     display("Results saved")
@@ -145,7 +142,7 @@ if __name__ == "__main__":
         parser.add_argument("--"+key)
 
     args = vars(parser.parse_args())
-    #Delete none values. key[2:] gets rid of the --
+    #Delete none values.
     print(args)
     args = {key:val for key, val in args.items() if val is not None}
     final_inputs = {**config_dict, **args}
