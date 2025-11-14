@@ -21,6 +21,7 @@ from masknmf.demixing.demixing_arrays import (
     ResidCorrMode,
 )
 from masknmf.demixing.demixing_results import DemixingResults
+from masknmf.demixing.initialization_results import InitializationResults
 
 from .demixing_utils import (
     construct_graph_from_sparse_tensor,
@@ -325,7 +326,7 @@ def process_custom_signals(
         c_nonneg: bool = True,
         blocks=None,
 ) -> Tuple[
-    torch.sparse_coo_tensor, torch.sparse_coo_tensor, torch.tensor, torch.tensor
+    InitializationResults
 ]:
     """
     Given spatial footprints matrix "a", prepare a set of initialized signals (spatial footprints, masks,
@@ -388,7 +389,11 @@ def process_custom_signals(
 
     display(f"started with {initial_num_signals} signals, ended initialization with {a_torch.shape[1]} signals")
 
-    return a_torch, a_mask, c_torch, b
+    init_res = InitializationResults(a_torch,
+                                     a_mask,
+                                     c_torch,
+                                     b)
+    return init_res
 
 
 def get_median(tensor, axis):
@@ -1555,16 +1560,24 @@ def superpixel_init(
     peaks = peaks.cpu().numpy()
     total_peaks = total_peaks.cpu().numpy()
 
-    superpixel_dict = {
-        "superpixel_map": connectivity_mat,
-        "pure_superpixel_map": pure_superpixel_img_1d.cpu().numpy().reshape((dims[0], dims[1]), order=data_order),
-        "superpixel_coords": unique_pix,
-        "selected_peaks": peaks,
-        "total_peaks": total_peaks,
-        "correlation_image": corr_image
-    }
+    # superpixel_dict = {
+    #     "nmf_seed_map": connectivity_mat,
+    #     "pure_nmf_seed_map": pure_superpixel_img_1d.cpu().numpy().reshape((dims[0], dims[1]), order=data_order),
+    #     "seed_coords": unique_pix,
+    #     "selected_peaks": peaks,
+    #     "total_peaks": total_peaks,
+    #     "correlation_image": corr_image
+    # }
     display(f'initialized {a.shape[1]} signals')
-    return a, a.bool(), c, b, superpixel_dict
+
+    init_res = InitializationResults(a,
+                                     a.bool(),
+                                     c,
+                                     b,
+                                     correlation_img=corr_image,
+                                     nmf_seed_map=connectivity_mat,
+                                     pure_nmf_seed_map = pure_superpixel_img_1d.cpu().numpy().reshape((dims[0], dims[1]), order=data_order))
+    return init_res
 
 
 def merge_components(
@@ -1993,12 +2006,13 @@ class InitializingState(SignalProcessingState):
             self.robust_noise_term = robust_noise_term
 
 
-        self.a_init = None
-        self.mask_a_init = None
-        self.c_init = None
-        self.b_init = None
-        self._curr_corr_image = None
-        self.superpixel_dict = None
+        self._init_results = None
+        # self.a_init = None
+        # self.mask_a_init = None
+        # self.c_init = None
+        # self.b_init = None
+        # self._curr_corr_image = None
+        # self.superpixel_dict = None
 
         if a is not None:
             self.a = a.to(self.device).coalesce()
@@ -2069,13 +2083,13 @@ class InitializingState(SignalProcessingState):
         self._pixel_batch_size = new_batch_size
 
     @property
-    def results(self):
-        return self.a_init, self.mask_a_init, self.c_init, self.b_init, self.superpixel_dict
+    def results(self) -> InitializationResults | None:
+        return self._init_results
 
     def lock_results_and_continue(
             self, context: SignalDemixer, carry_background: bool = True
     ):
-        if any(element is None for element in self.results[:4]):
+        if self.results is None:
             raise ValueError("Results do not exist. Run initialize signals first.")
         else:  # Initiate state transition
             if carry_background:
@@ -2084,10 +2098,7 @@ class InitializingState(SignalProcessingState):
                 background_term = None
             context.state = DemixingState(
                 self.pmd_obj,
-                self.a_init,
-                self.b_init,
-                self.c_init,
-                self.mask_a_init,
+                self.results,
                 (self.d1, self.d2, self.T),
                 factorized_ring_term=background_term,
                 data_order=self.data_order,
@@ -2152,11 +2163,7 @@ class InitializingState(SignalProcessingState):
             )
             self._th = mad_threshold
         (
-            self.a_init,
-            self.mask_a_init,
-            self.c_init,
-            self.b_init,
-            self.superpixel_dict,
+            self._init_results
         ) = superpixel_init(
             self.u_sparse,
             self.v,
@@ -2270,10 +2277,7 @@ class InitializingState(SignalProcessingState):
                                  f"Input has {baseline_estimate.ndim} dimensions")
 
         (
-            self.a_init,
-            self.mask_a_init,
-            self.c_init,
-            self.b_init,
+            self._init_results
         ) = process_custom_signals(
             processed_spatial_tensor,
             self.u_sparse,
@@ -2317,10 +2321,7 @@ class DemixingState(SignalProcessingState):
     def __init__(
             self,
             pmd_arr: PMDArray,
-            a_init,
-            b_init,
-            c_init,
-            mask_init,
+            init_results: InitializationResults,
             dimensions: Tuple[int, int, int],
             factorized_ring_term: Optional[Tuple[torch.tensor, torch.tensor]] = None,
             data_order: str = "C",
@@ -2341,10 +2342,10 @@ class DemixingState(SignalProcessingState):
         self.u_sparse = pmd_arr.u.to(device)
         self.v = pmd_arr.v.to(device)
 
-        self._mask_a_init = mask_init
-        self._a_init = a_init.to(device).coalesce()
-        self._b_init = b_init.to(device)
-        self._c_init = c_init.to(device)
+        self._mask_a_init = init_results.mask_a.to(device).coalesce()
+        self._a_init = init_results.a.to(device).coalesce()
+        self._b_init = init_results.b.to(device)
+        self._c_init = init_results.c.to(device)
         self.a = None
         self.b = None
         self.c = None

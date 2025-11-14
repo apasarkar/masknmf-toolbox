@@ -13,6 +13,7 @@ import masknmf.arrays
 from masknmf.utils import display
 from masknmf.demixing import DemixingResults
 from masknmf.compression import PMDArray
+from masknmf.demixing import InitializationResults
 
 
 class ROIManager(ui.EdgeWindow):
@@ -492,10 +493,10 @@ def make_demixing_video(
     return iw
 
 
-def visualize_superpixels_peaks(superpixel_results: dict):
-    superpixel_map = superpixel_results['superpixel_map']
-    pure_superpixel_map = superpixel_results['pure_superpixel_map']
-    correlation_image = superpixel_results['correlation_image']
+def visualize_superpixels_peaks(init_results: InitializationResults):
+    superpixel_map = init_results.nmf_seed_map
+    pure_superpixel_map = init_results.pure_nmf_seed_map
+    correlation_image = init_results.correlation_img
 
     superpixel_img = np.stack([correlation_image.copy()] * 3, axis=-1)
     superpixel_img[superpixel_map > 0] = [4, 0, 0]
@@ -507,5 +508,5 @@ def visualize_superpixels_peaks(superpixel_results: dict):
                                pure_superpixel_img],
                          rgb=[True, True, True],
                          figure_shape=(1, 3),
-                         names=['corr', 'superpix', 'pure superpix'])
+                         names=['corr', 'nmf seed map', 'pure nmf seed map'])
     return iw
