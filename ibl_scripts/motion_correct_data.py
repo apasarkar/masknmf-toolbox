@@ -8,11 +8,11 @@ import torch
 import numpy as np
 import argparse
 
-import matplotlib.pyplot as plt
 import time
 from typing import *
 import pathlib
 from pathlib import Path
+
 
 class MotionBinDataset:
     """Load a suite2p data.bin imaging registration file."""
@@ -66,7 +66,7 @@ class MotionBinDataset:
             number of frames, number of y pixels, number of x pixels.
         """
         _, ext_path = os.path.splitext(self.ops_path)
-        if ext_path == ".zip":  
+        if ext_path == ".zip":
             s2p_ops = np.load(self.ops_path, allow_pickle = True)['ops'].item()
         elif ext_path == ".npy":
             s2p_ops = np.load(self.ops_path, allow_pickle = True).item()
@@ -84,63 +84,56 @@ def load_bin_file(s2p_zip_path: Union[str, bytes, os.PathLike],
 
 
 
-def compress_and_denoise(hdf5_file_path: str | Path | None,
-                         ops_file_path: str | Path | None,
-                         bin_file_path: str | Path | None,
-                         block_size_dim1: int,
-                         block_size_dim2: int,
-                         max_components: int,
-                         max_consecutive_failures: int,
-                         temporal_avg_factor: int,
-                         spatial_avg_factor: int,
-                         frame_batch_size: int,
-                         noise_variance_quantile: float,
-                         out_path: str | Path) -> None:
-    if hdf5_file_path is not None:
-        my_data = masknmf.RegistrationArray.from_hdf5(hdf5_file_path)
-    elif bin_file_path is not None and ops_file_path is not None:
-        my_data = load_bin_file(ops_file_path, bin_file_path)
-    else:
-        raise ValueError("invalid set of file info provided")
+def run_motion_correction(bin_file_path: str | Path,
+                          ops_file_path: str | Path,
+                          out_path: str | Path,
+                          num_blocks_dim1: int,
+                          num_blocks_dim2: int,
+                          overlaps_dim1: int,
+                          overlaps_dim2: int,
+                          max_rigid_shifts_dim1: int,
+                          max_rigid_shifts_dim2: int,
+                          max_deviation_rigid_dim1: int,
+                          max_deviation_rigid_dim2: int,
+                          frame_batch_size: int):
 
-    # Zero out border pixels
-    binary_mask = np.zeros((my_data.shape[1], my_data.shape[2]), dtype=my_data.dtype)
-    binary_mask[3:-3, 3:-3] = 1.0
+    data = load_bin_file(ops_file_path, bin_file_path)
+    num_blocks = [num_blocks_dim1, num_blocks_dim2]
+    overlaps = [overlaps_dim1, overlaps_dim2]
+    max_rigid_shifts = [max_rigid_shifts_dim1, max_rigid_shifts_dim2]
+    max_deviation_rigid = [max_deviation_rigid_dim1, max_deviation_rigid_dim2]
 
-    block_sizes = [block_size_dim1, block_size_dim2]
 
-    compress_strat = masknmf.CompressDenoiseStrategy(my_data,
-                                                     block_sizes=block_sizes,
-                                                     max_components=max_components,
-                                                     max_consecutive_failures=max_consecutive_failures,
-                                                     temporal_avg_factor=temporal_avg_factor,
-                                                     spatial_avg_factor=spatial_avg_factor,
-                                                     frame_batch_size=frame_batch_size,
-                                                     pixel_weighting=binary_mask,
-                                                     noise_variance_quantile=noise_variance_quantile
-                                                     )
+    pwrigid_strategy = masknmf.PiecewiseRigidMotionCorrector(
+        num_blocks=num_blocks,
+        overlaps=overlaps,
+        max_rigid_shifts=max_rigid_shifts,
+        max_deviation_rigid=max_deviation_rigid,
+        batch_size=frame_batch_size
+    )
 
-    pmd_denoised = compress_strat.compress()
+    pwrigid_strategy.compute_template(data)
+    moco_results = masknmf.RegistrationArray(data, pwrigid_strategy)
+
 
     out_path = os.path.abspath(out_path)
-    pmd_denoised.export(out_path)
-    display("Results saved")
+    moco_results.export(out_path)
 
 
 if __name__ == "__main__":
     config_dict = {
-        'hdf5_file_path': None,
-        'bin_file_path': None,
-        'ops_file_path': None,
+        'bin_file_path': '/path/to/data/frames.bin',
+        'ops_file_path': '/path/to/ibl_outputs.zip',
         'out_path': '.',
-        'block_size_dim1': 32,
-        'block_size_dim2': 32,
-        'max_components': 20,
-        'max_consecutive_failures': 1,
-        'spatial_avg_factor': 1,
-        'temporal_avg_factor': 1,
-        'frame_batch_size': 1024,
-        'noise_variance_quantile': 0.7,
+        'num_blocks_dim1': 10,
+        'num_blocks_dim2': 10,
+        'overlaps_dim1': 5,
+        'overlaps_dim2': 5,
+        'max_rigid_shifts_dim1': 15,
+        'max_rigid_shifts_dim2': 15,
+        'max_deviation_rigid_dim1': 2,
+        'max_deviation_rigid_dim2': 2,
+        'frame_batch_size': 500
     }
 
     parser = argparse.ArgumentParser()
@@ -153,4 +146,4 @@ if __name__ == "__main__":
     print(args)
     args = {key:val for key, val in args.items() if val is not None}
     final_inputs = {**config_dict, **args}
-    compress_and_denoise(**final_inputs)
+    run_motion_correction(**final_inputs)

@@ -13,32 +13,37 @@ from typing import *
 import pathlib
 from pathlib import Path
 
-from omegaconf import DictConfig, OmegaConf
-import hydra
 from masknmf.utils import display
 from datetime import datetime
 
+import argparse
 
-@hydra.main()
-def demix(cfg: DictConfig) -> None:
-    data_file = os.path.abspath(cfg.data_path)
+
+def demix(data_path: str | Path,
+          frame_batch_size: int,
+          spatial_hp_sigma: tuple[float, float],
+          ring_radius: int,
+          background_downsampling_factor: int,
+          out_path: str | Path,
+          device: str) -> None:
+
+    data_file = os.path.abspath(data_path)
     if not os.path.exists(data_file):
         raise ValueError(f"the path {data_file} does not seem to exist")
-    pmd_denoise = np.load(data_file, allow_pickle=True)[cfg.data_field].item()
+    pmd_denoise = masknmf.PMDArray.from_hdf5(data_path)
 
     # Generate a spatially filtered version of the PMD data
     spatial_filt_pmd = masknmf.demixing.filters.spatial_filter_pmd(pmd_denoise,
-                                                       batch_size=cfg.frame_batch_size,
-                                                       filter_sigma=cfg.spatial_hp_sigma,
-                                                       device = 'cuda')
+                                                       batch_size=frame_batch_size,
+                                                       filter_sigma=spatial_hp_sigma,
+                                                       device = device)
 
     display("Processing spatially-highpass filtered PMD array")
-    num_frames, fov_dim1, fov_dim2 = spatial_filt_pmd.shape
     device = 'cuda'
     highpass_pmd_demixer = masknmf.demixing.signal_demixer.SignalDemixer(
                                                     spatial_filt_pmd,
                                                     device=device,
-                                                    frame_batch_size=cfg.frame_batch_size)
+                                                    frame_batch_size=frame_batch_size)
 
     init_kwargs = {
         'mad_correlation_threshold':0.8,
@@ -53,8 +58,7 @@ def demix(cfg: DictConfig) -> None:
     if highpass_pmd_demixer.results is not None:
         display(f"Identified {highpass_pmd_demixer.results[0].shape[1]} candidate neural signals at initialization step.")
 
-    highpass_pmd_demixer.lock_results_and_continue()
-        ## Demixing State
+    ## Demixing State
     num_iters = 25
     ## Now run demixing...
     localnmf_params = {
@@ -80,20 +84,18 @@ def demix(cfg: DictConfig) -> None:
     c_init = highpass_pmd_demixer.results.ac_array.export_c()
 
 
-    num_frames, fov_dim1, fov_dim2 = pmd_denoise.shape
     device = 'cuda'
     unfiltered_pmd_demixer = masknmf.demixing.signal_demixer.SignalDemixer(
                                                     pmd_denoise,
                                                     device=device,
-                                                    frame_batch_size=cfg.frame_batch_size)
+                                                    frame_batch_size=frame_batch_size)
 
     unfiltered_pmd_demixer.initialize_signals(is_custom=True,
                                               spatial_footprints=a_init,
                                               temporal_footprints=c_init,
                                               c_nonneg = True)
-    unfiltered_pmd_demixer.lock_results_and_continue()
 
-        ## Demixing State
+    ## Demixing State
     num_iters = 25
     ## Now run demixing...
     localnmf_params = {
@@ -101,8 +103,8 @@ def demix(cfg: DictConfig) -> None:
         'support_threshold':np.linspace(0.95, 0.5, num_iters).tolist(),
         'deletion_threshold':0.2,
         'ring_model_start_pt':0,
-        'ring_radius':cfg.ring_radius,
-        'background_downsampling_factor': cfg.background_downsampling_factor,
+        'ring_radius': ring_radius,
+        'background_downsampling_factor': background_downsampling_factor,
         'merge_threshold':0.8,
         'merge_overlap_threshold':0.8,
         'update_frequency':4,
@@ -114,9 +116,6 @@ def demix(cfg: DictConfig) -> None:
     with torch.no_grad():
         unfiltered_pmd_demixer.demix(**localnmf_params)
     display(f"after this step {unfiltered_pmd_demixer.results.a.shape[1]} signals identified")
-
-
-    unfiltered_pmd_demixer.lock_results_and_continue(carry_background=True)
 
     init_kwargs = {
         'mad_correlation_threshold':0.4,
@@ -127,11 +126,9 @@ def demix(cfg: DictConfig) -> None:
         'patch_size':(40, 40),
     }
     
-    unfiltered_pmd_demixer.initialize_signals(**init_kwargs, is_custom = False)
+    unfiltered_pmd_demixer.initialize_signals(**init_kwargs, carry_background=True, is_custom = False)
     if unfiltered_pmd_demixer.results is not None:
         display(f"Identified {unfiltered_pmd_demixer.results[0].shape[1]} candidate neural signals at initialization step.")
-
-    unfiltered_pmd_demixer.lock_results_and_continue()
 
     num_iters = 25
     ## Now run demixing...
@@ -140,8 +137,8 @@ def demix(cfg: DictConfig) -> None:
         'support_threshold':np.linspace(0.95, 0.2, num_iters).tolist(),
         'deletion_threshold':0.2,
         'ring_model_start_pt':0,
-        'ring_radius':cfg.ring_radius,
-        'background_downsampling_factor': cfg.background_downsampling_factor,
+        'ring_radius':ring_radius,
+        'background_downsampling_factor': background_downsampling_factor,
         'merge_threshold':0.8,
         'merge_overlap_threshold':0.8,
         'update_frequency':4,
@@ -155,21 +152,14 @@ def demix(cfg: DictConfig) -> None:
     display(f"after this step {unfiltered_pmd_demixer.results.a.shape[1]} signals identified")
 
     
-    out_path = os.path.abspath(cfg.out_path)
+    out_path = os.path.abspath(out_path)
 
     display(f"Saving demixing results to {out_path}")
-    config_to_save = OmegaConf.to_container(cfg, resolve=True)
-    np.savez(out_path,
-             results=unfiltered_pmd_demixer.results,
-             metadata = config_to_save)
-
-    
-    
+    unfiltered_pmd_demixer.results.export(out_path)
 
 if __name__ == "__main__":
     config_dict = {
         'data_path': '/path/to/data/',
-        'data_field': 'pmd',
         'out_path': '.',
         'spatial_hp_sigma': 4,
         'frame_batch_size':400,
@@ -178,8 +168,14 @@ if __name__ == "__main__":
         'ring_radius': 15,
     }
 
-    cfg = OmegaConf.create(config_dict)
-    cli_conf = OmegaConf.from_cli()
-    cfg = OmegaConf.merge(cfg, cli_conf)
+    parser = argparse.ArgumentParser()
+    for key in config_dict.keys():
+        curr_key = "--"+key
+        parser.add_argument("--"+key)
 
-    demix(cfg)
+    args = vars(parser.parse_args())
+    #Delete none values.
+    print(args)
+    args = {key:val for key, val in args.items() if val is not None}
+    final_inputs = {**config_dict, **args}
+    demix(**final_inputs)

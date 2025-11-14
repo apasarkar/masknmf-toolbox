@@ -134,6 +134,12 @@ class RegistrationArray(LazyFrameLoader, Serializer):
         """
         return self._index_frames_tensor(indices)[0]
 
+    def __getitem__(self, idx):
+        if isinstance(self.strategy, masknmf.DummyMotionCorrector):
+            return self.reference_movie.__getitem__(idx)
+        else:
+            return super().__getitem__(idx)
+
     def _index_frames_tensor(
         self,
         idx: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
