@@ -5,6 +5,7 @@ from masknmf.demixing.demixing_arrays import ACArray, StandardCorrelationImages,
 from masknmf.demixing.background_estimation import RingModel
 from masknmf.demixing.demixing_utils import torch_sparse_to_scipy_coo, ndarray_to_torch_sparse_coo
 from masknmf.demixing.filters import high_pass_filter_batch
+from masknmf.demixing.initialization_results import InitializationResults
 
 __all__ = [
     "ACArray",
@@ -17,6 +18,7 @@ __all__ = [
     "DemixingResults",
     "SignalDemixer",
     "InitializingState",
-    "DemixingState"
+    "DemixingState",
+    "InitializationResults"
 ]
 
