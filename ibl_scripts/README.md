@@ -2,8 +2,9 @@ These scripts show how to process a single plane of imaging data. Going from a d
 
 (1) To run the motion correction pipeline on a data_raw.bin file do: 
 ```
-Some stuff
+python motion_correct_data.py --bin_file_path /path/to/data_raw.bin --ops_file_path /path/to/ops.npy --out_path /path/to/desired_output.hdf5
 ```
+
 The output of this step will be a motion_corrected.hdf5 file, which contains a dense motion corrected movie and the piecewise rigid shift information
 
 (2) To compress and denoise this motion corrected dataset, do: 
