@@ -84,8 +84,9 @@ def load_bin_file(s2p_zip_path: Union[str, bytes, os.PathLike],
 
 
 
-def compress_and_denoise(ops_file_path: str | Path,
-                         bin_file_path: str | Path,
+def compress_and_denoise(hdf5_file_path: str | Path | None,
+                         ops_file_path: str | Path | None,
+                         bin_file_path: str | Path | None,
                          block_size_dim1: int,
                          block_size_dim2: int,
                          max_components: int,
@@ -95,7 +96,12 @@ def compress_and_denoise(ops_file_path: str | Path,
                          frame_batch_size: int,
                          noise_variance_quantile: float,
                          out_path: str | Path) -> None:
-    my_data = load_bin_file(ops_file_path, bin_file_path)
+    if hdf5_file_path is not None:
+        my_data = masknmf.RegistrationArray.from_hdf5(hdf5_file_path)
+    elif bin_file_path is not None and ops_file_path is not None:
+        my_data = load_bin_file(ops_file_path, bin_file_path)
+    else:
+        raise ValueError("invalid set of file info provided")
 
     # Zero out border pixels
     binary_mask = np.zeros((my_data.shape[1], my_data.shape[2]), dtype=my_data.dtype)
@@ -123,8 +129,9 @@ def compress_and_denoise(ops_file_path: str | Path,
 
 if __name__ == "__main__":
     config_dict = {
-        'bin_file_path': '/path/to/data/frames.bin',
-        'ops_file_path': '/path/to/ibl_outputs.zip',
+        'hdf5_file_path': None,
+        'bin_file_path': None,
+        'ops_file_path': None,
         'out_path': '.',
         'block_size_dim1': 32,
         'block_size_dim2': 32,
