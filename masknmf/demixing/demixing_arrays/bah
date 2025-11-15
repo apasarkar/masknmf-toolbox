@@ -1,0 +1,11 @@
+sd = SignalDemixer()
+
+i = sd.initialize_signals()
+
+d = sd.demix()
+
+------------------------------
+
+i2 = sd.initialize_signals()
+
+d = sd.demix()

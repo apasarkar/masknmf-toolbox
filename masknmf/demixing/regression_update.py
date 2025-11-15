@@ -74,13 +74,12 @@ def spatial_update_hals(
     C_prime = torch.matmul(c.t(), c)
     C_prime_diag = torch.diag(C_prime)
     C_prime_diag[C_prime_diag == 0] = 1  # For division safety
-    """
-    We will now compute the following expression: 
 
-    [UR(diag(s) - q)Vc - beVc]
-
-    This is part of the 'residual video' that we regress onto the spatial components below
-    """
+    # We will now compute the following expression:
+    #
+    # [UR(diag(s) - q)Vc - beVc]
+    #
+    # This is part of the 'residual video' that we regress onto the spatial components below
 
     u_subset = torch.index_select(u_sparse, 0, nonzero_row_indices)
 

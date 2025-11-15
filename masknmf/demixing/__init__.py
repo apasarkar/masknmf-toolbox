@@ -1,5 +1,6 @@
 from masknmf.demixing.signal_demixer import SignalDemixer, InitializingState, DemixingState
 from masknmf.demixing.demixing_results import DemixingResults
+from masknmf.demixing.initialization_results import InitializationResults
 from masknmf.demixing.demixing_arrays import ACArray, StandardCorrelationImages, ResidualCorrelationImages, ResidCorrMode, FluctuatingBackgroundArray, ColorfulACArray, ResidualArray
 
 from masknmf.demixing.background_estimation import RingModel
@@ -19,4 +20,3 @@ __all__ = [
     "InitializingState",
     "DemixingState"
 ]
-

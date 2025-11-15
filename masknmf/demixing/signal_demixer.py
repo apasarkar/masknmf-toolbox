@@ -21,6 +21,7 @@ from masknmf.demixing.demixing_arrays import (
     ResidCorrMode,
 )
 from masknmf.demixing.demixing_results import DemixingResults
+from masknmf.demixing.initialization_results import InitializationResults
 
 from .demixing_utils import (
     construct_graph_from_sparse_tensor,
@@ -33,6 +34,7 @@ from masknmf.demixing import regression_update
 from masknmf.demixing.background_estimation import RingModel
 from masknmf.compression import PMDArray
 from masknmf import display
+from masknmf.utils import torch_select_device
 
 
 
@@ -1827,7 +1829,7 @@ def spatial_comp_plot(
 
 
 class SignalProcessingState(ABC):
-    def __init__(self, pixel_batch_size: int, frame_batch_size: int):
+    def __init__(self, pixel_batch_size: int, frame_batch_size: int, device: str):
         """Constructor to initialize pixel_batch_size and frame_batch_size."""
         if not isinstance(pixel_batch_size, int) or pixel_batch_size <= 0:
             raise ValueError("pixel_batch_size must be a positive integer.")
@@ -1836,6 +1838,11 @@ class SignalProcessingState(ABC):
 
         self._pixel_batch_size = pixel_batch_size
         self._frame_batch_size = frame_batch_size
+        self._device = device
+
+    @property
+    def device(self) -> str:
+        return self._device
 
     @property
     def pixel_batch_size(self):
@@ -1894,7 +1901,7 @@ class SignalDemixer:
     def __init__(
             self,
             pmd_array,
-            device: str = "cpu",
+            device: str = "auto",
             frame_batch_size: int = 5000,
             pixel_batch_size: int = 10000,
     ):
@@ -1912,7 +1919,7 @@ class SignalDemixer:
             frame_batch_size (int): Number of full frames of data we load onto the GPU at a time
             pixel_batch_size (int): Number of full pixels of data we load onto the GPU at a time
         """
-        self.device = device
+        self._device = torch_select_device(device)
         self.pmd_obj = pmd_array
         self.pmd_obj.to(device)
         self.data_order = self.pmd_obj.order
@@ -1937,15 +1944,15 @@ class SignalDemixer:
         )
 
     @property
-    def state(self):
-        return self._state
-
-    @state.setter
-    def state(self, new_state: SignalProcessingState):
-        self._state = new_state
+    def device(self) -> Literal["cpu", "cuda"]:
+        return self._device
 
     @property
-    def results(self):
+    def state(self) -> InitializingState | DemixingState:
+        return self._state
+
+    @property
+    def results(self) -> InitializationResults | DemixingResults:
         return self.state.results
 
     def initialize_signals(self, carry_background: bool = False, **kwargs):
@@ -1963,7 +1970,7 @@ class InitializingState(SignalProcessingState):
             self,
             pmd_arr: PMDArray,
             dimensions: Tuple[int, int, int],
-            device: str = "cpu",
+            device: str,
             a: Optional[torch.sparse_coo_tensor] = None,
             c: Optional[torch.tensor] = None,
             pixel_batch_size: int = 40000,
@@ -1971,15 +1978,24 @@ class InitializingState(SignalProcessingState):
             factorized_ring_term: Optional[Tuple[torch.tensor, torch.tensor]] = None,
             robust_noise_term: Optional[float] = None,
     ):
-        super().__init__(pixel_batch_size, frame_batch_size)
         """
         Class for initializing the signals
         """
+
+        super().__init__(pixel_batch_size, frame_batch_size, device=device)
+
+        # TODO: refactor to use shape instead of d1, d2, T
         self.shape = pmd_arr.shape[1], pmd_arr.shape[2], pmd_arr.shape[0]
         self.d1, self.d2, self.T = dimensions
+
         self.pmd_obj = pmd_arr
+
+        # TODO: get rid of data order and make it always "C" for PMD and demixing stuff
         self.data_order = pmd_arr.order
-        self.device = device
+
+        # TODO: make all these attributes private or read-only
+        #  so the user can't do signal_demixer.state.v = ...
+
         self.pmd_obj.to(self.device)
 
         self.u_sparse = self.pmd_obj.u
@@ -1992,7 +2008,6 @@ class InitializingState(SignalProcessingState):
         else:
             self.robust_noise_term = robust_noise_term
 
-
         self.a_init = None
         self.mask_a_init = None
         self.c_init = None
@@ -2001,6 +2016,8 @@ class InitializingState(SignalProcessingState):
         self.superpixel_dict = None
 
         if a is not None:
+            # creating these references repeatedly over init-demix cycles does
+            # not create new arrays if that object is already on the same device
             self.a = a.to(self.device).coalesce()
         else:
             self.a = None
@@ -2013,7 +2030,6 @@ class InitializingState(SignalProcessingState):
         self._results = None
 
         self._th = None
-
 
     def _sketch_robust_variance_term(self, num_frames: int = 5000):
         """
@@ -2051,7 +2067,6 @@ class InitializingState(SignalProcessingState):
         output = torch.ones_like(variance_cumulator) * baseline
         return output.reshape(self.pmd_obj.shape[1], self.pmd_obj.shape[2])
 
-
     @property
     def frame_batch_size(self):
         return self._frame_batch_size
@@ -2069,8 +2084,10 @@ class InitializingState(SignalProcessingState):
         self._pixel_batch_size = new_batch_size
 
     @property
-    def results(self):
-        return self.a_init, self.mask_a_init, self.c_init, self.b_init, self.superpixel_dict
+    def results(self) -> InitializationResults:
+        # TODO: determine at which level we should return weakreferences
+        return proxy(self._results)
+        # return self.a_init, self.mask_a_init, self.c_init, self.b_init, self.superpixel_dict
 
     def lock_results_and_continue(
             self, context: SignalDemixer, carry_background: bool = True
@@ -2082,12 +2099,13 @@ class InitializingState(SignalProcessingState):
                 background_term = self.factorized_ring_term
             else:
                 background_term = None
-            context.state = DemixingState(
+            context._state = DemixingState(
                 self.pmd_obj,
-                self.a_init,
-                self.b_init,
-                self.c_init,
-                self.mask_a_init,
+                # TODO: refactor this
+                self.results.a,
+                self.results.b,
+                self.results.c,
+                self.results.mask_a_init,
                 (self.d1, self.d2, self.T),
                 factorized_ring_term=background_term,
                 data_order=self.data_order,
@@ -2287,14 +2305,13 @@ class InitializingState(SignalProcessingState):
             self,
             is_custom: bool = False,
             **init_kwargs: dict,
-    ):
+    ) -> InitializationResults:
         """
         Runs an initialization algorithm to get initial signal estimates.
 
         Args:
             is_custom (bool): Indicates whether custom init or regular init is used
             init_kwargs (dict): Dictionary of method-specific parameter values used in superpixel init
-
 
         See the functions _initialize_signals_superpixels and _initialize_signals_custom for documentation
 
@@ -2311,6 +2328,10 @@ class InitializingState(SignalProcessingState):
             self._initialize_signals_custom(**init_kwargs)
         else:
             self._initialize_signals_superpixels(**init_kwargs)
+
+        self._results = InitializationResults()
+
+        return self.results
 
 
 class DemixingState(SignalProcessingState):
@@ -2329,22 +2350,21 @@ class DemixingState(SignalProcessingState):
             frame_batch_size: int = 10000,
             robust_noise_term: Optional[float] = None
     ):
-        super().__init__(pixel_batch_size, frame_batch_size)
-        # Define the data dimensions, data ordering scheme, and device
+        super().__init__(pixel_batch_size, frame_batch_size, device=device)
+
         self.d1, self.d2, self.T = dimensions
         self.shape = (self.d1, self.d2, self.T)
         self.data_order = data_order
-        self.device = device
         self._results = None
-        self.pmd_obj = pmd_arr
+        self.pmd_obj = pmd_arr.to(self.device)
 
-        self.u_sparse = pmd_arr.u.to(device)
-        self.v = pmd_arr.v.to(device)
+        self.u_sparse = self.pmd_obj.u
+        self.v = self.pmd_obj.u
 
         self._mask_a_init = mask_init
-        self._a_init = a_init.to(device).coalesce()
-        self._b_init = b_init.to(device)
-        self._c_init = c_init.to(device)
+        self._a_init = a_init.to(self.device).coalesce()
+        self._b_init = b_init.to(self.device)
+        self._c_init = c_init.to(self.device)
         self.a = None
         self.b = None
         self.c = None
@@ -2356,8 +2376,9 @@ class DemixingState(SignalProcessingState):
 
         if factorized_ring_term is None:
             self._factorized_ring_term_init = (
-            torch.zeros(self.v.shape[0], 1, device=self.v.device, dtype=self.v.dtype),
-            torch.zeros(1, self.v.shape[1], device=self.v.device, dtype=self.v.dtype))
+                torch.zeros(self.v.shape[0], 1, device=self.v.device, dtype=self.v.dtype),
+                torch.zeros(1, self.v.shape[1], device=self.v.device, dtype=self.v.dtype)
+            )
         else:
             self._factorized_ring_term_init = (
             factorized_ring_term[0].to(self.device), factorized_ring_term[1].to(self.device))
@@ -2395,7 +2416,8 @@ class DemixingState(SignalProcessingState):
             start = k * self.frame_batch_size
             end = min(start + self.frame_batch_size, self.v.shape[1])
             if self.factorized_ring_term is not None:
-                v_used = self.v[:, indices[start:end]] - self.factorized_ring_term[0] @ self.factorized_ring_term[1]
+                frames_factorized_ring_term = self.factorized_ring_term[0] @ self.factorized_ring_term[1][:, indices[start:end]]
+                v_used = self.v[:, indices[start:end]] - frames_factorized_ring_term
             else:
                 v_used = self.v[:, indices[start:end]]
             curr_subset = torch.sparse.mm(self.u_sparse, v_used)
@@ -2419,7 +2441,7 @@ class DemixingState(SignalProcessingState):
         )
 
     @property
-    def results(self):
+    def results(self) -> DemixingResults:
         return self._results
 
     def lock_results_and_continue(
@@ -2440,7 +2462,7 @@ class DemixingState(SignalProcessingState):
                 background_term = self.factorized_ring_term
             else:
                 background_term = None
-            context.state = InitializingState(
+            context._state = InitializingState(
                 self.pmd_obj,
                 (self.d1, self.d2, self.T),
                 self.device,
@@ -3056,4 +3078,3 @@ class DemixingState(SignalProcessingState):
         )
 
         return self.results
-
