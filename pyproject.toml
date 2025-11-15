@@ -28,7 +28,7 @@ dependencies = [
     "jupyterlab",
     "pytorch-lightning>=2.5.2",
     "tensorboard>=2.20.0",
-    "fastplotlib[imgui,notebook]>=0.5.1",
+    "fastplotlib[imgui,notebook]==0.6.1",
     "simplejpeg",
 ]
 
