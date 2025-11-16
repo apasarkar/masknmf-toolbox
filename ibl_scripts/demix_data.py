@@ -56,7 +56,7 @@ def demix(data_path: str | Path,
 
     highpass_pmd_demixer.initialize_signals(**init_kwargs, is_custom = False)
     if highpass_pmd_demixer.results is not None:
-        display(f"Identified {highpass_pmd_demixer.results[0].shape[1]} candidate neural signals at initialization step.")
+        display(f"Identified {highpass_pmd_demixer.results.a.shape[1]} candidate neural signals at initialization step.")
 
     ## Demixing State
     num_iters = 25
@@ -128,7 +128,7 @@ def demix(data_path: str | Path,
     
     unfiltered_pmd_demixer.initialize_signals(**init_kwargs, carry_background=True, is_custom = False)
     if unfiltered_pmd_demixer.results is not None:
-        display(f"Identified {unfiltered_pmd_demixer.results[0].shape[1]} candidate neural signals at initialization step.")
+        display(f"Identified {unfiltered_pmd_demixer.results.a.shape[1]} candidate neural signals at initialization step.")
 
     num_iters = 25
     ## Now run demixing...
