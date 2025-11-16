@@ -67,9 +67,7 @@ def demix_with_s2p_outputs(folder: str,
 
     unfiltered_pmd_demixer.initialize_signals(is_custom=True,
                                               spatial_footprints=signal_spatial)
-    unfiltered_pmd_demixer.lock_results_and_continue()
 
-    
     ## Demixing State
     num_iters = 25
     ## Now run demixing...
@@ -127,7 +125,7 @@ def build_s2p_demixingresults(folder: str,
     signal_spatial = signal_spatial.reshape((ops['Ly'], ops['Lx'], -1))
     neuropil_spatial = neuropil_spatial.reshape((ops['Ly'], ops['Lx'], -1))
 
-    a_suite2p = masknmf.ndarray_to_torch_sparse_coo(signal_spatial.reshape((-1, signal_spatial.shape[2]))).to(device)
+    a_suite2p = masknmf.demixing.demixing_utils.ndarray_to_torch_sparse_coo(signal_spatial.reshape((-1, signal_spatial.shape[2]))).to(device)
     c_suite2p = torch.from_numpy(c_traces).float().to(device)
     
     c_suite2p_rescale, b_rescale = masknmf.demixing.regression_update.alternating_least_squares_affine_fit(pmd_object.u.to(device),
