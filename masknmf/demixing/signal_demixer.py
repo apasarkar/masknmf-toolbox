@@ -2797,15 +2797,8 @@ class DemixingState(SignalProcessingState):
             ).float()
             curr_masks = torch.index_select(mask, 1, neuron_indices).to_dense().float()
 
-            if (
-                    self.data_order == "F"
-            ):  # Torch uses reshape C, so we need to modify here
-                curr_masks = curr_masks.reshape((self.shape[1], self.shape[0], -1))
-                curr_masks = curr_masks.permute(1, 0, 2)
-            elif self.data_order == "C":
-                curr_masks = curr_masks.reshape((self.shape[0], self.shape[1], -1))
-            else:
-                raise ValueError(f"Error with data order")
+            ## C reshaping
+            curr_masks = curr_masks.reshape((self.shape[0], self.shape[1], -1))
 
             curr_masks = curr_masks.permute(2, 0, 1)
 
@@ -2813,12 +2806,7 @@ class DemixingState(SignalProcessingState):
                 curr_thresholded_residual_images, curr_masks
             )
 
-            if self.data_order == "F":
-                new_masks = new_masks.permute(
-                    2, 1, 0
-                )  # This is now d2 x d1 x frames to account for C vs F reshape
-            else:  # order is C
-                new_masks = new_masks.permute(1, 2, 0)
+            new_masks = new_masks.permute(1, 2, 0)
             new_masks = new_masks.reshape((self.shape[0] * self.shape[1], -1))
 
             a_crop = torch.index_select(spatial_comps, 1, neuron_indices).coalesce()
