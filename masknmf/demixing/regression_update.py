@@ -106,7 +106,7 @@ def spatial_update_hals(
             current_projection /= ctc_diag[None, subset_tensor]
 
             subset_rows, subset_cols = a_crop.indices()
-            subset_vals = a_crop.values()
+            subset_vals = current_projection[subset_rows, subset_cols]
             curr_cols.append(subset_tensor[subset_cols])
             curr_rows.append(subset_rows)
             curr_vals.append(subset_vals)
