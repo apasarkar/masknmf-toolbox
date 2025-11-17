@@ -70,6 +70,7 @@ def spatial_update_hals(
     nonzero_row_indices = torch.unique(mask_ab.indices()[0, :])
 
     a_subset = torch.index_select(a_sparse, 0, nonzero_row_indices).coalesce()
+    mask_a_subset = torch.index_select(mask_ab, 0, nonzero_row_indices).coalesce()
     ctc = torch.matmul(c.t(), c)
     ctc_diag = torch.diag(ctc)
     ctc_diag[ctc_diag == 0] = 1  # For division safety
@@ -100,12 +101,12 @@ def spatial_update_hals(
                 current_projection -= torch.sparse.mm(u_subset, (q[0]@(q[1]@c[:, subset_tensor])))
             current_projection -= baseline_projection[:, subset_tensor]
 
-            a_crop = torch.index_select(a_subset, 1, subset_tensor).coalesce()
+            mask_a_crop = torch.index_select(mask_a_subset, 1, subset_tensor).coalesce()
             ctc_subset = ctc[:, subset_tensor]
             current_projection -= torch.sparse.mm(a_subset, ctc_subset)
             current_projection /= ctc_diag[None, subset_tensor]
 
-            subset_rows, subset_cols = a_crop.indices()
+            subset_rows, subset_cols = mask_a_crop.indices()
             subset_vals = current_projection[subset_rows, subset_cols]
             curr_cols.append(subset_tensor[subset_cols])
             curr_rows.append(subset_rows)
