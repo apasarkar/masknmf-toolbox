@@ -162,12 +162,8 @@ def temporal_update_hals(
 
     ##Precompute quantities used throughout all iterations
 
-    # Find the tensor, e, (a 1 x R' shaped tensor) such that eV gives a 1 x T tensor consisting of all 1's
-    # e = torch.matmul(torch.ones([1, v.shape[1]], device=device), v.t())
-
     # Step 1: Get aTURs
     aTU = torch.sparse.mm(a_sparse.t(), u_sparse)
-    # aTUR = torch.sparse.mm(aTU, r)
     if q is not None:
         fluctuating_background_subtracted_projection = torch.sparse.mm(aTU, v)
         fluctuating_background_subtracted_projection -= torch.sparse.mm(aTU, q[0]) @ q[1]
@@ -179,7 +175,6 @@ def temporal_update_hals(
 
     # Step 2: Get aTbe
     aTb = torch.matmul(a_sparse.t(), b)
-    # static_background_projection = torch.matmul(aTb, e)
     static_background_projection = aTb
 
     # Step 3:
@@ -187,11 +182,8 @@ def temporal_update_hals(
         fluctuating_background_subtracted_projection - static_background_projection
     )
 
-    # cumulator = torch.matmul(cumulator, v)
-
     ata = torch.sparse.mm(a_sparse.t(), a_sparse)
-    ata = ata.to_dense()
-    diagonals = torch.diag(ata)
+    diagonals = _fast_a_squared_norm(a_sparse)
 
     if c_nonneg:
         threshold_function = torch.nn.ReLU()
@@ -202,7 +194,7 @@ def temporal_update_hals(
         blocks = torch.arange(c.shape[1], device=device).unsqueeze(1)
     for index_to_select in blocks:
         a_ia = torch.index_select(ata, 0, index_to_select)
-        a_iaC = torch.matmul(a_ia, c.t())
+        a_iaC = torch.sparse.mm(a_ia, c.t())
 
         curr_trace = torch.index_select(c, 1, index_to_select)
         curr_trace += (
@@ -213,6 +205,28 @@ def temporal_update_hals(
         c[:, index_to_select] = curr_trace
 
     return c
+
+def _fast_a_squared_norm(a: torch.sparse_coo_tensor):
+    """
+    Returns the l2 norm of each column of a
+    Assumes "a" is coalesced
+    """
+    idx = a.indices()
+    val = a.values()
+
+    n_cols = a.shape[1]
+
+    # squared values
+    val2 = val * val
+    col_idx = idx[1]
+
+    # accumulate squares into a length-N vector
+    col_sums = torch.zeros(n_cols, dtype=val.dtype, device=val.device)
+    col_sums.scatter_add_(0, col_idx, val2)
+
+    # take sqrt for L2 norm
+    # col_norms = torch.sqrt(col_sums)
+    return col_sums
 
 
 def _affine_fit_scaling_update(v: torch.tensor,
