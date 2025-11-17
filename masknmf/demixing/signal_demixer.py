@@ -899,8 +899,8 @@ def delete_comp(
     standard_correlation_image.c = torch.index_select(
         standard_correlation_image.c, 1, neg
     )
-    spatial_masks = torch.index_select(spatial_masks, 1, neg)
-    spatial_components = torch.index_select(spatial_components, 1, neg)
+    spatial_masks = torch.index_select(spatial_masks, 1, neg).coalesce()
+    spatial_components = torch.index_select(spatial_components, 1, neg).coalesce()
     temporal_components = torch.index_select(temporal_components, 1, neg)
     return (
         spatial_components,
@@ -2635,6 +2635,7 @@ class DemixingState(SignalProcessingState):
             q=self.factorized_ring_term,
             mask_ab=self.mask_ab,
             blocks=self.blocks,
+            frame_batch_size=self.frame_batch_size
         )
 
         ## Delete Bad Components
@@ -2868,7 +2869,7 @@ class DemixingState(SignalProcessingState):
             self.compute_residual_correlation_image()
 
         # Currently using rigid mask
-        self.mask_ab = self.a.bool()
+        self.mask_ab = self.a.bool().coalesce()
         self.mask_ab, self.a = self._mask_expansion_routine(
             relative_correlation_fraction,
             self.mask_ab,
