@@ -2809,18 +2809,16 @@ class DemixingState(SignalProcessingState):
             new_masks = new_masks.permute(1, 2, 0)
             new_masks = new_masks.reshape((self.shape[0] * self.shape[1], -1))
 
-            a_crop = torch.index_select(spatial_comps, 1, neuron_indices).coalesce()
-            curr_a_row, curr_a_col = a_crop.indices()
-            curr_a_new_values = a_crop.values() * new_masks[(curr_a_row, curr_a_col)]
+            a_crop = torch.index_select(spatial_comps, 1, neuron_indices).coalesce().to_dense()
+            new_a_row, new_a_col = torch.nonzero(new_masks, as_tuple=True)
+            new_a_values = a_crop[new_a_row, new_a_col] ## Some of these might be zeros, that is ok!
 
-            final_spatial_rows.append(curr_a_row)
-            final_spatial_cols.append(start + curr_a_col)
-            final_spatial_values.append(curr_a_new_values)
+            final_spatial_rows.append(new_a_row)
+            final_spatial_cols.append(start + new_a_col)
+            final_spatial_values.append(new_a_values)
 
-            curr_mask_row, curr_mask_col = torch.nonzero(new_masks, as_tuple=True)
-
-            final_mask_rows.append(curr_mask_row)
-            final_mask_cols.append(start + curr_mask_col)
+            final_mask_rows.append(new_a_row)
+            final_mask_cols.append(start + new_a_col)
 
         # Construct the new mask
         final_mask_rows = torch.cat(final_mask_rows, 0)
