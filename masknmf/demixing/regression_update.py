@@ -31,15 +31,15 @@ def baseline_update(uv_mean, a, c, to_torch=False):
 
 
 def spatial_update_hals(
-    u_sparse: torch.tensor,
-    v: torch.tensor,
-    a_sparse: torch.sparse_coo_tensor,
-    c: torch.tensor,
-    b: torch.tensor,
-    q: Optional[Tuple[torch.tensor, torch.tensor]] = None,
-    blocks: Optional[Union[torch.tensor, list]] = None,
-    mask_ab: Optional[torch.sparse_coo_tensor] = None,
-    frame_batch_size: int = 500,
+        u_sparse: torch.tensor,
+        v: torch.tensor,
+        a_sparse: torch.sparse_coo_tensor,
+        c: torch.tensor,
+        b: torch.tensor,
+        q: Optional[Tuple[torch.tensor, torch.tensor]] = None,
+        blocks: Optional[Union[torch.tensor, list]] = None,
+        mask_ab: Optional[torch.sparse_coo_tensor] = None,
+        frame_batch_size: int = 500,
 ):
     """
     Computes a spatial HALS updates:
@@ -64,74 +64,55 @@ def spatial_update_hals(
     # Load all values onto device in torch
     device = v.device
 
-    if mask_ab is None:
-        mask_ab = a_sparse.bool().coalesce()
-
-    nonzero_row_indices = torch.unique(mask_ab.indices()[0, :])
-
-    a_subset = torch.index_select(a_sparse, 0, nonzero_row_indices).coalesce()
-    mask_a_subset = torch.index_select(mask_ab, 0, nonzero_row_indices).coalesce()
+    c_sq_norm = torch.linalg.norm(c, dim=0, keepdim=True) ** 2
     ctc = torch.matmul(c.t(), c)
-    ctc_diag = torch.diag(ctc)
-    ctc_diag[ctc_diag == 0] = 1  # For division safety
+    ctc /= c_sq_norm
     """
     We will now compute the following expression: 
     This is part of the 'residual video' that we regress onto the spatial components below
     """
+    baseline_projection = b @ (torch.sum(c, dim=0, keepdim=True))
+    baseline_projection /= c_sq_norm
 
-    u_subset = torch.index_select(u_sparse, 0, nonzero_row_indices)
-    baseline_projection = torch.matmul(
-        torch.index_select(b, 0, nonzero_row_indices), torch.sum(c, dim=0, keepdim=True)
-    )
-    threshold_func = torch.nn.ReLU(0)
+    # rows, cols = a_sparse.indices()
     if blocks is None:
         blocks = torch.arange(c.shape[1], device=device).unsqueeze(1)
+
+    column_lut = torch.zeros(a_sparse.shape[1], device=device, dtype=a_sparse.indices().dtype)
+    membership_lut = torch.zeros(a_sparse.shape[1], device=device, dtype=torch.bool)
+    a_rows, a_cols = a_sparse.indices()
+    a_values = a_sparse.values()
+    diff = v @ c
+    if q is not None:
+        diff -= q[0] @ (q[1] @ c)
+    diff /= c_sq_norm
     for index_select_tensor in blocks:
         num_iters = math.ceil(index_select_tensor.shape[0] / frame_batch_size)
-        curr_rows = []
-        curr_cols = []
-        curr_vals = []
         for i in range(num_iters):
             start_pt = i * frame_batch_size
             end_pt = min(start_pt + frame_batch_size, index_select_tensor.shape[0])
             subset_tensor = index_select_tensor[start_pt:end_pt]
+            column_lut[subset_tensor] = torch.arange(subset_tensor.shape[0], device=device)
+            membership_lut[subset_tensor] = True
+            col_mask = membership_lut[a_cols]
+            col_indices = a_cols[col_mask]
+            remapped_col_indices = column_lut[col_indices]
+            row_indices = a_rows[col_mask]
+            curr_values = a_values[col_mask]
 
-            current_projection = torch.sparse.mm(u_subset, (v @ c[:, subset_tensor]))
-            if q is not None:
-                current_projection -= torch.sparse.mm(u_subset, (q[0]@(q[1]@c[:, subset_tensor])))
-            current_projection -= baseline_projection[:, subset_tensor]
+            term1 = torch.sparse.mm(u_sparse, diff[:, subset_tensor])
+            term2 = torch.sparse.mm(a_sparse, ctc[:, subset_tensor])
 
-            mask_a_crop = torch.index_select(mask_a_subset, 1, subset_tensor).coalesce()
-            ctc_subset = ctc[:, subset_tensor]
-            current_projection -= torch.sparse.mm(a_subset, ctc_subset)
-            current_projection /= ctc_diag[None, subset_tensor]
+            updated_values = term1[row_indices, remapped_col_indices] - term2[row_indices, remapped_col_indices] - \
+                             baseline_projection[row_indices, col_indices]
+            curr_values += updated_values
+            curr_values.relu_()
+            a_sparse.values().masked_scatter_(col_mask, curr_values)
 
-            subset_rows, subset_cols = mask_a_crop.indices()
-            subset_vals = current_projection[subset_rows, subset_cols]
-            curr_cols.append(subset_tensor[subset_cols])
-            curr_rows.append(subset_rows)
-            curr_vals.append(subset_vals)
+            ##Critical: reset the membership LUT
+            membership_lut[subset_tensor] = False
 
-        curr_net_indices = torch.stack([torch.cat(curr_rows), torch.cat(curr_cols)])
-        curr_net_values = torch.cat(curr_vals)
-        net_indices = torch.cat([a_subset.indices(), curr_net_indices], dim=1)
-        net_values = torch.cat([a_subset.values(), curr_net_values], dim=0)
-
-        a_subset = torch.sparse_coo_tensor(net_indices, net_values, a_subset.shape
-    ).coalesce()
-
-        new_values = threshold_func(a_subset.values())
-        a_subset = torch.sparse_coo_tensor(a_subset.indices(), new_values, a_subset.shape).coalesce()
-
-    pruned_row, pruned_col = a_subset.indices()
-    final_values = a_subset.values()
-    real_row = nonzero_row_indices[pruned_row]
-
-    a_sparse = torch.sparse_coo_tensor(
-        torch.stack([real_row, pruned_col]), final_values, a_sparse.shape
-    ).coalesce()
     return a_sparse
-
 
 def temporal_update_hals(
     u_sparse: torch.sparse_coo_tensor,
