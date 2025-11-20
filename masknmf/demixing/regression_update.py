@@ -2,7 +2,7 @@ import scipy.sparse
 import torch
 from typing import *
 from tqdm import tqdm
-
+import math
 from masknmf.demixing.demixing_utils import construct_graph_from_sparse_tensor, color_and_get_tensors
 
 
@@ -31,14 +31,15 @@ def baseline_update(uv_mean, a, c, to_torch=False):
 
 
 def spatial_update_hals(
-    u_sparse: torch.tensor,
-    v: torch.tensor,
-    a_sparse: torch.sparse_coo_tensor,
-    c: torch.tensor,
-    b: torch.tensor,
-    q: Optional[Tuple[torch.tensor, torch.tensor]] = None,
-    blocks: Optional[Union[torch.tensor, list]] = None,
-    mask_ab: Optional[torch.sparse_coo_tensor] = None,
+        u_sparse: torch.tensor,
+        v: torch.tensor,
+        a_sparse: torch.sparse_coo_tensor,
+        c: torch.tensor,
+        b: torch.tensor,
+        q: Optional[Tuple[torch.tensor, torch.tensor]] = None,
+        blocks: Optional[Union[torch.tensor, list]] = None,
+        mask_ab: Optional[torch.sparse_coo_tensor] = None,
+        frame_batch_size: int = 500,
 ):
     """
     Computes a spatial HALS updates:
@@ -54,6 +55,7 @@ def spatial_update_hals(
         q (torch.tensor): This is the factorized ring model term; u@r@q@v gives you the full ring model movie
         blocks Optional[Union[torch.tensor, list]]: Describes which components can be updated in parallel. Typically a list of 1D tensors, each describing indices
         mask_ab (torch.sparse_coo_tensor): Dimensions (d x k). For each neuron, indicates the allowed support of neuron
+        frame_batch_size (int): Roughly the number of dense frames of data that are expanded out in GPU memory
 
     Returns:
         a_sparse: torch.sparse_coo_tensor. Dimensions d x k, containing updated spatial matrix
@@ -62,66 +64,55 @@ def spatial_update_hals(
     # Load all values onto device in torch
     device = v.device
 
-    if mask_ab is None:
-        mask_ab = a_sparse.bool()
-
-    mask_ab = mask_ab.long().to_dense()
-    nonzero_row_indices = torch.squeeze(torch.sum(mask_ab, dim=1).nonzero())
-    mask_ab = torch.index_select(mask_ab, 0, nonzero_row_indices)
-
-    a_dense = torch.index_select(a_sparse, 0, nonzero_row_indices).to_dense()
-
-    C_prime = torch.matmul(c.t(), c)
-    C_prime_diag = torch.diag(C_prime)
-    C_prime_diag[C_prime_diag == 0] = 1  # For division safety
+    c_sq_norm = torch.linalg.norm(c, dim=0, keepdim=True) ** 2
+    ctc = torch.matmul(c.t(), c)
+    ctc /= c_sq_norm
     """
     We will now compute the following expression: 
-
-    [UR(diag(s) - q)Vc - beVc]
-
     This is part of the 'residual video' that we regress onto the spatial components below
     """
+    baseline_projection = b @ (torch.sum(c, dim=0, keepdim=True))
+    baseline_projection /= c_sq_norm
 
-    u_subset = torch.index_select(u_sparse, 0, nonzero_row_indices)
-
-    if q is not None:
-        background_subtracted_projection = torch.sparse.mm(
-            u_subset, (v@c - q[0]@(q[1]@c))
-        )
-    else:
-        background_subtracted_projection = torch.sparse.mm(u_subset, torch.matmul(v, c))
-    baseline_projection = torch.matmul(
-        torch.index_select(b, 0, nonzero_row_indices), torch.sum(c, dim=0, keepdim=True)
-    )
-
-    cumulator = background_subtracted_projection - baseline_projection
-
-    threshold_func = torch.nn.ReLU(0)
+    # rows, cols = a_sparse.indices()
     if blocks is None:
         blocks = torch.arange(c.shape[1], device=device).unsqueeze(1)
+
+    column_lut = torch.zeros(a_sparse.shape[1], device=device, dtype=a_sparse.indices().dtype)
+    membership_lut = torch.zeros(a_sparse.shape[1], device=device, dtype=torch.bool)
+    a_rows, a_cols = a_sparse.indices()
+    a_values = a_sparse.values()
+    diff = v @ c
+    if q is not None:
+        diff -= q[0] @ (q[1] @ c)
+    diff /= c_sq_norm
     for index_select_tensor in blocks:
-        mask_apply = torch.index_select(mask_ab, 1, index_select_tensor)
+        num_iters = math.ceil(index_select_tensor.shape[0] / frame_batch_size)
+        for i in range(num_iters):
+            start_pt = i * frame_batch_size
+            end_pt = min(start_pt + frame_batch_size, index_select_tensor.shape[0])
+            subset_tensor = index_select_tensor[start_pt:end_pt]
+            column_lut[subset_tensor] = torch.arange(subset_tensor.shape[0], device=device)
+            membership_lut[subset_tensor] = True
+            col_mask = membership_lut[a_cols]
+            col_indices = a_cols[col_mask]
+            remapped_col_indices = column_lut[col_indices]
+            row_indices = a_rows[col_mask]
+            curr_values = a_values[col_mask]
 
-        c_prime_i = C_prime.index_select(0, index_select_tensor).t()
-        cumulator_i = cumulator.index_select(1, index_select_tensor)
-        acc = torch.matmul(a_dense, c_prime_i)
-        final_vec = (cumulator_i - acc) / C_prime_diag[None, index_select_tensor]
-        curr_frame = torch.index_select(a_dense, 1, index_select_tensor)
-        curr_frame += final_vec
-        curr_frame *= mask_apply
-        curr_frame = threshold_func(curr_frame)
-        a_dense[:, index_select_tensor] = curr_frame
+            term1 = torch.sparse.mm(u_sparse, diff[:, subset_tensor])
+            term2 = torch.sparse.mm(a_sparse, ctc[:, subset_tensor])
 
-    pruned_indices = a_dense.nonzero()
-    pruned_row, pruned_col = [pruned_indices[:, i] for i in range(2)]
-    final_values = a_dense[pruned_row, pruned_col]
-    real_row = nonzero_row_indices[pruned_row]
+            updated_values = term1[row_indices, remapped_col_indices] - term2[row_indices, remapped_col_indices] - \
+                             baseline_projection[row_indices, col_indices]
+            curr_values += updated_values
+            curr_values.relu_()
+            a_sparse.values().masked_scatter_(col_mask, curr_values)
 
-    a_sparse = torch.sparse_coo_tensor(
-        torch.stack([real_row, pruned_col]), final_values, a_sparse.shape
-    ).coalesce()
+            ##Critical: reset the membership LUT
+            membership_lut[subset_tensor] = False
+
     return a_sparse
-
 
 def temporal_update_hals(
     u_sparse: torch.sparse_coo_tensor,
@@ -153,12 +144,8 @@ def temporal_update_hals(
 
     ##Precompute quantities used throughout all iterations
 
-    # Find the tensor, e, (a 1 x R' shaped tensor) such that eV gives a 1 x T tensor consisting of all 1's
-    # e = torch.matmul(torch.ones([1, v.shape[1]], device=device), v.t())
-
     # Step 1: Get aTURs
     aTU = torch.sparse.mm(a_sparse.t(), u_sparse)
-    # aTUR = torch.sparse.mm(aTU, r)
     if q is not None:
         fluctuating_background_subtracted_projection = torch.sparse.mm(aTU, v)
         fluctuating_background_subtracted_projection -= torch.sparse.mm(aTU, q[0]) @ q[1]
@@ -170,7 +157,6 @@ def temporal_update_hals(
 
     # Step 2: Get aTbe
     aTb = torch.matmul(a_sparse.t(), b)
-    # static_background_projection = torch.matmul(aTb, e)
     static_background_projection = aTb
 
     # Step 3:
@@ -178,11 +164,8 @@ def temporal_update_hals(
         fluctuating_background_subtracted_projection - static_background_projection
     )
 
-    # cumulator = torch.matmul(cumulator, v)
-
     ata = torch.sparse.mm(a_sparse.t(), a_sparse)
-    ata = ata.to_dense()
-    diagonals = torch.diag(ata)
+    diagonals = _fast_a_squared_norm(a_sparse)
 
     if c_nonneg:
         threshold_function = torch.nn.ReLU()
@@ -193,7 +176,7 @@ def temporal_update_hals(
         blocks = torch.arange(c.shape[1], device=device).unsqueeze(1)
     for index_to_select in blocks:
         a_ia = torch.index_select(ata, 0, index_to_select)
-        a_iaC = torch.matmul(a_ia, c.t())
+        a_iaC = torch.sparse.mm(a_ia, c.t())
 
         curr_trace = torch.index_select(c, 1, index_to_select)
         curr_trace += (
@@ -204,6 +187,28 @@ def temporal_update_hals(
         c[:, index_to_select] = curr_trace
 
     return c
+
+def _fast_a_squared_norm(a: torch.sparse_coo_tensor):
+    """
+    Returns the l2 norm of each column of a
+    Assumes "a" is coalesced
+    """
+    idx = a.indices()
+    val = a.values()
+
+    n_cols = a.shape[1]
+
+    # squared values
+    val2 = val * val
+    col_idx = idx[1]
+
+    # accumulate squares into a length-N vector
+    col_sums = torch.zeros(n_cols, dtype=val.dtype, device=val.device)
+    col_sums.scatter_add_(0, col_idx, val2)
+
+    # take sqrt for L2 norm
+    # col_norms = torch.sqrt(col_sums)
+    return col_sums
 
 
 def _affine_fit_scaling_update(v: torch.tensor,

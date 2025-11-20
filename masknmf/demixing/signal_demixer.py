@@ -899,8 +899,8 @@ def delete_comp(
     standard_correlation_image.c = torch.index_select(
         standard_correlation_image.c, 1, neg
     )
-    spatial_masks = torch.index_select(spatial_masks, 1, neg)
-    spatial_components = torch.index_select(spatial_components, 1, neg)
+    spatial_masks = torch.index_select(spatial_masks, 1, neg).coalesce()
+    spatial_components = torch.index_select(spatial_components, 1, neg).coalesce()
     temporal_components = torch.index_select(temporal_components, 1, neg)
     return (
         spatial_components,
@@ -2635,6 +2635,7 @@ class DemixingState(SignalProcessingState):
             q=self.factorized_ring_term,
             mask_ab=self.mask_ab,
             blocks=self.blocks,
+            frame_batch_size=self.frame_batch_size
         )
 
         ## Delete Bad Components
@@ -2796,15 +2797,8 @@ class DemixingState(SignalProcessingState):
             ).float()
             curr_masks = torch.index_select(mask, 1, neuron_indices).to_dense().float()
 
-            if (
-                    self.data_order == "F"
-            ):  # Torch uses reshape C, so we need to modify here
-                curr_masks = curr_masks.reshape((self.shape[1], self.shape[0], -1))
-                curr_masks = curr_masks.permute(1, 0, 2)
-            elif self.data_order == "C":
-                curr_masks = curr_masks.reshape((self.shape[0], self.shape[1], -1))
-            else:
-                raise ValueError(f"Error with data order")
+            ## C reshaping
+            curr_masks = curr_masks.reshape((self.shape[0], self.shape[1], -1))
 
             curr_masks = curr_masks.permute(2, 0, 1)
 
@@ -2812,26 +2806,19 @@ class DemixingState(SignalProcessingState):
                 curr_thresholded_residual_images, curr_masks
             )
 
-            if self.data_order == "F":
-                new_masks = new_masks.permute(
-                    2, 1, 0
-                )  # This is now d2 x d1 x frames to account for C vs F reshape
-            else:  # order is C
-                new_masks = new_masks.permute(1, 2, 0)
+            new_masks = new_masks.permute(1, 2, 0)
             new_masks = new_masks.reshape((self.shape[0] * self.shape[1], -1))
 
-            a_crop = torch.index_select(spatial_comps, 1, neuron_indices).coalesce()
-            curr_a_row, curr_a_col = a_crop.indices()
-            curr_a_new_values = a_crop.values() * new_masks[(curr_a_row, curr_a_col)]
+            a_crop = torch.index_select(spatial_comps, 1, neuron_indices).coalesce().to_dense()
+            new_a_row, new_a_col = torch.nonzero(new_masks, as_tuple=True)
+            new_a_values = a_crop[new_a_row, new_a_col] ## Some of these might be zeros, that is ok!
 
-            final_spatial_rows.append(curr_a_row)
-            final_spatial_cols.append(start + curr_a_col)
-            final_spatial_values.append(curr_a_new_values)
+            final_spatial_rows.append(new_a_row)
+            final_spatial_cols.append(start + new_a_col)
+            final_spatial_values.append(new_a_values)
 
-            curr_mask_row, curr_mask_col = torch.nonzero(new_masks, as_tuple=True)
-
-            final_mask_rows.append(curr_mask_row)
-            final_mask_cols.append(start + curr_mask_col)
+            final_mask_rows.append(new_a_row)
+            final_mask_cols.append(start + new_a_col)
 
         # Construct the new mask
         final_mask_rows = torch.cat(final_mask_rows, 0)
@@ -2868,7 +2855,7 @@ class DemixingState(SignalProcessingState):
             self.compute_residual_correlation_image()
 
         # Currently using rigid mask
-        self.mask_ab = self.a.bool()
+        self.mask_ab = self.a.bool().coalesce()
         self.mask_ab, self.a = self._mask_expansion_routine(
             relative_correlation_fraction,
             self.mask_ab,
