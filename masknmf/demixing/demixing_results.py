@@ -396,7 +396,7 @@ class DemixingResults(Serializer):
         """
         Returns an ACArray using the tensors stored in this object
         """
-        return ACArray(self.fov_shape, self.order, self.a, self.c)
+        return ACArray(self.fov_shape, self.a, self.c)
 
     @property
     def pmd_array(self) -> PMDArray:
@@ -436,6 +436,6 @@ class DemixingResults(Serializer):
 
     @property
     def colorful_ac_array(self) -> ColorfulACArray:
-        return ColorfulACArray(self.fov_shape, self.order, self.a, self.c)
+        return ColorfulACArray(self.fov_shape, self.a, self.c)
 
 

@@ -12,7 +12,6 @@ class ColorfulACArray(FactorizedVideo):
     def __init__(
         self,
         fov_shape: Tuple[int, int],
-        order: str,
         a: torch.sparse_coo_tensor,
         c: torch.tensor,
         min_color: int = 30,
@@ -21,7 +20,6 @@ class ColorfulACArray(FactorizedVideo):
         """
         Args:
             fov_shape (tuple): (fov_dim1, fov_dim2)
-            order (str): Order to reshape arrays from 1D to 2D
             a (torch.sparse_coo_tensor): Shape (pixels, components)
             c (torch.tensor). Shape (frames, components)
             min_color (int): Minimum RGB value (from 0 to 255)
@@ -33,11 +31,11 @@ class ColorfulACArray(FactorizedVideo):
         if not (self.a.device == self.c.device):
             raise ValueError(f"Input tensors not on same device")
         self._device = self.a.device
-        self._shape = (t,) + fov_shape + (3,)
-        self.pixel_mat = np.arange(np.prod(self.shape[1:3])).reshape(
-            [self.shape[1], self.shape[2]], order=order
-        )
+        fov_shape = tuple(map(int, fov_shape))
+        self._shape = (t, *fov_shape, 3)
+        self.pixel_mat = np.arange(np.prod(self.shape[1:3])).reshape([self.shape[1], self.shape[2]])
         self.pixel_mat = torch.from_numpy(self.pixel_mat).long().to(self.device)
+        self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
 
         ## Establish the coloring scheme
         num_neurons = c.shape[1]
@@ -46,11 +44,6 @@ class ColorfulACArray(FactorizedVideo):
         color_sum = np.sum(colors, axis=1, keepdims=True)
         self._colors = torch.from_numpy(colors / color_sum).to(self.device).float()
 
-        if order == "F" or order == "C":
-            self._order = order
-        else:
-            raise ValueError(f"order can only be F or C")
-
     @property
     def a(self) -> torch.sparse_coo_tensor:
         return self._a
@@ -58,6 +51,14 @@ class ColorfulACArray(FactorizedVideo):
     @property
     def c(self) -> torch.tensor:
         return self._c
+
+    @property
+    def mask(self) -> torch.tensor:
+        return self._mask
+
+    @mask.setter
+    def mask(self, new_mask: torch.tensor):
+        self._mask = new_mask.to(self.device).bool().to(self.c.dtype) #Ensures it's all 1s and 0s
 
     @property
     def device(self) -> str:
@@ -102,10 +103,6 @@ class ColorfulACArray(FactorizedVideo):
         Number of dimensions
         """
         return len(self.shape)
-
-    @property
-    def order(self):
-        return self._order
 
     def getitem_tensor(
         self,
@@ -176,6 +173,7 @@ class ColorfulACArray(FactorizedVideo):
         if c_crop.ndim < self.c.ndim:
             c_crop = c_crop[None, :]
 
+        c_crop = c_crop * self._mask[None, :]
         c_crop = c_crop.T
 
         # Step 4: Deal with remaining indices after lazy computing the frame(s)
@@ -201,20 +199,17 @@ class ColorfulACArray(FactorizedVideo):
             product_list = []
             for k in range(3):
                 curr_product = torch.sparse.mm(a_crop, c_crop * self.colors[:, [k]])
-                if self.order == "F":
-                    curr_product = curr_product.T.reshape(
-                        (-1, implied_fov[1], implied_fov[0])
-                    )
-                    curr_product = curr_product.permute((0, 2, 1))
-                elif self.order == "C":  # order is "C"
-                    curr_product = curr_product.reshape(
-                        (implied_fov[0], implied_fov[1], -1)
-                    )
-                    curr_product = curr_product.permute(2, 0, 1)
+
+                curr_product = curr_product.reshape(
+                    (implied_fov[0], implied_fov[1], -1)
+                )
+                curr_product = curr_product.permute(2, 0, 1)
                 product_list.append(curr_product)
 
             product = torch.stack(product_list, dim=3)
 
+        if len(item) == 4:
+            product = product[..., item[3]] ##Apply the last crop
         return product
 
     def __getitem__(

@@ -13,34 +13,41 @@ class ACArray(FactorizedVideo):
     def __init__(
         self,
         fov_shape: tuple[int, int],
-        order: str,
         a: torch.sparse_coo_tensor,
         c: torch.tensor,
     ):
         """
         Args:
             fov_shape (tuple): (fov_dim1, fov_dim2)
-            order (str): Order to reshape arrays from 1D to 2D
             a (torch.sparse_coo_tensor): Shape (pixels, components)
             c (torch.tensor). Shape (frames, components)
+            mask (torch.tensor). Shape (num_components). A mask of 1s and 0s indicating which neurons are actively displayed
+                (and which are effectively zerod out). Can be toggled
         """
+
         self._a = a
         self._c = c
         # Check that both objects are on same device
         if self._a.device != self._c.device:
             raise ValueError(f"Spatial and Temporal matrices are not on same device")
         self._device = self._a.device
-        t = c.shape[0]
-        self._shape = (t, *fov_shape)
-        self.pixel_mat = np.arange(np.prod(self.shape[1:])).reshape(
-            [self.shape[1], self.shape[2]], order=order
-        )
+        num_frames = c.shape[0]
+        self._shape = (num_frames, *fov_shape)
+        self.pixel_mat = np.arange(np.prod(self.shape[-2:])).reshape([self.shape[-2], self.shape[-1]])
         self.pixel_mat = torch.from_numpy(self.pixel_mat).long().to(self.device)
-        self._order = order
+        self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
 
     @property
     def device(self) -> str:
         return self._device
+
+    @property
+    def mask(self) -> torch.tensor:
+        return self._mask
+
+    @mask.setter
+    def mask(self, new_mask: torch.tensor):
+        self._mask = new_mask.to(self.device).bool().to(self.c.dtype) #Ensures it's all 1s and 0s
 
     @property
     def c(self) -> torch.tensor:
@@ -61,7 +68,7 @@ class ACArray(FactorizedVideo):
         returns the spatial components, where each component is a 2D image. output shape (fov dim1, fov dim 2, n_frames)
         """
         output = self.a.cpu().to_dense().numpy()
-        output = output.reshape((self.shape[1], self.shape[2], -1), order=self.order)
+        output = output.reshape((self.shape[-2], self.shape[-1], -1))
         return output
 
     def export_c(self) -> np.ndarray:
@@ -164,48 +171,25 @@ class ACArray(FactorizedVideo):
         if c_crop.ndim < self._c.ndim:
             c_crop = c_crop.unsqueeze(0)
 
+        c_crop = c_crop * self._mask[None, :]
+
         # Step 4: First do spatial subselection before multiplying by c
-        if isinstance(item, tuple) and check_spatial_crop_effect(
-            item[1:], self.shape[1:]
-        ):
+        if isinstance(item, tuple) and check_spatial_crop_effect(item[1:3], self.shape[1:3]):
 
-            if isinstance(item[1], np.ndarray) and len(item[1]) == 1:
-                term_1 = slice(int(item[1]), int(item[1]) + 1)
-            elif isinstance(item[1], np.integer):
-                term_1 = slice(int(item[1]), int(item[1]) + 1)
-            elif isinstance(item[1], int):
-                term_1 = slice(item[1], item[1] + 1)
-            else:
-                term_1 = item[1]
-
-            if isinstance(item[2], np.ndarray) and len(item[2]) == 1:
-                term_2 = slice(int(item[2]), int(item[2]) + 1)
-            elif isinstance(item[2], np.integer):
-                term_2 = slice(int(item[2]), int(item[2]) + 1)
-            elif isinstance(item[2], int):
-                term_2 = slice(item[2], item[2] + 1)
-            else:
-                term_2 = item[2]
-
-            spatial_crop_terms = (term_1, term_2)
-
-            pixel_space_crop = self.pixel_mat[spatial_crop_terms]
+            pixel_space_crop = self.pixel_mat[item[1:3]]
             a_indices = pixel_space_crop.flatten()
-            implied_fov = pixel_space_crop.shape
             a_crop = torch.index_select(self._a, 0, a_indices)
+            implied_fov = pixel_space_crop.shape
             product = torch.sparse.mm(a_crop, c_crop.T)
             product = product.reshape(implied_fov + (-1,))
             product = product.permute(-1, *range(product.ndim - 1))
+
         else:
             a_crop = self._a
-            implied_fov = self.shape[1], self.shape[2]
+            implied_fov = self.shape[-2], self.shape[-1]
             product = torch.sparse.mm(a_crop, c_crop.T)
-            if self.order == "F":
-                product = product.T.reshape((-1, implied_fov[1], implied_fov[0]))
-                product = product.permute((0, 2, 1))
-            else:  # order is "C"
-                product = product.reshape((implied_fov[0], implied_fov[1], -1))
-                product = product.permute(2, 0, 1)
+            product = product.reshape((implied_fov[0], implied_fov[1], -1))
+            product = product.permute(2, 0, 1)
 
         return product
 

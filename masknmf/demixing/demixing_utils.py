@@ -9,6 +9,29 @@ import networkx as nx
 from collections import defaultdict
 
 
+def _max_ac_routine(a, c):
+    """
+
+    Args:
+        a (torch.sparse_coo_tensor): Spatial footprints, shape (num_pixels, num_neurons)
+        c (torch.tensor): Temporal footprints, shape (num_frames, num_neurons)
+    Returns:
+        - torch.tensor. shape (num_neurons)
+    """
+    a = a.coalesce()
+    accumulator = torch.zeros(a.shape[1], device=a.device)
+    _, cols = a.indices()
+    vals = torch.abs(a.values())
+    accumulator.scatter_reduce_(0, cols, vals, "amax", include_self=False)
+    accumulator *= torch.amax(torch.abs(c), dim=0)
+    return accumulator
+
+
+def brightness_order(a, c):
+    brightnesses = _max_ac_routine(a, c)
+    idx_sort = torch.argsort(brightnesses, descending=True)
+    return idx_sort
+
 def construct_graph_from_sparse_tensor(adj_tensor: torch.sparse_coo_tensor) -> nx.Graph:
     """
     Constructs a NetworkX graph from a sparse COO tensor representing an adjacency matrix.
