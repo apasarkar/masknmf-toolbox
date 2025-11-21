@@ -35,6 +35,7 @@ class ColorfulACArray(FactorizedVideo):
         self._shape = (t, *fov_shape, 3)
         self.pixel_mat = np.arange(np.prod(self.shape[1:3])).reshape([self.shape[1], self.shape[2]])
         self.pixel_mat = torch.from_numpy(self.pixel_mat).long().to(self.device)
+        self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
 
         ## Establish the coloring scheme
         num_neurons = c.shape[1]
@@ -50,6 +51,14 @@ class ColorfulACArray(FactorizedVideo):
     @property
     def c(self) -> torch.tensor:
         return self._c
+
+    @property
+    def mask(self) -> torch.tensor:
+        return self._mask
+
+    @mask.setter
+    def mask(self, new_mask: torch.tensor):
+        self._mask = new_mask.to(self.device).bool().to(self.c.dtype) #Ensures it's all 1s and 0s
 
     @property
     def device(self) -> str:
@@ -164,6 +173,7 @@ class ColorfulACArray(FactorizedVideo):
         if c_crop.ndim < self.c.ndim:
             c_crop = c_crop[None, :]
 
+        c_crop = c_crop * self._mask[None, :]
         c_crop = c_crop.T
 
         # Step 4: Deal with remaining indices after lazy computing the frame(s)
