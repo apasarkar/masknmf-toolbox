@@ -436,6 +436,6 @@ class DemixingResults(Serializer):
 
     @property
     def colorful_ac_array(self) -> ColorfulACArray:
-        return ColorfulACArray(self.fov_shape, self.order, self.a, self.c)
+        return ColorfulACArray(self.fov_shape, self.a, self.c)
 
 
