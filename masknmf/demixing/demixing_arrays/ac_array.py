@@ -174,30 +174,12 @@ class ACArray(FactorizedVideo):
         c_crop = c_crop * self._mask[None, :]
 
         # Step 4: First do spatial subselection before multiplying by c
-        if isinstance(item, tuple) and len(item) > 1:
-            spatial_indices = [1, 2]
-            spatial_crop_terms = []
-            for k in spatial_indices:
-                if len(item) > k:
-                    curr_item = item[k]
-                    if isinstance(curr_item, np.ndarray) and len(curr_item) == 1:
-                        curr_term = slice(int(curr_item), int(curr_item) + 1)
-                    elif isinstance(curr_item, np.integer):
-                        curr_term = slice(int(curr_item), int(curr_item) + 1)
-                    elif isinstance(curr_item, int):
-                        curr_term = slice(curr_item, curr_item + 1)
-                    else:
-                        curr_term = curr_item
-                    spatial_crop_terms.append(curr_term)
+        if isinstance(item, tuple) and check_spatial_crop_effect(item[1:3], self.shape[1:3]):
 
-            spatial_crop_terms = tuple(spatial_crop_terms)
-            pixel_space_crop = self.pixel_mat[spatial_crop_terms]
+            pixel_space_crop = self.pixel_mat[item[1:3]]
+            a_indices = pixel_space_crop.flatten()
+            a_crop = torch.index_select(self._a, 0, a_indices)
             implied_fov = pixel_space_crop.shape
-            if implied_fov != self.pixel_mat.shape:
-                a_indices = pixel_space_crop.flatten()
-                a_crop = torch.index_select(self._a, 0, a_indices)
-            else:
-                a_crop = self._a
             product = torch.sparse.mm(a_crop, c_crop.T)
             product = product.reshape(implied_fov + (-1,))
             product = product.permute(-1, *range(product.ndim - 1))
