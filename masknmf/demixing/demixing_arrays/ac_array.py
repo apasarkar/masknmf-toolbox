@@ -13,30 +13,31 @@ class ACArray(FactorizedVideo):
     def __init__(
         self,
         fov_shape: tuple[int, int],
-        order: str,
         a: torch.sparse_coo_tensor,
         c: torch.tensor,
     ):
         """
         Args:
             fov_shape (tuple): (fov_dim1, fov_dim2)
-            order (str): Order to reshape arrays from 1D to 2D
             a (torch.sparse_coo_tensor): Shape (pixels, components)
             c (torch.tensor). Shape (frames, components)
+            ranked_neuron_axis (bool): If this is true, the lazy array is 4-dimensional: (frames, num_neurons, height, width).
+                The 1st dimension starts by showing all neural signals from a*c. As you go from 0 -> num_neurons - 1, it will start excluding the "top" remaining neuron
+                For example, at index 2, we are excluding the top 2 ranked neurons from positions a[:, 0] and a[:, 1].
+                The ranking is given by the ordering of neurons in "a" and "c".
         """
+
         self._a = a
         self._c = c
         # Check that both objects are on same device
         if self._a.device != self._c.device:
             raise ValueError(f"Spatial and Temporal matrices are not on same device")
         self._device = self._a.device
-        t = c.shape[0]
-        self._shape = (t, *fov_shape)
-        self.pixel_mat = np.arange(np.prod(self.shape[1:])).reshape(
-            [self.shape[1], self.shape[2]], order=order
-        )
+        num_frames = c.shape[0]
+        self._shape = (num_frames, *fov_shape)
+        self.pixel_mat = np.arange(np.prod(self.shape[-2:])).reshape([self.shape[-2], self.shape[-1]])
         self.pixel_mat = torch.from_numpy(self.pixel_mat).long().to(self.device)
-        self._order = order
+
 
     @property
     def device(self) -> str:
@@ -61,7 +62,7 @@ class ACArray(FactorizedVideo):
         returns the spatial components, where each component is a 2D image. output shape (fov dim1, fov dim 2, n_frames)
         """
         output = self.a.cpu().to_dense().numpy()
-        output = output.reshape((self.shape[1], self.shape[2], -1), order=self.order)
+        output = output.reshape((self.shape[-2], self.shape[-1], -1))
         return output
 
     def export_c(self) -> np.ndarray:
@@ -164,48 +165,42 @@ class ACArray(FactorizedVideo):
         if c_crop.ndim < self._c.ndim:
             c_crop = c_crop.unsqueeze(0)
 
+
         # Step 4: First do spatial subselection before multiplying by c
-        if isinstance(item, tuple) and check_spatial_crop_effect(
-            item[1:], self.shape[1:]
-        ):
+        if isinstance(item, tuple) and len(item) > 1:
+            spatial_indices = [1, 2]
+            spatial_crop_terms = []
+            for k in spatial_indices:
+                if len(item) > k:
+                    curr_item = item[k]
+                    if isinstance(curr_item, np.ndarray) and len(curr_item) == 1:
+                        curr_term = slice(int(curr_item), int(curr_item) + 1)
+                    elif isinstance(curr_item, np.integer):
+                        curr_term = slice(int(curr_item), int(curr_item) + 1)
+                    elif isinstance(curr_item, int):
+                        curr_term = slice(curr_item, curr_item + 1)
+                    else:
+                        curr_term = curr_item
+                    spatial_crop_terms.append(curr_term)
 
-            if isinstance(item[1], np.ndarray) and len(item[1]) == 1:
-                term_1 = slice(int(item[1]), int(item[1]) + 1)
-            elif isinstance(item[1], np.integer):
-                term_1 = slice(int(item[1]), int(item[1]) + 1)
-            elif isinstance(item[1], int):
-                term_1 = slice(item[1], item[1] + 1)
-            else:
-                term_1 = item[1]
-
-            if isinstance(item[2], np.ndarray) and len(item[2]) == 1:
-                term_2 = slice(int(item[2]), int(item[2]) + 1)
-            elif isinstance(item[2], np.integer):
-                term_2 = slice(int(item[2]), int(item[2]) + 1)
-            elif isinstance(item[2], int):
-                term_2 = slice(item[2], item[2] + 1)
-            else:
-                term_2 = item[2]
-
-            spatial_crop_terms = (term_1, term_2)
-
+            spatial_crop_terms = tuple(spatial_crop_terms)
             pixel_space_crop = self.pixel_mat[spatial_crop_terms]
-            a_indices = pixel_space_crop.flatten()
             implied_fov = pixel_space_crop.shape
-            a_crop = torch.index_select(self._a, 0, a_indices)
+            if implied_fov != self.pixel_mat.shape:
+                a_indices = pixel_space_crop.flatten()
+                a_crop = torch.index_select(self._a, 0, a_indices)
+            else:
+                a_crop = self._a
             product = torch.sparse.mm(a_crop, c_crop.T)
             product = product.reshape(implied_fov + (-1,))
             product = product.permute(-1, *range(product.ndim - 1))
+
         else:
             a_crop = self._a
-            implied_fov = self.shape[1], self.shape[2]
+            implied_fov = self.shape[-2], self.shape[-1]
             product = torch.sparse.mm(a_crop, c_crop.T)
-            if self.order == "F":
-                product = product.T.reshape((-1, implied_fov[1], implied_fov[0]))
-                product = product.permute((0, 2, 1))
-            else:  # order is "C"
-                product = product.reshape((implied_fov[0], implied_fov[1], -1))
-                product = product.permute(2, 0, 1)
+            product = product.reshape((implied_fov[0], implied_fov[1], -1))
+            product = product.permute(2, 0, 1)
 
         return product
 
