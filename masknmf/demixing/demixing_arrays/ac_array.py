@@ -21,10 +21,8 @@ class ACArray(FactorizedVideo):
             fov_shape (tuple): (fov_dim1, fov_dim2)
             a (torch.sparse_coo_tensor): Shape (pixels, components)
             c (torch.tensor). Shape (frames, components)
-            ranked_neuron_axis (bool): If this is true, the lazy array is 4-dimensional: (frames, num_neurons, height, width).
-                The 1st dimension starts by showing all neural signals from a*c. As you go from 0 -> num_neurons - 1, it will start excluding the "top" remaining neuron
-                For example, at index 2, we are excluding the top 2 ranked neurons from positions a[:, 0] and a[:, 1].
-                The ranking is given by the ordering of neurons in "a" and "c".
+            mask (torch.tensor). Shape (num_components). A mask of 1s and 0s indicating which neurons are actively displayed
+                (and which are effectively zerod out). Can be toggled
         """
 
         self._a = a
@@ -37,11 +35,19 @@ class ACArray(FactorizedVideo):
         self._shape = (num_frames, *fov_shape)
         self.pixel_mat = np.arange(np.prod(self.shape[-2:])).reshape([self.shape[-2], self.shape[-1]])
         self.pixel_mat = torch.from_numpy(self.pixel_mat).long().to(self.device)
-
+        self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
 
     @property
     def device(self) -> str:
         return self._device
+
+    @property
+    def mask(self) -> torch.tensor:
+        return self._mask
+
+    @mask.setter
+    def mask(self, new_mask: torch.tensor):
+        self._mask = new_mask.to(self.device).bool().to(self.c.dtype) #Ensures it's all 1s and 0s
 
     @property
     def c(self) -> torch.tensor:
@@ -165,6 +171,7 @@ class ACArray(FactorizedVideo):
         if c_crop.ndim < self._c.ndim:
             c_crop = c_crop.unsqueeze(0)
 
+        c_crop = c_crop * self._mask[None, :]
 
         # Step 4: First do spatial subselection before multiplying by c
         if isinstance(item, tuple) and len(item) > 1:
