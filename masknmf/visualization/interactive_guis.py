@@ -514,7 +514,6 @@ def quantile_segregated_signal_gui(ac_arr: masknmf.ACArray,
         colorful_arr_list.append(curr_colorful_ac)
 
 
-    print(len(ac_arr_list))
     rgb = [*[False for i in range(len(ac_arr_list))], *[True for i in range(len(ac_arr_list))]]
     iw = fpl.ImageWidget(data = [*ac_arr_list, *colorful_arr_list],
                          figure_shape = (2, len(ac_arr_list)),
