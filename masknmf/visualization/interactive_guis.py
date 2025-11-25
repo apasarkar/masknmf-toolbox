@@ -6,6 +6,7 @@ import fastplotlib as fpl
 from imgui_bundle import imgui
 from fastplotlib import ui
 import pygfx
+import torch
 from functools import partial
 from ipywidgets import VBox, HBox
 from collections import OrderedDict
@@ -14,7 +15,8 @@ from masknmf.utils import display
 from masknmf.demixing import DemixingResults
 from masknmf.compression import PMDArray
 from masknmf.demixing import InitializationResults
-
+from masknmf.demixing.demixing_arrays import ACArray, ColorfulACArray
+from masknmf.demixing.demixing_utils import brightness_order
 
 class ROIManager(ui.EdgeWindow):
     def __init__(self, figure, size):
@@ -492,6 +494,33 @@ def make_demixing_video(
 
     return iw
 
+def quantile_segregated_signal_gui(ac_arr: masknmf.ACArray,
+                                   partitions = 4) -> fpl.Figure:
+    brightness_ordering = brightness_order(ac_arr.a, ac_arr.c)
+    points = [int(i) for i in np.linspace(0, brightness_ordering.shape[0], partitions + 1)]
+    ac_arr_list = []
+    colorful_arr_list = []
+    for k in range(len(points) - 1):
+        start = points[k]
+        end = points[k+1]
+        current_subset = brightness_ordering[start:end]
+        curr_ac = ACArray(ac_arr.shape[1:], ac_arr.a, ac_arr.c)
+        curr_colorful_ac = ColorfulACArray(ac_arr.shape[1:], ac_arr.a, ac_arr.c)
+        curr_mask = torch.zeros_like(curr_ac.mask)
+        curr_mask[current_subset] = 1.0
+        curr_ac.mask = curr_mask
+        curr_colorful_ac.mask = curr_mask
+        ac_arr_list.append(curr_ac)
+        colorful_arr_list.append(curr_colorful_ac)
+
+
+    print(len(ac_arr_list))
+    rgb = [*[False for i in range(len(ac_arr_list))], *[True for i in range(len(ac_arr_list))]]
+    iw = fpl.ImageWidget(data = [*ac_arr_list, *colorful_arr_list],
+                         figure_shape = (2, len(ac_arr_list)),
+                         rgb = rgb)
+    iw.cmap = "gray"
+    return iw
 
 def visualize_superpixels_peaks(init_results: InitializationResults):
     superpixel_map = init_results.nmf_seed_map

@@ -4,7 +4,8 @@ from .interactive_guis import (
     get_correlation_widget,
     make_demixing_video,
     PMDWidget,
-    visualize_superpixels_peaks
+    visualize_superpixels_peaks,
+    quantile_segregated_signal_gui
 )
 from .plots import (
     construct_index,
