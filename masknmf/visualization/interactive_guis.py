@@ -78,7 +78,7 @@ class PMDWidget:
                                    figure_shape=(2, 3)
                                    )
 
-        self.image_graphics = [k for k in self.iw.managed_graphics]
+        self.image_graphics = [k for k in self.iw.graphics]
 
         self._fig_temporal = fpl.Figure(shape=(3, 1), names=["mcorr", "pmd", "residual"])
         self._mcorr_line = self.fig_temporal["mcorr"].add_line(np.zeros(self.pmd_stack.shape[0]))
