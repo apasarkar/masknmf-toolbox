@@ -208,7 +208,7 @@ class ColorfulACArray(FactorizedVideo):
 
             product = torch.stack(product_list, dim=3)
 
-        if len(item) == 4:
+        if isinstance(item, tuple) and len(item) == 4:
             product = product[..., item[3]] ##Apply the last crop
         return product
 
