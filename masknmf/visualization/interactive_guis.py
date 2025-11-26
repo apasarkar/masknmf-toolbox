@@ -62,7 +62,7 @@ class PMDWidget:
                                                                                             device=device)
         display('Residual Statistics: Complete')
         mcorr_name = "mcorr mean 0" if mean_subtract else "mcorr"
-        pmd_name = "pmd mean 0" if mean_subtract else "pmd"
+        pmd_name = "compressed mean 0" if mean_subtract else "compressed"
         self._iw = fpl.ImageWidget([self.comparison_stack,
                                     self.pmd_stack,
                                     self._residual_stack,
@@ -73,16 +73,16 @@ class PMDWidget:
                                           pmd_name,
                                           "residual",
                                           'mcorr lag1 acf',
-                                          'pmd lag1 acf',
+                                          'compressed lag1 acf',
                                           'resid lag1 acf'],
                                    figure_shape=(2, 3)
                                    )
 
         self.image_graphics = [k for k in self.iw.graphics]
 
-        self._fig_temporal = fpl.Figure(shape=(3, 1), names=["mcorr", "pmd", "residual"])
+        self._fig_temporal = fpl.Figure(shape=(3, 1), names=["mcorr", "compressed", "residual"])
         self._mcorr_line = self.fig_temporal["mcorr"].add_line(np.zeros(self.pmd_stack.shape[0]))
-        self._pmd_line = self.fig_temporal["pmd"].add_line(np.zeros(self.pmd_stack.shape[0]))
+        self._pmd_line = self.fig_temporal["compressed"].add_line(np.zeros(self.pmd_stack.shape[0]))
         self._resid_line = self.fig_temporal["residual"].add_line(np.zeros(self.pmd_stack.shape[0]))
 
         self._mcorr_selectors = list()
@@ -97,7 +97,7 @@ class PMDWidget:
         self._pmd_selectors.append(self._pmd_ls)
         self._residual_selectors.append(self._resid_ls)
 
-        self._iw.add_event_handler(self._sync_time, "current_index")
+        self._iw.add_event_handler(self._sync_time, "indices")
         self._moco_ls.add_event_handler(self._sync_time, "selection")
         self._pmd_ls.add_event_handler(self._sync_time, "selection")
         self._resid_ls.add_event_handler(self._sync_time, "selection")
@@ -258,7 +258,7 @@ class PMDWidget:
 
         residual_temporal = mcorr_temporal - pmd_temporal
         self.fig_temporal["mcorr"].graphics[0].data[:, 1] = mcorr_temporal
-        self.fig_temporal["pmd"].graphics[0].data[:, 1] = pmd_temporal
+        self.fig_temporal["compressed"].graphics[0].data[:, 1] = pmd_temporal
         self.fig_temporal["residual"].graphics[0].data[:, 1] = residual_temporal
 
         for subplot in self.fig_temporal:
