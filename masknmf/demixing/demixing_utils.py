@@ -30,7 +30,7 @@ def _max_ac_routine(a, c):
 def brightness_order(a, c):
     brightnesses = _max_ac_routine(a, c)
     idx_sort = torch.argsort(brightnesses, descending=True)
-    return idx_sort
+    return idx_sort, brightnesses
 
 def construct_graph_from_sparse_tensor(adj_tensor: torch.sparse_coo_tensor) -> nx.Graph:
     """

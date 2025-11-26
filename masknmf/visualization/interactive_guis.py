@@ -496,7 +496,7 @@ def make_demixing_video(
 
 def quantile_segregated_signal_gui(ac_arr: masknmf.ACArray,
                                    partitions = 4) -> fpl.Figure:
-    brightness_ordering = brightness_order(ac_arr.a, ac_arr.c)
+    brightness_ordering, _ = brightness_order(ac_arr.a, ac_arr.c)
     points = [int(i) for i in np.linspace(0, brightness_ordering.shape[0], partitions + 1)]
     ac_arr_list = []
     colorful_arr_list = []
