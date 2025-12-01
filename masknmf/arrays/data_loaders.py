@@ -58,26 +58,27 @@ class TiffArray(LazyFrameLoader):
 
     def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
         if isinstance(indices, int):
-            if self.memmap:
-                data = self.filename[indices].copy().squeeze()
-            else:
-                data = tifffile.imread(self.filename, key=[indices]).squeeze()
+            data = tifffile.imread(self.filename, key=[indices]).squeeze()
         elif isinstance(indices, list):
-            if self.memmap:
-                data = self.filename[indices].copy().squeeze()
-            else:
-                data = tifffile.imread(self.filename, key=indices).squeeze()
+            data = tifffile.imread(self.filename, key=indices).squeeze()
         else:
             indices_list = list(
                 range(
                     indices.start or 0, indices.stop or self.shape[0], indices.step or 1
                 )
             )
-            if self.memmap:
-                data = self.filename[indices_list].copy().squeeze()
-            else:
-                data = tifffile.imread(self.filename, key=indices_list).squeeze()
+            data = tifffile.imread(self.filename, key=indices_list).squeeze()
         return data.astype(self.dtype)
+
+    def __getitem__(
+            self,
+            item: Union[int, list, np.ndarray, slice, range, Tuple[Union[int, np.ndarray, slice, range]]],
+    ):
+        if self.memmap:
+            data = self.filename.__getitem__(item).copy()
+            return data.astype(self.dtype)
+        else:
+            return super().__getitem__(item)
 
 
 class Hdf5Array(LazyFrameLoader):
