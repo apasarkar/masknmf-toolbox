@@ -2086,7 +2086,7 @@ class InitializingState(SignalProcessingState):
     def results(self) -> InitializationResults | None:
         return self._init_results
 
-    def preview_demix(self) -> DemixingResults:
+    def preview_demix(self, carry_background: bool = True) -> DemixingResults:
         if self.results is None:
             raise ValueError("Results do not exist. Run initialize signals first.")
         else:  # Initiate state transition
