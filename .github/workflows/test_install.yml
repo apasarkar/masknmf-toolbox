@@ -44,7 +44,7 @@ jobs:
         env:
           GIT_LFS_SKIP_SMUDGE: 1
         run: |
-          uv sync --all-extras --no-binary
+          uv sync --all-extras
           uv run -m pytest tests
 
   conda-test:
@@ -68,7 +68,7 @@ jobs:
       - name: Install package & pytest
         shell: bash -l {0}
         run: |
-          pip install . pytest --no-binary :all:
+          pip install . pytest
 
       - name: Run tests
         shell: bash -l {0}
