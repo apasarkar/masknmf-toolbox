@@ -3011,7 +3011,7 @@ class DemixingState(SignalProcessingState):
             self.u_sparse,
             bg_subtract_temporal_basis,
             self.shape,
-            0,
+            1,
             self.robust_noise_term,
             order=self.data_order,
             batch_size=self.pixel_batch_size,

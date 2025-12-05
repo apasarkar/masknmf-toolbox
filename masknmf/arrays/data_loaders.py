@@ -6,7 +6,7 @@ from typing import *
 
 
 class TiffArray(LazyFrameLoader):
-    def __init__(self, filename):
+    def __init__(self, filename, memmap: bool = False):
         """
         TiffArray data loading object. Supports loading data from multipage tiff files.
 
@@ -14,7 +14,11 @@ class TiffArray(LazyFrameLoader):
             filename (str): Path to file
 
         """
-        self.filename = filename
+        self._memmap = memmap
+        if self.memmap:
+            self.filename = tifffile.memmap(filename)
+        else:
+            self.filename = filename
 
     @property
     def dtype(self) -> str:
@@ -30,12 +34,15 @@ class TiffArray(LazyFrameLoader):
         Tuple[int]
             (n_frames, dims_x, dims_y)
         """
-        with tifffile.TiffFile(self.filename) as tffl:
-            num_frames = len(tffl.pages)
-            for page in tffl.pages[0:1]:
-                image = page.asarray()
-            x, y = page.shape
-        return num_frames, x, y
+        if self.memmap:
+            return self.filename.shape
+        else:
+            with tifffile.TiffFile(self.filename) as tffl:
+                num_frames = len(tffl.pages)
+                for page in tffl.pages[0:1]:
+                    image = page.asarray()
+                x, y = page.shape
+            return num_frames, x, y
 
     @property
     def ndim(self) -> int:
@@ -44,6 +51,10 @@ class TiffArray(LazyFrameLoader):
             Number of dimensions
         """
         return len(self.shape)
+
+    @property
+    def memmap(self) -> bool:
+        return self._memmap
 
     def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
         if isinstance(indices, int):
@@ -58,6 +69,16 @@ class TiffArray(LazyFrameLoader):
             )
             data = tifffile.imread(self.filename, key=indices_list).squeeze()
         return data.astype(self.dtype)
+
+    def __getitem__(
+            self,
+            item: Union[int, list, np.ndarray, slice, range, Tuple[Union[int, np.ndarray, slice, range]]],
+    ):
+        if self.memmap:
+            data = self.filename.__getitem__(item).copy()
+            return data.astype(self.dtype)
+        else:
+            return super().__getitem__(item)
 
 
 class Hdf5Array(LazyFrameLoader):

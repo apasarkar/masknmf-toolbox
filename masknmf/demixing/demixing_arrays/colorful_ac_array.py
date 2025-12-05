@@ -93,7 +93,7 @@ class ColorfulACArray(FactorizedVideo):
     @property
     def shape(self) -> Tuple[int, int, int, int]:
         """
-        Array shape (n_frames, dims_x, dims_y)
+        Array shape (n_frames, dims_x, dims_y, 3)
         """
         return self._shape
 
@@ -103,6 +103,16 @@ class ColorfulACArray(FactorizedVideo):
         Number of dimensions
         """
         return len(self.shape)
+
+    def compute_mip(self) -> torch.tensor:
+        updated_coloring = self.colors * torch.amax(self.c, dim=0, keepdims = True).T #(num_neurons, 3)
+        updated_coloring = updated_coloring * self.mask[:, None].float()
+        mip_image = torch.sparse.mm(self.a, updated_coloring)
+        mip_image = mip_image.reshape(self.shape[1], self.shape[2], -1)
+        mip_image /= torch.amax(mip_image, dim=2, keepdim=True)
+        mip_image = torch.nan_to_num(mip_image, nan=0.0)
+        return mip_image
+
 
     def getitem_tensor(
         self,
@@ -208,7 +218,7 @@ class ColorfulACArray(FactorizedVideo):
 
             product = torch.stack(product_list, dim=3)
 
-        if len(item) == 4:
+        if isinstance(item, tuple) and len(item) == 4:
             product = product[..., item[3]] ##Apply the last crop
         return product
 

@@ -125,7 +125,6 @@ def evaluate_fitness(
 
     return torch.logical_and(spatial_decisions, temporal_decisions)
 
-
 def filter_by_failures(
         decisions: torch.tensor, max_consecutive_failures: int
 ) -> torch.tensor:
@@ -968,6 +967,17 @@ def blockwise_decomposition_with_rank_selection(
     )
 
     decisions = filter_by_failures(decisions, max_consecutive_failures)
+
+
+    ## Also eliminate bad components
+    std_dev = local_temporal_basis.std(dim=1)
+    nonzero_temporal = std_dev > 1e-6
+
+    std_dev = local_spatial_basis.std(dim=(0,1))
+    nonzero_spatial = std_dev > 1e-6
+
+    nonzero_comps = torch.logical_and(nonzero_temporal, nonzero_spatial)
+    decisions = torch.logical_and(decisions, nonzero_comps)
     return local_spatial_basis[:, :, decisions], local_temporal_basis[decisions, :]
 
 
@@ -1268,6 +1278,9 @@ def pmd_decomposition(
                 temporal_denoiser=temporal_denoiser,
                 device=device,
             )
+
+            if local_temporal_basis.shape[0] == 0:
+                continue
 
             total_temporal_fit.append(local_temporal_basis)
 

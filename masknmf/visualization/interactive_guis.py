@@ -6,6 +6,7 @@ import fastplotlib as fpl
 from imgui_bundle import imgui
 from fastplotlib import ui
 import pygfx
+import torch
 from functools import partial
 from ipywidgets import VBox, HBox
 from collections import OrderedDict
@@ -14,7 +15,8 @@ from masknmf.utils import display
 from masknmf.demixing import DemixingResults
 from masknmf.compression import PMDArray
 from masknmf.demixing import InitializationResults
-
+from masknmf.demixing.demixing_arrays import ACArray, ColorfulACArray
+from masknmf.demixing.demixing_utils import brightness_order
 
 class ROIManager(ui.EdgeWindow):
     def __init__(self, figure, size):
@@ -60,7 +62,7 @@ class PMDWidget:
                                                                                             device=device)
         display('Residual Statistics: Complete')
         mcorr_name = "mcorr mean 0" if mean_subtract else "mcorr"
-        pmd_name = "pmd mean 0" if mean_subtract else "pmd"
+        pmd_name = "compressed mean 0" if mean_subtract else "compressed"
         self._iw = fpl.ImageWidget([self.comparison_stack,
                                     self.pmd_stack,
                                     self._residual_stack,
@@ -71,16 +73,16 @@ class PMDWidget:
                                           pmd_name,
                                           "residual",
                                           'mcorr lag1 acf',
-                                          'pmd lag1 acf',
+                                          'compressed lag1 acf',
                                           'resid lag1 acf'],
                                    figure_shape=(2, 3)
                                    )
 
-        self.image_graphics = [k for k in self.iw.managed_graphics]
+        self.image_graphics = [k for k in self.iw.graphics]
 
-        self._fig_temporal = fpl.Figure(shape=(3, 1), names=["mcorr", "pmd", "residual"])
+        self._fig_temporal = fpl.Figure(shape=(3, 1), names=["mcorr", "compressed", "residual"])
         self._mcorr_line = self.fig_temporal["mcorr"].add_line(np.zeros(self.pmd_stack.shape[0]))
-        self._pmd_line = self.fig_temporal["pmd"].add_line(np.zeros(self.pmd_stack.shape[0]))
+        self._pmd_line = self.fig_temporal["compressed"].add_line(np.zeros(self.pmd_stack.shape[0]))
         self._resid_line = self.fig_temporal["residual"].add_line(np.zeros(self.pmd_stack.shape[0]))
 
         self._mcorr_selectors = list()
@@ -95,7 +97,7 @@ class PMDWidget:
         self._pmd_selectors.append(self._pmd_ls)
         self._residual_selectors.append(self._resid_ls)
 
-        self._iw.add_event_handler(self._sync_time, "current_index")
+        self._iw.add_event_handler(self._sync_time, "indices")
         self._moco_ls.add_event_handler(self._sync_time, "selection")
         self._pmd_ls.add_event_handler(self._sync_time, "selection")
         self._resid_ls.add_event_handler(self._sync_time, "selection")
@@ -256,7 +258,7 @@ class PMDWidget:
 
         residual_temporal = mcorr_temporal - pmd_temporal
         self.fig_temporal["mcorr"].graphics[0].data[:, 1] = mcorr_temporal
-        self.fig_temporal["pmd"].graphics[0].data[:, 1] = pmd_temporal
+        self.fig_temporal["compressed"].graphics[0].data[:, 1] = pmd_temporal
         self.fig_temporal["residual"].graphics[0].data[:, 1] = residual_temporal
 
         for subplot in self.fig_temporal:
@@ -492,6 +494,32 @@ def make_demixing_video(
 
     return iw
 
+def quantile_segregated_signal_gui(ac_arr: masknmf.ACArray,
+                                   partitions = 4) -> fpl.Figure:
+    brightness_ordering, _ = brightness_order(ac_arr.a, ac_arr.c)
+    points = [int(i) for i in np.linspace(0, brightness_ordering.shape[0], partitions + 1)]
+    ac_arr_list = []
+    colorful_arr_list = []
+    for k in range(len(points) - 1):
+        start = points[k]
+        end = points[k+1]
+        current_subset = brightness_ordering[start:end]
+        curr_ac = ACArray(ac_arr.shape[1:], ac_arr.a, ac_arr.c)
+        curr_colorful_ac = ColorfulACArray(ac_arr.shape[1:], ac_arr.a, ac_arr.c)
+        curr_mask = torch.zeros_like(curr_ac.mask)
+        curr_mask[current_subset] = 1.0
+        curr_ac.mask = curr_mask
+        curr_colorful_ac.mask = curr_mask
+        ac_arr_list.append(curr_ac)
+        colorful_arr_list.append(curr_colorful_ac)
+
+
+    rgb = [*[False for i in range(len(ac_arr_list))], *[True for i in range(len(ac_arr_list))]]
+    iw = fpl.ImageWidget(data = [*ac_arr_list, *colorful_arr_list],
+                         figure_shape = (2, len(ac_arr_list)),
+                         rgb = rgb)
+    iw.cmap = "gray"
+    return iw
 
 def visualize_superpixels_peaks(init_results: InitializationResults):
     superpixel_map = init_results.nmf_seed_map
