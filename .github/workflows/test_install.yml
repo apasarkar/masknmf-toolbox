@@ -44,7 +44,7 @@ jobs:
         env:
           GIT_LFS_SKIP_SMUDGE: 1
         run: |
-          uv sync --all-extras --pip-args="--no-binary=:all:"
+          uv sync --all-extras --no-binary
           uv run -m pytest tests
 
   conda-test:
