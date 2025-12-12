@@ -2,14 +2,14 @@ import torch
 from warnings import warn
 
 def torch_select_device(device: str = "auto", log_warning: bool = True) -> str:
-    if device == "cpu":
+    if device.startswith("cpu"):  # seems like "cpu:<index>" is also a valid device, maybe for multi-CPU setups
         if log_warning:
             warn(
                 "You've explicitly selected to perform computations on the cpu, "
                 "performance will be significantly slower"
             )
 
-    elif device == "cuda":
+    elif device.startswith("cuda"):
         if not torch.cuda.is_available():
             raise ValueError(f"You specified a 'cuda' device but no cuda device is available.\n"
                              f"Do you have a device that supports CUDA? Are nvidia drivers installed? "
@@ -26,7 +26,4 @@ def torch_select_device(device: str = "auto", log_warning: bool = True) -> str:
                     "performance will be significantly slower"
                 )
 
-    else:
-        raise ValueError(f"device must be one of: ['auto', 'cuda', 'cpu'], you have passed: {device}")
-
-    return device
+    return torch.device(device)
