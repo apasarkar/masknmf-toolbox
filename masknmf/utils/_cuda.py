@@ -1,7 +1,10 @@
 import torch
 from warnings import warn
 
-def torch_select_device(device: str = "auto", log_warning: bool = True) -> str:
+def torch_select_device(device: str | torch.device = "auto", log_warning: bool = True) -> str:
+    if isinstance(device, torch.device):
+        return device
+        
     if device.startswith("cpu"):  # seems like "cpu:<index>" is also a valid device, maybe for multi-CPU setups
         if log_warning:
             warn(
