@@ -35,6 +35,7 @@ jobs:
         shell: pwsh
         run: |
           $env:GIT_LFS_SKIP_SMUDGE = "1"
+          uv venv
           uv pip install -e ".[dev]"
           uv run -m pytest tests
 
@@ -44,6 +45,7 @@ jobs:
         env:
           GIT_LFS_SKIP_SMUDGE: 1
         run: |
+          uv venv
           uv pip install -e ".[dev]"
           uv run -m pytest tests
 
