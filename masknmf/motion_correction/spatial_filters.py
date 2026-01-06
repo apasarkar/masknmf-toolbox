@@ -54,9 +54,10 @@ def gaussian_kernel(kernel_size: int = 3, sigma: float = 1.0) -> torch.tensor:
     return kernel
 
 
-def image_filter(frames: torch.tensor, kernel: torch.tensor) -> torch.tensor:
+def image_filter(frames: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
     """
-    Generic Image filter function; given a kernel an image stack, convolve every image with the kernel.
+    Generic Image filter function; given a kernel and an image stack,
+    convolve every image with the kernel using reflect padding.
 
     Args:
         frames (torch.Tensor): Shape (num_frames, fov_dim1, fov_dim2)
@@ -69,16 +70,29 @@ def image_filter(frames: torch.tensor, kernel: torch.tensor) -> torch.tensor:
     num_frames, fov_dim1, fov_dim2 = frames.shape
     kH, kW = kernel.shape
 
-    # Reshape frames to fit conv2d input format: (batch=frames, channels=1, height, width)
-    frames = frames.unsqueeze(1)  # Shape: (num_frames, 1, fov_dim1, fov_dim2)
+    # Reshape frames to (batch, channels, height, width)
+    frames = frames.unsqueeze(1)  # (num_frames, 1, H, W)
 
-    # Reshape kernel to fit conv2d weight format: (out_channels=1, in_channels=1, kH, kW)
-    kernel = kernel.unsqueeze(0).unsqueeze(0)  # Shape: (1, 1, kH, kW)
+    # Reshape kernel to (out_channels, in_channels, kH, kW)
+    kernel = kernel.unsqueeze(0).unsqueeze(0)  # (1, 1, kH, kW)
 
-    # Apply convolution (padding='same' ensures output size matches input size)
+    # Compute padding for "same" output size
+    pad_h = kH // 2
+    pad_w = kW // 2
+
+    # Reflect padding (OpenCV BORDER_REFLECT-style)
+    frames = torch.nn.functional.pad(
+        frames,
+        pad=(pad_w, pad_w, pad_h, pad_h),
+        mode="reflect"
+    )
+
+    # Convolution (no padding here)
     convolved_frames = torch.nn.functional.conv2d(
-        frames, kernel, padding="same"
-    )  # Shape: (num_frames, 1, fov_dim1, fov_dim2)
+        frames,
+        kernel,
+        padding=0
+    )  # (num_frames, 1, H, W)
 
     # Remove channel dimension
-    return convolved_frames.squeeze(1)  # Shape: (num_frames, fov_dim1, fov_dim2)
+    return convolved_frames.squeeze(1)
