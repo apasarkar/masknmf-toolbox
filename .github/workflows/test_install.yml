@@ -35,7 +35,7 @@ jobs:
         shell: pwsh
         run: |
           $env:GIT_LFS_SKIP_SMUDGE = "1"
-          uv sync --only-binary :all: --all-extras
+          uv pip install -e ".[dev]"
           uv run -m pytest tests
 
       - name: UV sync (Unix)
@@ -44,7 +44,7 @@ jobs:
         env:
           GIT_LFS_SKIP_SMUDGE: 1
         run: |
-          uv sync --only-binary :all: --all-extras
+          uv pip install -e ".[dev]"
           uv run -m pytest tests
 
   conda-test:
