@@ -31,7 +31,7 @@ dependencies = [
     "fastplotlib[imgui,notebook]==0.6.1",
     "simplejpeg",
     "PyQt6",
-    "pyside6"
+    "glfw"
 ]
 
 [project.optional-dependencies]
