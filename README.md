@@ -13,7 +13,7 @@ PyTorch implementation of the masknmf framework for {calcium, voltage, glutamate
 
 ## Installation
  
-Tests are run against Python 3.11 and 3.12, on Linux and Windows using `pip` and `miniforge3`.
+Tests are run against Python 3.12 and 3.13, on Linux and Windows using `pip` and `miniforge3`.
 
 ### Download the repository
 
