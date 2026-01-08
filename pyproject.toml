@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "masknmf pipeline for motion correction, denoising, compression, and demixing of functional neuroimaging data"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.11, <3.13"  # ">=3.10"
+requires-python = ">=3.11, <3.14"  # ">=3.10"
 authors = [
     { name = "Amol Pasarkar" },
 ]
@@ -30,6 +30,7 @@ dependencies = [
     "tensorboard>=2.20.0",
     "fastplotlib[imgui,notebook]==0.6.1",
     "simplejpeg",
+    "glfw"
 ]
 
 [project.optional-dependencies]
