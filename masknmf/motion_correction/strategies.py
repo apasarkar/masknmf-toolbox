@@ -334,7 +334,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
         self._overlaps = overlaps
         self._max_rigid_shifts = max_rigid_shifts
         self._max_deviation_rigid = max_deviation_rigid
-        self._pixel_weighting = torch.from_numpy(pixel_weighting).float() if pixel_weighting is not None else None
+        self._pixel_weighting = pixel_weighting.astype('float') if pixel_weighting is not None else None
 
     @property
     def num_blocks(self) -> tuple[int, int]:
