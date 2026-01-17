@@ -917,29 +917,61 @@ def register_frames_pwrigid(
         ) if patched_weights is not None else None,
     )
 
-    patched_target_data = apply_rigid_shifts(patched_target_data.reshape(-1, patches[0], patches[1]),
-                                       lowrank_patchwise_rigid_shifts.reshape(-1, 2))
-    patched_target_data = interpolate_to_border(patched_target_data,
-                                          lowrank_patchwise_rigid_shifts.reshape(-1, 2))
+    lowrank_patchwise_rigid_shifts = lowrank_patchwise_rigid_shifts.reshape(num_frames, patch_grid_dim1, patch_grid_dim2, 2)
 
-    ## Multiply each patch by the interpolation matrix
-    patched_target_data *= interpolation_weighting[None,...]
+    shift_field_lr = lowrank_patchwise_rigid_shifts.permute(0, 3, 1, 2)
 
-    ## Reshape everything to (num_frames, num_patches_dim0, num_patches_dim1, patch_height, patch_width)
-    patched_target_data = patched_target_data.reshape(num_frames, patch_grid_dim1, patch_grid_dim2, patches[0], patches[1])
-
-    interpolation_patches = torch.zeros(1, patch_grid_dim1, patch_grid_dim2, patches[0], patches[1], device=device)
-    interpolation_patches += interpolation_weighting[None, None, None, :, :]
-
-    ## Now efficiently scatter this data back to (num_frames, fov_dim1, fov_dim2) data
-    pwrigid_results = scatter_patches_to_fov(patched_target_data, dim1_start_pts, dim2_start_pts, (fov_dim1, fov_dim2))
-
-    pwrigid_net_weightings = scatter_patches_to_fov(interpolation_patches, dim1_start_pts, dim2_start_pts, (fov_dim1, fov_dim2))
-
-    return torch.nan_to_num(pwrigid_results / pwrigid_net_weightings, nan=0.0), lowrank_patchwise_rigid_shifts.reshape(
-        num_frames, patch_grid_dim1, patch_grid_dim2, 2
+    # Upsample to full resolution
+    shift_field_hr = torch.nn.functional.interpolate(
+        shift_field_lr,
+        size=(fov_dim1, fov_dim2),
+        mode="bilinear",
+        align_corners=True,
     )
 
+    # (N, H, W, 2)  still in pixel units (dy, dx)
+    shift_field_hr = shift_field_hr.permute(0, 2, 3, 1)
+
+    yy, xx = torch.meshgrid(
+        torch.linspace(-1, 1, fov_dim1, device=device),
+        torch.linspace(-1, 1, fov_dim2, device=device),
+        indexing="ij",
+    )
+    base_grid = torch.stack((xx, yy), dim=-1)  # (H, W, 2)
+
+    # -----------------------
+    # Convert pixel shifts -> normalized shifts
+    # -----------------------
+    shift_field_hr_norm = torch.empty_like(shift_field_hr)
+
+    # x displacement
+    shift_field_hr_norm[..., 0] = (
+            shift_field_hr[..., 1] * 2 / (fov_dim2 - 1)
+    )
+    # y displacement
+    shift_field_hr_norm[..., 1] = (
+            shift_field_hr[..., 0] * 2 / (fov_dim1 - 1)
+    )
+
+    sampling_grid = base_grid[None, ...] - shift_field_hr_norm
+
+    # -----------------------
+    # Warp once per frame
+    # -----------------------
+    registered_frames = torch.nn.functional.grid_sample(
+        target_frames[:, None, :, :],  # (N,1,H,W)
+        sampling_grid,
+        mode="bilinear",
+        padding_mode="border",
+        align_corners=True,
+    ).squeeze(1)
+
+    return (
+        registered_frames,
+        lowrank_patchwise_rigid_shifts.reshape(
+            num_frames, patch_grid_dim1, patch_grid_dim2, 2
+        ),
+    )
 
 def compute_pwrigid_patch_midpoints(num_blocks, overlaps, fov_height, fov_width):
     """
