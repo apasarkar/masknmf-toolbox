@@ -2086,6 +2086,27 @@ class InitializingState(SignalProcessingState):
     def results(self) -> InitializationResults | None:
         return self._init_results
 
+    def preview_demix(self, carry_background: bool = True) -> DemixingResults:
+        if self.results is None:
+            raise ValueError("Results do not exist. Run initialize signals first.")
+        else:  # Initiate state transition
+            if carry_background:
+                background_term = self.factorized_ring_term
+            else:
+                background_term = None
+            ds = DemixingState(
+                self.pmd_obj,
+                self.results,
+                (self.d1, self.d2, self.T),
+                factorized_ring_term=background_term,
+                data_order=self.data_order,
+                device=self.device,
+                frame_batch_size=self.frame_batch_size,
+                robust_noise_term=self.robust_noise_term
+            )
+
+            return ds.demix(maxiter=5)
+
     def lock_results_and_continue(
             self, context: SignalDemixer, carry_background: bool = True
     ):
