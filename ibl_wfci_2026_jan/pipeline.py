@@ -5,6 +5,10 @@ import sys
 from typing import *
 import argparse
 from scipy.interpolate import interp1d
+import numpy as np
+import wfield
+import math
+from tqdm import tqdm
 
 class ucla_wf_singlechannel(masknmf.ArrayLike):
     def __init__(self,
@@ -13,10 +17,10 @@ class ucla_wf_singlechannel(masknmf.ArrayLike):
                  channel: int = 0,
                  mask: Optional[np.ndarray] = None,
                  num_frames: Optional[int] = None):
+        # print(f"type of my_memmap is {type(my_memmap)}")
         self._channel = channel
         self._dtype = dtype
         self._mmap = my_memmap[:num_frames] if num_frames is not None else my_memmap
-        frames = self._mmap.shape[0]
         self._shape = (self._mmap.shape[0], self._mmap.shape[2], self._mmap.shape[3])
         self._mask = mask.astype(dtype) if mask is not None else None
 
@@ -33,7 +37,16 @@ class ucla_wf_singlechannel(masknmf.ArrayLike):
         return 3
 
     def __getitem__(self, item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> np.ndarray:
-        return self._mmap[item].copy()
+        # return self._mmap[item].copy()
+        if isinstance(item, (int, slice, np.ndarray, range)):
+            return np.asarray(self._mmap[item, self._channel, :, :]).copy()
+        elif isinstance(item, list) or isinstance(item, tuple):
+            if len(item) == 1:
+                return np.asarray(self._mmap[item[0], self._channel, :, :]).copy()
+            elif len(item) == 2:
+                return np.asarray(self._mmap[item[0], self._channel, item[1], :]).copy()
+            elif len(item) == 3:
+                return np.asarray(self._mmap[item[0], self._channel, item[1], item[2]]).copy()
 
 
 def per_pixel_lstsq(u_gcamp: torch.sparse_coo_tensor,
@@ -90,8 +103,7 @@ def hemocorr_basis(blood_basis,
                    device='cpu'):
     return gcamp_basis.to(device) - blood_basis.to(device)
 
-def hemocorr_pipeline(bin_file_path: str,
-                      mask_file_path: str,
+def hemocorr_pipeline(bin_folder: str,
                       out_folder: str,
                       num_frames_used: Optional[int] = None,
                       block_size_dim1: int=100,
@@ -103,13 +115,17 @@ def hemocorr_pipeline(bin_file_path: str,
                       frame_batch_size: int=1000):
 
     out_save_dir = os.path.abspath(out_folder)
-    data_path = os.path.abspath(bin_file_path)
+    data_path = os.path.abspath(bin_folder)
     video_obj = wfield.load_stack(data_path, nchannels=2)
-    mask = np.load(os.path.abspath(mask_file_path)).astype('float')
+    mask = np.load(os.path.join(data_path, 'manual_mask.npy')).astype('float')
 
     if num_frames_used is None:
         num_frames_used = video_obj.shape[0]
-
+    else:
+        num_frames_used = int(num_frames_used)
+    #
+    # print(f"{num_frames_used}")
+    # print(f"{type(num_frames_used)}")
     gcamp_channel = ucla_wf_singlechannel(video_obj,
                                           channel=0,
                                           mask=mask,
@@ -147,25 +163,25 @@ def hemocorr_pipeline(bin_file_path: str,
     pmd_blood = blood_strat.compress()
 
     blood_indices = np.array([i*2+1 for i in range(pmd_blood.shape[0])])
-    gcamp_indices = np.arrar([i*2 for i in range(pmd_gcamp.shape[0])])
+    gcamp_indices = np.array([i*2 for i in range(pmd_gcamp.shape[0])])
 
     v_hemo_interp = interp1d(blood_indices,
                              pmd_blood.v.cpu().numpy(),
                              axis=1,
                              fill_value='extrapolate')(gcamp_indices)
 
-    v_hemo_interp = torch.from_numpy(v_hemo_interp).to(pmd_blood.device)
+    v_hemo_interp = torch.from_numpy(v_hemo_interp).to(pmd_blood.v.dtype)
 
     regression_coefficients = per_pixel_lstsq(pmd_gcamp.u,
                                               pmd_blood.u,
                                               pmd_gcamp.v,
-                                              v_hemo_interp.v,
+                                              v_hemo_interp,
                                               batch_size=300,
                                               device='cuda')
 
     blood_basis = compute_blood_basis(pmd_gcamp.u,
                                       pmd_gcamp.u_local_projector,
-                                      pmd_hemo.u,
+                                      pmd_blood.u,
                                       v_hemo_interp,
                                       regression_coefficients,
                                       device='cpu')
@@ -193,17 +209,16 @@ def hemocorr_pipeline(bin_file_path: str,
 
 if __name__ == "__main__":
     config_dict = {
-        'bin_file_path': '/path/to/data/frames.bin',
-        'mask_file_path': '/path/to/mask/file/',
-        'num_frames_used': None,
+        'bin_folder': '/path/to/data/frames.bin',
         'out_folder': '/path/to/output/folder/',
+        'num_frames_used': None,
         'block_size_dim1': 100,
         'block_size_dim2': 100,
         'max_components': 20,
         'max_consecutive_failures': 1,
         'spatial_avg_factor': 1,
         'temporal_avg_factor': 1,
-        'frame_batch_size': 1024,
+        'frame_batch_size': 200,
     }
 
     parser = argparse.ArgumentParser()

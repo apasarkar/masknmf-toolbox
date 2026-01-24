@@ -9,6 +9,10 @@ What did I do:
 4. Test/update the dataloaders. Looks like it works well.
 5. Figure out how the masking works. This time we make two standard deviation images, one on the blood channel and another on the gcamp channel, and we do a logical_or operationt to fuse these into one final mask.
 6. version_controlled in a dedicated branch
+7. Run hemocorrection pipeline on this data
 
-Next Tasks:
-1. Make a new hemocorrection pipeline and run it on this data. 
+
+Conventions for running the pipeline script: 
+- We assume that the folder containing the motion corrected .bin stack is the same folder that contains the mask. Furthermore, the mask file is named manual_mask.npy.
+- The bin_folder parameter for this script is the folder containing the .bin file (and the mask)
+- Note the larger block size values (100 x 100) here
