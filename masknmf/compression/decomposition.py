@@ -954,6 +954,8 @@ def blockwise_decomposition_with_rank_selection(
         spatial_denoiser: Optional[torch.nn.Module] = None,
         temporal_denoiser: Optional[torch.nn.Module] = None,
         device: str = "cpu",
+        subset_mean: Optional[torch.tensor] = None,
+        subset_noise_std: Optional[torch.tensor] = None
 ):
     local_spatial_basis, local_temporal_basis, subset_mean, subset_noise_std = blockwise_decomposition(
         video_subset,
@@ -965,6 +967,8 @@ def blockwise_decomposition_with_rank_selection(
         spatial_denoiser=spatial_denoiser,
         temporal_denoiser=temporal_denoiser,
         device=device,
+        subset_mean=subset_mean,
+        subset_noise_std=subset_noise_std
     )
 
     decisions = evaluate_fitness(
@@ -1166,7 +1170,11 @@ def pmd_decomposition(
     overlap = [math.ceil(block_sizes[0] / 2), math.ceil(block_sizes[1] / 2)]
 
     dataset_mean = torch.zeros(dataset.shape[1], dataset.shape[2]).to(device).to(dtype)
-    dataset_noise_std = torch.zeros(dataset.shape[1], dataset.shape[2]).to(device).to(dtype)
+
+    if not compute_normalizer:
+        dataset_noise_std = torch.ones(dataset.shape[1], dataset.shape[2]).to(device).to(dtype)
+    else:
+        dataset_noise_std = torch.zeros(dataset.shape[1], dataset.shape[2]).to(device).to(dtype)
 
     display("Loading data to estimate complete spatial basis")
 
@@ -1281,6 +1289,7 @@ def pmd_decomposition(
                 spatial_denoiser=spatial_denoiser,
                 temporal_denoiser=temporal_denoiser,
                 device=device,
+                subset_noise_std=dataset_noise_std[slice_dim1, slice_dim2] if not compute_normalizer else None
             )
 
             dataset_mean[slice_dim1, slice_dim2] = subset_mean
