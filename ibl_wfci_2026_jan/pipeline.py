@@ -105,6 +105,7 @@ def hemocorr_basis(blood_basis,
 
 def hemocorr_pipeline(bin_folder: str,
                       out_folder: str,
+                      functional_channel: int = 0,
                       num_frames_used: Optional[int] = None,
                       block_size_dim1: int=100,
                       block_size_dim2: int=100,
@@ -123,17 +124,19 @@ def hemocorr_pipeline(bin_folder: str,
         num_frames_used = video_obj.shape[0]
     else:
         num_frames_used = int(num_frames_used)
+    functional_channel = int(functional_channel)
     #
     # print(f"{num_frames_used}")
     # print(f"{type(num_frames_used)}")
     gcamp_channel = ucla_wf_singlechannel(video_obj,
-                                          channel=0,
+                                          channel=functional_channel,
                                           mask=mask,
                                           num_frames=num_frames_used)
     blood_channel = ucla_wf_singlechannel(video_obj,
-                                          channel=1,
+                                          channel=1 - functional_channel,
                                           mask=mask,
                                           num_frames=num_frames_used)
+    print(f"functional channel is {functional_channel}")
 
     block_sizes = [block_size_dim1, block_size_dim2]
     gcamp_strat = masknmf.CompressDenoiseStrategy(gcamp_channel,
@@ -162,8 +165,8 @@ def hemocorr_pipeline(bin_folder: str,
 
     pmd_blood = blood_strat.compress()
 
-    blood_indices = np.array([i*2+1 for i in range(pmd_blood.shape[0])])
-    gcamp_indices = np.array([i*2 for i in range(pmd_gcamp.shape[0])])
+    blood_indices = np.array([i*2+(1 - functional_channel) for i in range(pmd_blood.shape[0])])
+    gcamp_indices = np.array([i*2 + functional_channel for i in range(pmd_gcamp.shape[0])])
 
     v_hemo_interp = interp1d(blood_indices,
                              pmd_blood.v.cpu().numpy(),
@@ -211,6 +214,7 @@ if __name__ == "__main__":
     config_dict = {
         'bin_folder': '/path/to/data/frames.bin',
         'out_folder': '/path/to/output/folder/',
+        'functional_channel': 0,
         'num_frames_used': None,
         'block_size_dim1': 100,
         'block_size_dim2': 100,
