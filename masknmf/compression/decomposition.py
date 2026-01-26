@@ -755,10 +755,10 @@ def blockwise_decomposition(
         temporal_denoiser: Optional[Callable] = None,
         device: str = "cpu",
         subset_mean: Optional[torch.tensor] = None,
-        subset_noise_variance: Optional[torch.tensor] = None
+        subset_noise_std: Optional[torch.tensor] = None
 ) -> Tuple[torch.tensor, torch.tensor, torch.tensor, torch.tensor]:
 
-    first_spatial, first_temporal, subset_mean, subset_noise_variance = blockwise_decomposition_singlepass(video_subset,
+    first_spatial, first_temporal, subset_mean, subset_noise_std = blockwise_decomposition_singlepass(video_subset,
                                                                        subset_pixel_weighting,
                                                                        max_components,
                                                                        spatial_avg_factor,
@@ -768,9 +768,9 @@ def blockwise_decomposition(
                                                                        temporal_denoiser=temporal_denoiser,
                                                                        device=device,
                                                                        subset_mean=subset_mean,
-                                                                       subset_noise_variance=subset_noise_variance)
+                                                                       subset_noise_std=subset_noise_std)
 
-    return first_spatial, first_temporal, subset_mean, subset_noise_variance
+    return first_spatial, first_temporal, subset_mean, subset_noise_std
     # Below is an experimental rank-1 deflation procedure
     #
     # else:
@@ -822,7 +822,7 @@ def blockwise_decomposition_singlepass(
         temporal_denoiser: Optional[Callable] = None,
         device: str = "cpu",
         subset_mean: Optional[torch.tensor] = None,
-        subset_noise_variance: Optional[torch.tensor] = None,
+        subset_noise_std: Optional[torch.tensor] = None,
 ) -> Tuple[torch.tensor, torch.tensor, torch.tensor, torch.tensor]:
     num_frames, fov_dim1, fov_dim2 = video_subset.shape
     empty_values = torch.zeros((fov_dim1, fov_dim2, 1), device=device, dtype=dtype), torch.zeros((1, num_frames),
@@ -834,14 +834,14 @@ def blockwise_decomposition_singlepass(
         subset_mean = subset.mean(dim = 0)
     subset = subset - subset_mean.to(device).to(dtype)[None, :, :]
 
-    if subset_noise_variance is None:
-        subset_noise_variance = ((torch.sum(subset ** 2, dim=0) / num_frames) -
+    if subset_noise_std is None:
+        subset_noise_std = ((torch.sum(subset ** 2, dim=0) / num_frames) -
                       (torch.sum(subset[1:, :, :] * subset[:-1, :, :], dim=0)) / (num_frames - 1))
-        subset_noise_variance[subset_noise_variance < 1e-8] = 0.0 #Avoid division errors
-        subset_noise_variance = torch.sqrt(subset_noise_variance)
-        subset_noise_variance[subset_noise_variance < 1e-8] = 1.0
+        subset_noise_std[subset_noise_std < 1e-8] = 0.0 #Avoid division errors
+        subset_noise_std = torch.sqrt(subset_noise_std)
+        subset_noise_std[subset_noise_std < 1e-8] = 1.0
 
-    subset /= subset_noise_variance.to(device).to(dtype)[None, :, :]
+    subset /= subset_noise_std.to(device).to(dtype)[None, :, :]
 
     subset = subset.permute(1, 2, 0)
     subset_weighted = subset * subset_pixel_weighting.to(device).to(dtype)[:, :, None]
@@ -932,7 +932,7 @@ def blockwise_decomposition_singlepass(
         else:
             local_temporal_basis -= torch.mean(local_temporal_basis, dim=1, keepdims=True)
 
-    return local_spatial_basis, local_temporal_basis, subset_mean, subset_noise_variance
+    return local_spatial_basis, local_temporal_basis, subset_mean, subset_noise_std
 
 def residual_std_calculation(spatial_decomposition: torch.tensor,
                              temporal_decomposition: torch.tensor,
@@ -1050,7 +1050,7 @@ def threshold_heuristic(
             temporal_denoiser=temporal_denoiser,
             device=device,
             subset_mean=sim_mean,
-            subset_noise_variance=sim_noise_normalizer
+            subset_noise_std=sim_noise_normalizer
         )
 
         spatial_stat = spatial_roughness_statistic(spatial)
@@ -1267,7 +1267,7 @@ def pmd_decomposition(
                 unweighted_local_spatial_basis,
                 local_temporal_basis,
                 subset_mean,
-                subset_noise_variance
+                subset_noise_std
             ) = blockwise_decomposition_with_rank_selection(
                 current_data_for_fit,
                 pixel_weighting[slice_dim1, slice_dim2],
@@ -1284,7 +1284,7 @@ def pmd_decomposition(
             )
 
             dataset_mean[slice_dim1, slice_dim2] = subset_mean
-            dataset_noise_std[slice_dim1, slice_dim2] = subset_noise_variance
+            dataset_noise_std[slice_dim1, slice_dim2] = subset_noise_std
 
             if local_temporal_basis.shape[0] == 0:
                 continue
