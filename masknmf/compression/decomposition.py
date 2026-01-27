@@ -871,7 +871,7 @@ def blockwise_decomposition_singlepass(
         spatiotemporal_pooled_subset_r, max_components, device=device
     )
     if torch.count_nonzero(interm_sing_values) == 0:
-        return empty_values
+        return empty_values[0], empty_values[1], subset_mean, subset_noise_std
 
     temporal_projection_from_downsample = (
             lowres_spatial_basis_r.T @ spatial_pooled_subset_r
@@ -882,7 +882,7 @@ def blockwise_decomposition_singlepass(
         )
     std_values = torch.std(temporal_projection_from_downsample, dim=1)
     if torch.count_nonzero(std_values) == 0:
-        return empty_values
+        return empty_values[0], empty_values[1], subset_mean, subset_noise_std
     else:
         temporal_projection_from_downsample = temporal_projection_from_downsample[std_values != 0]
 
@@ -905,7 +905,7 @@ def blockwise_decomposition_singlepass(
         spatial_basis_fullres, full_matrices=False
     )
     if torch.count_nonzero(interm_sing_vals) == 0:
-        return empty_values
+        return empty_values[0], empty_values[1], subset_mean, subset_noise_std
     else:
         spatial_basis_orthogonal = spatial_basis_orthogonal[:, interm_sing_vals != 0]
 
@@ -914,7 +914,7 @@ def blockwise_decomposition_singlepass(
     final_temporal_projection = spatial_basis_orthogonal.T @ subset_r
     left, sing, right = torch.linalg.svd(final_temporal_projection, full_matrices=False)
     if torch.count_nonzero(sing) == 0:
-        return empty_values
+        return empty_values[0], empty_values[1], subset_mean, subset_noise_std
     else:
         indices_to_keep = sing != 0
         left = left[:, indices_to_keep]
@@ -928,7 +928,7 @@ def blockwise_decomposition_singlepass(
     if temporal_denoiser is not None:
         local_temporal_basis = temporal_denoiser(local_temporal_basis)
         if torch.count_nonzero(local_temporal_basis) == 0:
-            return empty_values
+            return empty_values[0], empty_values[1], subset_mean, subset_noise_std
         else:
             local_temporal_basis -= torch.mean(local_temporal_basis, dim=1, keepdims=True)
 
