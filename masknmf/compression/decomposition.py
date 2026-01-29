@@ -941,6 +941,72 @@ def residual_std_calculation(spatial_decomposition: torch.tensor,
     resid = data_block - output.permute(2, 0, 1)
     return torch.std(resid, dim = 0)
 
+
+def bcv_rank_selection_randomized_vectorized(
+    Y: torch.Tensor,
+    max_components: int,
+    n_splits: int = 10,
+    row_frac: float = 0.8,
+    col_frac: float = 0.8,
+    num_oversamples: int = 5,
+    device: str = "cuda",
+):
+    """
+    Bi-cross-validation rank selection using randomized SVD.
+    Fully vectorized across candidate ranks.
+    """
+    Y = Y.to(device)
+    n_rows, n_cols = Y.shape
+    errors = torch.zeros((n_splits, max_components), device=device)
+
+    for s in range(n_splits):
+        # --- random splits ---
+        row_perm = torch.randperm(n_rows, device=device)
+        col_perm = torch.randperm(n_cols, device=device)
+
+        r_cut = int(row_frac * n_rows)
+        c_cut = int(col_frac * n_cols)
+
+        r1, r2 = row_perm[:r_cut], row_perm[r_cut:]
+        c1, c2 = col_perm[:c_cut], col_perm[c_cut:]
+
+        Y11 = Y[r1][:, c1]
+        Y12 = Y[r1][:, c2]
+        Y21 = Y[r2][:, c1]
+        Y22 = Y[r2][:, c2]
+
+        # --- randomized SVD of Y11 ---
+        U, S, V = truncated_random_svd(
+            Y11,
+            rank=max_components,
+            num_oversamples=num_oversamples,
+            device=device,
+        )
+        # U: (|r1|, K), S: (K,), V: (K, |c1|)
+
+        # Precompute terms
+        UtY12 = U.T @ Y12          # (K, |c2|)
+        Y21V = Y21 @ V.T           # (|r2|, K)
+
+        # --- vectorized rank-1 outer products ---
+        # Y21V / S: (|r2|, K)
+        scaled_Y21V = Y21V / S[None, :]   # broadcast
+        # UtY12: (K, |c2|)
+
+        # For rank-1..K predictions, use cumulative sum of outer products
+        # scaled_Y21V[:,:,None] * UtY12[:,None,:] -> (|r2|, K, |c2|)
+        # cumsum along K dimension
+        outer_products = scaled_Y21V[:, :, None] * UtY12[None, :, :]
+        Y22_preds = torch.cumsum(outer_products, dim=1)  # (|r2|, K, |c2|)
+
+        # Compute BCV error for all ranks in vectorized form
+        # (Y22[None,:,:] - Y22_preds) ** 2 -> sum over r2 and c2
+        diff = Y22[:, None, :] - Y22_preds  # (|r2|, K, |c2|)
+        errors[s, :] = diff.pow(2).mean(dim=(0, 2))  # mean over r2 and c2
+
+    return errors.mean(dim=0)  # mean over splits
+
+
 def blockwise_decomposition_with_rank_selection(
         video_subset: torch.tensor,
         subset_pixel_weighting: torch.tensor,
@@ -971,26 +1037,16 @@ def blockwise_decomposition_with_rank_selection(
         subset_noise_std=subset_noise_std
     )
 
-    decisions = evaluate_fitness(
-        local_spatial_basis,
-        local_temporal_basis,
-        spatial_roughness_threshold,
-        temporal_roughness_threshold,
-    )
+    video_subset_meansub = video_subset - torch.mean(video_subset, dim=0, keepdim=True)
+    video_subset_meansub = video_subset_meansub.permute(1, 2, 0)
+    video_subset_meansub = video_subset_meansub.reshape(-1, video_subset_meansub.shape[2])
 
-    decisions = filter_by_failures(decisions, max_consecutive_failures)
+    errors_bcv = bcv_rank_selection_randomized_vectorized(video_subset_meansub,
+                                             max_components)
 
+    min_rank = torch.argmin(errors_bcv)
 
-    ## Also eliminate bad components
-    std_dev = local_temporal_basis.std(dim=1)
-    nonzero_temporal = std_dev > 1e-6
-
-    std_dev = local_spatial_basis.std(dim=(0,1))
-    nonzero_spatial = std_dev > 1e-6
-
-    nonzero_comps = torch.logical_and(nonzero_temporal, nonzero_spatial)
-    decisions = torch.logical_and(decisions, nonzero_comps)
-    return local_spatial_basis[:, :, decisions], local_temporal_basis[decisions, :], subset_mean, subset_noise_std
+    return local_spatial_basis[:, :, :min_rank], local_temporal_basis[:min_rank, :], subset_mean, subset_noise_std
 
 
 def threshold_heuristic(
