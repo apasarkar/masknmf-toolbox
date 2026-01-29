@@ -9,6 +9,7 @@ import numpy as np
 import wfield
 import math
 from tqdm import tqdm
+from masknmf import display
 
 class ucla_wf_singlechannel(masknmf.ArrayLike):
     def __init__(self,
@@ -115,6 +116,7 @@ def hemocorr_pipeline(bin_folder: str,
                       temporal_avg_factor: int=1,
                       frame_batch_size: int=1000):
 
+    block_sizes = [int(block_size_dim1), int(block_size_dim2)]
     out_save_dir = os.path.abspath(out_folder)
     data_path = os.path.abspath(bin_folder)
     video_obj = wfield.load_stack(data_path, nchannels=2)
@@ -125,9 +127,9 @@ def hemocorr_pipeline(bin_folder: str,
     else:
         num_frames_used = int(num_frames_used)
     functional_channel = int(functional_channel)
-    #
-    # print(f"{num_frames_used}")
-    # print(f"{type(num_frames_used)}")
+
+    print(f"{num_frames_used}")
+    print(f"{type(num_frames_used)}")
     gcamp_channel = ucla_wf_singlechannel(video_obj,
                                           channel=functional_channel,
                                           mask=mask,
@@ -138,32 +140,56 @@ def hemocorr_pipeline(bin_folder: str,
                                           num_frames=num_frames_used)
     print(f"functional channel is {functional_channel}")
 
-    block_sizes = [block_size_dim1, block_size_dim2]
-    gcamp_strat = masknmf.CompressDenoiseStrategy(gcamp_channel,
-                                                  block_sizes=block_sizes,
-                                                  max_components=max_components,
-                                                  max_consecutive_failures=max_consecutive_failures,
-                                                  spatial_avg_factor=spatial_avg_factor,
-                                                  temporal_avg_factor=temporal_avg_factor,
-                                                  pixel_weighting=mask,
-                                                  noise_variance_quantile=0.3,
-                                                  num_epochs=10,
-                                                  frame_batch_size=frame_batch_size)
+    gcamp_path = os.path.join(out_save_dir, 'gcamp.hdf5')
+    blood_path = os.path.join(out_save_dir, 'blood.hdf5')
+    hemocorr_path = os.path.join(out_save_dir, 'hemocorr.hdf5')
 
-    pmd_gcamp = gcamp_strat.compress()
+    if not os.path.exists(gcamp_path):
+        display("running gcamp channel compression")
+        gcamp_strat = masknmf.CompressDenoiseStrategy(gcamp_channel,
+                                                      block_sizes=block_sizes,
+                                                      max_components=max_components,
+                                                      max_consecutive_failures=max_consecutive_failures,
+                                                      spatial_avg_factor=spatial_avg_factor,
+                                                      temporal_avg_factor=temporal_avg_factor,
+                                                      pixel_weighting=mask,
+                                                      noise_variance_quantile=0.3,
+                                                      num_epochs=10,
+                                                      frame_batch_size=frame_batch_size)
 
-    blood_strat = masknmf.CompressDenoiseStrategy(blood_channel,
-                                                  block_sizes=block_sizes,
-                                                  max_components=max_components,
-                                                  max_consecutive_failures=max_consecutive_failures,
-                                                  spatial_avg_factor=spatial_avg_factor,
-                                                  temporal_avg_factor=temporal_avg_factor,
-                                                  pixel_weighting=mask,
-                                                  noise_variance_quantile=0.3,
-                                                  num_epochs=10,
-                                                  frame_batch_size=frame_batch_size)
+        pmd_gcamp = gcamp_strat.compress()
+        pmd_gcamp.export(gcamp_path)
+        del pmd_gcamp
+        torch.cuda.empty_cache()
 
-    pmd_blood = blood_strat.compress()
+
+
+
+    if not os.path.exists(blood_path):
+        display("running blood channel compression")
+
+        blood_strat = masknmf.CompressDenoiseStrategy(blood_channel,
+                                                      block_sizes=block_sizes,
+                                                      max_components=max_components,
+                                                      max_consecutive_failures=max_consecutive_failures,
+                                                      spatial_avg_factor=spatial_avg_factor,
+                                                      temporal_avg_factor=temporal_avg_factor,
+                                                      pixel_weighting=mask,
+                                                      noise_variance_quantile=0.3,
+                                                      num_epochs=10,
+                                                      frame_batch_size=frame_batch_size)
+
+        pmd_blood = blood_strat.compress()
+        pmd_blood.export(blood_path)
+        del pmd_blood
+        torch.cuda.empty_cache()
+
+
+    display("Running hemocorrection")
+    display("Loading the data from serialized formats")
+    pmd_blood = masknmf.PMDArray.from_hdf5(blood_path)
+    pmd_gcamp = masknmf.PMDArray.from_hdf5(gcamp_path)
+
 
     blood_indices = np.array([i*2+(1 - functional_channel) for i in range(pmd_blood.shape[0])])
     gcamp_indices = np.array([i*2 + functional_channel for i in range(pmd_gcamp.shape[0])])
@@ -202,12 +228,6 @@ def hemocorr_pipeline(bin_folder: str,
                                      device='cpu')
 
     ## Save results:
-    gcamp_path = os.path.join(out_save_dir, 'gcamp.hdf5')
-    blood_path = os.path.join(out_save_dir, 'blood.hdf5')
-    hemocorr_path = os.path.join(out_save_dir, 'hemocorr.hdf5')
-
-    pmd_gcamp.export(gcamp_path)
-    pmd_blood.export(blood_path)
     hemo_corr_est.export(hemocorr_path)
 
 if __name__ == "__main__":
