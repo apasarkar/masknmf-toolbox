@@ -78,7 +78,7 @@ class PMDWidget:
                                    figure_shape=(2, 3)
                                    )
 
-        self.image_graphics = [k for k in self.iw.graphics]
+        self.image_graphics = [k for k in self.iw.managed_graphics]
 
         self._fig_temporal = fpl.Figure(shape=(3, 1), names=["mcorr", "compressed", "residual"])
         self._mcorr_line = self.fig_temporal["mcorr"].add_line(np.zeros(self.pmd_stack.shape[0]))
@@ -97,7 +97,7 @@ class PMDWidget:
         self._pmd_selectors.append(self._pmd_ls)
         self._residual_selectors.append(self._resid_ls)
 
-        self._iw.add_event_handler(self._sync_time, "indices")
+        self._iw.add_event_handler(self._sync_time, "current_index")
         self._moco_ls.add_event_handler(self._sync_time, "selection")
         self._pmd_ls.add_event_handler(self._sync_time, "selection")
         self._resid_ls.add_event_handler(self._sync_time, "selection")
