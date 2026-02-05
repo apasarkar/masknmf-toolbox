@@ -1263,7 +1263,7 @@ def pmd_decomposition(
     )
 
     display("Running Blockwise Decompositions")
-    for k in dim_1_iters:
+    for k in tqdm(dim_1_iters):
         for j in dim_2_iters:
             slice_dim1 = slice(k, k + block_sizes[0])
             slice_dim2 = slice(j, j + block_sizes[1])
