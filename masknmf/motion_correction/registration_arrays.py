@@ -12,6 +12,7 @@ from masknmf.utils import Serializer
 from pathlib import Path
 import h5py
 import os
+from tqdm import tqdm
 
 
 class Shifts(ArrayLike):
@@ -175,7 +176,7 @@ class RegistrationArray(LazyFrameLoader, Serializer):
             else:
                 shifts_dset = None
             batch_size = self.strategy.batch_size
-            for k in range(math.ceil(num_frames / batch_size)):
+            for k in tqdm(range(math.ceil(num_frames / batch_size))):
                 start = k * batch_size
                 end = min(start + batch_size, num_frames)
                 moco_subset, shifts_subset = self._index_frames_tensor(slice(start, end))
