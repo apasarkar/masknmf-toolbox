@@ -1,9 +1,9 @@
 import math
-from typing import Optional, Callable
+from typing import Optional, Callable, Union
+import numpy as np
+from numpy.typing import DTypeLike
 
 import torch
-import numpy as np
-
 import masknmf
 from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
 from .strategies import MotionCorrectionStrategy, RigidMotionCorrector, PiecewiseRigidMotionCorrector, DummyMotionCorrector
@@ -46,6 +46,7 @@ class RegistrationArray(LazyFrameLoader, Serializer):
         strategy: MotionCorrectionStrategy | None = None,
         target_movie: Optional[LazyFrameLoader] = None,
         shifts: Shifts | np.ndarray | None = None,
+        dtype: Union[str, np.dtype] = np.float32
     ):
         """
         Array-like motion correction representation that support on-the-fly motion correction
@@ -75,6 +76,8 @@ class RegistrationArray(LazyFrameLoader, Serializer):
             #Here the shifts are pre-computed
             self._shifts = shifts
 
+        self._dtype = dtype
+
     @property
     def ndim(self) -> int:
         return self._ndim
@@ -84,8 +87,8 @@ class RegistrationArray(LazyFrameLoader, Serializer):
         return self._shape
 
     @property
-    def dtype(self) -> str:
-        return "float32"
+    def dtype(self) ->  Union[str, np.dtype]:
+        return self._dtype
 
     @property
     def reference_movie(self) -> LazyFrameLoader:
@@ -170,7 +173,9 @@ class RegistrationArray(LazyFrameLoader, Serializer):
 
         with h5py.File(path, 'w') as f:
             num_frames = self.shape[0]
-            moco_dset = f.create_dataset(self._motion_export_name, data_output_shape)
+            moco_dset = f.create_dataset(self._motion_export_name,
+                                         data_output_shape,
+                                         dtype=self.dtype)
             if shifts_output_shape is not None:
                 shifts_dset = f.create_dataset(self._shifts_export_name, shifts_output_shape)
             else:
@@ -180,7 +185,7 @@ class RegistrationArray(LazyFrameLoader, Serializer):
                 start = k * batch_size
                 end = min(start + batch_size, num_frames)
                 moco_subset, shifts_subset = self._index_frames_tensor(slice(start, end))
-                moco_dset[start:end, :, :] = moco_subset
+                moco_dset[start:end, :, :] = moco_subset.astype(self.dtype)
                 if shifts_dset is not None:
                     shifts_dset[start:end, ...] = shifts_subset
 

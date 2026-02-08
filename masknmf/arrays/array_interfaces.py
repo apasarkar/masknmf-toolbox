@@ -57,7 +57,7 @@ class FactorizedVideo(ABC):
 
     @property
     @abstractmethod
-    def dtype(self) -> str:
+    def dtype(self) ->  Union[str, np.dtype]:
         """
         data type
         """
@@ -98,7 +98,7 @@ class LazyFrameLoader(ArrayLike):
 
     @property
     @abstractmethod
-    def dtype(self) -> str:
+    def dtype(self) -> Union[str, np.dtype]:
         """
         data type
         """
@@ -197,9 +197,9 @@ class LazyFrameLoader(ArrayLike):
 
         # Only squeeze at axis = 0 (time dimension) in case one of the spatial dimensions is actually 1
         if frames.shape[0] == 1:
-            return frames.squeeze(axis=0)
+            return frames.squeeze(axis=0).astype(self.dtype)
         else:
-            return frames
+            return frames.astype(self.dtype)
 
     @abstractmethod
     def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
