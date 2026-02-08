@@ -46,12 +46,12 @@ def raster_view(img_stack_1, img_stack_2, radius):
             )
     
     sel_1 = movie_widget.managed_graphics[0].add_rectangle_selector(
-                    selection=[lower_x, upper_x, lower_y, upper_y],
+                    selection=[lower_point_x, upper_point_x, lower_point_y, upper_point_y],
                     **rect_selector_kwargs
                 )
     
     sel_2 = movie_widget.managed_graphics[1].add_rectangle_selector(
-                    selection=[lower_x, upper_x, lower_y, upper_y],
+                    selection=[lower_point_x, upper_point_x, lower_point_y, upper_point_y],
                     **rect_selector_kwargs
                 )
 
@@ -94,9 +94,8 @@ def raster_view(img_stack_1, img_stack_2, radius):
     time_sel_1.add_event_handler(temporal_sync, "selection")
     time_sel_2.add_event_handler(temporal_sync, "selection")
     movie_widget.add_event_handler(temporal_sync, "current_index")
-
-    time_sel_1.visible = False
-    time_sel_2.visible = False
+    # time_sel_1.visible = False
+    # time_sel_2.visible = False
     
     
     return VBox([movie_widget.show(), raster_widget.show()])
