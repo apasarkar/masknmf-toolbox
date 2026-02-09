@@ -75,7 +75,6 @@ def raster_view(img_stack_1, img_stack_2, radius):
 
         ##In this case, the event came from imagewidget
         if isinstance(ev, dict):
-            print(ev['t'])
             curr_index = int(ev['t'])
             time_sel_1.selection = curr_index
             time_sel_2.selection = curr_index
