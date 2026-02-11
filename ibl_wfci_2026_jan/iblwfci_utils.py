@@ -4,6 +4,47 @@ import sys
 import torch
 import math
 import numpy as np
+from typing import *
+
+
+class ucla_wf_singlechannel(masknmf.ArrayLike):
+    def __init__(self,
+                 my_memmap: np.memmap,
+                 dtype = np.uint16,
+                 channel: int = 0,
+                 mask: Optional[np.ndarray] = None,
+                 num_frames: Optional[int] = None):
+        # print(f"type of my_memmap is {type(my_memmap)}")
+        self._channel = channel
+        self._dtype = dtype
+        self._mmap = my_memmap[:num_frames] if num_frames is not None else my_memmap
+        self._shape = (self._mmap.shape[0], self._mmap.shape[2], self._mmap.shape[3])
+        self._mask = mask.astype(dtype) if mask is not None else None
+
+    @property
+    def shape(self):
+        return self._shape
+
+    @property
+    def dtype(self):
+        return self._dtype
+
+    @property
+    def ndim(self):
+        return 3
+
+    def __getitem__(self, item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> np.ndarray:
+        # return self._mmap[item].copy()
+        if isinstance(item, (int, slice, np.ndarray, range)):
+            return np.asarray(self._mmap[item, self._channel, :, :]).copy()
+        elif isinstance(item, list) or isinstance(item, tuple):
+            if len(item) == 1:
+                return np.asarray(self._mmap[item[0], self._channel, :, :]).copy()
+            elif len(item) == 2:
+                return np.asarray(self._mmap[item[0], self._channel, item[1], :]).copy()
+            elif len(item) == 3:
+                return np.asarray(self._mmap[item[0], self._channel, item[1], item[2]]).copy()
+
 
 def load_joao_results(u_path,
                      svt_path,
