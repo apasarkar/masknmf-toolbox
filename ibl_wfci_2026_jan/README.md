@@ -57,3 +57,7 @@ Next steps (Feb 6th)
 Updates as of Feb 11th: 
 The hemo_compare_trial_avg notebook captures the basic workflow for computing and visualizing trial/behavior/stimulus-triggered averages. Need to be careful to pull the right metadata from Alyx. Also need to be VERY careful to map the trial times to the correct frames of data (since GCaMP frames and Blood channel frames are interleaved). 
 - On the list now: make an expanded version of the above GUI for the raw GCaMP data. We can compute trial-averaged residual movies too.
+
+Updates as of Feb 15th:
+- Added dimensionality analyses notebook to the repo to track how we compare the dimensionality of both compression methods.
+- 
