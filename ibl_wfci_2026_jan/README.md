@@ -60,4 +60,13 @@ The hemo_compare_trial_avg notebook captures the basic workflow for computing an
 
 Updates as of Feb 15th:
 - Added dimensionality analyses notebook to the repo to track how we compare the dimensionality of both compression methods.
-- 
+
+
+
+Updates: 
+- No longer need to track the hemo_compare_trial_avg notebooks. The following notebooks have the bulk of the "shareable" analyses:
+visualize_all_channels
+dimensionality_analysis
+stimulus_onset_xcorr_trial_avg
+behaviora_correlation_analysis
+  
