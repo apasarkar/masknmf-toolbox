@@ -137,7 +137,7 @@ def build_s2p_demixingresults(folder: str,
     results = masknmf.DemixingResults(pmd_object.shape,
                                   pmd_object.u,
                                   pmd_object.v,
-                                  a_suite2p,
+                                  a_suite2p.coalesce(),
                                   c_suite2p_rescale,
                                   b=b_rescale,
                                   device=device)
