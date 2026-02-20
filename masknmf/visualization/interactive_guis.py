@@ -494,6 +494,69 @@ def make_demixing_video(
 
     return iw
 
+
+def brightness_demix_init(curr_dr, splits=4, device='cpu'):
+    """
+    The goal of this is to segregate the signals based on "max brightness" and see whether the dimmer vs. brighter signals are significantly different in any way
+    """
+    curr_dr.to(device)
+    a, c = curr_dr.a, curr_dr.c
+    matched = torch.arange(a.shape[1], device=a.device).long()
+    subset_ind = matched
+    a_subset = torch.index_select(a, 1, subset_ind)
+    c_subset = torch.index_select(c, 1, subset_ind)
+    brightness_ordering, _ = masknmf.demixing.demixing_utils.brightness_order(a_subset, c_subset)
+    matched_ordered = matched[brightness_ordering]
+
+    points = [int(i) for i in np.linspace(0, brightness_ordering.shape[0], splits + 1)]
+
+    subset_indices = [matched_ordered[points[i]:points[i + 1]] for i in range(splits)]
+
+    curr_dr.to(device)
+    pmd_arr = curr_dr.pmd_array
+    pmd_arr.rescale = False
+
+    pseudo_residuals = []
+    subset_ac = []
+
+    fluctuating_bg = curr_dr.fluctuating_background_array
+    static_bg = curr_dr.b.reshape(curr_dr.fov_shape)
+    for k in range(splits):
+        curr_resid_ac_arr = curr_dr.ac_array
+        curr_ac_arr = curr_dr.ac_array
+
+        curr_resid_mask = torch.ones_like(curr_resid_ac_arr.mask)
+        curr_subset_indices = subset_indices[k]
+        curr_resid_mask[curr_subset_indices] = 0.0
+        curr_resid_ac_arr.mask = curr_resid_mask
+
+        curr_mask = torch.zeros_like(curr_ac_arr.mask)
+        curr_mask[curr_subset_indices] = 1.0
+        curr_ac_arr.mask = curr_mask
+
+        resid_arr = masknmf.ResidualArray(pmd_arr,
+                                          curr_resid_ac_arr,
+                                          fluctuating_bg,
+                                          static_bg)
+
+        pseudo_residuals.append(resid_arr)
+        subset_ac.append(curr_ac_arr)
+
+    pmd_list = [pmd_arr for i in range(0, splits)]
+
+    pmd_names = [f'pmd {i}' for i in range(0, splits)]
+    ac_names = ['matched 75-100', 'matched 50-75', 'matched 25-50', 'matched 0-25']
+    resid_names = ['pseudo resid 75-100', 'pseudo resid 50-75', 'pseudo resid 25-50', 'pseudo resid 0-25']
+    iw = fpl.ImageWidget(names=[*pmd_names,
+                                *ac_names,
+                                *resid_names],
+                         data=[*pmd_list,
+                               *subset_ac,
+                               *pseudo_residuals],
+                         figure_shape=(3, splits))
+    return iw
+
+
 def quantile_segregated_signal_gui(ac_arr: masknmf.ACArray,
                                    partitions = 4) -> fpl.Figure:
     brightness_ordering, _ = brightness_order(ac_arr.a, ac_arr.c)
