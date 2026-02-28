@@ -893,7 +893,6 @@ def delete_comp(
             a_used[:, pos_for_cpu],
             corr_values,
             ini=False,
-            order=order,
         )
 
     standard_correlation_image.c = torch.index_select(
@@ -1587,7 +1586,6 @@ def merge_components(
         merge_corr_thr=0.6,
         merge_overlap_thr=0.6,
         plot_en=False,
-        data_order="C",
 ) -> Tuple[
     torch.sparse_coo_tensor,
     torch.tensor,
@@ -1622,6 +1620,8 @@ def merge_components(
     standard_correlation_image_full = standard_correlation_image.getitem_tensor(
         slice(0, num_corr_signals, 1)
     )
+
+
     ############ calculate overlap area ###########
 
     a_corr = torch.sparse.mm(a.t(), a).to_dense()
@@ -1690,7 +1690,6 @@ def merge_components(
                     a_merge.cpu().to_dense().numpy(),
                     standard_correlation_image_full[comp].cpu().numpy(),
                     ini=False,
-                    order=data_order,
                 )
 
             nonzero_indices = torch.nonzero(a_rank1)
@@ -1808,7 +1807,6 @@ def spatial_comp_plot(
         a: np.ndarray,
         standard_correlation_image: np.ndarray,
         ini: bool = False,
-        order: str = "C",
 ):
     print("DISPLAYING SOME OF THE COMPONENTS")
     max_neurons = 5
@@ -1821,7 +1819,7 @@ def spatial_comp_plot(
     neuron_numbering = np.arange(num)
     for ii in range(num):
         plt.subplot(num, 2, 2 * ii + 1)
-        plt.imshow(a[:, ii].reshape(patch_size, order=order), cmap="nipy_spectral_r")
+        plt.imshow(a[:, ii].reshape(patch_size), cmap="nipy_spectral_r")
         plt.ylabel(str(neuron_numbering[ii] + 1), fontsize=15, fontweight="bold")
         if ii == 0:
             if ini:
