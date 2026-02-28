@@ -64,7 +64,9 @@ def construct_graph_from_sparse_tensor(adj_tensor: torch.sparse_coo_tensor) -> n
     return graph
 
 
-def color_and_get_tensors(graph: nx.Graph, device: str) -> List[torch.Tensor]:
+def color_and_get_tensors(graph: nx.Graph,
+                          device: str,
+                          frame_batch_size: int = 1500) -> List[torch.Tensor]:
     """
     Color the nodes of a graph using a greedy coloring algorithm and convert the
     resulting color groups into PyTorch tensors.
@@ -86,10 +88,13 @@ def color_and_get_tensors(graph: nx.Graph, device: str) -> List[torch.Tensor]:
 
     # Convert lists of nodes to PyTorch tensors
     color_to_tensors: List[torch.Tensor] = [
-        torch.tensor(nodes, dtype=torch.long).to(device)
+        chunk
         for nodes in color_to_nodes.values()
+        for chunk in torch.split(
+            torch.tensor(nodes, dtype=torch.long, device=device),
+            frame_batch_size,
+        )
     ]
-
     return color_to_tensors
 
 

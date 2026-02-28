@@ -2551,7 +2551,9 @@ class DemixingState(SignalProcessingState):
         """
         adjacency_mat = torch.sparse.mm(self.mask_ab.float().t(), self.mask_ab.float())
         graph = construct_graph_from_sparse_tensor(adjacency_mat)
-        self.blocks = color_and_get_tensors(graph, self.device)
+        self.blocks = color_and_get_tensors(graph,
+                                            self.device,
+                                            self.frame_batch_size)
 
     def update_ring_model_support(self):
         ones_vec = torch.ones((self.a.shape[1], 1), device=self.a.device)
