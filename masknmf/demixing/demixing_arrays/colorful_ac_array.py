@@ -81,7 +81,7 @@ class ColorfulACArray(FactorizedVideo):
         Args:
             new_colors (torch.tensor): Shape (num_neurons, 3)
         """
-        self._colors = new_colors.to(self.device)
+        self._colors = new_colors.to(self.device).to(self.c.dtype)
 
     @property
     def dtype(self) -> str:
