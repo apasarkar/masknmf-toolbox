@@ -3016,7 +3016,6 @@ class DemixingState(SignalProcessingState):
             self.shape,
             1,
             self.robust_noise_term,
-            order=self.data_order,
             batch_size=self.pixel_batch_size,
             a=self.a,
             c=self.c,
