@@ -453,7 +453,6 @@ def get_local_correlation_structure(
         dims: Tuple[int, int, int],
         th: int,
         noise_std: torch.Tensor,
-        order: str = "C",
         batch_size: int = 10000,
         tol: float = 0.000001,
         a: Optional[torch.sparse_coo_tensor] = None,
@@ -474,7 +473,6 @@ def get_local_correlation_structure(
         dims: (d1, d2, T)
         th: int (positive integer), describes the MAD threshold. We use this to threshold the pixels for when we compute correlations.
             We compute the median and median absolute deviation (MAD), then zero all bins (x,t) such that Yd(x,t) < med(x) + th * MAD(x).
-        order: "C" or "F" Indicates how we reshape the 2D images of the video (d1, d2) into (d1*d2) column vectors. The order here is important for consistency.
         batch_size: int. Maximum number of pixels of the movie that we fully expand out (i.e. we never have more than batch_size * T -sized Tensor in device memory.
             This is useful for GPU memory management, especially on small graphics cards.
         pseudo: float >= 0. a robust correlation parameter, used in the robust correlation calculation between every pair of neighboring pixels.
@@ -503,10 +501,7 @@ def get_local_correlation_structure(
     dims = (dims[0], dims[1], v.shape[1])
 
     ref_mat = torch.arange(np.prod(dims[:-1]), device=device)
-    if order == "F":
-        ref_mat = reshape_fortran(ref_mat, (dims[0], dims[1]))
-    else:
-        ref_mat = reshape_c(ref_mat, (dims[0], dims[1]))
+    ref_mat = ref_mat.reshape(dims[0], dims[1])
 
     tilesize = math.floor(math.sqrt(batch_size))
 
@@ -534,34 +529,14 @@ def get_local_correlation_structure(
             x_interval = indices_curr_2d.shape[0]
             y_interval = indices_curr_2d.shape[1]
 
-            if order == "F":
-                indices_curr = reshape_fortran(
-                    indices_curr_2d, (x_interval * y_interval,)
-                )
-            else:
-                indices_curr = reshape_c(indices_curr_2d, (x_interval * y_interval,))
+            indices_curr = indices_curr_2d.reshape(x_interval * y_interval,)
 
             U_sparse_crop = torch.index_select(u_sparse, 0, indices_curr)
-            if order == "F":
-                Yd = reshape_fortran(
-                    torch.sparse.mm(U_sparse_crop, v), (x_interval, y_interval, -1)
-                )
-            else:
-                Yd = reshape_c(
-                    torch.sparse.mm(U_sparse_crop, v), (x_interval, y_interval, -1)
-                )
+            Yd = torch.sparse.mm(U_sparse_crop, v).reshape(x_interval, y_interval, -1)
             if resid_flag:
                 a_sparse_crop = torch.index_select(a, 0, indices_curr)
-                if order == "F":
-                    ac_mov = reshape_fortran(
-                        torch.sparse.mm(a_sparse_crop, c.T),
-                        (x_interval, y_interval, -1),
-                    )
-                else:
-                    ac_mov = reshape_c(
-                        torch.sparse.mm(a_sparse_crop, c.T),
-                        (x_interval, y_interval, -1),
-                    )
+
+                ac_mov = torch.sparse.mm(a_sparse_crop, c.T).reshape(x_interval, y_interval, -1)
                 Yd = torch.sub(Yd, ac_mov)
 
             # Get MAD-thresholded movie in-place
@@ -2183,7 +2158,6 @@ class InitializingState(SignalProcessingState):
                 self.shape,
                 mad_threshold,
                 self.robust_noise_term,
-                order=self.data_order,
                 batch_size=self.pixel_batch_size,
                 a=self.a,
                 c=self.c,
