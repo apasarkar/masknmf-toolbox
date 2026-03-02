@@ -1655,10 +1655,6 @@ def merge_components(
         standard_correlation_image (StandardCorrelationImages): Updated correlation images
     """
     device = c.device
-    num_corr_signals = standard_correlation_image.shape[0]
-    standard_correlation_image_full = standard_correlation_image.getitem_tensor(
-        slice(0, num_corr_signals, 1)
-    )
 
     ############ calculate overlap area ###########
 
@@ -2647,7 +2643,7 @@ class DemixingState(SignalProcessingState):
                                                                  background_sketch)
             explained_variance_term = torch.cumsum(s_bkgd ** 2, dim=0) / torch.sum(s_bkgd ** 2)
             min_rank = int(torch.argmax((explained_variance_term >= 0.99).float()).item())
-            self.background_rank = min_rank + 1
+            self.background_rank = min_rank + 1 ## This is the new estimate
             display(f"The estimated min rank is {self.background_rank}")
 
         u_bkgd, s_bkgd, v_bkgd = self.lowrank_background_svd(downsampling_factor,
