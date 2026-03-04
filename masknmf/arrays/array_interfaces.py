@@ -1,3 +1,4 @@
+from copy import copy as copy_func
 from typing import *
 from abc import ABC, abstractmethod
 import numpy as np
@@ -17,6 +18,21 @@ class ArrayLike(ABC):
     """
     The most general class capturing the minimum functionality a general array needs to support
     """
+    def __array__(self, dtype=None, copy=None):
+        # required for minimal xarray compatability
+        if copy:
+            return copy_func(self)
+
+        return self
+
+    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        # required for minimal xarray compatability, doesn't actually have to do anything
+        raise NotImplementedError
+
+    def __array_function__(self, func, types, *args, **kwargs):
+        # required for minimal xarray compatability, doesn't actually have to do anything
+        raise NotImplementedError
+
     @property
     @abstractmethod
     def dtype(self) -> Union[str, np.dtype]:
@@ -41,91 +57,22 @@ class ArrayLike(ABC):
         """
         return len(self.shape)
 
-    @abstractmethod
-    def __getitem__(
-        self,
-        item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
-    ):
-        # Step 1: index the frames (dimension 0)
-        pass
-
-
-class FactorizedVideo(ABC):
-    """
-    This captures the numpy array-like functionality for factorized videos in our NMF model.
-    """
-
     @property
-    @abstractmethod
-    def dtype(self) ->  Union[str, np.dtype]:
+    def nbytes(self) -> int:
         """
-        data type
+        int
+            number of bytes for the array if it were fully computed
         """
-        pass
+        return np.prod(self.shape + (np.dtype(self.dtype).itemsize,), dtype=np.int64)
 
-    @property
-    @abstractmethod
-    def shape(self) -> Tuple[int, int, int]:
-        """
-        Array shape (n_frames, dims_x, dims_y)
-        """
-        pass
-
-    @property
-    def ndim(self) -> int:
-        """
-        Number of dimensions
-        """
-        return len(self.shape)
-
-    @abstractmethod
-    def __getitem__(
-        self,
-        item: Union[int, list, np.ndarray, slice, range, Tuple[Union[int, np.ndarray, slice, range]]],
-    ):
-        # Step 1: index the frames (dimension 0)
-        pass
-
-
-class LazyFrameLoader(ArrayLike):
-    """
-    An array-like object that only supports fast slicing in the temporal domain. Used for motion correction algorithms.
-
-    Key: To implement support for a new file type, you just need to specify the key properties below (dtype, shape, ndim)
-    and then implement the function _compute_at_indices.
-    Adapted from mesmerize core: https://github.com/nel-lab/mesmerize-core/blob/master/mesmerize_core/arrays/_base.py
-    """
-
-    @property
-    @abstractmethod
-    def dtype(self) -> Union[str, np.dtype]:
-        """
-        data type
-        """
-        pass
-
-    @property
-    @abstractmethod
-    def shape(self) -> Tuple[int, int, int]:
-        """
-        Array shape (n_frames, dims_x, dims_y)
-        """
-        pass
-
-    @property
-    def ndim(self) -> int:
-        """
-        Number of dimensions
-        """
-        return len(self.shape)
-
-    def __getitem__(
-        self,
-        item: Union[int, list, np.ndarray, slice, range, Tuple[Union[int, np.ndarray, slice, range]]],
-    ):
+    def _parse_indices(self, item: list | int | np.ndarray | tuple[int, np.ndarray | slice | range]):
         # Step 1: index the frames (dimension 0)
 
         if isinstance(item, tuple):
+            # if the last item is Ellipsis, remove it. This probably came from xarray's indexer
+            if item[-1] is Ellipsis:
+                item = item[:-1]
+
             if len(item) > len(self.shape):
                 raise IndexError(
                     f"Cannot index more dimensions than exist in the array. "
@@ -139,7 +86,7 @@ class LazyFrameLoader(ArrayLike):
         # Step 2: Do some basic error handling for frame_indexer before using it to slice
 
         if isinstance(frame_indexer, np.ndarray):
-            frame_indexer = frame_indexer.tolist()
+            pass
 
         if isinstance(frame_indexer, list):
             pass
@@ -183,6 +130,39 @@ class LazyFrameLoader(ArrayLike):
                 f"Invalid indexing method, " f"you have passed a: <{type(item)}>"
             )
 
+        return frame_indexer, item
+
+    @abstractmethod
+    def __getitem__(
+        self,
+        item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+    ):
+        # Step 1: index the frames (dimension 0)
+        pass
+
+
+class FactorizedVideo(ArrayLike):
+    """
+    This captures the numpy array-like functionality for factorized videos in our NMF model.
+    Different class just for separating instance checks?
+    """
+    pass
+
+
+class LazyFrameLoader(ArrayLike):
+    """
+    An array-like object that only supports fast slicing in the temporal domain. Used for motion correction algorithms.
+
+    Key: To implement support for a new file type, you just need to specify the key properties below (dtype, shape, ndim)
+    and then implement the function _compute_at_indices.
+    Adapted from mesmerize core: https://github.com/nel-lab/mesmerize-core/blob/master/mesmerize_core/arrays/_base.py
+    """
+
+    def __getitem__(
+        self,
+        item: Union[int, list, np.ndarray, slice, range, Tuple[Union[int, np.ndarray, slice, range]]],
+    ):
+        frame_indexer, item = self._parse_indices(item)
         # Step 3: Now slice the data with frame_indexer (careful: if the ndims has shrunk, add a dim)
         frames = self._compute_at_indices(frame_indexer)
         if len(frames.shape) < len(self.shape):
