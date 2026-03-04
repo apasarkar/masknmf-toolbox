@@ -90,4 +90,4 @@ class ResidualArray(FactorizedVideo):
                 - self.baseline[None, :]
             )
 
-        return output.cpu().numpy().squeeze()
+        return output.cpu().numpy()
