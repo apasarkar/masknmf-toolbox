@@ -911,7 +911,11 @@ def blockwise_decomposition_singlepass(
 
     # Regress the original (unweighted) data onto this basis
     subset_r = subset.reshape((-1, subset.shape[2]))
-    final_temporal_projection = spatial_basis_orthogonal.T @ subset_r
+    if temporal_denoiser is None:
+        #In this case, we want to take advantage of the existing
+        final_temporal_projection = (spatial_basis_orthogonal.T @ (subset_r @ temporal_basis_from_downsample.T)) @ temporal_basis_from_downsample
+    else:
+        final_temporal_projection = spatial_basis_orthogonal.T @ subset_r #In this case we want to project onto this basis and re-apply the denoiser
     left, sing, right = torch.linalg.svd(final_temporal_projection, full_matrices=False)
     if torch.count_nonzero(sing) == 0:
         return empty_values[0], empty_values[1], subset_mean, subset_noise_std
