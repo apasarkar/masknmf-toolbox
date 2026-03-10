@@ -175,9 +175,6 @@ def plot_ith_roi(
     p1, p2 = a.nonzero()
     T, d1, d2 = results.pmd_array.shape
     pmd_roi_avg = get_roi_avg(results.pmd_array, p1, p2, normalize=False)
-    static_bg_roi_avg = np.ones_like(pmd_roi_avg) * np.mean(
-        results.baseline[p1, p2].cpu().numpy().flatten()
-    )
     fluctuating_bg_roi_avg = get_roi_avg(
         results.fluctuating_background_array, p1, p2, normalize=False
     )

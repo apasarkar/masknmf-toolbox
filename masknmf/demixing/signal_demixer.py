@@ -453,7 +453,6 @@ def get_local_correlation_structure(
         dims: Tuple[int, int, int],
         th: int,
         noise_std: torch.Tensor,
-        order: str = "C",
         batch_size: int = 10000,
         tol: float = 0.000001,
         a: Optional[torch.sparse_coo_tensor] = None,
@@ -474,7 +473,6 @@ def get_local_correlation_structure(
         dims: (d1, d2, T)
         th: int (positive integer), describes the MAD threshold. We use this to threshold the pixels for when we compute correlations.
             We compute the median and median absolute deviation (MAD), then zero all bins (x,t) such that Yd(x,t) < med(x) + th * MAD(x).
-        order: "C" or "F" Indicates how we reshape the 2D images of the video (d1, d2) into (d1*d2) column vectors. The order here is important for consistency.
         batch_size: int. Maximum number of pixels of the movie that we fully expand out (i.e. we never have more than batch_size * T -sized Tensor in device memory.
             This is useful for GPU memory management, especially on small graphics cards.
         pseudo: float >= 0. a robust correlation parameter, used in the robust correlation calculation between every pair of neighboring pixels.
@@ -503,10 +501,7 @@ def get_local_correlation_structure(
     dims = (dims[0], dims[1], v.shape[1])
 
     ref_mat = torch.arange(np.prod(dims[:-1]), device=device)
-    if order == "F":
-        ref_mat = reshape_fortran(ref_mat, (dims[0], dims[1]))
-    else:
-        ref_mat = reshape_c(ref_mat, (dims[0], dims[1]))
+    ref_mat = ref_mat.reshape(dims[0], dims[1])
 
     tilesize = math.floor(math.sqrt(batch_size))
 
@@ -534,34 +529,14 @@ def get_local_correlation_structure(
             x_interval = indices_curr_2d.shape[0]
             y_interval = indices_curr_2d.shape[1]
 
-            if order == "F":
-                indices_curr = reshape_fortran(
-                    indices_curr_2d, (x_interval * y_interval,)
-                )
-            else:
-                indices_curr = reshape_c(indices_curr_2d, (x_interval * y_interval,))
+            indices_curr = indices_curr_2d.reshape(x_interval * y_interval,)
 
             U_sparse_crop = torch.index_select(u_sparse, 0, indices_curr)
-            if order == "F":
-                Yd = reshape_fortran(
-                    torch.sparse.mm(U_sparse_crop, v), (x_interval, y_interval, -1)
-                )
-            else:
-                Yd = reshape_c(
-                    torch.sparse.mm(U_sparse_crop, v), (x_interval, y_interval, -1)
-                )
+            Yd = torch.sparse.mm(U_sparse_crop, v).reshape(x_interval, y_interval, -1)
             if resid_flag:
                 a_sparse_crop = torch.index_select(a, 0, indices_curr)
-                if order == "F":
-                    ac_mov = reshape_fortran(
-                        torch.sparse.mm(a_sparse_crop, c.T),
-                        (x_interval, y_interval, -1),
-                    )
-                else:
-                    ac_mov = reshape_c(
-                        torch.sparse.mm(a_sparse_crop, c.T),
-                        (x_interval, y_interval, -1),
-                    )
+
+                ac_mov = torch.sparse.mm(a_sparse_crop, c.T).reshape(x_interval, y_interval, -1)
                 Yd = torch.sub(Yd, ac_mov)
 
             # Get MAD-thresholded movie in-place
@@ -893,7 +868,6 @@ def delete_comp(
             a_used[:, pos_for_cpu],
             corr_values,
             ini=False,
-            order=order,
         )
 
     standard_correlation_image.c = torch.index_select(
@@ -1579,6 +1553,44 @@ def superpixel_init(
                                      pure_nmf_seed_map = pure_superpixel_img_1d.cpu().numpy().reshape((dims[0], dims[1]), order=data_order))
     return init_res
 
+def _compute_corr_overlap_with_threshold(standard_correlation_image: StandardCorrelationImages,
+                                      threshold: float= 0.6,
+                                      frame_batch_size: int = 200):
+    """
+    Routine for computing the overlap between all pairs of thresholded correlation images as well as the total number
+    of correlation images.
+    """
+    dtype=torch.float32
+    num_neurons = standard_correlation_image.shape[0]
+    num_iters = math.ceil(standard_correlation_image.shape[0] / frame_batch_size)
+    corr_tensor = torch.zeros(num_neurons,
+                              num_neurons,
+                              dtype=dtype,
+                              device=standard_correlation_image.device)
+
+    corr_support = torch.zeros(num_neurons,
+                               dtype=dtype,
+                               device=standard_correlation_image.device)
+
+    for k in range(num_iters):
+        start_first = k*frame_batch_size
+        end_first = min(start_first + frame_batch_size, num_neurons)
+        subset_first = (standard_correlation_image.getitem_tensor(slice(start_first,end_first)) > threshold).to(dtype)
+        sum_values = torch.sum(subset_first, dim=[1,2])
+        sum_values[sum_values == 0] = 1
+        corr_support[start_first:end_first] = sum_values
+        for j in range(k, num_iters):
+            start_second = j*frame_batch_size
+            end_second = min(start_second + frame_batch_size, num_neurons)
+            subset_second = (standard_correlation_image.getitem_tensor(slice(start_second,end_second)) > threshold).to(dtype)
+            corr_tensor[start_first:end_first, start_second:end_second] = torch.tensordot(subset_first,
+                                                                                          subset_second,
+                                                                                          dims=([1, 2], [1, 2]))
+    corr_tensor = torch.triu(corr_tensor, diagonal=1)
+    return corr_tensor, corr_support
+
+
+
 
 def merge_components(
         a: torch.sparse_coo_tensor,
@@ -1586,8 +1598,8 @@ def merge_components(
         standard_correlation_image: StandardCorrelationImages,
         merge_corr_thr=0.6,
         merge_overlap_thr=0.6,
+        frame_batch_size: int = 300,
         plot_en=False,
-        data_order="C",
 ) -> Tuple[
     torch.sparse_coo_tensor,
     torch.tensor,
@@ -1618,23 +1630,15 @@ def merge_components(
         standard_correlation_image (StandardCorrelationImages): Updated correlation images
     """
     device = c.device
-    num_corr_signals = standard_correlation_image.shape[0]
-    standard_correlation_image_full = standard_correlation_image.getitem_tensor(
-        slice(0, num_corr_signals, 1)
-    )
+
     ############ calculate overlap area ###########
 
     a_corr = torch.sparse.mm(a.t(), a).to_dense()
     a_corr = torch.triu(a_corr, diagonal=1)
-    cor = ((standard_correlation_image_full > merge_corr_thr) * 1).float()
-    temp = torch.sum(cor, dim=[1, 2])
-    temp[temp == 0] = 1  # For division safety
-    cor_corr = torch.tensordot(
-        cor,
-        cor,
-        dims=([1, 2], [1, 2]),
-    )
-    cor_corr = torch.triu(cor_corr, diagonal=1)
+    cor_corr, temp = _compute_corr_overlap_with_threshold(standard_correlation_image,
+                                                    merge_corr_thr,
+                                                    frame_batch_size=frame_batch_size
+                                                    )
 
     # Test to see for each pair of neurons (a, b) whether overlap(a, b) / support_size(corr_img(a)) > merge_overlap_thres
     condition1 = (cor_corr / temp.unsqueeze(1)) > merge_overlap_thr
@@ -1690,7 +1694,6 @@ def merge_components(
                     a_merge.cpu().to_dense().numpy(),
                     standard_correlation_image_full[comp].cpu().numpy(),
                     ini=False,
-                    order=data_order,
                 )
 
             nonzero_indices = torch.nonzero(a_rank1)
@@ -1808,7 +1811,6 @@ def spatial_comp_plot(
         a: np.ndarray,
         standard_correlation_image: np.ndarray,
         ini: bool = False,
-        order: str = "C",
 ):
     print("DISPLAYING SOME OF THE COMPONENTS")
     max_neurons = 5
@@ -1821,7 +1823,7 @@ def spatial_comp_plot(
     neuron_numbering = np.arange(num)
     for ii in range(num):
         plt.subplot(num, 2, 2 * ii + 1)
-        plt.imshow(a[:, ii].reshape(patch_size, order=order), cmap="nipy_spectral_r")
+        plt.imshow(a[:, ii].reshape(patch_size), cmap="nipy_spectral_r")
         plt.ylabel(str(neuron_numbering[ii] + 1), fontsize=15, fontweight="bold")
         if ii == 0:
             if ini:
@@ -2156,7 +2158,6 @@ class InitializingState(SignalProcessingState):
                 self.shape,
                 mad_threshold,
                 self.robust_noise_term,
-                order=self.data_order,
                 batch_size=self.pixel_batch_size,
                 a=self.a,
                 c=self.c,
@@ -2520,7 +2521,9 @@ class DemixingState(SignalProcessingState):
         """
         adjacency_mat = torch.sparse.mm(self.mask_ab.float().t(), self.mask_ab.float())
         graph = construct_graph_from_sparse_tensor(adjacency_mat)
-        self.blocks = color_and_get_tensors(graph, self.device)
+        self.blocks = color_and_get_tensors(graph,
+                                            self.device,
+                                            self.frame_batch_size)
 
     def update_ring_model_support(self):
         ones_vec = torch.ones((self.a.shape[1], 1), device=self.a.device)
@@ -2614,7 +2617,7 @@ class DemixingState(SignalProcessingState):
                                                                  background_sketch)
             explained_variance_term = torch.cumsum(s_bkgd ** 2, dim=0) / torch.sum(s_bkgd ** 2)
             min_rank = int(torch.argmax((explained_variance_term >= 0.99).float()).item())
-            self.background_rank = min_rank + 1
+            self.background_rank = min_rank + 1 ## This is the new estimate
             display(f"The estimated min rank is {self.background_rank}")
 
         u_bkgd, s_bkgd, v_bkgd = self.lowrank_background_svd(downsampling_factor,
@@ -2877,8 +2880,8 @@ class DemixingState(SignalProcessingState):
             self.standard_correlation_image,
             merge_corr_thr=merge_corr_thr,
             merge_overlap_thr=merge_overlap_thr,
+            frame_batch_size=self.frame_batch_size,
             plot_en=plot_en,
-            data_order=self.data_order,
         )
 
     def demix(
@@ -3013,7 +3016,6 @@ class DemixingState(SignalProcessingState):
             self.shape,
             1,
             self.robust_noise_term,
-            order=self.data_order,
             batch_size=self.pixel_batch_size,
             a=self.a,
             c=self.c,

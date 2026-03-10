@@ -5,8 +5,7 @@ import math
 
 from typing import List
 
-
-def compute_highpass_filter_kernel(gaussian_sigma: List[int]) -> torch.tensor:
+def compute_highpass_filter_kernel(gaussian_sigma: List[float]) -> torch.Tensor:
     """
     Computes a high-pass filter kernel using a Gaussian filter.
 
@@ -16,32 +15,31 @@ def compute_highpass_filter_kernel(gaussian_sigma: List[int]) -> torch.tensor:
     Returns:
         torch.Tensor: High-pass filter kernel.
     """
-    if gaussian_sigma[0] < 0:
-        raise ValueError("gaussian_sigma must contain a positive integer")
 
-    # Compute kernel size: ksize = (3 * sigma) rounded to nearest odd integer
-    ksize = [(3 * math.ceil(i)) // 2 * 2 + 1 for i in gaussian_sigma]
+    if len(gaussian_sigma) != 2:
+        raise ValueError("gaussian_sigma must have length 2")
 
-    # Create 1D Gaussian kernel
-    x = torch.arange(ksize[0]) - ksize[0] // 2
-    gauss_1d = torch.exp(-0.5 * (x / gaussian_sigma[0]) ** 2)
-    gauss_1d /= gauss_1d.sum()  # Normalize
+    if any(s <= 0 for s in gaussian_sigma):
+        raise ValueError("gaussian_sigma must contain positive values")
 
-    # Create 2D Gaussian kernel
-    ker2D = gauss_1d[:, None] @ gauss_1d[None, :]  # Outer product
+    sigma_h, sigma_w = gaussian_sigma
 
-    # Find nonzero indices where kernel is greater than its first column max
-    nz = ker2D >= ker2D[:, 0].max()
-    zz = ker2D < ker2D[:, 0].max()
+    radius_h = int(3 * sigma_h)
+    radius_w = int(3 * sigma_w)
 
-    # Modify kernel values for high-pass filtering
-    ker2D[nz] -= ker2D[nz].mean()
-    ker2D[zz] = 0
+    coords_h = torch.arange(-radius_h, radius_h + 1, dtype=torch.float32)
+    coords_w = torch.arange(-radius_w, radius_w + 1, dtype=torch.float32)
 
-    # ker2D /= torch.sum(ker2D)
+    g_h = torch.exp(-0.5 * (coords_h ** 2) / (sigma_h ** 2))
+    g_w = torch.exp(-0.5 * (coords_w ** 2) / (sigma_w ** 2))
 
-    return ker2D
+    kernel = g_h[:, None] @ g_w[None, :]
+    kernel /= kernel.sum()
 
+    kernel = -kernel
+    kernel[radius_h, radius_w] += 1.0
+
+    return kernel
 
 def gaussian_kernel(kernel_size: int = 3, sigma: float = 1.0) -> torch.tensor:
     """Generates a 2D Gaussian kernel."""

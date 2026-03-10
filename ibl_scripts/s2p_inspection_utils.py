@@ -9,6 +9,7 @@ from typing import *
 import masknmf
 from masknmf import utils
 import torch
+from tqdm import tqdm
 
 def make_masks_from_suite2p_statfile(stat: dict,
                                      Ly: int, 
