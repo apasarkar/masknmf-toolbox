@@ -88,7 +88,7 @@ def standard_twophoton_calcium_pipeline(data: Union[np.ndarray, LazyFrameLoader,
         curr_config = CompressDenoiseConfig()
         curr_config.pixel_weighting = shift_mask
         compress_strategy = CompressDenoiseStrategy(device=device,**asdict(curr_config))
-    if isinstance(compress_config, CompressConfig):
+    elif isinstance(compress_config, CompressConfig):
         curr_config = asdict(compress_config)
         if compress_config.pixel_weighting is not None:
             curr_config['pixel_weighting'] = curr_config['pixel_weighting'] * shift_mask
