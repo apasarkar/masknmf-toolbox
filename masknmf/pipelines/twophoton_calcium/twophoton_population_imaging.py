@@ -58,9 +58,9 @@ def standard_twophoton_calcium_pipeline(data: Union[np.ndarray, LazyFrameLoader,
     if motion_correct_config is None:
         moco_strategy = RigidMotionCorrector(**asdict(RigidMotionCorrectionConfig()), device=device, batch_size=frame_batch_size)
     elif isinstance(motion_correct_config, RigidMotionCorrectionConfig):
-        moco_strategy = RigidMotionCorrector(**asdict(MotionCorrectionConfig), device=device, batch_size=frame_batch_size)
+        moco_strategy = RigidMotionCorrector(**asdict(motion_correct_config), device=device, batch_size=frame_batch_size)
     elif isinstance(motion_correct_config, PiecewiseRigidMotionCorrectionConfig):
-        moco_strategy = PiecewiseRigidMotionCorrector(**asdict(MotionCorrectionConfig), device=device, batch_size=frame_batch_size)
+        moco_strategy = PiecewiseRigidMotionCorrector(**asdict(motion_correct_config), device=device, batch_size=frame_batch_size)
     elif isinstance(motion_correct_config, str):
         if motion_correct_config.lower() == "skip":
             moco_strategy = DummyMotionCorrector()
