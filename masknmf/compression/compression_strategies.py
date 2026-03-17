@@ -1,4 +1,4 @@
-from typing import Optional, Literal
+from typing import Optional, Literal, Union
 import masknmf
 from masknmf.compression import PMDArray
 from masknmf.compression.denoising import train_total_variance_denoiser
@@ -9,7 +9,6 @@ import numpy as np
 class CompressStrategy:
 
     def __init__(self,
-                 dataset: ArrayLike | None,
                  block_sizes: tuple[int, int] = (32, 32),
                  frame_range: int | None  = None,
                  max_components: int = 20,
@@ -22,8 +21,6 @@ class CompressStrategy:
                  pixel_weighting: Optional[np.ndarray] = None,
                  device: Literal["auto", "cpu", "cuda"] = "auto",
                  ):
-
-        self._dataset = dataset
 
         ##User-settable parameters
         self._block_sizes = block_sizes
@@ -41,14 +38,6 @@ class CompressStrategy:
         self._pixel_weighting = pixel_weighting
 
         self._results = None
-
-    @property
-    def dataset(self) -> ArrayLike | None:
-        return self._dataset
-
-    @dataset.setter
-    def dataset(self, new_dataset: ArrayLike):
-        self._dataset = new_dataset
 
     @property
     def block_sizes(self) -> tuple[int, int]:
@@ -126,12 +115,8 @@ class CompressStrategy:
     def results(self) -> PMDArray | None:
         return self._results
 
-    def compress(self) -> PMDArray:
-        if self.dataset is None:
-            raise ValueError("No dataset provided. "
-                             "Provide a dataset at construction time of the"
-                             " strategy object or set the dataset property")
-        self._results = pmd_decomposition(self.dataset,
+    def compress(self, dataset: Union[masknmf.ArrayLike, np.ndarray]) -> PMDArray:
+        self._results = pmd_decomposition(dataset,
                                           self.block_sizes,
                                           frame_range=self.frame_range,
                                           max_components=self.max_components,
@@ -150,7 +135,6 @@ class CompressDenoiseStrategy(CompressStrategy):
 
 
     def __init__(self,
-                 dataset: ArrayLike | None,
                  block_sizes: tuple[int, int] = (32, 32),
                  frame_range: int | None  = None,
                  max_components: int = 20,
@@ -166,8 +150,7 @@ class CompressDenoiseStrategy(CompressStrategy):
                  num_epochs: int = 10
                  ):
 
-        super().__init__(dataset,
-                         block_sizes,
+        super().__init__(block_sizes,
                          frame_range,
                          max_components,
                          sim_conf,
@@ -197,13 +180,9 @@ class CompressDenoiseStrategy(CompressStrategy):
     def noise_variance_quantile(self, new_noise_variance_quantile: float):
         self._noise_variance_quantile = new_noise_variance_quantile
 
-    def compress(self):
+    def compress(self, dataset: Union[masknmf.ArrayLike, np.ndarray]):
 
-        if self.dataset is None:
-            raise ValueError("No dataset provided. "
-                             "Provide a dataset at construction time of the"
-                             " strategy object or set the dataset property")
-        pmd_no_denoiser = pmd_decomposition(self.dataset,
+        pmd_no_denoiser = pmd_decomposition(dataset,
                                             self.block_sizes,
                                             frame_range=self.frame_range,
                                             max_components=self.max_components,
@@ -224,7 +203,7 @@ class CompressDenoiseStrategy(CompressStrategy):
 
         curr_temporal_denoiser = masknmf.compression.PMDTemporalDenoiser(trained_model, self.noise_variance_quantile)
 
-        self._results = masknmf.compression.pmd_decomposition(self.dataset,
+        self._results = masknmf.compression.pmd_decomposition(dataset,
                                                              self.block_sizes,
                                                              frame_range=self.frame_range,
                                                              max_components=self.max_components,

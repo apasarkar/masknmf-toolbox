@@ -87,13 +87,13 @@ def standard_twophoton_calcium_pipeline(data: Union[np.ndarray, LazyFrameLoader,
 
     display("Running Compression")
     if compress_config is None:
-        compress_strategy = CompressDenoiseStrategy(moco_data, device=device, **asdict(CompressDenoiseConfig()))
+        compress_strategy = CompressDenoiseStrategy(device=device, **asdict(CompressDenoiseConfig()))
     if isinstance(compress_config, CompressConfig):
-        compress_strategy = CompressStrategy(moco_data, device=device, **asdict(compress_config))
+        compress_strategy = CompressStrategy(device=device, **asdict(compress_config))
     elif isinstance(compress_config, CompressDenoiseConfig):
-        compress_strategy = CompressDenoiseStrategy(moco_data, device=device, **asdict(compress_config))
+        compress_strategy = CompressDenoiseStrategy(device=device, **asdict(compress_config))
 
-    compressed_results = compress_strategy.compress()
+    compressed_results = compress_strategy.compress(moco_data)
 
     compressed_results.export(outpath_compression)
 
