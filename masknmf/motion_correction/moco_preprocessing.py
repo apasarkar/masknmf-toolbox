@@ -6,6 +6,34 @@ import scipy.ndimage as ndi
 import skimage
 import math
 
+def construct_moco_template(full_moco_shifts: np.ndarray,
+                            fov_dims: tuple[int,int]):
+    """
+    Given an array of shifts, decide how many pixels from each corner to exclude for downstream processing.
+
+    The purpose of this function is to establish an upper bound on how many pixels to disregard
+    full_moco_shifts (np.ndarray). Shape (num_frames, patch_height, patch_width, 2) if piecewise rigid registration otherwise
+        shape (num_frames, 2)
+    fov_dims: the height/width of the imaging fov
+    """
+    if full_moco_shifts.ndim == 4:
+        axes = (0, 1, 2)
+    else:
+        axes = 0
+
+    min_dim1, min_dim2 = np.amin(full_moco_shifts, axis = axes)
+    max_dim1, max_dim2 = np.amax(full_moco_shifts, axis = axes)
+    pixel_weighting = np.ones(fov_dims)
+    if min_dim1 < 0:
+        pixel_weighting[math.floor(min_dim1):, :] = 0
+    if min_dim2 < 0:
+        pixel_weighting[:, math.floor(min_dim2):] = 0
+    if max_dim1 > 0:
+        pixel_weighting[:min(math.ceil(max_dim1), fov_dims[0]), :] = 0
+    if max_dim2 > 0:
+        pixel_weighting[:, :min(math.ceil(max_dim2), fov_dims[1])] = 0
+    return pixel_weighting
+
 def compute_saturation_mask(data: np.ndarray,
                             saturation_limit: Union[float, int]) -> np.ndarray:
     """

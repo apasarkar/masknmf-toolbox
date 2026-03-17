@@ -79,18 +79,28 @@ def standard_twophoton_calcium_pipeline(data: Union[np.ndarray, LazyFrameLoader,
     full_moco_arr.export(os.path.abspath(outpath_motion_correction))
 
     moco_data = masknmf.RegistrationArray.from_hdf5(outpath_motion_correction)
+    shift_mask = masknmf.motion_correction.moco_preprocessing.construct_moco_template(moco_data.shifts, moco_data.shape[1:]).astype("float")
     if load_into_ram:
         moco_data = moco_data[:]
 
-    ## TODO: Add code that will mask out the pixels you do not want
-    ## TODO: Move the moco_data called below to the .compress() function once we change the API there properly
-
     display("Running Compression")
     if compress_config is None:
-        compress_strategy = CompressDenoiseStrategy(device=device, **asdict(CompressDenoiseConfig()))
+        curr_config = CompressDenoiseConfig()
+        curr_config.pixel_weighting = shift_mask
+        compress_strategy = CompressDenoiseStrategy(device=device,**asdict(curr_config))
     if isinstance(compress_config, CompressConfig):
-        compress_strategy = CompressStrategy(device=device, **asdict(compress_config))
+        curr_config = asdict(compress_config)
+        if compress_config.pixel_weighting is not None:
+            curr_config['pixel_weighting'] = curr_config['pixel_weighting'] * shift_mask
+        else:
+            curr_config['pixel_weighting'] = shift_mask
+        compress_strategy = CompressStrategy(device=device, **curr_config)
     elif isinstance(compress_config, CompressDenoiseConfig):
+        curr_config = asdict(compress_config)
+        if compress_config.pixel_weighting is not None:
+            curr_config['pixel_weighting'] = curr_config['pixel_weighting'] * shift_mask
+        else:
+            curr_config['pixel_weighting'] = shift_mask
         compress_strategy = CompressDenoiseStrategy(device=device, **asdict(compress_config))
 
     compressed_results = compress_strategy.compress(moco_data)
