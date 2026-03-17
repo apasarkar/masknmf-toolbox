@@ -162,8 +162,8 @@ class CompressDenoiseStrategy(CompressStrategy):
                  compute_normalizer: Optional[bool] = True,
                  pixel_weighting: Optional[np.ndarray] = None,
                  device: Literal["auto", "cpu", "cuda"] = "auto",
-                 noise_variance_quantile: float = 0.7,
-                 num_epochs: int = 5
+                 noise_variance_quantile: float = 0.3,
+                 num_epochs: int = 10
                  ):
 
         super().__init__(dataset,
