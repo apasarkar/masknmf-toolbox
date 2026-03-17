@@ -2887,9 +2887,9 @@ class DemixingState(SignalProcessingState):
     def demix(
             self,
             maxiter: int = 25,
-            support_threshold: Union[list, float] = 0.9,
+            support_threshold: Union[list, tuple, float] = 0.9,
             deletion_threshold: float = 0.2,
-            ring_model_start_pt: int = 5,
+            ring_model_start_pt: Optional[int] = 0,
             background_downsampling_factor: int = 20,
             ring_radius: int = 10,
             merge_threshold: float = 0.8,
@@ -2938,8 +2938,10 @@ class DemixingState(SignalProcessingState):
         self.initialize_standard_correlation_image()
         self.compute_residual_correlation_image()
 
-        if isinstance(support_threshold, list):
-            if len(support_threshold) != maxiter:
+        if isinstance(support_threshold, list) or isinstance(support_threshold, tuple):
+            if len(support_threshold) == 2:
+                support_threshold = np.linspace(support_threshold[0], support_threshold[1], maxiter).tolist()
+            elif len(support_threshold) != maxiter:
                 raise ValueError(
                     f"Length of list ``support_threshold`` is not equal to maxiter, which is {maxiter}"
                 )
@@ -2963,7 +2965,7 @@ class DemixingState(SignalProcessingState):
         for iters in tqdm(range(maxiter)):
             self.static_baseline_update()
 
-            if iters >= ring_model_start_pt:
+            if ring_model_start_pt is not None and iters >= ring_model_start_pt:
                 self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
             else:
                 pass
