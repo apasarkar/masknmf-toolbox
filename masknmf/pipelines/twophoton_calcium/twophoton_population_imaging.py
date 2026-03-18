@@ -35,7 +35,7 @@ def standard_twophoton_calcium_pipeline(data: Union[np.ndarray, LazyFrameLoader,
                                         outpath_motion_correction: Optional[str] = "motion_correction.hdf5",
                                         outpath_compression: Optional[str] = "compression.hdf5",
                                         outpath_demixing: Optional[str] = "demixing_results.hdf5",
-                                        load_into_ram: bool = True,
+                                        load_into_ram: bool = False,
                                         frame_batch_size: int= 300,
                                         device: Literal["auto", "cuda", "cpu"] = "auto") -> masknmf.DemixingResults:
     """
