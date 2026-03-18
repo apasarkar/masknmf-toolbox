@@ -107,6 +107,7 @@ class PMDArray(FactorizedVideo, Serializer):
         "u_local_projector",
         "mean_img",
         "var_img"
+        "block_ranks"
     }
 
     def __init__(
@@ -117,6 +118,7 @@ class PMDArray(FactorizedVideo, Serializer):
         mean_img: torch.tensor,
         var_img: torch.tensor,
         u_local_projector: Optional[torch.sparse_coo_tensor] = None,
+        block_ranks: Optional[torch.tensor] = None,
         device: str = "cpu",
         rescale: bool = True,
     ):
@@ -132,6 +134,7 @@ class PMDArray(FactorizedVideo, Serializer):
             mean_img (torch.tensor): shape (fov_dim1, fov_dim2). The pixelwise mean of the data
             var_img (torch.tensor): shape (fov_dim1, fov_dim2). A pixelwise noise normalizer for the data
             u_local_projector (Optional[torch.sparse_coo_tensor]): shape (pixels, rank)
+            block_ranks (Optional[torch.tensor]): shape (n blocks). Stores final rank of each block
             resid_std (torch.tensor): The residual standard deviation, shape (fov_dim1, fov_dim2)
             device (str): The device on which computations occur/data is stored
             rescale (bool): True if we rescale the PMD data (i.e. multiply by the pixelwise normalizer
@@ -144,6 +147,10 @@ class PMDArray(FactorizedVideo, Serializer):
             self._u_local_projector = u_local_projector.to(device).coalesce()
         else:
             self._u_local_projector = None
+        if block_ranks is not None:
+            self._block_ranks = block_ranks.to(device)
+        else:
+            self._block_ranks = None
 
         self._device = self._u.device
         self._shape = tuple(shape)
@@ -185,6 +192,8 @@ class PMDArray(FactorizedVideo, Serializer):
         self._device = self._u.device
         if self.u_local_projector is not None:
             self._u_local_projector = self.u_local_projector.to(device)
+        if self.block_ranks is not None:
+            self._block_ranks = self._block_ranks.to(device)
 
     @property
     def u(self) -> torch.sparse_coo_tensor:
@@ -193,6 +202,10 @@ class PMDArray(FactorizedVideo, Serializer):
     @property
     def u_local_projector(self) -> Optional[torch.sparse_coo_tensor]:
         return self._u_local_projector
+
+    @property 
+    def block_ranks(self) -> Optional[torch.tensor]:
+        return self._block_ranks
 
     @property
     def pmd_rank(self) -> int:

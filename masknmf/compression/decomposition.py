@@ -1247,6 +1247,7 @@ def pmd_decomposition(
     spatial_overall_unweighted_values = []
     cumulative_weights = torch.zeros((fov_dim1, fov_dim2), dtype=dtype, device=device)
     total_temporal_fit = []
+    blockwise_ranks = []
 
     display("Finding spatiotemporal roughness thresholds")
     spatial_roughness_threshold, temporal_roughness_threshold = threshold_heuristic(
@@ -1294,6 +1295,9 @@ def pmd_decomposition(
 
             dataset_mean[slice_dim1, slice_dim2] = subset_mean
             dataset_noise_std[slice_dim1, slice_dim2] = subset_noise_std
+
+            # Append the rank to storage even if rank = 0
+            blockwise_ranks.append(local_temporal_basis.shape[0])
 
             if local_temporal_basis.shape[0] == 0:
                 continue
@@ -1371,6 +1375,8 @@ def pmd_decomposition(
     else:
         v_aggregated = torch.concatenate(total_temporal_fit, dim=0)
 
+    blockwise_ranks = torch.tensor(blockwise_ranks)
+
     interpolation_weightings = torch.reciprocal(
         cumulative_weights.flatten()[final_row_indices]
     )
@@ -1396,6 +1402,9 @@ def pmd_decomposition(
         dataset_noise_std,
         u_local_projector=u_local_projector.cpu()
         if u_local_projector is not None
+        else None,
+        block_ranks = blockwise_ranks.cpu() 
+        if blockwise_ranks is not None
         else None,
         device="cpu",
     )
