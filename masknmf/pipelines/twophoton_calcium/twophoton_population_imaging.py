@@ -1,15 +1,13 @@
 from dataclasses import asdict
 import masknmf
-from masknmf.motion_correction import RigidMotionCorrector
 from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import RegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.utils import display
-from masknmf.demixing.signal_demixer import SignalDemixer
 
-from masknmf.pipelines.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
-from masknmf.pipelines.compression_configs import CompressConfig, CompressDenoiseConfig
-from masknmf.pipelines.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig
+from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
+from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
+from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig
 
 from masknmf.utils import torch_select_device
 from typing import *
