@@ -153,6 +153,13 @@ class RegistrationArray(LazyFrameLoader, Serializer):
         reference_data_frames = self.reference_movie[idx]
         target_data_frames = None if self.target_movie is None else self.target_movie[idx]
 
+        #Ensure that we pass in (num_frames, height, width) data to the correction code
+        if reference_data_frames.ndim == 2:
+            reference_data_frames = reference_data_frames[None, ...]
+        if target_data_frames is not None:
+            if target_data_frames.ndim == 2:
+                target_data_frames = target_data_frames[None, ...]
+
         return self.strategy.correct(
             reference_movie_frames=reference_data_frames,
             target_movie_frames=target_data_frames,
