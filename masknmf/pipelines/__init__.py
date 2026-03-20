@@ -1,7 +1,8 @@
 from masknmf.pipelines.widefield.widefield_calcium import widefield_singlechannel_pipeline
-from masknmf.pipelines.twophoton_calcium.twophoton_population_imaging import standard_twophoton_calcium_pipeline
+from masknmf.pipelines.twophoton_calcium.twophoton_population_imaging import TwoPhotonCalciumPipeline
+from masknmf.pipelines.configs import *
 
 __all__ = [
-    "standard_twophoton_calcium_pipeline",
+    "TwoPhotonCalciumPipeline",
     "widefield_singlechannel_pipeline",
 ]

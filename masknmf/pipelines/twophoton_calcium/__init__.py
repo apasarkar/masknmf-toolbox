@@ -1,5 +1,5 @@
-from masknmf.pipelines.twophoton_calcium.twophoton_population_imaging import standard_twophoton_calcium_pipeline
+from masknmf.pipelines.twophoton_calcium.twophoton_population_imaging import TwoPhotonCalciumPipeline
 
 __all__ = [
-    "standard_twophoton_calcium_pipeline"
+    "TwoPhotonCalciumPipeline"
 ]
