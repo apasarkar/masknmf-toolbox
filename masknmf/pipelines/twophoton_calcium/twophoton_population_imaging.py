@@ -26,7 +26,7 @@ def run_singlepass_demixing(demixing_obj: masknmf.SignalDemixer,
     return demixing_obj
 
 
-class TwoPhotonCalciumPipeline:
+class TwoPhotonCalciumPipeline(BasePipeline):
     def __init__(self,
                  motion_correct_config: RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig | Literal[
                      "skip"] | None = None,
@@ -97,8 +97,9 @@ class TwoPhotonCalciumPipeline:
     @property
     def device(self) -> Literal["auto", "cuda", "cpu"]:
         return self._device
+
     @property
-    def configs(self):
+    def config(self):
         return {'motion_correct_config': self.motion_correct_config,
                 'compress_config': self.compress_config,
                 'spatial_highpass_config': self.spatial_highpass_config,
@@ -110,6 +111,7 @@ class TwoPhotonCalciumPipeline:
                 'load_into_ram': self.load_into_ram,
                 'frame_batch_size': self.frame_batch_size,
                 'device': self.device}
+
     def run(self, data: np.ndarray | LazyFrameLoader | ArrayLike):
         """
                 Uses the API to run rigid motion correction, compression (with denoising), and demixing.

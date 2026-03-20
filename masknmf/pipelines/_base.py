@@ -8,6 +8,7 @@ class BasePipeline(ABC):
     @abstractmethod
     def config(self):
         pass
+
     @abstractmethod
     def run(self, data):
         """
