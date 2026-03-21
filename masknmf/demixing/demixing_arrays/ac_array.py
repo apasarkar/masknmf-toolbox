@@ -25,7 +25,7 @@ class ACArray(FactorizedVideo):
                 (and which are effectively zerod out). Can be toggled
         """
 
-        self._a = a
+        self._a = a.coalesce()
         self._c = c
         # Check that both objects are on same device
         if self._a.device != self._c.device:
@@ -36,6 +36,8 @@ class ACArray(FactorizedVideo):
         self.pixel_mat = np.arange(np.prod(self.shape[-2:])).reshape([self.shape[-2], self.shape[-1]])
         self.pixel_mat = torch.from_numpy(self.pixel_mat).long().to(self.device)
         self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
+        self._centers = None
+        self._bbox = None
 
     @property
     def device(self) -> str:
@@ -48,6 +50,82 @@ class ACArray(FactorizedVideo):
     @mask.setter
     def mask(self, new_mask: torch.tensor):
         self._mask = new_mask.to(self.device).bool().to(self.c.dtype) #Ensures it's all 1s and 0s
+
+    @property
+    def centers(self) -> torch.tensor:
+        """
+        Returns a (num_signals, 2) shaped tensor describing the height, width dimensions of each signals spatial center
+            of mass. The center of mass might not be on an active pixel, but this is ok
+        """
+        if self._centers is None:
+            height, width = self.shape[1:]
+            num_signals = self.a.shape[1]
+            row, col = self.a.indices()
+            values = self.a.values().float()
+
+            # First get rid of values that are nonzero
+            row = row[values != 0]
+            col = col[values != 0]
+
+            # Need to unvectorize row
+            dim0_coords = row // width
+            dim1_coords = row % width
+
+            dim0_com_numerator = torch.zeros(num_signals, device=self.device).float()
+            dim0_com_denominator = torch.zeros(num_signals, device=self.device).float()
+
+            dim1_com_numerator = torch.zeros(num_signals, device=self.device).float()
+            dim1_com_denominator = torch.zeros(num_signals, device=self.device).float()
+
+            dim0_com_numerator.scatter_reduce_(0, col, (dim0_coords * values).float(), reduce="sum")
+            dim0_com_denominator.scatter_reduce_(0, col, values, reduce="sum")
+
+            dim1_com_numerator.scatter_reduce_(0, col, (dim1_coords * values).float(), reduce="sum")
+            dim1_com_denominator.scatter_reduce_(0, col, values, reduce="sum")
+
+            dim0_com = torch.nan_to_num(dim0_com_numerator / dim0_com_denominator, nan=0.0)
+            dim1_com = torch.nan_to_num(dim1_com_numerator / dim1_com_denominator, nan=0.0)
+
+            self._centers = torch.stack([dim0_com, dim1_com], dim=1)
+
+        return self._centers
+
+    @property
+    def bbox(self) -> torch.tensor:
+        """
+        Returns a torch tensor of shape (num_signals, 4). Each row contains 4 elements a1, a2, b1, b2 which define a bounding box
+            of a neuron image like img[a1:a2, b1:b2]
+
+        """
+        if self._bbox is None:
+            height, width = self.shape[1:]
+            num_signals = self.a.shape[1]
+            row, col = self.a.indices()
+            values = self.a.values()
+
+            #First get rid of values that are nonzero
+            row = row[values != 0]
+            col = col[values != 0]
+
+            #Need to unvectorize row
+            dim0_values = (row // width).long()
+            dim1_values = (row % width).long()
+
+            min_dim0 = torch.zeros(num_signals, device=self.device).long()
+            max_dim0 = torch.zeros(num_signals, device=self.device).long()
+            min_dim1 = torch.zeros(num_signals, device=self.device).long()
+            max_dim1 = torch.zeros(num_signals, device=self.device).long()
+
+            min_dim0.scatter_reduce_(0, col, dim0_values,  reduce="amin", include_self=False)
+            max_dim0.scatter_reduce_(0, col, dim0_values, reduce="amax", include_self=False)
+            min_dim1.scatter_reduce_(0, col, dim1_values, reduce="amin", include_self=False)
+            max_dim1.scatter_reduce_(0, col, dim1_values, reduce="amax", include_self=False)
+
+            self._bbox = torch.stack([min_dim0, max_dim0, min_dim1, max_dim1], dim=1)
+        return self._bbox
+
+
+
 
     @property
     def c(self) -> torch.tensor:
