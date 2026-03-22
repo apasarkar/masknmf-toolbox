@@ -96,7 +96,10 @@ class DemixingResults(Serializer):
         "resid_corr_img_mean",
         "resid_corr_img_normalizer",
         "bkgd_corr_img_mean",
-        "bkgd_corr_img_normalizer"
+        "bkgd_corr_img_normalizer",
+        "pmd_roi_averages",
+        "fluctuating_background_roi_averages",
+        "residual_roi_averages"
     }
 
     def __init__(
@@ -120,6 +123,9 @@ class DemixingResults(Serializer):
             bkgd_corr_img_mean: Optional[torch.Tensor] = None,
             bkgd_corr_img_normalizer: Optional[torch.Tensor] = None,
             global_residual_correlation_image: Optional[torch.Tensor] = None,
+            pmd_roi_averages: Optional[torch.Tensor] = None,
+            fluctuating_background_roi_averages: Optional[torch.Tensor] = None,
+            residual_roi_averages: Optional[torch.Tensor] = None,
             order: str = "C",
             device="cpu",
     ):
@@ -194,6 +200,13 @@ class DemixingResults(Serializer):
                                                                            keepdim=True))))
         else:
             self._b = b
+
+        if pmd_roi_averages is not None:
+            self._pmd_roi_averages = pmd_roi_averages
+        if fluctuating_background_roi_averages is not None:
+            self._fluctuating_background_roi_averages = fluctuating_background_roi_averages
+        if residual_roi_averages is not None:
+            self._residual_roi_averages = residual_roi_averages
 
         if std_corr_img_mean is None or std_corr_img_normalizer is None:
             self._std_corr_img_mean = None
