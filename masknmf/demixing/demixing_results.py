@@ -221,6 +221,10 @@ class DemixingResults(Serializer):
         # Move all tracked tensors to desired location so everything is on one device
         self.to(self.device)
 
+        self._pmd_roi_averages = None
+        self._fluctuating_background_roi_averages = None
+        self._residual_roi_averages = None
+
     @property
     def pmd_mean_img(self) -> Union[None, torch.Tensor]:
         return self._pmd_mean_img
@@ -334,7 +338,6 @@ class DemixingResults(Serializer):
     def resid_corr_img_normalizer(self) -> Union[None, torch.Tensor]:
         return self._resid_corr_img_normalizer
 
-
     @property
     def global_residual_correlation_image(self) -> Union[None, torch.Tensor]:
         return self._global_residual_corr_img
@@ -347,6 +350,54 @@ class DemixingResults(Serializer):
     def bkgd_corr_img_normalizer(self) -> Union[None, torch.Tensor]:
         return self._bkgd_corr_img_normalizer
 
+    def _roi_averages(self) -> tuple[torch.tensor, torch.tensor, torch.tensor]:
+        """
+        Returns the ROI averages for each spatial footprint of the AC Array in the PMD movie, fluctuating background movie,
+        and residual movie.
+        """
+        if self._residual_roi_averages is None or self._pmd_roi_averages is None or self._fluctuating_background_roi_averages is None:
+            residual_roi_averages = torch.zeros_like(self.c)
+            pmd_roi_averages = torch.zeros_like(self.c)
+            fluctuating_background_roi_averages = torch.zeros_like(self.c)
+
+            ind_select_tensor = torch.arange(self.a.shape[1], device=self.device).long()
+            avg_tensor = torch.zeros(self.a.shape[0], device=self.device)
+            u_t = self.u.t()
+            a_t = self.a.t()
+            for k in range(self.a.shape[1]):
+                row, col = torch.index_select(self.a, 1, ind_select_tensor[k:k+1]).coalesce().indices()
+                avg_tensor[row] = 1.0
+                divisor = torch.sum(avg_tensor)
+                avg_tensor[row] /= divisor
+                u_avg = torch.sparse.mm(u_t, avg_tensor[:, None]).T
+                avg_pmd = u_avg @ self.v
+                avg_bkgd = (u_avg @ self.factorized_bkgd_term1) @ self.factorized_bkgd_term2
+                avg_static_bkgd = avg_tensor[None, :] @ self.b
+                a_avg = torch.sparse.mm(a_t, avg_tensor[:, None])
+                ac_avg = (self.c @ a_avg).T
+                resid = avg_pmd - avg_bkgd - avg_static_bkgd - ac_avg
+
+                pmd_roi_averages[:, k] = avg_pmd.squeeze()
+                fluctuating_background_roi_averages[:, k] = avg_bkgd.squeeze()
+                residual_roi_averages[:, k] = resid.squeeze()
+                avg_tensor *= 0 #Reset this
+            self._pmd_roi_averages = pmd_roi_averages
+            self._fluctuating_background_roi_averages = fluctuating_background_roi_averages
+            self._residual_roi_averages = residual_roi_averages
+
+        return (self._pmd_roi_averages, self._fluctuating_background_roi_averages, self._residual_roi_averages)
+
+    @property
+    def pmd_roi_averages(self) -> torch.tensor:
+        return self._roi_averages()[0]
+
+    @property
+    def fluctuating_background_roi_averages(self) -> torch.tensor:
+        return self._roi_averages()[1]
+
+    @property
+    def residual_roi_averages(self) -> torch.tensor:
+        return self._roi_averages()[2]
 
     @property
     def standard_correlation_image(self) -> Union[None, StandardCorrelationImages]:
@@ -437,5 +488,4 @@ class DemixingResults(Serializer):
     @property
     def colorful_ac_array(self) -> ColorfulACArray:
         return ColorfulACArray(self.fov_shape, self.a, self.c)
-
 
