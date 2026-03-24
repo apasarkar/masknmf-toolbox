@@ -44,15 +44,6 @@ class MotionCorrectionVis:
                 ref_range = {"time": (0, registration_array.shape[0], 1)}
                 frame_timings = np.arange(registration_array.shape[0])
 
-        if np.amin(frame_timings) < ref_range["time"][0]:
-            raise ValueError(
-                f"the min frame time {np.amin(frame_timings)} is lower than the start point of the reference time range {ref_range['time'][0]}"
-            )
-        if np.amax(frame_timings) > ref_range["time"][1]:
-            raise ValueError(
-                f"the max frame time {np.amax(frame_timings)} is higher than the start point of the reference time range {ref_range['time'][1]}"
-            )
-
         if self.shifts.ndim == 4:  # This is piecewise rigid registration
             raise ValueError("Not fully supported yet")
             ## TODO: Make a nicer vector field graphic here
