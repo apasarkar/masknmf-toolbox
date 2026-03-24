@@ -1,4 +1,4 @@
-from .interactive_guis import (
+from masknmf.visualization.interactive_guis import (
     signal_space_demixing,
     stack_comparison_interface,
     get_correlation_widget,
@@ -7,7 +7,7 @@ from .interactive_guis import (
     visualize_superpixels_peaks,
     quantile_segregated_signal_gui
 )
-from .plots import (
+from masknmf.visualization.plots import (
     construct_index,
     plot_ith_roi,
     plot_pmd_vs_raw_stack_diagnostic,
@@ -16,10 +16,13 @@ from .plots import (
     pmd_temporal_denoiser_trace_plot
 )
 
+from masknmf.visualization.motion_vis import MotionCorrectionVis
+
 __all__ = [
     "PMDWidget",
     "visualize_superpixels_peaks",
     "plot_ith_roi",
     "construct_index",
-    "make_demixing_video"
+    "make_demixing_video",
+    "MotionCorrectionVis"
 ]
