@@ -217,10 +217,10 @@ class SingleSessionDemixingVis:
         ac_trace = np.mean(self._ac_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
 
 
-        self._ndw[self._trace_panels[0]][self._trace_panels[0]].data = format_timeseries(num_frames, x_data, pmd_trace)
-        self._ndw[self._trace_panels[1]][self._trace_panels[1]].data = format_timeseries(num_frames, x_data, ac_trace)
-        self._ndw[self._trace_panels[2]][self._trace_panels[2]].data = format_timeseries(num_frames, x_data, background_trace)
-        self._ndw[self._trace_panels[3]][self._trace_panels[3]].data = format_timeseries(num_frames, x_data, residual_trace)
+        self._ndw[self._trace_panels[0]][self._trace_panels[0]].data = fpl.utils.functions.heatmap_to_positions(pmd_trace[None, :], x_data)
+        self._ndw[self._trace_panels[1]][self._trace_panels[1]].data = fpl.utils.functions.heatmap_to_positions(ac_trace[None, :], x_data)
+        self._ndw[self._trace_panels[2]][self._trace_panels[2]].data = fpl.utils.functions.heatmap_to_positions(background_trace[None, :], x_data)
+        self._ndw[self._trace_panels[3]][self._trace_panels[3]].data = fpl.utils.functions.heatmap_to_positions(residual_trace[None, :], x_data)
 
 
 
@@ -246,11 +246,3 @@ class SingleSessionDemixingVis:
 
     def show(self):
         return self.widget.show()
-
-def format_timeseries(data_shape: int,
-                      x_data: np.ndarray,
-                      y_data: np.ndarray):
-    series = np.zeros((1, data_shape, 2))
-    series[0, :, 0] = x_data
-    series[0, :, 1] = y_data
-    return series
