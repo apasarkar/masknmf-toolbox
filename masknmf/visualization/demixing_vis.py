@@ -156,7 +156,7 @@ class SingleSessionDemixingVis:
                 ("l", "time", "d"),
                 slider_dim_transforms=movie_index_mapping.copy(),
                 x_range_mode="auto",
-                display_window=10000000000.0,
+                display_window=50.0,
                 name=self._trace_panels[0],
             )
 
@@ -167,7 +167,7 @@ class SingleSessionDemixingVis:
             ("l", "time", "d"),
             slider_dim_transforms=movie_index_mapping.copy(),
             x_range_mode="auto",
-            display_window=10000000000.0,
+            display_window=50.0,
             name=self._trace_panels[1],
         )
 
@@ -178,7 +178,7 @@ class SingleSessionDemixingVis:
             ("l", "time", "d"),
             slider_dim_transforms=movie_index_mapping.copy(),
             x_range_mode="auto",
-            display_window=10000000000.0,
+            display_window=50.0,
             name=self._trace_panels[2],
         )
 
@@ -189,7 +189,7 @@ class SingleSessionDemixingVis:
             ("l", "time", "d"),
             slider_dim_transforms=movie_index_mapping.copy(),
             x_range_mode="auto",
-            display_window=10000000000.0,
+            display_window=50.0,
             name=self._trace_panels[3],
         )
 
@@ -207,14 +207,14 @@ class SingleSessionDemixingVis:
         x_data = np.arange(num_frames)
         col, row = ev.pick_info["index"]
 
-        colslice = slice(max(0, col - self._roi_radius), min(width, col + self._roi_radius + 1))
-        rowslice = slice(max(0, row - self._roi_radius), min(height, row + self._roi_radius + 1))
+        col_start, col_stop = max(0, col - self._roi_radius), min(width, col + self._roi_radius + 1)
+        row_start, row_stop = max(0, row - self._roi_radius), min(height, row + self._roi_radius + 1)
         ## For each array, add the appropriate data
 
-        pmd_trace = np.mean(self._pmd_array[:, rowslice, colslice], axis = (1,2))
-        residual_trace = np.mean(self._residual_array[:, rowslice, colslice], axis = (1, 2))
-        background_trace = np.mean(self._fluctuating_background_array[:, rowslice, colslice], axis = (1, 2))
-        ac_trace = np.mean(self._ac_array[:, rowslice, colslice], axis = (1, 2))
+        pmd_trace = np.mean(self._pmd_array[:, row_start:row_stop, col_start:col_stop], axis = (1,2))
+        residual_trace = np.mean(self._residual_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
+        background_trace = np.mean(self._fluctuating_background_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
+        ac_trace = np.mean(self._ac_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
 
 
         self._ndw[self._trace_panels[0]][self._trace_panels[0]].data = format_timeseries(num_frames, x_data, pmd_trace)
