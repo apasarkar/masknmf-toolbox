@@ -61,6 +61,7 @@ class SingleSessionDemixingVis:
                         "residual corr img")
 
         self._pmd_array = self.demixing_results.pmd_array
+        self._pmd_array.rescale = False
         self._fluctuating_background_array = self.demixing_results.fluctuating_background_array
         self._residual_array = self.demixing_results.residual_array
         self._colorful_ac_array = self.demixing_results.colorful_ac_array
@@ -71,26 +72,26 @@ class SingleSessionDemixingVis:
                         "background trace",
                         "residual trace")
 
-        self._extents =  {
-                self._video_panels[0]: (0, 0.333, 0.0, 0.2),
-                self._video_panels[1]: (0.33, 0.666, 0.0, 0.2),
-                self._video_panels[2]: (0.666, 1, 0.0, 0.2),
-                self._video_panels[3]: (0.0, 0.333, 0.2, 0.4),
-                self._video_panels[4]: (0.333, 0.666, 0.2, 0.4),
-                self._video_panels[5]: (0.666, 1, 0.2, 0.4),
-                self._trace_panels[0]: (0, 1, 0.4, 0.55),
-                self._trace_panels[1]: (0, 1, 0.55, 0.7),
-                self._trace_panels[2]: (0, 1, 0.7, 0.85),
-                self._trace_panels[3]: (0, 1, 0.85, 1.0)
+        self._video_extents =  {
+                self._video_panels[0]: (0, 0.333, 0.0, 0.5),
+                self._video_panels[1]: (0.33, 0.666, 0.0, 0.5),
+                self._video_panels[2]: (0.666, 1, 0.0, 0.5),
+                self._video_panels[3]: (0.0, 0.333, 0.5, 1.0),
+                self._video_panels[4]: (0.333, 0.666, 0.5, 1.0),
+                self._video_panels[5]: (0.666, 1, 0.5, 1.0)}
+        self._trace_extents = {
+                self._trace_panels[0]: (0, 1, 0.0, 0.25),
+                self._trace_panels[1]: (0, 1, 0.25, 0.5),
+                self._trace_panels[2]: (0, 1, 0.5, 0.75),
+                self._trace_panels[3]: (0, 1, 0.75, 1.0)
             }
 
-        self._ndw = fpl.NDWidget(
+        self._ndw_fov = fpl.NDWidget(
             ref_range,
-            extents=self._extents,
-            names=[*self._video_panels,*self._trace_panels],
+            extents=self._video_extents,
+            names=[*self._video_panels],
             controller_ids=[
                 tuple(self._video_panels),
-                tuple(self._trace_panels),
             ],
             size=(1200, 1200),
         )
@@ -98,7 +99,7 @@ class SingleSessionDemixingVis:
         movie_dims = ["time", "m", "n"]
         movie_spatial_dims = ["m", "n"]
         movie_index_mapping = {"time": frame_timings}
-        self._ndw[self._video_panels[0]].add_nd_image(
+        self._ndw_fov[self._video_panels[0]].add_nd_image(
             self._pmd_array,
             movie_dims,
             movie_spatial_dims,
@@ -106,7 +107,7 @@ class SingleSessionDemixingVis:
             name=self._video_panels[0],
         )
 
-        self._ndw[self._video_panels[1]].add_nd_image(
+        self._ndw_fov[self._video_panels[1]].add_nd_image(
             self._ac_array,
             movie_dims,
             movie_spatial_dims,
@@ -114,7 +115,7 @@ class SingleSessionDemixingVis:
             name=self._video_panels[1],
         )
 
-        self._ndw[self._video_panels[2]].add_nd_image(
+        self._ndw_fov[self._video_panels[2]].add_nd_image(
             self._fluctuating_background_array,
             movie_dims,
             movie_spatial_dims,
@@ -122,7 +123,7 @@ class SingleSessionDemixingVis:
             name=self._video_panels[2],
         )
 
-        self._ndw[self._video_panels[3]].add_nd_image(
+        self._ndw_fov[self._video_panels[3]].add_nd_image(
             self._residual_array,
             movie_dims,
             movie_spatial_dims,
@@ -133,7 +134,7 @@ class SingleSessionDemixingVis:
         movie_dims_rgb = ["time", "m", "n", "c"]
         movie_spatial_dims_rgb= ["m", "n", "c"]
         movie_index_mapping = {"time": frame_timings}
-        self._ndw[self._video_panels[4]].add_nd_image(
+        self._ndw_fov[self._video_panels[4]].add_nd_image(
             self._colorful_ac_array,
             movie_dims_rgb,
             movie_spatial_dims_rgb,
@@ -142,63 +143,76 @@ class SingleSessionDemixingVis:
             name=self._video_panels[4],
         )
 
-        self._ndw[self._video_panels[5]].add_nd_image(
+        self._ndw_fov[self._video_panels[5]].add_nd_image(
             self.demixing_results.global_residual_correlation_image.cpu().numpy(),
             ["m", "n"],
             ["m", "n"],
             name=self._video_panels[5],
         )
 
+        self._ndw_traces = fpl.NDWidget(
+            ref_ranges=self._ndw_fov.indices.ref_ranges,
+            ref_index=self._ndw_fov.indices,
+            extents=self._trace_extents,
+            names=[*self._trace_panels],
+            controller_ids=[
+                tuple(self._trace_panels),
+            ],
+            size=(1200, 1200),
+        )
+
         #Traces for the denoised data
-        self._ndw[self._trace_panels[0]].add_nd_timeseries(
+        self._ndw_traces[self._trace_panels[0]].add_nd_timeseries(
                 None,
                 ("l", "time", "d"),
                 ("l", "time", "d"),
                 slider_dim_transforms=movie_index_mapping.copy(),
                 x_range_mode="auto",
-                display_window=50.0,
+                display_window=None,
                 name=self._trace_panels[0],
             )
 
         #Traces for the color-matched signals
-        self._ndw[self._trace_panels[1]].add_nd_timeseries(
+        self._ndw_traces[self._trace_panels[1]].add_nd_timeseries(
             None,
             ("l", "time", "d"),
             ("l", "time", "d"),
             slider_dim_transforms=movie_index_mapping.copy(),
             x_range_mode="auto",
-            display_window=50.0,
+            display_window=None,
             name=self._trace_panels[1],
         )
 
         #Traces for the background
-        self._ndw[self._trace_panels[2]].add_nd_timeseries(
+        self._ndw_traces[self._trace_panels[2]].add_nd_timeseries(
             None,
             ("l", "time", "d"),
             ("l", "time", "d"),
             slider_dim_transforms=movie_index_mapping.copy(),
             x_range_mode="auto",
-            display_window=50.0,
+            display_window=None,
             name=self._trace_panels[2],
         )
 
         #Traces for the residual
-        self._ndw[self._trace_panels[3]].add_nd_timeseries(
+        self._ndw_traces[self._trace_panels[3]].add_nd_timeseries(
             None,
             ("l", "time", "d"),
             ("l", "time", "d"),
             slider_dim_transforms=movie_index_mapping.copy(),
             x_range_mode="auto",
-            display_window=50.0,
+            display_window=None,
             name=self._trace_panels[3],
         )
 
         for name in self._video_panels:
-            print(type(self._ndw[name][name]))
+            # print(type(self._ndw[name][name]))
+            self._ndw_fov[name][name].graphic.add_event_handler(partial(self._click_update), "double_click")
 
-            self._ndw[name][name].graphic.add_event_handler(partial(self._click_update), "double_click")
+        for subplot in self._ndw_fov.figure:
+            subplot.toolbar = False
 
-        for subplot in self._ndw.figure:
+        for subplot in self._ndw_traces.figure:
             subplot.toolbar = False
 
     ## Let's make a dummy click event for now
@@ -216,18 +230,20 @@ class SingleSessionDemixingVis:
         background_trace = np.mean(self._fluctuating_background_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
         ac_trace = np.mean(self._ac_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
 
-        self._ndw[self._trace_panels[0]][self._trace_panels[0]].data = fpl.utils.functions.heatmap_to_positions(pmd_trace[None, :], x_data)
-        self._ndw.figure[self._trace_panels[0]].auto_scale()
+        max_pmd_trace = np.amax(pmd_trace)
+        min_pmd_trace = np.amin(pmd_trace)
 
-        self._ndw[self._trace_panels[1]][self._trace_panels[1]].data = fpl.utils.functions.heatmap_to_positions(ac_trace[None, :], x_data)
-        self._ndw.figure[self._trace_panels[1]].auto_scale()
+        self._ndw_traces[self._trace_panels[0]][self._trace_panels[0]].data = fpl.utils.functions.heatmap_to_positions(pmd_trace[None, :], x_data)
+        self._ndw_traces.figure[self._trace_panels[0]].y_range = (min_pmd_trace, max_pmd_trace)
 
-        self._ndw[self._trace_panels[2]][self._trace_panels[2]].data = fpl.utils.functions.heatmap_to_positions(background_trace[None, :], x_data)
-        self._ndw.figure[self._trace_panels[2]].auto_scale()
+        self._ndw_traces[self._trace_panels[1]][self._trace_panels[1]].data = fpl.utils.functions.heatmap_to_positions(ac_trace[None, :], x_data)
+        self._ndw_traces.figure[self._trace_panels[1]].y_range = (min_pmd_trace, max_pmd_trace)
 
-        self._ndw[self._trace_panels[3]][self._trace_panels[3]].data = fpl.utils.functions.heatmap_to_positions(residual_trace[None, :], x_data)
-        self._ndw.figure[self._trace_panels[3]].auto_scale()
+        self._ndw_traces[self._trace_panels[2]][self._trace_panels[2]].data = fpl.utils.functions.heatmap_to_positions(background_trace[None, :], x_data)
+        self._ndw_traces.figure[self._trace_panels[2]].y_range = (min_pmd_trace, max_pmd_trace)
 
+        self._ndw_traces[self._trace_panels[3]][self._trace_panels[3]].data = fpl.utils.functions.heatmap_to_positions(residual_trace[None, :], x_data)
+        self._ndw_traces.figure[self._trace_panels[3]].y_range = (min_pmd_trace, max_pmd_trace)
 
     @property
     def roi_radius(self) -> int:
@@ -246,8 +262,22 @@ class SingleSessionDemixingVis:
         return self._demixing_results
 
     @property
-    def widget(self) -> fpl.NDWidget:
-        return self._ndw
+    def fov_widget(self) -> fpl.NDWidget:
+        return self._ndw_fov
+
+    @property
+    def trace_widget(self) -> fpl.NDWidget:
+        return self._ndw_traces
 
     def show(self):
-        return self.widget.show()
+
+        # parse based on canvas type
+        if self.fov_widget.figure.canvas.__class__.__name__ == "JupyterRenderCanvas":
+            from ipywidgets import VBox
+            return VBox([self.fov_widget.show(), self.trace_widget.show()])
+
+        elif self.canvas.__class__.__name__ == "QRenderCanvas":
+            self.fov_widget.figure.canvas.show()
+            return self.fov_widget.figure.canvas ##????
+        else:
+            raise ValueError("Canvas type not supported")
