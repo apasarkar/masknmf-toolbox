@@ -49,7 +49,6 @@ class SingleSessionDemixingVis:
                 ref_range = {"time": (0, self.demixing_results.shape[0], 1)}
                 frame_timings = np.arange(self.demixing_results.shape[0])
 
-        demixing_colors = self.demixing_results.colorful_ac_array.colors
 
 
 
@@ -228,7 +227,7 @@ class SingleSessionDemixingVis:
         pmd_trace = np.mean(self._pmd_array[:, row_start:row_stop, col_start:col_stop], axis = (1,2))
         residual_trace = np.mean(self._residual_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
         background_trace = np.mean(self._fluctuating_background_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
-        ac_trace = np.mean(self._ac_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
+        # ac_trace = np.mean(self._ac_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
 
         max_pmd_trace = np.amax(pmd_trace)
         min_pmd_trace = np.amin(pmd_trace)
@@ -236,8 +235,23 @@ class SingleSessionDemixingVis:
         self._ndw_traces[self._trace_panels[0]][self._trace_panels[0]].data = fpl.utils.functions.heatmap_to_positions(pmd_trace[None, :], x_data)
         self._ndw_traces.figure[self._trace_panels[0]].y_range = (min_pmd_trace, max_pmd_trace)
 
-        self._ndw_traces[self._trace_panels[1]][self._trace_panels[1]].data = fpl.utils.functions.heatmap_to_positions(ac_trace[None, :], x_data)
-        self._ndw_traces.figure[self._trace_panels[1]].y_range = (min_pmd_trace, max_pmd_trace)
+        #Pull out colorful signals
+        separated_ac_signals, separated_colors = extract_per_trace_roi_averages(self._colorful_ac_array,
+                                                              slice(row_start, row_stop),
+                                                              slice(col_start, col_stop))
+
+        if separated_ac_signals is not None:
+            colorful_signals_to_display = fpl.utils.functions.heatmap_to_positions(separated_ac_signals, x_data)
+            self._ndw_traces[self._trace_panels[1]][self._trace_panels[1]].data = colorful_signals_to_display
+            self._ndw_traces.figure[self._trace_panels[1]].y_range = (min_pmd_trace, max_pmd_trace)
+            self._ndw_traces[self._trace_panels[1]][self._trace_panels[1]].graphic.colors = separated_colors
+            self._ndw_traces.figure[self._trace_panels[1]].title = f"{separated_ac_signals.shape[0]} signals"
+        else:
+            colorful_signals_to_display = fpl.utils.functions.heatmap_to_positions(np.ones((1, self.demixing_results.shape[0])), x_data)
+            self._ndw_traces[self._trace_panels[1]][self._trace_panels[1]].data = colorful_signals_to_display
+            self._ndw_traces[self._trace_panels[1]][self._trace_panels[1]].data = colorful_signals_to_display
+            self._ndw_traces.figure[self._trace_panels[1]].title = "No signals here"
+
 
         self._ndw_traces[self._trace_panels[2]][self._trace_panels[2]].data = fpl.utils.functions.heatmap_to_positions(background_trace[None, :], x_data)
         self._ndw_traces.figure[self._trace_panels[2]].y_range = (min_pmd_trace, max_pmd_trace)
@@ -281,3 +295,52 @@ class SingleSessionDemixingVis:
             return self.fov_widget.figure.canvas ##????
         else:
             raise ValueError("Canvas type not supported")
+
+
+def extract_per_trace_roi_averages(colorful_ac_array: masknmf.ACArray,
+                                   rowslice: slice,
+                                   colslice: slice):
+    """
+
+    Args:
+        ac_array (masknmf.ACArray): The signal array that contains the factorized signals
+        coloring (torch.tensor): Shape (num_neurons, 3) #Each row is RGB coloring
+    """
+    device = colorful_ac_array.device
+    num_frames, height, width, _ = colorful_ac_array.shape
+    a = colorful_ac_array.a.coalesce() #Shape (num_pixels, num_signals)
+    c = colorful_ac_array.c #Shape (num_frames, num_signals)
+
+    pixel_space = torch.arange(height * width, device = device).reshape(height, width).long()
+    good_row_values = pixel_space[rowslice, colslice].flatten()
+    num_pixels = good_row_values.shape[0]
+
+    row, col = a.indices()
+    values = a.values()
+
+    valid_indices = torch.isin(row, good_row_values)
+    if torch.count_nonzero(valid_indices) == 0:
+        return None, None
+    else:
+        filtered_rows = row[valid_indices]
+        filtered_col = col[valid_indices]
+        filtered_values = values[valid_indices]
+
+        reduce_tensor = torch.zeros(a.shape[1], device=device)
+        reduce_tensor.scatter_reduce_(0, filtered_col, filtered_values, reduce="sum")
+        reduce_tensor = reduce_tensor / num_pixels
+
+        unique_signals = torch.unique(filtered_col)
+        unique_means = reduce_tensor[unique_signals]
+
+        weighted_signals = unique_means[None, :] * c[:, unique_signals] #Shape (num_frames, neural_signals)
+        colors = colorful_ac_array.colors[unique_signals, :] #(neural_signals, 3)
+
+        return weighted_signals.T.cpu().numpy(), colors.cpu().numpy()
+
+
+
+
+
+
+
