@@ -216,12 +216,17 @@ class SingleSessionDemixingVis:
         background_trace = np.mean(self._fluctuating_background_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
         ac_trace = np.mean(self._ac_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
 
-
         self._ndw[self._trace_panels[0]][self._trace_panels[0]].data = fpl.utils.functions.heatmap_to_positions(pmd_trace[None, :], x_data)
-        self._ndw[self._trace_panels[1]][self._trace_panels[1]].data = fpl.utils.functions.heatmap_to_positions(ac_trace[None, :], x_data)
-        self._ndw[self._trace_panels[2]][self._trace_panels[2]].data = fpl.utils.functions.heatmap_to_positions(background_trace[None, :], x_data)
-        self._ndw[self._trace_panels[3]][self._trace_panels[3]].data = fpl.utils.functions.heatmap_to_positions(residual_trace[None, :], x_data)
+        self._ndw.figure[self._trace_panels[0]].auto_scale()
 
+        self._ndw[self._trace_panels[1]][self._trace_panels[1]].data = fpl.utils.functions.heatmap_to_positions(ac_trace[None, :], x_data)
+        self._ndw.figure[self._trace_panels[1]].auto_scale()
+
+        self._ndw[self._trace_panels[2]][self._trace_panels[2]].data = fpl.utils.functions.heatmap_to_positions(background_trace[None, :], x_data)
+        self._ndw.figure[self._trace_panels[2]].auto_scale()
+
+        self._ndw[self._trace_panels[3]][self._trace_panels[3]].data = fpl.utils.functions.heatmap_to_positions(residual_trace[None, :], x_data)
+        self._ndw.figure[self._trace_panels[3]].auto_scale()
 
 
     @property
