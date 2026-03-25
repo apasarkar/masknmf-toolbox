@@ -17,6 +17,7 @@ from masknmf.visualization.plots import (
 )
 
 from masknmf.visualization.motion_vis import MotionCorrectionVis
+from masknmf.visualization.demixing_vis import SingleSessionDemixingVis
 
 __all__ = [
     "PMDWidget",
@@ -24,5 +25,6 @@ __all__ = [
     "plot_ith_roi",
     "construct_index",
     "make_demixing_video",
-    "MotionCorrectionVis"
+    "MotionCorrectionVis",
+    "SingleSessionDemixingVis"
 ]
