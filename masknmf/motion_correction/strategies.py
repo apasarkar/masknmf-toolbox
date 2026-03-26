@@ -454,3 +454,106 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
             num_iterations=num_iterations,
         )
         torch.cuda.empty_cache()
+
+
+class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
+
+    _serialized = {
+        "template",
+        "batch_size"
+    }
+    def __init__(
+            self,
+            template: Optional[np.ndarray] = None,
+            batch_size: int = 200,
+            device: str = "auto",
+    ):
+        super().__init__(template, batch_size=batch_size, device=device)
+
+    @property
+    def batch_size(self) -> int:
+        """get or set the batch size, the number of frames sent to the GPU in batches for motion correction"""
+        return self._batch_size
+
+    @batch_size.setter
+    def batch_size(self, value: int):
+        if not isinstance(value, int):
+            raise ValueError(f"`batch_size` must be an <int>, you passed: {value}")
+        self._batch_size = value
+
+    @property
+    def template(self) -> None | np.ndarray:
+        """registration template to map raw frames onto"""
+        return self._template
+
+    def _correct_singlebatch(
+            self,
+            reference_frames: np.ndarray,
+            target_frames: Optional[np.ndarray],
+    ) -> tuple[np.ndarray, np.ndarray]:
+
+        if self.template is None:
+            raise ValueError(
+                "Template is uninitialized"
+            )
+
+        if target_frames is not None:
+            target_frames = torch.from_numpy(target_frames).to(self.device).float()
+
+        reference_frames = torch.from_numpy(reference_frames).to(self.device).float()
+        num_frames, height, width = reference_frames.shape
+        template = torch.from_numpy(self.template).to(self.device).float()
+        template_projector = torch.from_numpy(self._template_projector).to(self.device).float()
+
+        ref_flat = reference_frames.permute(1, 2, 0).reshape(-1, num_frames)  # [H*W, F]
+        if target_frames is not None:
+            target_flat = target_frames.permute(1, 2, 0).reshape(-1, num_frames)
+        else:
+            target_flat = None
+        shift = template_projector @ ref_flat  # [2, F]
+        if target_frames is not None:
+            result = target_flat - template @ shift
+        else:
+            result = ref_flat - template @ shift
+
+        result = result.reshape(height, width, num_frames).permute(2, 0, 1)
+        return result.cpu().numpy(), shift.cpu().numpy().T
+
+    def compute_template(
+            self,
+            frames: masknmf.ArrayLike | masknmf.LazyFrameLoader
+    ):
+        num_iters = math.ceil(frames.shape[0] / self.batch_size)
+        mean_img = np.zeros((frames.shape[1], frames.shape[2]))
+        for k in tqdm(range(num_iters)):
+            start = k * self.batch_size
+            end = start + self.batch_size
+            mean_img += (np.sum(frames[start:end], axis = 0) / frames.shape[0])
+
+        f0 = torch.from_numpy(mean_img)
+        dfdx = torch.nn.functional.pad(
+            (f0[:, 2:] - f0[:, :-2]) / 2, (1, 1), mode="constant"
+        )  # x-gradient [H, W]
+        dfdy = torch.nn.functional.pad(
+            (f0[2:, :] - f0[:-2, :]) / 2, (0, 0, 1, 1), mode="constant"
+        )  # y-gradient [H, W]
+
+        f0_flat = f0.flatten()  # [H*W]
+        f0_norm_sq = f0_flat @ f0_flat
+
+        def orthogonalize_against_f0(v):
+            return v - (f0_flat @ v) / f0_norm_sq * f0_flat
+
+        dfdx_flat = orthogonalize_against_f0(dfdx.flatten())
+        dfdy_flat = orthogonalize_against_f0(dfdy.flatten())
+
+        A = torch.stack([dfdx_flat, dfdy_flat], dim=1).float()  # [H*W, 2]
+        AtA_inv = torch.linalg.inv(A.T @ A)  # [2, 2]
+        A_projector = AtA_inv @ A.T  # [2, H*W]
+
+        self._template = A.cpu().numpy()
+        self._template_projector = A_projector.cpu().numpy()
+
+
+
+

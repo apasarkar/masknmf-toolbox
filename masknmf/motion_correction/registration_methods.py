@@ -5,7 +5,6 @@ from typing import *
 
 from typing import Tuple
 
-
 def register_frames_rigid(
     reference_frames: torch.tensor,
     template: torch.tensor,
