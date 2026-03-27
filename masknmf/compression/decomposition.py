@@ -920,9 +920,6 @@ def blockwise_decomposition_singlepass(
         left = left[:, indices_to_keep]
         right = right[indices_to_keep, :]
         sing = sing[indices_to_keep]
-    local_spatial_basis = (spatial_basis_orthogonal @ left).reshape(
-        (fov_dim1, fov_dim2, -1)
-    )
     local_temporal_basis = sing[:, None] * right
 
     if temporal_denoiser is not None:
@@ -932,6 +929,12 @@ def blockwise_decomposition_singlepass(
         else:
             local_temporal_basis -= torch.mean(local_temporal_basis, dim=1, keepdims=True)
 
+    v = local_temporal_basis  # (r, T), final temporal basis
+    Q, R = torch.linalg.qr(v.T, mode="reduced")                 # Q:(T,r), R:(r,r)
+    # U = argmin_U ||X - U V||_F^2, via QR solve
+    local_spatial_basis_r = torch.linalg.solve(R, (Q.T @ subset_r.T)).T  # (P, r)
+    local_spatial_basis = local_spatial_basis_r.reshape(fov_dim1, fov_dim2, -1)
+   
     return local_spatial_basis, local_temporal_basis, subset_mean, subset_noise_std
 
 def residual_std_calculation(spatial_decomposition: torch.tensor,
@@ -1401,4 +1404,3 @@ def pmd_decomposition(
     )
     display("PMD Objected constructed")
     return final_pmd_arr
-
