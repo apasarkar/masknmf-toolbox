@@ -6,7 +6,7 @@ from numpy.typing import DTypeLike
 import torch
 import masknmf
 from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
-from .strategies import MotionCorrectionStrategy, RigidMotionCorrector, PiecewiseRigidMotionCorrector, DummyMotionCorrector
+from .strategies import MotionCorrectionStrategy, RigidMotionCorrector, GradientMotionCorrector, PiecewiseRigidMotionCorrector, DummyMotionCorrector
 from .registration_methods import compute_pwrigid_patch_midpoints
 from masknmf.utils import Serializer
 from pathlib import Path
@@ -153,6 +153,13 @@ class RegistrationArray(LazyFrameLoader, Serializer):
         reference_data_frames = self.reference_movie[idx]
         target_data_frames = None if self.target_movie is None else self.target_movie[idx]
 
+        #Ensure that we pass in (num_frames, height, width) data to the correction code
+        if reference_data_frames.ndim == 2:
+            reference_data_frames = reference_data_frames[None, ...]
+        if target_data_frames is not None:
+            if target_data_frames.ndim == 2:
+                target_data_frames = target_data_frames[None, ...]
+
         return self.strategy.correct(
             reference_movie_frames=reference_data_frames,
             target_movie_frames=target_data_frames,
@@ -162,7 +169,7 @@ class RegistrationArray(LazyFrameLoader, Serializer):
         data_output_shape = self.shape
         if isinstance(self.strategy, masknmf.PiecewiseRigidMotionCorrector):
             shifts_output_shape = self.shape[0], self.block_centers.shape[0], self.block_centers.shape[1], 2
-        elif isinstance(self.strategy, masknmf.RigidMotionCorrector):
+        elif isinstance(self.strategy, masknmf.RigidMotionCorrector) or isinstance(self.strategy, masknmf.GradientMotionCorrector):
             shifts_output_shape = self.shape[0], 2
         elif isinstance(self.strategy, masknmf.DummyMotionCorrector):
             shifts_output_shape = None

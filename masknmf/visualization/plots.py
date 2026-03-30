@@ -96,34 +96,29 @@ def construct_index(folder: str, file_prefix="neuron", index_name="index.html"):
     print(f'Index file "{index_file}" created successfully.')
 
 def pixel_crop_stack(array, p1, p2):
+    """
+    Fast routine for taking a small set of pixels and returning a (frames, num_pixels) dataset
+    Normally we would just do array[:, p1, p2] but not all arrays support this
+    """
     if array.shape[0] == 1:
         raise ValueError("Need more than 1 frame in data")
-    if np.amin(p1) == np.amax(p1):
-        term1 = slice(np.amin(p1), np.amin(p1) + 1)
-        dim1_flag = True
-    else:
-        term1 = slice(np.amin(p1), np.amax(p1) + 1)
-        dim1_flag = False
+    dim1_flag = True if np.amin(p1) == np.amax(p1) else False
+    term1 = slice(np.amin(p1), np.amax(p1) + 1)
 
-    if np.amin(p2) == np.amax(p2):
-        term2 = slice(np.amin(p2), np.amin(p2) + 1)
-        dim2_flag = True
-    else:
-        term2 = slice(np.amin(p2), np.amax(p2) + 1)
-        dim2_flag = False
+    dim2_flag = True if np.amin(p2) == np.amax(p2) else False
+    term2 = slice(np.amin(p2), np.amax(p2) + 1)
 
     selected_pixels = array[:, term1, term2].squeeze()
 
     if dim1_flag and dim2_flag:
         data_2d = selected_pixels[:, None]
     elif dim1_flag and not dim2_flag:
-        data_2d = selected_pixels[:, None, p2 - np.amin(p2)]
+        data_2d = selected_pixels[:, None, :][:, np.zeros_like(p2), p2 - np.amin(p2)]
     elif not dim1_flag and dim2_flag:
-        data_2d = selected_pixels[:, p1 - np.amin(p1), None]
+        data_2d = selected_pixels[:, :, None][:, p1 - np.amin(p1), np.zeros_like(p1)]
     else:
         data_2d = selected_pixels[:, p1 - np.amin(p1), p2 - np.amin(p2)]
     return data_2d
-
 
 # For every signal, need to look at the temporal trace and the PMD average, superimposed
 def get_roi_avg(array, p1, p2, normalize=True):
@@ -175,9 +170,6 @@ def plot_ith_roi(
     p1, p2 = a.nonzero()
     T, d1, d2 = results.pmd_array.shape
     pmd_roi_avg = get_roi_avg(results.pmd_array, p1, p2, normalize=False)
-    static_bg_roi_avg = np.ones_like(pmd_roi_avg) * np.mean(
-        results.baseline[p1, p2].cpu().numpy().flatten()
-    )
     fluctuating_bg_roi_avg = get_roi_avg(
         results.fluctuating_background_array, p1, p2, normalize=False
     )
