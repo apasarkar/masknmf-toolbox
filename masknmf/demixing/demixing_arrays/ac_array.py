@@ -298,6 +298,6 @@ class ACArray(FactorizedVideo):
         self,
         item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
     ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
-        return product
+        # product = self.getitem_tensor(item)
+        # product = product.cpu().numpy().astype(self.dtype)
+        return self.getitem_tensor(item)

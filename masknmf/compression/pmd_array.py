@@ -1,8 +1,11 @@
+from typing import *
+
+import numpy as np
+import torch
+
 from masknmf.arrays.array_interfaces import LazyFrameLoader, FactorizedVideo, ArrayLike
 from masknmf.utils import Serializer
-import torch
-from typing import *
-import numpy as np
+from masknmf.utils.linalg import sparse_mm_async
 
 
 def test_slice_effect(my_slice: slice, spatial_dim: int) -> bool:
@@ -329,7 +332,7 @@ class PMDArray(FactorizedVideo, Serializer):
             var_img_crop = self.var_img.flatten()
             implied_fov = self.shape[1], self.shape[2]
 
-        product = torch.sparse.mm(u_crop, v_crop)
+        product = sparse_mm_async(u_crop, v_crop)
         if self.rescale:
             product *= var_img_crop.unsqueeze(1)
             product += mean_img_crop.unsqueeze(1)
@@ -343,9 +346,9 @@ class PMDArray(FactorizedVideo, Serializer):
         self,
         item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
     ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
-        return product
+        # product = self.getitem_tensor(item)
+        # product = product.cpu().numpy().astype(self.dtype)
+        return self.getitem_tensor(item)
 
 
 class PMDResidualArray(ArrayLike):

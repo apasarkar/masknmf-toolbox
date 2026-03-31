@@ -1,8 +1,12 @@
 from typing import *
+
 import numpy as np
-from masknmf.arrays.array_interfaces import FactorizedVideo
 import torch
+
+from masknmf.arrays.array_interfaces import FactorizedVideo
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
+from masknmf.utils.linalg import sparse_mm_async
+
 
 class FluctuatingBackgroundArray(FactorizedVideo):
     """
@@ -33,7 +37,7 @@ class FluctuatingBackgroundArray(FactorizedVideo):
         t = b.shape[1]
         self._shape = (t,) + fov_shape
 
-        self._u = u
+        self._u = u.coalesce()
         self._b = b
         self._a= a
 
@@ -138,12 +142,12 @@ class FluctuatingBackgroundArray(FactorizedVideo):
 
         # Temporal term is guaranteed to have nonzero "T" dimension below
         if np.prod(implied_fov) <= b_crop.shape[1]:
-            product = torch.sparse.mm(u_crop, self.a)
+            product = sparse_mm_async(u_crop, self.a)
             product = torch.matmul(product, b_crop)
 
         else:
             product = torch.matmul(self.a, b_crop)
-            product = torch.sparse.mm(u_crop, product)
+            product = sparse_mm_async(u_crop, product)
 
         if used_order == "F":
             product = product.T.reshape((-1, implied_fov[1], implied_fov[0]))
@@ -158,6 +162,6 @@ class FluctuatingBackgroundArray(FactorizedVideo):
         self,
         item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
     ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
-        return product
+        # product = self.getitem_tensor(item)
+        # product = product.cpu().numpy().astype(self.dtype)
+        return self.getitem_tensor(item)
