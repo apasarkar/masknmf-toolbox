@@ -45,7 +45,7 @@ class MotionCorrectionVis:
                 frame_timings = np.arange(registration_array.shape[0])
 
         if self.shifts.ndim == 4:  # This is piecewise rigid registration
-            raise ValueError("Not fully supported yet")
+            raise NotImplementedError("Not fully supported yet")
             ## TODO: Make a nicer vector field graphic here
             # self._ndw = fpl.NDWidget(ref_range,
             #                          extents=self._extents,

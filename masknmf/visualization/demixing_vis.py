@@ -98,7 +98,7 @@ class SingleSessionDemixingVis:
         movie_dims = ["time", "m", "n"]
         movie_spatial_dims = ["m", "n"]
         movie_index_mapping = {"time": frame_timings}
-        self._ndw_fov[self._video_panels[0]].add_nd_image(
+        self._pmd_graphic = self._ndw_fov[self._video_panels[0]].add_nd_image(
             self._pmd_array,
             movie_dims,
             movie_spatial_dims,
@@ -106,7 +106,7 @@ class SingleSessionDemixingVis:
             name=self._video_panels[0],
         )
 
-        self._ndw_fov[self._video_panels[1]].add_nd_image(
+        self._ac_graphic = self._ndw_fov[self._video_panels[1]].add_nd_image(
             self._ac_array,
             movie_dims,
             movie_spatial_dims,
@@ -114,7 +114,7 @@ class SingleSessionDemixingVis:
             name=self._video_panels[1],
         )
 
-        self._ndw_fov[self._video_panels[2]].add_nd_image(
+        self._background_graphic = self._ndw_fov[self._video_panels[2]].add_nd_image(
             self._fluctuating_background_array,
             movie_dims,
             movie_spatial_dims,
@@ -122,7 +122,7 @@ class SingleSessionDemixingVis:
             name=self._video_panels[2],
         )
 
-        self._ndw_fov[self._video_panels[3]].add_nd_image(
+        self._residual_graphic = self._ndw_fov[self._video_panels[3]].add_nd_image(
             self._residual_array,
             movie_dims,
             movie_spatial_dims,
@@ -133,7 +133,7 @@ class SingleSessionDemixingVis:
         movie_dims_rgb = ["time", "m", "n", "c"]
         movie_spatial_dims_rgb= ["m", "n", "c"]
         movie_index_mapping = {"time": frame_timings}
-        self._ndw_fov[self._video_panels[4]].add_nd_image(
+        self._colorful_signal_graphic = self._ndw_fov[self._video_panels[4]].add_nd_image(
             self._colorful_ac_array,
             movie_dims_rgb,
             movie_spatial_dims_rgb,
@@ -142,7 +142,7 @@ class SingleSessionDemixingVis:
             name=self._video_panels[4],
         )
 
-        self._ndw_fov[self._video_panels[5]].add_nd_image(
+        self._residual_correlation_graphic = self._ndw_fov[self._video_panels[5]].add_nd_image(
             self.demixing_results.global_residual_correlation_image.cpu().numpy(),
             ["m", "n"],
             ["m", "n"],
@@ -161,51 +161,54 @@ class SingleSessionDemixingVis:
         )
 
         #Traces for the denoised data
-        self._ndw_traces[self._trace_panels[0]].add_nd_timeseries(
+        self._pmd_trace_graphic = self._ndw_traces[self._trace_panels[0]].add_nd_timeseries(
                 None,
                 ("l", "time", "d"),
                 ("l", "time", "d"),
                 slider_dim_transforms=movie_index_mapping.copy(),
+                max_display_datapoints=5000,
                 x_range_mode="auto",
                 display_window=None,
                 name=self._trace_panels[0],
             )
 
         #Traces for the color-matched signals
-        self._ndw_traces[self._trace_panels[1]].add_nd_timeseries(
+        self._colorful_signal_trace_graphic = self._ndw_traces[self._trace_panels[1]].add_nd_timeseries(
             None,
             ("l", "time", "d"),
             ("l", "time", "d"),
             slider_dim_transforms=movie_index_mapping.copy(),
             x_range_mode="auto",
+            max_display_datapoints=5000,
             display_window=None,
             name=self._trace_panels[1],
         )
 
         #Traces for the background
-        self._ndw_traces[self._trace_panels[2]].add_nd_timeseries(
+        self._fluctuating_background_trace_graphic = self._ndw_traces[self._trace_panels[2]].add_nd_timeseries(
             None,
             ("l", "time", "d"),
             ("l", "time", "d"),
             slider_dim_transforms=movie_index_mapping.copy(),
             x_range_mode="auto",
+            max_display_datapoints=5000,
             display_window=None,
             name=self._trace_panels[2],
         )
 
         #Traces for the residual
-        self._ndw_traces[self._trace_panels[3]].add_nd_timeseries(
+        self._residual_trace_graphic = self._ndw_traces[self._trace_panels[3]].add_nd_timeseries(
             None,
             ("l", "time", "d"),
             ("l", "time", "d"),
             slider_dim_transforms=movie_index_mapping.copy(),
             x_range_mode="auto",
+            max_display_datapoints=5000,
             display_window=None,
             name=self._trace_panels[3],
         )
 
         for name in self._video_panels:
-            # print(type(self._ndw[name][name]))
             self._ndw_fov[name][name].graphic.add_event_handler(partial(self._click_update), "double_click")
 
         for subplot in self._ndw_fov.figure:
@@ -227,12 +230,11 @@ class SingleSessionDemixingVis:
         pmd_trace = np.mean(self._pmd_array[:, row_start:row_stop, col_start:col_stop], axis = (1,2))
         residual_trace = np.mean(self._residual_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
         background_trace = np.mean(self._fluctuating_background_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
-        # ac_trace = np.mean(self._ac_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
 
         max_pmd_trace = np.amax(pmd_trace)
         min_pmd_trace = np.amin(pmd_trace)
 
-        self._ndw_traces[self._trace_panels[0]][self._trace_panels[0]].data = fpl.utils.functions.heatmap_to_positions(pmd_trace[None, :], x_data)
+        self._pmd_trace_graphic.data = fpl.utils.heatmap_to_positions(pmd_trace[None, :], x_data)
         self._ndw_traces.figure[self._trace_panels[0]].y_range = (min_pmd_trace, max_pmd_trace)
 
         #Pull out colorful signals
@@ -241,22 +243,21 @@ class SingleSessionDemixingVis:
                                                               slice(col_start, col_stop))
 
         if separated_ac_signals is not None:
-            colorful_signals_to_display = fpl.utils.functions.heatmap_to_positions(separated_ac_signals, x_data)
-            self._ndw_traces[self._trace_panels[1]][self._trace_panels[1]].data = colorful_signals_to_display
+            colorful_signals_to_display = fpl.utils.heatmap_to_positions(separated_ac_signals, x_data)
+            self._colorful_signal_trace_graphic.data = colorful_signals_to_display
             self._ndw_traces.figure[self._trace_panels[1]].y_range = (min_pmd_trace, max_pmd_trace)
-            self._ndw_traces[self._trace_panels[1]][self._trace_panels[1]].graphic.colors = separated_colors
+            self._colorful_signal_trace_graphic.graphic.colors = separated_colors
             self._ndw_traces.figure[self._trace_panels[1]].title = f"{separated_ac_signals.shape[0]} signals"
         else:
-            colorful_signals_to_display = fpl.utils.functions.heatmap_to_positions(np.ones((1, self.demixing_results.shape[0])), x_data)
-            self._ndw_traces[self._trace_panels[1]][self._trace_panels[1]].data = colorful_signals_to_display
-            self._ndw_traces[self._trace_panels[1]][self._trace_panels[1]].data = colorful_signals_to_display
+            colorful_signals_to_display = fpl.utils.heatmap_to_positions(np.ones((1, self.demixing_results.shape[0])), x_data)
+            self._colorful_signal_trace_graphic.data = colorful_signals_to_display
             self._ndw_traces.figure[self._trace_panels[1]].title = "No signals here"
 
 
-        self._ndw_traces[self._trace_panels[2]][self._trace_panels[2]].data = fpl.utils.functions.heatmap_to_positions(background_trace[None, :], x_data)
+        self._fluctuating_background_trace_graphic.data = fpl.utils.heatmap_to_positions(background_trace[None, :], x_data)
         self._ndw_traces.figure[self._trace_panels[2]].y_range = (min_pmd_trace, max_pmd_trace)
 
-        self._ndw_traces[self._trace_panels[3]][self._trace_panels[3]].data = fpl.utils.functions.heatmap_to_positions(residual_trace[None, :], x_data)
+        self._ndw_traces[self._trace_panels[3]][self._trace_panels[3]].data = fpl.utils.heatmap_to_positions(residual_trace[None, :], x_data)
         self._ndw_traces.figure[self._trace_panels[3]].y_range = (min_pmd_trace, max_pmd_trace)
 
     @property
@@ -289,12 +290,8 @@ class SingleSessionDemixingVis:
         if self.fov_widget.figure.canvas.__class__.__name__ == "JupyterRenderCanvas":
             from ipywidgets import VBox
             return VBox([self.fov_widget.show(), self.trace_widget.show()])
-
-        elif self.canvas.__class__.__name__ == "QRenderCanvas":
-            self.fov_widget.figure.canvas.show()
-            return self.fov_widget.figure.canvas ##????
         else:
-            raise ValueError("Canvas type not supported")
+            return self.fov_widget.show(), self.trace_widget.show()
 
 
 def extract_per_trace_roi_averages(colorful_ac_array: masknmf.ACArray,
