@@ -10,6 +10,7 @@ from collections import OrderedDict
 import masknmf.arrays
 from masknmf.utils import display
 from functools import partial
+from fastplotlib.widgets.nd_widget._index import ReferenceIndex
 
 class SingleSessionDemixingVis:
     """
@@ -59,6 +60,9 @@ class SingleSessionDemixingVis:
                         "colorful_signals",
                         "residual corr img")
 
+        self._local_signal_panels = ("signals",
+                                     "traces")
+
         self._pmd_array = self.demixing_results.pmd_array
         self._pmd_array.rescale = False
         self._fluctuating_background_array = self.demixing_results.fluctuating_background_array
@@ -84,6 +88,10 @@ class SingleSessionDemixingVis:
                 self._trace_panels[2]: (0, 1, 0.5, 0.75),
                 self._trace_panels[3]: (0, 1, 0.75, 1.0)
             }
+        self._local_signal_extents = {
+            self._local_signal_panels[0]: (0, 0.2, 0, 1),
+            self._local_signal_panels[1]: (0.2, 1, 0, 1)
+        }
 
         self._ndw_fov = fpl.NDWidget(
             ref_range,
@@ -94,6 +102,8 @@ class SingleSessionDemixingVis:
             ],
             size=(1200, 1200),
         )
+
+        self._reference_index = self._ndw_fov.indices
 
         movie_dims = ["time", "m", "n"]
         movie_spatial_dims = ["m", "n"]
@@ -150,8 +160,8 @@ class SingleSessionDemixingVis:
         )
 
         self._ndw_traces = fpl.NDWidget(
-            ref_ranges=self._ndw_fov.indices.ref_ranges,
-            ref_index=self._ndw_fov.indices,
+            ref_ranges=self.reference_index.ref_ranges,
+            ref_index=self.reference_index,
             extents=self._trace_extents,
             names=[*self._trace_panels],
             controller_ids=[
@@ -206,6 +216,17 @@ class SingleSessionDemixingVis:
             max_display_datapoints=5000,
             display_window=None,
             name=self._trace_panels[3],
+        )
+
+        self._ndw_local_signals = fpl.NDWidget(
+            ref_ranges=self.reference_index.ref_ranges,
+            ref_index=self.reference_index,
+            extents=self._local_signal_extents,
+            names=[*self._local_signal_panels],
+            controller_ids=[
+                tuple(self._local_signal_panels),
+            ],
+            size=(1200, 1200),
         )
 
         for name in self._video_panels:
@@ -283,6 +304,14 @@ class SingleSessionDemixingVis:
     @property
     def trace_widget(self) -> fpl.NDWidget:
         return self._ndw_traces
+
+    @property
+    def local_signal_widget(self) -> fpl.NDWidget:
+        return self._ndw_local_signals
+
+    @property
+    def reference_index(self) -> ReferenceIndex:
+        return self._reference_index
 
     def show(self):
 
