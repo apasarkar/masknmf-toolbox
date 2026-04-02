@@ -520,7 +520,6 @@ class DemixingResults(Serializer):
         """
         if self._fluctuating_background_array is None:
             self._fluctuating_background_array = FluctuatingBackgroundArray(self.fov_shape,
-                                          self.order,
                                           self.u,
                                           self.factorized_bkgd_term1,
                                           self.factorized_bkgd_term2)

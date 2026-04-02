@@ -8,6 +8,8 @@ class ColorfulACArray(FactorizedVideo):
     """
     Factorized video for the spatial and temporal extracted sources from the data
     """
+    DATA_ARRAYS = ["a",
+                   "c"]
 
     def __init__(
         self,
@@ -30,11 +32,10 @@ class ColorfulACArray(FactorizedVideo):
         self._c = c - torch.amin(c, dim=0, keepdim=True)
         if not (self.a.device == self.c.device):
             raise ValueError(f"Input tensors not on same device")
-        self._device = self.a.device
         fov_shape = tuple(map(int, fov_shape))
         self._shape = (t, *fov_shape, 3)
-        self.pixel_mat = np.arange(np.prod(self.shape[1:3])).reshape([self.shape[1], self.shape[2]])
-        self.pixel_mat = torch.from_numpy(self.pixel_mat).long().to(self.device)
+        self.pixel_mat = torch.arange(np.prod(self.shape[1:3]), device=self.device, dtype=torch.long).reshape(
+            self.shape[1], self.shape[2])
         self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
 
         ## Establish the coloring scheme
@@ -44,20 +45,39 @@ class ColorfulACArray(FactorizedVideo):
         color_sum = np.sum(colors, axis=1, keepdims=True)
         self._colors = torch.from_numpy(colors / color_sum).to(self.device).float()
 
+
+    def _find_common_device(self):
+        """
+        Finds the common device that for all data tensors. Throws error if no such device exists
+        """
+        device=None
+        for i, name in enumerate(DATA_ARRAYS):
+            arr = getattr(self, name)
+            if i == 0:
+                device = arr.device
+            else:
+                if not arr.device == device:
+                    raise ValueError("Not all tensors in fluctuating background array are on same device")
+        return device
+
+    @property
+    def device(self) -> str:
+        return self._find_common_device()
+
     @property
     def a(self) -> torch.sparse_coo_tensor:
         return self._a
 
     @property
-    def c(self) -> torch.tensor:
+    def c(self) -> torch.Tensor:
         return self._c
 
     @property
-    def mask(self) -> torch.tensor:
+    def mask(self) -> torch.Tensor:
         return self._mask
 
     @mask.setter
-    def mask(self, new_mask: torch.tensor):
+    def mask(self, new_mask: torch.Tensor):
         self._mask = new_mask.to(self.device).bool().to(self.c.dtype) #Ensures it's all 1s and 0s
 
     @property
@@ -65,7 +85,7 @@ class ColorfulACArray(FactorizedVideo):
         return self._device
 
     @property
-    def colors(self) -> torch.tensor:
+    def colors(self) -> torch.Tensor:
         """
         Colors used for each neuron
 
@@ -75,7 +95,7 @@ class ColorfulACArray(FactorizedVideo):
         return self._colors
 
     @colors.setter
-    def colors(self, new_colors: torch.tensor):
+    def colors(self, new_colors: torch.Tensor):
         """
         Updates the colors used here
         Args:
@@ -104,7 +124,7 @@ class ColorfulACArray(FactorizedVideo):
         """
         return len(self.shape)
 
-    def compute_mip(self) -> torch.tensor:
+    def compute_mip(self) -> torch.Tensor:
         updated_coloring = self.colors * torch.amax(self.c, dim=0, keepdims = True).T #(num_neurons, 3)
         updated_coloring = updated_coloring * self.mask[:, None].float()
         mip_image = torch.sparse.mm(self.a, updated_coloring)

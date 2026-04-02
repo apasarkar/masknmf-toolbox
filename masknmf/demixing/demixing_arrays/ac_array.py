@@ -14,43 +14,77 @@ class ACArray(FactorizedVideo):
         self,
         fov_shape: tuple[int, int],
         a: torch.sparse_coo_tensor,
-        c: torch.tensor,
+        c: torch.Tensor,
+        normalizer: Optional[torch.Tensor] = None,
+        rescale: bool = False
     ):
+        DATA_ARRAYS = ["a", "c"]
         """
         Args:
             fov_shape (tuple): (fov_dim1, fov_dim2)
             a (torch.sparse_coo_tensor): Shape (pixels, components)
-            c (torch.tensor). Shape (frames, components)
-            mask (torch.tensor). Shape (num_components). A mask of 1s and 0s indicating which neurons are actively displayed
-                (and which are effectively zerod out). Can be toggled
+            c (torch.Tensor). Shape (frames, components)
+            normalizer (Optional[torch.Tensor]): A (height, width)-shaped tensor. Multiply the array pixelwise by this
+                value to obtain results in the "raw data" space.
+            rescale (bool): Whether or not to rescale the data to the raw data space. This determines the output of getitem
         """
 
         self._a = a.coalesce()
         self._c = c
-        # Check that both objects are on same device
-        if self._a.device != self._c.device:
-            raise ValueError(f"Spatial and Temporal matrices are not on same device")
-        self._device = self._a.device
+
         num_frames = c.shape[0]
         self._shape = tuple(map(int, (num_frames, *fov_shape)))
-        self.pixel_mat = np.arange(np.prod(self.shape[-2:])).reshape([self.shape[-2], self.shape[-1]])
-        self.pixel_mat = torch.from_numpy(self.pixel_mat).long().to(self.device)
+        self.pixel_mat = torch.arange(np.prod(self.shape[1:]), device=self.device, dtype=torch.long).reshape(
+            self.shape[1], self.shape[2])
         self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
         self._centers = None
         self._bbox = None
         self._contours = None
 
-    @property
-    def device(self) -> str:
-        return self._device
+        self._rescale = rescale
+        self._normalizer = normalizer
+        if self._normalizer is not None:
+            if self._normalizer.shape[0] != self.shape[1] or self._normalizer.shape[1] != self.shape[2]:
+                raise ValueError("Normalizer had dimensions not equal to the fov")
+
+
+    def _find_common_device(self):
+        """
+        Finds the common device that for all data tensors. Throws error if no such device exists
+        """
+        device=None
+        for i, name in enumerate(DATA_ARRAYS):
+            arr = getattr(self, name)
+            if i == 0:
+                device = arr.device
+            else:
+                if not arr.device == device:
+                    raise ValueError("Not all tensors in fluctuating background array are on same device")
+        return device
 
     @property
-    def mask(self) -> torch.tensor:
+    def device(self) -> str:
+        return self._find_common_device()
+
+    @property
+    def mask(self) -> torch.Tensor:
         return self._mask
 
     @mask.setter
-    def mask(self, new_mask: torch.tensor):
+    def mask(self, new_mask: torch.Tensor):
         self._mask = new_mask.to(self.device).bool().to(self.c.dtype) #Ensures it's all 1s and 0s
+
+    @property
+    def normalizer(self) -> torch.Tensor:
+        return self._normalizer
+
+    @property
+    def rescale(self):
+        return self._rescale
+
+    @rescale.setter
+    def rescale(self, new_value: bool):
+        self._rescale = new_value
 
     @property
     def contours(self) -> torch.sparse_coo_tensor:
@@ -129,7 +163,7 @@ class ACArray(FactorizedVideo):
         return self._contours
 
     @property
-    def centers(self) -> torch.tensor:
+    def centers(self) -> torch.Tensor:
         """
         Returns a (num_signals, 2) shaped tensor describing the height, width dimensions of each signals spatial center
             of mass. The center of mass might not be on an active pixel, but this is ok
@@ -168,7 +202,7 @@ class ACArray(FactorizedVideo):
         return self._centers
 
     @property
-    def bbox(self) -> torch.tensor:
+    def bbox(self) -> torch.Tensor:
         """
         Returns a torch tensor of shape (num_signals, 4). Each row contains 4 elements a1, a2, b1, b2 which define a bounding box
             of a neuron image like img[a1:a2, b1:b2]
@@ -205,7 +239,7 @@ class ACArray(FactorizedVideo):
 
 
     @property
-    def c(self) -> torch.tensor:
+    def c(self) -> torch.Tensor:
         """
         return temporal time courses of all signals, shape (frames, components)
         """
@@ -263,7 +297,7 @@ class ACArray(FactorizedVideo):
     def getitem_tensor(
         self,
         item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
-    ) -> torch.tensor:
+    ) -> torch.Tensor:
         # Step 1: index the frames (dimension 0)
         frame_indexer, item = self._parse_indices(item)
 
@@ -291,6 +325,9 @@ class ACArray(FactorizedVideo):
             product = torch.sparse.mm(a_crop, c_crop.T)
             product = product.reshape((implied_fov[0], implied_fov[1], -1))
             product = product.permute(2, 0, 1)
+
+        if self.normalizer is not None and self.rescale:
+            product *= self._normalizer[None, :, :]
 
         return product
 
