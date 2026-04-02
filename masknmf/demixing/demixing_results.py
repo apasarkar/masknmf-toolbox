@@ -102,6 +102,12 @@ class DemixingResults(Serializer):
         "residual_roi_averages"
     }
 
+    MANAGED_ARRAYS = ['ac_array',
+                      'pmd_array',
+                      'colorful_ac_array',
+                      'residual_array',
+                      'fluctuating_background_array']
+
     def __init__(
             self,
             shape: Tuple[int, int, int] | np.ndarray,
@@ -237,6 +243,27 @@ class DemixingResults(Serializer):
         self._pmd_roi_averages = None
         self._fluctuating_background_roi_averages = None
         self._residual_roi_averages = None
+
+        self._ac_array = None
+        self._colorful_ac_array = None
+        self._pmd_array = None
+        self._fluctuating_background_array = None
+        self._residual_array = None
+        self._residual_correlation_images = None
+        self._standard_correlation_images = None
+
+        self._rescale = False
+
+    @property
+    def rescale(self):
+        return self._rescale
+
+    @rescale.setter
+    def rescale(self, new_value: bool):
+        self._rescale = new_value
+        for name in MANAGED_ARRAYS:
+            array = getattr(self, f'_{name}')
+            array.rescale = self._rescale
 
     @property
     def pmd_mean_img(self) -> Union[None, torch.Tensor]:
@@ -413,15 +440,17 @@ class DemixingResults(Serializer):
         return self._roi_averages()[2]
 
     @property
-    def standard_correlation_image(self) -> Union[None, StandardCorrelationImages]:
+    def standard_correlation_images(self) -> Union[None, StandardCorrelationImages]:
         if self.std_corr_img_mean is not None:
-            return StandardCorrelationImages(self._u_sparse,
-                                             self._v,
-                                             self._c,
-                                             self.std_corr_img_mean,
-                                             self.std_corr_img_normalizer,
-                                             (self._shape[1], self._shape[2]),
-                                             order=self.order)
+            if self._standard_correlation_images is None:
+                self._standard_correlation_images = StandardCorrelationImages(self._u_sparse,
+                                                 self._v,
+                                                 self._c,
+                                                 self.std_corr_img_mean,
+                                                 self.std_corr_img_normalizer,
+                                                 (self._shape[1], self._shape[2]),
+                                                 order=self.order)
+            return self._standard_correlation_images
         else:
             return None
 
@@ -439,19 +468,21 @@ class DemixingResults(Serializer):
             return None
 
     @property
-    def residual_correlation_image(self) -> Union[None, ResidualCorrelationImages]:
+    def residual_correlation_images(self) -> Union[None, ResidualCorrelationImages]:
         if self.resid_corr_img_mean is not None:
-            return ResidualCorrelationImages(self.u,
-                                             self.v,
-                                             (self.factorized_bkgd_term1, self.factorized_bkgd_term2),
-                                             self.a,
-                                             self.c,
-                                             self.resid_corr_img_support_values,
-                                             self.resid_corr_img_mean,
-                                             self.resid_corr_img_normalizer,
-                                             (self.shape[1], self.shape[2]),
-                                             mode=ResidCorrMode.RESIDUAL,
-                                             order=self._order)
+            if self._residual_correlation_images is None:
+                self._residual_correlation_images = ResidualCorrelationImages(self.u,
+                                                 self.v,
+                                                 (self.factorized_bkgd_term1, self.factorized_bkgd_term2),
+                                                 self.a,
+                                                 self.c,
+                                                 self.resid_corr_img_support_values,
+                                                 self.resid_corr_img_mean,
+                                                 self.resid_corr_img_normalizer,
+                                                 (self.shape[1], self.shape[2]),
+                                                 mode=ResidCorrMode.RESIDUAL,
+                                                 order=self._order)
+            return self._residual_correlation_images
         else:
             return None
 
@@ -460,45 +491,54 @@ class DemixingResults(Serializer):
         """
         Returns an ACArray using the tensors stored in this object
         """
-        return ACArray(self.fov_shape, self.a, self.c)
+        if self._ac_array is None:
+            self._ac_array = ACArray(self.fov_shape, self.a, self.c)
+        return self._ac_array
 
     @property
     def pmd_array(self) -> PMDArray:
         """
         Returns a PMDArray using the tensors stored in this object
         """
-        return PMDArray(
-            self.shape,
-            self.u,
-            self.v,
-            self.pmd_mean_img,
-            self.pmd_var_img,
-            u_local_projector=self.pmd_u_projector,
-            device=self.device,
-            rescale=True,
-        )
+        if self._pmd_array is None:
+            self._pmd_array = PMDArray(
+                self.shape,
+                self.u,
+                self.v,
+                self.pmd_mean_img,
+                self.pmd_var_img,
+                u_local_projector=self.pmd_u_projector,
+                device=self.device,
+                rescale=self._rescale,
+            )
+        return self._pmd_array
 
     @property
     def fluctuating_background_array(self) -> FluctuatingBackgroundArray:
         """
         Returns a PMDArray using the tensors stored in this object
         """
-        return FluctuatingBackgroundArray(self.fov_shape,
+        if self._fluctuating_background_array is None:
+            self._fluctuating_background_array = FluctuatingBackgroundArray(self.fov_shape,
                                           self.order,
                                           self.u,
                                           self.factorized_bkgd_term1,
                                           self.factorized_bkgd_term2)
+        return self._fluctuating_background_array
 
     @property
     def residual_array(self) -> ResidualArray:
-        return ResidualArray(
-            self.pmd_array,
-            self.ac_array,
-            self.fluctuating_background_array,
-            self.b.reshape(self.fov_shape),
-        )
+        if self._residual_array is None:
+            self._residual_array = ResidualArray(self.pmd_array,
+                                                self.ac_array,
+                                                self.fluctuating_background_array,
+                                                self.b.reshape(self.fov_shape),
+                                            )
+        return self._residual_array
 
     @property
     def colorful_ac_array(self) -> ColorfulACArray:
-        return ColorfulACArray(self.fov_shape, self.a, self.c)
+        if self._colorful_ac_array is None:
+            self._colorful_ac_array = ColorfulACArray(self.fov_shape, self.a, self.c)
+        return self._colorful_ac_array
 
