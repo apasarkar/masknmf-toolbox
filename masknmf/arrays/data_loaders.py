@@ -58,16 +58,16 @@ class TiffArray(LazyFrameLoader):
 
     def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:
         if isinstance(indices, int):
-            data = tifffile.imread(self.filename, key=[indices]).squeeze()
+            data = tifffile.imread(self.filename, key=[indices])
         elif isinstance(indices, list):
-            data = tifffile.imread(self.filename, key=indices).squeeze()
+            data = tifffile.imread(self.filename, key=indices)
         else:
             indices_list = list(
                 range(
                     indices.start or 0, indices.stop or self.shape[0], indices.step or 1
                 )
             )
-            data = tifffile.imread(self.filename, key=indices_list).squeeze()
+            data = tifffile.imread(self.filename, key=indices_list)
         return data.astype(self.dtype)
 
     def __getitem__(
@@ -131,9 +131,9 @@ class Hdf5Array(LazyFrameLoader):
             # Access the 'field' dataset
             field_dataset = file[self.field]
             if isinstance(indices, int):
-                data = field_dataset[indices, :, :].squeeze()
+                data = field_dataset[indices, :, :]
             elif isinstance(indices, list):
-                data = field_dataset[indices, :, :].squeeze()
+                data = field_dataset[indices, :, :]
             else:
                 indices_list = list(
                     range(
@@ -142,5 +142,5 @@ class Hdf5Array(LazyFrameLoader):
                         indices.step or 1,
                     )
                 )
-                data = field_dataset[indices_list, :, :].squeeze()
+                data = field_dataset[indices_list, :, :]
         return data.astype(self.dtype)
