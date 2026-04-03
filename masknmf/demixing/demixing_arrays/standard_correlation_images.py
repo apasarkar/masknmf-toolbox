@@ -9,12 +9,11 @@ class StandardCorrelationImages(FactorizedVideo):
     def __init__(
         self,
         u_sparse: torch.sparse_coo_tensor,
-        v: torch.tensor,
-        c: torch.tensor,
-        movie_mean: torch.tensor,
-        movie_normalizer: torch.tensor,
+        v: torch.Tensor,
+        c: torch.Tensor,
+        movie_mean: torch.Tensor,
+        movie_normalizer: torch.Tensor,
         fov_dims: Tuple[int, int],
-        order: str = "F",
     ):
         """
         Generates all the standard correlation images for the demixed data. It is more convenient to keep the
@@ -22,11 +21,11 @@ class StandardCorrelationImages(FactorizedVideo):
 
         Args:
             u_sparse (torch.sparse_coo_tensor): shape (pixels, rank)
-            v (torch.tensor): shape (rank, frames)
-            c (torch.tensor): shape (frames, number of neural signals). This is the temporal traces matrix, where every
+            v (torch.Tensor): shape (rank, frames)
+            c (torch.Tensor): shape (frames, number of neural signals). This is the temporal traces matrix, where every
                 column has mean 0 and Frobenius norm 1.
             movie_mean (torch.tensor): shape (pixels), the mean of u_sparse times v
-            movie_normalizer (torch.tensor): shape (pixels), the pixelwise l2 norm of (u_sparse times v) - movie_mean
+            movie_normalizer (torch.Tensor): shape (pixels), the pixelwise l2 norm of (u_sparse times v) - movie_mean
         """
 
         if not (u_sparse.device == v.device == c.device):
@@ -40,17 +39,14 @@ class StandardCorrelationImages(FactorizedVideo):
         self._movie_mean = movie_mean
         self._movie_normalizer = movie_normalizer
         self._fov_dims = (fov_dims[0], fov_dims[1])
-        self._order = order
 
-        self.pixel_mat = np.arange(np.prod(self.shape[1:])).reshape(
-            [self.shape[1], self.shape[2]], order=order
-        )
+        self.pixel_mat = torch.arange(np.prod(self.shape[1:3]), device=self.device, dtype=torch.long).reshape(
+            self.shape[1], self.shape[2])
 
         self._ones_frames = torch.ones(
             (1, self._v.shape[1]), device=self.device, dtype=torch.float
         )
 
-        self.pixel_mat = torch.from_numpy(self.pixel_mat).long().to(self.device)
 
     @property
     def device(self) -> str:
@@ -80,16 +76,12 @@ class StandardCorrelationImages(FactorizedVideo):
         return self.c.shape[1], self._fov_dims[0], self._fov_dims[1]
 
     @property
-    def movie_mean(self) -> torch.tensor:
+    def movie_mean(self) -> torch.Tensor:
         return self._movie_mean
 
     @property
-    def movie_normalizer(self) -> torch.tensor:
+    def movie_normalizer(self) -> torch.Tensor:
         return self._movie_normalizer
-
-    @property
-    def order(self) -> str:
-        return self._order
 
     @property
     def ndim(self) -> int:
@@ -125,24 +117,19 @@ class StandardCorrelationImages(FactorizedVideo):
                 self._movie_normalizer, 0, u_indices
             )
             implied_fov = pixel_space_crop.shape
-            used_order = "C"  # The crop from pixel mat and flattening means we are now using default torch order
         else:
             u_crop = self._u
             mean_crop = self._movie_mean
             movie_normalizer_crop = self._movie_normalizer
             implied_fov = self.shape[1], self.shape[2]
-            used_order = self.order
 
         product = (
             torch.sparse.mm(u_crop, v_crop) - mean_crop.unsqueeze(1) @ ones_crop
         ) / movie_normalizer_crop.unsqueeze(1)
 
-        if used_order == "F":
-            product = product.T.reshape((-1, implied_fov[1], implied_fov[0]))
-            product = product.permute((0, 2, 1))
-        else:  # order is "C"
-            product = product.reshape((implied_fov[0], implied_fov[1], -1))
-            product = product.permute(2, 0, 1)
+
+        product = product.reshape((implied_fov[0], implied_fov[1], -1))
+        product = product.permute(2, 0, 1)
 
         return torch.nan_to_num(product, nan=0.0, posinf=0.0, neginf=0.0)
 

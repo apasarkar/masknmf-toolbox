@@ -15,13 +15,13 @@ class ResidualCorrelationImages(FactorizedVideo):
     def __init__(
         self,
         u_sparse: torch.sparse_coo_tensor,
-        v: torch.tensor,
+        v: torch.Tensor,
         factorized_ring_term: Tuple[torch.tensor, torch.tensor],
         a: torch.sparse_coo_tensor,
-        c: torch.tensor,
+        c: torch.Tensor,
         support_correlation_values: torch.sparse_coo_tensor,
-        residual_movie_mean: torch.tensor,
-        residual_movie_normalizer: torch.tensor,
+        residual_movie_mean: torch.Tensor,
+        residual_movie_normalizer: torch.Tensor,
         fov_dims: Tuple[int, int],
         mode: ResidCorrMode = ResidCorrMode.DEFAULT,
     ):
@@ -37,14 +37,14 @@ class ResidualCorrelationImages(FactorizedVideo):
 
         Args:
             u_sparse (torch.sparse_coo_tensor): shape (pixels, rank 1)
-            v (torch.tensor): shape (rank 2, frames)
-            factorized_ring_term (Tuple[torch.tensor, torch.tensor]): A factorized representation of the data background
+            v (torch.Tensor): shape (rank 2, frames)
+            factorized_ring_term (Tuple[torch.Tensor, torch.Tensor]): A factorized representation of the data background
             a (torch.sparse_coo_tensor): shape (pixels, number of neural signals). Spatial components
             c (torch.tensor): shape (frames, number of neural signals). This is the temporal traces matrix
             support_correlation_values (torch.sparse_coo_tensor): Shape (pixels, number of neural signals). The i-th
                 gives the residual correlation image for neural signal "i" on its spatial support.
-            residual_movie_mean (torch.tensor): shape (pixels)
-            residual_movie_normalizer (torch.tensor): shape (pixels)
+            residual_movie_mean (torch.Tensor): shape (pixels)
+            residual_movie_normalizer (torch.Tensor): shape (pixels)
             fov_dims (tuple): A tuple of two values describing the field height/width of the field of view.
             zero_support Optional[bool[: If true, for each neuron, i, the support of neuron i is set to 0 in the i-th
                 correlation image
