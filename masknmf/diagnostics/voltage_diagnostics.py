@@ -56,6 +56,7 @@ def onephoton_voltage_snr_stats(full_moco_dense: np.ndarray,
                                 temporal_trace: np.ndarray,
                                 trend_filter_cutoff_freq: float = 1,
                                 spike_detect_cutoff_freq: float = 3,
+                                spike_min_distance: int = 10,
                                 mad_cutoff=8,
                                 sampling_rate: float = 800,
                                 reverse_polarity: bool = True):
@@ -69,6 +70,7 @@ def onephoton_voltage_snr_stats(full_moco_dense: np.ndarray,
         temporal_trace (np.ndarray): Shape (num_frames,)
         trend_filter_cutoff_freq (float): the frequency cutoff for highpass filtering to remove optostim related smooth trends
         spike_detect_cutoff_freq (float): the highpass filter frequency used before running MAD thresholding to identify spikes
+        spike_min_distance (int): The minimum distance between identified spikes in frames.
         mad_cutoff (float): the mad threshold used to identify spiking locations (and eventually find the spike peak times).
         sampling_rate (float): The sampling rate of the data in Hz
         reverse_polarity (bool): True if the raw stack contains a negatively tuned indicator.
@@ -114,7 +116,8 @@ def onephoton_voltage_snr_stats(full_moco_dense: np.ndarray,
                                                                   sampling_rate).squeeze()
 
     thres_c = masknmf.diagnostics.voltage_diagnostics.mad_filter_for_spikes(hp_filter_c, mad_cutoff)
-    c_peaks, _ = masknmf.diagnostics.voltage_diagnostics.detect_peaks(thres_c, distance=10)
+    c_peaks, _ = masknmf.diagnostics.voltage_diagnostics.detect_peaks(thres_c,
+                                                                      spike_min_distance)
 
     # For each peak, estimate the splike amplitude. Strategy: subtract the 1Hz low-pass
     pmd_spike_heights = pmd_roi_avg[c_peaks] - pmd_roi_lowpass[c_peaks]
