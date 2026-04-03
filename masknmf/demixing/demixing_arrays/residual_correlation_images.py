@@ -24,7 +24,6 @@ class ResidualCorrelationImages(FactorizedVideo):
         residual_movie_normalizer: torch.tensor,
         fov_dims: Tuple[int, int],
         mode: ResidCorrMode = ResidCorrMode.DEFAULT,
-        order: str = "F",
     ):
         """
         Array interface for interacting with the residual correlation image data. Data is kept in a memory
@@ -81,19 +80,14 @@ class ResidualCorrelationImages(FactorizedVideo):
         self._residual_movie_normalizer = residual_movie_normalizer
         self._fov_dims = (fov_dims[0], fov_dims[1])
         self._index_values = torch.arange(self._c.shape[1], device=self.device).long()
-        self._order = order
 
         self._mode = mode
 
         self._ones_basis = (
             torch.ones([1, self._v.shape[1]], device=self.device) @ self._v.T
         )
-
-        self.pixel_mat = np.arange(np.prod(self.shape[1:])).reshape(
-            [self.shape[1], self.shape[2]], order=order
-        )
-        self.pixel_mat = torch.from_numpy(self.pixel_mat).long().to(self.device)
-
+        self.pixel_mat = torch.arange(np.prod(self.shape[1:3]), device=self.device, dtype=torch.long).reshape(
+            self.shape[1], self.shape[2])
     @property
     def mode(self) -> ResidCorrMode:
         """
@@ -125,16 +119,12 @@ class ResidualCorrelationImages(FactorizedVideo):
         return self._support_correlation_values
 
     @property
-    def residual_movie_mean(self) -> torch.tensor:
+    def residual_movie_mean(self) -> torch.Tensor:
         return self._residual_movie_mean
 
     @property
-    def residual_movie_normalizer(self) -> torch.tensor:
+    def residual_movie_normalizer(self) -> torch.Tensor:
         return self._residual_movie_normalizer
-
-    @property
-    def order(self) -> str:
-        return self._order
 
     @property
     def ndim(self) -> int:
@@ -147,7 +137,7 @@ class ResidualCorrelationImages(FactorizedVideo):
     def getitem_tensor(
         self,
         item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
-    ) -> torch.tensor:
+    ) -> torch.Tensor:
         frame_indexer, item = self._parse_indices(item)
 
         # Step 3: Now slice the data with frame_indexer (careful: if the ndims has shrunk, add a dim)
@@ -180,14 +170,12 @@ class ResidualCorrelationImages(FactorizedVideo):
                 self._residual_movie_normalizer, 0, u_indices
             )
             implied_fov = pixel_space_crop.shape
-            used_order = "C"  # The crop from pixel mat and flattening means we are now using default torch order
         else:
             u_crop = self._u
             a_crop = self._a
             mean_crop = self._residual_movie_mean
             movie_normalizer_crop = self._residual_movie_normalizer
             implied_fov = self.shape[1], self.shape[2]
-            used_order = self.order
 
         # Temporal term is guaranteed to have nonzero "T" dimension below
         ## TODO: If you only had 2 matrices in the factorization, this if/else is useless. But eventually background term will be its own factorization. So keep this for now.
@@ -213,12 +201,8 @@ class ResidualCorrelationImages(FactorizedVideo):
         elif self.mode == ResidCorrMode.RESIDUAL:
             pass
 
-        if used_order == "F":
-            product = product.T.reshape((-1, implied_fov[1], implied_fov[0]))
-            product = product.permute((0, 2, 1))
-        else:  # order is "C"
-            product = product.reshape((implied_fov[0], implied_fov[1], -1))
-            product = product.permute(2, 0, 1)
+        product = product.reshape((implied_fov[0], implied_fov[1], -1))
+        product = product.permute(2, 0, 1)
 
         return torch.nan_to_num(product, nan=0.0, posinf=0.0, neginf=0.0)
 
