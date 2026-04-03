@@ -8,3 +8,4 @@ from masknmf.demixing import *
 from masknmf.visualization import *
 from masknmf.diagnostics import *
 from masknmf.pipelines import *
+from masknmf.pipelines.configs import *
