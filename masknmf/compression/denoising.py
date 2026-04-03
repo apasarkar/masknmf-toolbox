@@ -294,6 +294,86 @@ class MultivariateTimeSeriesDataset(torch.utils.data.Dataset):
             return data
 
 
+def run_windowed_model(
+        model: torch.nn.Module,
+        traces: torch.tensor,
+        input_size: int = 900,
+        overlap: int = 200,
+) -> Tuple[torch.tensor, torch.tensor]:
+    """
+    Run the model in windows over normalized traces, accumulating outputs by overlap averaging.
+
+    Args:
+        model (torch.nn.Module): Trained model
+        traces (torch.tensor): Normalized input traces, shape (num_traces, num_timesteps)
+        input_size (int): Window size for inference
+        overlap (int): Overlap between windows
+
+    Returns:
+        mu_x_full (torch.tensor): Shape (num_traces, num_timesteps). Overlap-averaged mean predictions.
+        total_var_full (torch.tensor): Shape (num_traces, num_timesteps). Overlap-averaged total variance predictions.
+    """
+    device = next(model.parameters()).device
+    placeholder = torch.arange(traces.shape[1], device=device)[None, :]
+    eval_dataset = MultivariateTimeSeriesDataset(
+        placeholder, input_size=input_size, overlap=overlap, provide_indices=True
+    )
+    mu_x_full = torch.zeros(traces.shape, device=device, dtype=torch.float32)
+    total_var_full = torch.zeros(traces.shape, device=device, dtype=torch.float32)
+    counts = torch.zeros(traces.shape, device=device, dtype=torch.float32)
+
+    model.eval()
+    with torch.no_grad():
+        for i in range(eval_dataset.num_windows):
+            _, _, start_idx, end_idx = eval_dataset[i]
+            subset = traces[:, start_idx:end_idx].to(device).float().unsqueeze(1)  # (rank, 1, W)
+            mu_x, total_var = model(subset)                                         # (rank, 1, W)
+            mu_x_full[:, start_idx:end_idx] += mu_x.squeeze(1)
+            total_var_full[:, start_idx:end_idx] += total_var.squeeze(1)
+            counts[:, start_idx:end_idx] += 1
+
+    mu_x_full /= counts
+    total_var_full /= counts
+    return mu_x_full, total_var_full
+
+
+def apply_bayesian_denoising(
+        traces: torch.tensor,
+        mu_x: torch.tensor,
+        total_var: torch.tensor,
+        noise_variance_quantile: float = 0.05,
+) -> Tuple[torch.tensor, torch.tensor, torch.tensor, torch.tensor, torch.tensor, torch.tensor]:
+    """
+    Apply Bayesian denoising formula given pre-computed model outputs. No model calls.
+
+    The noise variance is estimated as the per-trace quantile of total_var. Because this
+    function takes pre-computed model outputs, it can be called repeatedly with different
+    noise_variance_quantile values without re-running the model.
+
+    Args:
+        traces (torch.tensor): Normalized input traces, shape (num_traces, num_timesteps)
+        mu_x (torch.tensor): Model mean predictions, shape (num_traces, num_timesteps)
+        total_var (torch.tensor): Model total variance predictions, shape (num_traces, num_timesteps)
+        noise_variance_quantile (float): Quantile of total_var used to estimate the noise floor per trace
+
+    Returns:
+        denoised (torch.tensor): Shape (num_traces, num_timesteps)
+        mu_x (torch.tensor): Shape (num_traces, num_timesteps). Passed through unchanged.
+        noise_variance (torch.tensor): Shape (num_traces, 1). Estimated noise variance per trace.
+        weight_signal (torch.tensor): Shape (num_traces, num_timesteps)
+        weight_observation (torch.tensor): Shape (num_traces, num_timesteps)
+        total_var (torch.tensor): Shape (num_traces, num_timesteps). Passed through unchanged.
+    """
+    noise_variance = torch.quantile(total_var, noise_variance_quantile, dim=1, keepdim=True)  # (rank, 1)
+    noise_var_exp = noise_variance.expand_as(total_var)
+    total_var_norm = torch.clamp(total_var, min=noise_var_exp)
+    signal_var = torch.clamp(total_var_norm - noise_var_exp, min=0)
+    weight_signal = noise_var_exp / total_var_norm
+    weight_observation = signal_var / total_var_norm
+    denoised = weight_signal * mu_x + weight_observation * traces
+    return denoised, mu_x, noise_variance, weight_signal, weight_observation, total_var
+
+
 def denoise_batched(
         model: torch.nn.Module,
         traces: torch.tensor,
@@ -303,23 +383,28 @@ def denoise_batched(
 ):
     """
     Denoise a large dataset by processing in batches.
-    First, we partition the variance using a subset of the data,
-    then we denoise the entire dataset using the estimated noise variance.
+
+    Runs the model once (windowed) to obtain mu_x and total_var, then derives the
+    noise variance from a per-trace quantile of total_var and applies the Bayesian
+    denoising formula. To try multiple quantile values without re-running the model,
+    call run_windowed_model and apply_bayesian_denoising directly.
 
     Args:
         model (torch.nn.Module): Trained model
-        traces (torch.tensor): Input traces to denoise [num_traces, num_timesteps]
-        noise_variance_quantile (float): quantile for noise variance estimation
-        var_partition_timesteps (int): Number of timesteps to use for variance partitioning
-        input_size (int): We break each T-length time series into batches of size ``input_size" when running inference.
-        overlap (int): The overlap over the input_size chunks.
+        traces (torch.tensor): Input traces to denoise, shape (num_traces, num_timesteps)
+        noise_variance_quantile (float): Quantile of total_var used to estimate noise floor per trace
+        input_size (int): Window size for inference
+        overlap (int): Overlap between windows
+
     Returns:
-        denoised_traces: The denoised traces [num_nodes, num_timesteps]
-        noise_variance: Estimated noise variance per node. Shape: [num_nodes,]
-        signal_weight: weights for signal component. Shape: [num_nodes, num_timesteps]
-        observation_weight: weights for observation component. Shape: [num_nodes, num_timesteps]
+        denoised_traces (torch.tensor): Shape (num_traces, num_timesteps)
+        signal_mean (torch.tensor): Shape (num_traces, num_timesteps)
+        noise_variance (torch.tensor): Shape (num_traces, 1)
+        weight_signal (torch.tensor): Shape (num_traces, num_timesteps)
+        weight_observation (torch.tensor): Shape (num_traces, num_timesteps)
+        total_var (torch.tensor): Shape (num_traces, num_timesteps)
     """
-    device = next(model.parameters()).device #Infer device from the model device
+    device = next(model.parameters()).device
     traces = traces.to(device)
     traces_means = torch.mean(traces, dim=1, keepdim=True)
     traces_normalized = traces - traces_means
@@ -327,35 +412,14 @@ def denoise_batched(
     traces_norms[traces_norms == 0] = 1
     traces_normalized /= traces_norms
 
-    noise_variance = partition_variance(
-        model,
-        traces_normalized[:, :],
-        quantile=noise_variance_quantile,
+    mu_x, total_var = run_windowed_model(model, traces_normalized, input_size, overlap)
+
+    denoised, signal_mean, noise_variance, w_sig, w_obs, total_var = apply_bayesian_denoising(
+        traces_normalized, mu_x, total_var, noise_variance_quantile
     )
 
-
-    # Denoise the entire dataset using the estimated noise variance
-    denoised_traces, signal_mean, signal_weight, observation_weight, total_var = (
-        _denoise_batched_inner(
-            model,
-            traces_normalized,
-            noise_variance,
-            input_size=input_size,
-            overlap=overlap,
-        )
-    )
-
-    denoised_traces *= traces_norms
-    denoised_traces += traces_means
-    noise_variance = noise_variance
-    return (
-        denoised_traces,
-        signal_mean,
-        noise_variance,
-        signal_weight,
-        observation_weight,
-        total_var,
-    )
+    denoised = denoised * traces_norms + traces_means
+    return denoised, signal_mean, noise_variance, w_sig, w_obs, total_var
 
 
 def partition_variance(model: torch.nn.Module,
@@ -518,18 +582,19 @@ class PMDTemporalDenoiser(torch.nn.Module):
 
     def __init__(self,
                  trained_model: torch.nn.Module,
-                 noise_variance_quantile:float = 1,
-                 padding: int = 100):
+                 noise_variance_quantile: float = 1,
+                 padding: int = 100,
+                 input_size: int = 900):
         super(PMDTemporalDenoiser, self).__init__()
         self.noise_variance_quantile = noise_variance_quantile
         self.net = trained_model
         self._padding = padding
+        self._input_size = input_size
 
     def forward(self, traces: torch.tensor):
-        #F.pad(x, (pad_size, pad_size), mode=mode)
-        padded = torch.nn.functional.pad(traces, (self._padding, self._padding), mode = 'reflect')
+        padded = torch.nn.functional.pad(traces, (self._padding, self._padding), mode='reflect')
         outputs = denoise_batched(self.net,
-                               padded,
-                               noise_variance_quantile=self.noise_variance_quantile,
-                               input_size=traces.shape[1])[0]
+                                  padded,
+                                  noise_variance_quantile=self.noise_variance_quantile,
+                                  input_size=self._input_size)[0]
         return outputs[:, self._padding:-1*self._padding]
