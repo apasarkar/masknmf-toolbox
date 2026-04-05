@@ -273,7 +273,7 @@ class PMDArray(ArrayLike, Serializer):
                              (self.shape[1],self.shape[2]))
 
     def project_frames(
-        self, frames: torch.tensor, standardize: Optional[bool] = True
+        self, frames: torch.Tensor, standardize: Optional[bool] = True
     ) -> torch.Tensor:
         """
         Projects frames onto the spatial basis, using the u_projector property. u_projector must be defined.
