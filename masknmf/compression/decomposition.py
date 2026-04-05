@@ -1388,7 +1388,7 @@ def pmd_decomposition(
     )
     display(f"Constructed U matrix. Rank of U is {u_aggregated.shape[1]}")
 
-    final_pmd_arr = PMDArray(
+    final_pmd_arr = PMDArray.from_tensors(
         (num_frames, fov_dim1, fov_dim2),
         u_aggregated.cpu(),
         v_aggregated.cpu(),

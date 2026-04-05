@@ -3,7 +3,7 @@ from typing import *
 from abc import ABC, abstractmethod
 import numpy as np
 
-
+import torch
 def is_arraylike(obj):
     """Returns if the object is sufficiently array-like for lazy compute or loading"""
     for attr in ["dtype", "shape", "ndim", "__getitem__"]:
@@ -140,13 +140,40 @@ class ArrayLike(ABC):
         # Step 1: index the frames (dimension 0)
         pass
 
+class TensorFlyWeight:
+    """
+    Generic class for managing a collection of tensors across multiple objects
+    """
+    def __init__(self, **kwargs):
+        device = None
+        for name, value in kwargs.items():
+            if isinstance(value, torch.Tensor):
+                if device is None:
+                    device = value.device
+                setattr(self, name, value.to(device))
 
-class FactorizedVideo(ArrayLike):
-    """
-    This captures the numpy array-like functionality for factorized videos in our NMF model.
-    Different class just for separating instance checks?
-    """
-    pass
+            else:
+                raise ValueError(f"field {name} is not a torch Tensor object")
+
+    @property
+    def device(self) -> str | None:
+        device = None
+        for name in vars(self):
+            data = getattr(self, name)
+            if device is None:
+                device = data.device
+            if data.device != device:
+                raise ValueError("Not all attributes on same device")
+        return device
+
+    def list_tensor_attributes(self) -> list[str]:
+        return list(vars(self).keys())
+
+    def to(self, device: str):
+        for name in vars(self):
+            curr_tensor = getattr(self, name)
+            new_values = curr_tensor.to(device)
+            setattr(self, name, new_values)
 
 
 class LazyFrameLoader(ArrayLike):
