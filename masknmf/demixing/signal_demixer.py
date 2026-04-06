@@ -300,14 +300,13 @@ def _compute_standard_correlation_image(
         uv_meanzero_norm += num_frames * (noise_std.flatten() ** 2)[:, None]
 
     uv_meanzero_norm = torch.sqrt(uv_meanzero_norm)
-    corr_array = StandardCorrelationImages(
+    corr_array = StandardCorrelationImages.from_tensors(
         u_sparse,
         v,
         c,
         uv_mean.squeeze(),
         uv_meanzero_norm.squeeze(),
         fov_dims,
-        data_order,
     )
 
     return corr_array
