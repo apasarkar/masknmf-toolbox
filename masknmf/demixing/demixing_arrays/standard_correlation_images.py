@@ -88,6 +88,10 @@ class StandardCorrelationImages(ArrayLike):
 
     @property
     def c(self) -> torch.Tensor:
+        """
+        Because this tensor is settable, we do not want to default to the flyweight (in other words,
+        this attribute is an 'extrinsic' property that is not really shared
+        """
         return self._c
 
     @c.setter

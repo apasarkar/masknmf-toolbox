@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import *
 import numpy as np
-from masknmf.arrays.array_interfaces import FactorizedVideo
+from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
 
@@ -11,18 +11,46 @@ class ResidCorrMode(Enum):
     RESIDUAL = 2
 
 
-class ResidualCorrelationImages(FactorizedVideo):
-    def __init__(
-        self,
+class ResidualCorrelationImages(ArrayLike):
+
+    def __init__(self,
+                 flyweight: TensorFlyWeight,
+                 fov_dims: tuple[int, int],
+                 mode: ResidCorrMode = ResidCorrMode.DEFAULT):
+        """
+        See from_tensors for parameter documentation
+        """
+
+        self._flyweight = flyweight
+        self._c_norm = self.c - torch.mean(self.c, dim=0, keepdim=True)
+        self._c_norm = self._c_norm / torch.linalg.norm(
+            self._c_norm, dim=0, keepdim=True
+        )
+        self._c_norm = torch.nan_to_num(self._c_norm, nan=0.0)
+        self._fov_dims = (fov_dims[0], fov_dims[1])
+        self._index_values = torch.arange(self._c.shape[1], device=self.device).long()
+
+        self._mode = mode
+
+        self._ones_basis = (
+            torch.ones([1, self._v.shape[1]], device=self.device) @ self._v.T
+        )
+        self._pixel_mat = torch.arange(np.prod(self.shape[1:3]), device=self.device, dtype=torch.long).reshape(
+            self.shape[1], self.shape[2])
+
+    @classmethod
+    def from_tensors(
+        cls,
         u_sparse: torch.sparse_coo_tensor,
         v: torch.Tensor,
-        factorized_ring_term: Tuple[torch.tensor, torch.tensor],
+        factorized_bkgd_term1: torch.Tensor,
+        factorized_bkgd_term2: torch.Tensor,
         a: torch.sparse_coo_tensor,
         c: torch.Tensor,
         support_correlation_values: torch.sparse_coo_tensor,
         residual_movie_mean: torch.Tensor,
         residual_movie_normalizer: torch.Tensor,
-        fov_dims: Tuple[int, int],
+        fov_dims: tuple[int, int],
         mode: ResidCorrMode = ResidCorrMode.DEFAULT,
     ):
         """
@@ -38,7 +66,8 @@ class ResidualCorrelationImages(FactorizedVideo):
         Args:
             u_sparse (torch.sparse_coo_tensor): shape (pixels, rank 1)
             v (torch.Tensor): shape (rank 2, frames)
-            factorized_ring_term (Tuple[torch.Tensor, torch.Tensor]): A factorized representation of the data background
+            factorized_bkgd_term1 (torch.Tensor):
+            factorized_bkgd_term2 (torch.Tensor):
             a (torch.sparse_coo_tensor): shape (pixels, number of neural signals). Spatial components
             c (torch.tensor): shape (frames, number of neural signals). This is the temporal traces matrix
             support_correlation_values (torch.sparse_coo_tensor): Shape (pixels, number of neural signals). The i-th
@@ -46,48 +75,47 @@ class ResidualCorrelationImages(FactorizedVideo):
             residual_movie_mean (torch.Tensor): shape (pixels)
             residual_movie_normalizer (torch.Tensor): shape (pixels)
             fov_dims (tuple): A tuple of two values describing the field height/width of the field of view.
-            zero_support Optional[bool[: If true, for each neuron, i, the support of neuron i is set to 0 in the i-th
-                correlation image
+            mode (ResidCorrMode): The mode of the residual correlation image
         """
+        flyweight = TensorFlyWeight(u=u_sparse,
+                                    v=v,
+                                    factorized_bkgd_term1=factorized_bkgd_term1,
+                                    factorized_bkgd_term2=factorized_bkgd_term2,
+                                    a=a,
+                                    c=c,
+                                    support_correlation_values=support_correlation_values,
+                                    residual_movie_mean=residual_movie_mean,
+                                    residual_movie_normalizer=residual_movie_normalizer,
+                                    )
 
-        if not (
-            u_sparse.device
-            == v.device
-            == c.device
-            == a.device
-            == factorized_ring_term[0].device
-            == factorized_ring_term[1].device
-            == support_correlation_values.device
-            == residual_movie_mean.device
-            == residual_movie_normalizer.device
-        ):
-            raise ValueError("Not all tensors are on same device")
+        return cls(flyweight,
+                   fov_dims,
+                   mode=mode)
 
-        self._device = u_sparse.device
-        self._u = u_sparse
-        self._v = v
-        self._background_term = factorized_ring_term
-        self._c = c
-        self._c_norm = self._c - torch.mean(self._c, dim=0, keepdim=True)
-        self._c_norm = self._c_norm / torch.linalg.norm(
-            self._c_norm, dim=0, keepdim=True
-        )
-        self._c_norm = torch.nan_to_num(self._c_norm, nan=0.0)
+    @classmethod
+    def from_flyweight(cls,
+                       flyweight: TensorFlyWeight,
+                       fov_dims: tuple[int, int],
+                       mode: ResidCorrMode = ResidCorrMode.DEFAULT):
+        return cls(flyweight,
+                   fov_dims,
+                   mode=mode)
 
-        self._a = a
-        self._residual_movie_mean = residual_movie_mean
-        self._support_correlation_values = support_correlation_values
-        self._residual_movie_normalizer = residual_movie_normalizer
-        self._fov_dims = (fov_dims[0], fov_dims[1])
-        self._index_values = torch.arange(self._c.shape[1], device=self.device).long()
 
-        self._mode = mode
+    @property
+    def flyweight(self) -> TensorFlyWeight:
+        return self._flyweight
 
-        self._ones_basis = (
-            torch.ones([1, self._v.shape[1]], device=self.device) @ self._v.T
-        )
-        self.pixel_mat = torch.arange(np.prod(self.shape[1:3]), device=self.device, dtype=torch.long).reshape(
-            self.shape[1], self.shape[2])
+    @property
+    def device(self) -> str:
+        return self.flyweight.device
+
+    def to(self, new_device: str):
+        self.flyweight.to(new_device)
+        self._pixel_mat = self._pixel_mat.to(new_device)
+        self._ones_basis = self._ones_basis.to(new_device)
+        self._c_norm = self._c_norm.to(new_device)
+
     @property
     def mode(self) -> ResidCorrMode:
         """
@@ -111,8 +139,25 @@ class ResidualCorrelationImages(FactorizedVideo):
         return self._device
 
     @property
-    def shape(self) -> Tuple[int, int, int]:
+    def shape(self) -> tuple[int, int, int]:
         return self._c.shape[1], self._fov_dims[0], self._fov_dims[1]
+
+    @property
+    def u(self) -> torch.sparse_coo_tensor:
+        return self.flyweight.u
+
+    @property
+    def v(self) -> torch.Tensor:
+        return self.flyweight.v
+
+
+    @property
+    def a(self) -> torch.sparse_coo_tensor:
+        return self.flyweight.a
+
+    @property
+    def c(self) -> torch.Tensor:
+        return self.flyweight.c
 
     @property
     def support_correlation_values(self) -> torch.sparse_coo_tensor:
@@ -125,6 +170,14 @@ class ResidualCorrelationImages(FactorizedVideo):
     @property
     def residual_movie_normalizer(self) -> torch.Tensor:
         return self._residual_movie_normalizer
+
+    @property
+    def factorized_bkgd_term1(self) -> torch.Tensor:
+        return self.flyweight.factorized_bkgd_term1
+
+    @property
+    def factorized_bkgd_term2(self) -> torch.Tensor:
+        return self.flyweight.factorized_bkgd_term2
 
     @property
     def ndim(self) -> int:
@@ -145,8 +198,8 @@ class ResidualCorrelationImages(FactorizedVideo):
         if c_crop.ndim < self._c_norm.ndim:
             c_crop = c_crop.unsqueeze(1)
 
-        v_crop = self._v @ c_crop - (self._background_term[0] @ (self._background_term[1] @ c_crop))
-        cc_crop = self._c.T @ c_crop
+        v_crop = self.v @ c_crop - (self.factorized_bkgd_term1 @ (self.factorized_bkgd_term2 @ c_crop))
+        cc_crop = self.c.T @ c_crop
         selected_neurons = self._index_values[frame_indexer]
         if selected_neurons.ndim < 1:
             selected_neurons = selected_neurons.unsqueeze(0)
@@ -158,23 +211,23 @@ class ResidualCorrelationImages(FactorizedVideo):
         if isinstance(item, tuple) and check_spatial_crop_effect(
             item[1:], self.shape[1:]
         ):
-            pixel_space_crop = self.pixel_mat[item[1:]]
+            pixel_space_crop = self._pixel_mat[item[1:]]
             u_indices = pixel_space_crop.flatten()
-            u_crop = torch.index_select(self._u, 0, u_indices)
-            a_crop = torch.index_select(self._a, 0, u_indices)
+            u_crop = torch.index_select(self.u, 0, u_indices)
+            a_crop = torch.index_select(self.a, 0, u_indices)
             support_values_crop = torch.index_select(
                 support_values_crop, 0, u_indices
             ).coalesce()
-            mean_crop = torch.index_select(self._residual_movie_mean, 0, u_indices)
+            mean_crop = torch.index_select(self.residual_movie_mean, 0, u_indices)
             movie_normalizer_crop = torch.index_select(
-                self._residual_movie_normalizer, 0, u_indices
+                self.residual_movie_normalizer, 0, u_indices
             )
             implied_fov = pixel_space_crop.shape
         else:
-            u_crop = self._u
-            a_crop = self._a
-            mean_crop = self._residual_movie_mean
-            movie_normalizer_crop = self._residual_movie_normalizer
+            u_crop = self.u
+            a_crop = self.a
+            mean_crop = self.residual_movie_mean
+            movie_normalizer_crop = self.residual_movie_normalizer
             implied_fov = self.shape[1], self.shape[2]
 
         # Temporal term is guaranteed to have nonzero "T" dimension below
