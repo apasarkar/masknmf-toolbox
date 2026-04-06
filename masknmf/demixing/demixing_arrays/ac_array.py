@@ -1,10 +1,10 @@
 from typing import *
 import numpy as np
-from masknmf.arrays.array_interfaces import FactorizedVideo
+from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
 
-class ACArray(FactorizedVideo):
+class ACArray(ArrayLike):
     """
     Factorized video for the spatial and temporal extracted sources from the data
     Computations happen transparently on GPU, if device = 'cuda' is specified
@@ -13,12 +13,37 @@ class ACArray(FactorizedVideo):
     def __init__(
         self,
         fov_shape: tuple[int, int],
-        a: torch.sparse_coo_tensor,
-        c: torch.Tensor,
-        normalizer: Optional[torch.Tensor] = None,
+        flyweight: TensorFlyWeight,
         rescale: bool = False
     ):
-        DATA_ARRAYS = ["a", "c"]
+
+
+        self._flyweight = flyweight
+        self._validate_attributes(["a", "c"])
+        num_frames = self.c.shape[0]
+        self._shape = tuple(map(int, (num_frames, *fov_shape)))
+
+        self._pixel_mat = torch.arange(np.prod(self.shape[1:]), device=self.device, dtype=torch.long).reshape(
+            self.shape[1], self.shape[2])
+        self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
+        self._centers = None
+        self._bbox = None
+        self._contours = None
+
+        self._rescale = rescale
+        self._default_normalizer = torch.ones(self.shape[1], self.shape[2], device=self.device).float()
+        if hasattr(self.flyweight, "normalizer"):
+            if self.flyweight.normalizer.shape[0] != self.shape[1] or self.flyweight.normalizer.shape[1] != self.shape[2]:
+                raise ValueError("Normalizer from flyweight had dimensions not equal to the fov dimensions")
+
+    @classmethod
+    def from_tensors(cls,
+                     fov_shape: tuple[int, int],
+                     a: torch.sparse_coo_tensor,
+                     c: torch.Tensor,
+                     normalizer: Optional[torch.Tensor],
+                     rescale: bool = False
+                     ):
         """
         Args:
             fov_shape (tuple): (fov_dim1, fov_dim2)
@@ -28,43 +53,39 @@ class ACArray(FactorizedVideo):
                 value to obtain results in the "raw data" space.
             rescale (bool): Whether or not to rescale the data to the raw data space. This determines the output of getitem
         """
+        flyweight = TensorFlyWeight(a=a, c=c, normalizer=normalizer)
+        return cls(fov_shape,
+                   flyweight,
+                   rescale=rescale)
 
-        self._a = a.coalesce()
-        self._c = c
-
-        num_frames = c.shape[0]
-        self._shape = tuple(map(int, (num_frames, *fov_shape)))
-        self.pixel_mat = torch.arange(np.prod(self.shape[1:]), device=self.device, dtype=torch.long).reshape(
-            self.shape[1], self.shape[2])
-        self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
-        self._centers = None
-        self._bbox = None
-        self._contours = None
-
-        self._rescale = rescale
-        self._normalizer = normalizer
-        if self._normalizer is not None:
-            if self._normalizer.shape[0] != self.shape[1] or self._normalizer.shape[1] != self.shape[2]:
-                raise ValueError("Normalizer had dimensions not equal to the fov")
+    @classmethod
+    def from_flyweight(cls,
+                       fov_shape: tuple[int, int],
+                       flyweight: TensorFlyWeight,
+                       rescale: bool = False):
+        return cls(fov_shape,
+                   flyweight,
+                   rescale=rescale)
 
 
-    def _find_common_device(self):
-        """
-        Finds the common device that for all data tensors. Throws error if no such device exists
-        """
-        device=None
-        for i, name in enumerate(DATA_ARRAYS):
-            arr = getattr(self, name)
-            if i == 0:
-                device = arr.device
-            else:
-                if not arr.device == device:
-                    raise ValueError("Not all tensors in fluctuating background array are on same device")
-        return device
+    def _validate_attributes(self, attr_list):
+        for name in attr_list:
+            if not hasattr(self.flyweight, name):
+                raise ValueError(f"Required attribute: {name} missing from constructor")
 
     @property
-    def device(self) -> str:
-        return self._find_common_device()
+    def flyweight(self) -> TensorFlyWeight:
+        return self._flyweight
+
+    @property
+    def device(self):
+        return self.flyweight.device
+
+    def to(self, new_device):
+        self._flyweight.to(new_device)
+        self._pixel_mat = self._pixel_mat.to(new_device)
+        self._mask = self._mask.to(new_device)
+
 
     @property
     def mask(self) -> torch.Tensor:
@@ -76,7 +97,8 @@ class ACArray(FactorizedVideo):
 
     @property
     def normalizer(self) -> torch.Tensor:
-        return self._normalizer
+        if not hasattr(self.flyweight, "normalizer"):
+            return self._default_normalizer
 
     @property
     def rescale(self):
@@ -243,14 +265,14 @@ class ACArray(FactorizedVideo):
         """
         return temporal time courses of all signals, shape (frames, components)
         """
-        return self._c
+        return self.flyweight.c
 
     @property
     def a(self) -> torch.sparse_coo_tensor:
         """
         return spatial profiles of all signals as sparse matrix, shape (pixels, components)
         """
-        return self._a
+        return self.flyweight.a
 
     def export_a(self) -> np.ndarray:
         """
@@ -265,13 +287,6 @@ class ACArray(FactorizedVideo):
         returns the temporal traces, where each trace is a n_frames-shaped time series. output shape (n_frames, n_components)
         """
         return self.c.cpu().numpy()
-
-    @property
-    def order(self) -> str:
-        """
-        The spatial data is "flattened" from 2D into 1D. This specifies the order ("F" for column-major or "C" for row-major) in which reshaping happened.
-        """
-        return self._order
 
     @property
     def dtype(self) -> str:
@@ -326,8 +341,8 @@ class ACArray(FactorizedVideo):
             product = product.reshape((implied_fov[0], implied_fov[1], -1))
             product = product.permute(2, 0, 1)
 
-        if self.normalizer is not None and self.rescale:
-            product *= self._normalizer[None, :, :]
+        if self.rescale:
+            product *= self.normalizer[None, :, :]
 
         return product
 
