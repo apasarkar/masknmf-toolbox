@@ -221,7 +221,7 @@ def _compute_residual_correlation_image(
         resid_corr_indices, final_values, spatial_comps.size()
     ).coalesce()
 
-    residual_array = ResidualCorrelationImages(
+    residual_array = ResidualCorrelationImages.from_tensors(
         u_sparse,
         v,
         factorized_ring_term,
@@ -232,7 +232,6 @@ def _compute_residual_correlation_image(
         robust_residual_movie_norms.squeeze(),
         fov_dims,
         mode=ResidCorrMode.DEFAULT,
-        order=data_order,
     )
     return residual_array
 
