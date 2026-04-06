@@ -19,7 +19,7 @@ class ACArray(ArrayLike):
 
 
         self._flyweight = flyweight
-        self._validate_attributes(["a", "c"])
+        self.flyweight.validate_attributes(["a", "c"])
         num_frames = self.c.shape[0]
         self._shape = tuple(map(int, (num_frames, *fov_shape)))
 
@@ -67,11 +67,6 @@ class ACArray(ArrayLike):
                    flyweight,
                    rescale=rescale)
 
-
-    def _validate_attributes(self, attr_list):
-        for name in attr_list:
-            if not hasattr(self.flyweight, name):
-                raise ValueError(f"Required attribute: {name} missing from constructor")
 
     @property
     def flyweight(self) -> TensorFlyWeight:

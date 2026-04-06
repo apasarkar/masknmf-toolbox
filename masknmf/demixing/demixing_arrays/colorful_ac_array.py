@@ -21,7 +21,7 @@ class ColorfulACArray(ArrayLike):
         """
 
         self._flyweight = flyweight
-        self._validate_attributes(["a", "c"])
+        self.flyweight.validate_attributes(["a", "c"])
         t = self.c.shape[0]
         self._c_minsub = self.c - torch.amin(self.c, dim=0, keepdim=True)
         fov_shape = tuple(map(int, fov_shape))

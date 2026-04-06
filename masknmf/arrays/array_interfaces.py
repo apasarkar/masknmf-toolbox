@@ -169,6 +169,11 @@ class TensorFlyWeight:
     def list_tensor_attributes(self) -> list[str]:
         return list(vars(self).keys())
 
+    def validate_attributes(self, attr_list):
+        for name in attr_list:
+            if not hasattr(self, name):
+                raise ValueError(f"Required attribute: {name} missing from constructor")
+
     def to(self, device: str):
         for name in vars(self):
             curr_tensor = getattr(self, name)
