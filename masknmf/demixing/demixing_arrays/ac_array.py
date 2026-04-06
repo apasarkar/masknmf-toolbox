@@ -80,6 +80,7 @@ class ACArray(ArrayLike):
         self._flyweight.to(new_device)
         self._pixel_mat = self._pixel_mat.to(new_device)
         self._mask = self._mask.to(new_device)
+        self._default_normalizer = self._default_normalizer.to(new_device)
 
 
     @property
