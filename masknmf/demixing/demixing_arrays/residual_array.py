@@ -87,14 +87,14 @@ class ResidualArray(ArrayLike):
         if isinstance(item, tuple) and len(item) > 1:
             output = (
                 self.pmd_array.getitem_tensor(item)
-                - self.fluctuating_array.getitem_tensor(item)
+                - self.fluctuating_background_array.getitem_tensor(item)
                 - self.ac_array.getitem_tensor(item)
                 - self.baseline.getitem_tensor(item[1:])[None, ...]
             )
         else:
             output = (
                 self.pmd_array.getitem_tensor(item)
-                - self.fluctuating_array.getitem_tensor(item)
+                - self.fluctuating_background_array.getitem_tensor(item)
                 - self.ac_array.getitem_tensor(item)
                 - self.baseline.getitem_tensor((slice(0, self.shape[1]), slice(0, self.shape[2])))[None, :]
             )

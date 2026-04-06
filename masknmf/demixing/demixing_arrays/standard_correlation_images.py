@@ -107,7 +107,7 @@ class StandardCorrelationImages(ArrayLike):
         self._c = mean_zero
 
     @property
-    def u(self) -> torch.sprase_coo_tensor:
+    def u(self) -> torch.sparse_coo_tensor:
         return self.flyweight.u
 
     @property

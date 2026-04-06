@@ -11,7 +11,7 @@ __all__ = [
     "ResidualCorrelationImages",
     "ResidCorrMode",
     "FluctuatingBackgroundArray",
-    "StaticBaselineArray",
+    "StaticBackgroundArray",
     "ColorfulACArray",
     "ResidualArray"
 ]

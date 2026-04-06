@@ -2,7 +2,7 @@ from typing import *
 import numpy as np
 from masknmf import display
 from masknmf.compression import PMDArray
-from masknmf.demixing.demixing_arrays import ACArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulACArray, StaticBaselineArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode
+from masknmf.demixing.demixing_arrays import ACArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulACArray, StaticBackgroundArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode
 import torch
 from masknmf.utils import Serializer
 from masknmf.arrays.array_interfaces import TensorFlyWeight
@@ -156,11 +156,9 @@ class DemixingResults(Serializer, TensorFlyWeight):
             bkgd_corr_img_mean (Optional[torch.Tensor]): The mean image used to compute the correlation between the signal and the background.
             bkgd_corr_img_normalizer (Optional[torch.Tensor]): The mean image used to compute the correlation between the signal and the background.
             global_resid_correlation_image (torch.Tensor): The global correlation image of the residual. Shape (FOV dim 1, FOV dim 2).
-            order (str): order used to reshape data from 2D to 1D
             device (str): 'cpu' or 'cuda'. used to manage where the tensors reside
         """
         self._device = device
-        self._order = order
         self._shape = tuple(shape)
         self._u_sparse = u.to(self.device).float()
         self._v = v.to(self.device).float()
@@ -200,6 +198,7 @@ class DemixingResults(Serializer, TensorFlyWeight):
                                                                            keepdim=True))))
         else:
             self._b = b
+        self._baseline = self._b.reshape(self.fov_shape)
 
         if pmd_roi_averages is not None:
             self._pmd_roi_averages = pmd_roi_averages
@@ -242,6 +241,7 @@ class DemixingResults(Serializer, TensorFlyWeight):
         self._colorful_ac_array = None
         self._pmd_array = None
         self._fluctuating_background_array = None
+        self._static_background_array = None
         self._residual_array = None
         self._residual_correlation_images = None
         self._standard_correlation_images = None
@@ -266,7 +266,15 @@ class DemixingResults(Serializer, TensorFlyWeight):
         return self._pmd_mean_img
 
     @property
+    def mean_img(self) -> torch.Tensor:
+        return self._pmd_mean_img
+
+    @property
     def pmd_var_img(self) -> Union[None, torch.Tensor]:
+        return self._pmd_var_img
+
+    @property
+    def var_img(self) -> torch.Tensor:
         return self._pmd_var_img
 
     @property
@@ -306,6 +314,7 @@ class DemixingResults(Serializer, TensorFlyWeight):
         self._a = self._a.to(self.device)
         self._c = self._c.to(self.device)
         self._b = self._b.to(self.device)
+        self._baseline = self._baseline.to(self.device)
 
         if self._pmd_mean_img is not None:
             self._pmd_mean_img = self._pmd_mean_img.to(self.device)
@@ -343,8 +352,12 @@ class DemixingResults(Serializer, TensorFlyWeight):
         return self._u_sparse
 
     @property
-    def b(self) -> torch.tensor:
+    def b(self) -> torch.Tensor:
         return self._b
+
+    @property
+    def baseline(self) -> torch.Tensor:
+        return self._baseline
 
     @property
     def v(self) -> torch.tensor:
@@ -511,11 +524,12 @@ class DemixingResults(Serializer, TensorFlyWeight):
         return self._fluctuating_background_array
 
     @property
-    def baseline(self) -> StaticBaselineArray:
-        if self._static_baseline_array is None:
-            self._static_baseline_array = StaticBaselineArray.from_flyweight(self,
+    def static_background_array(self) -> StaticBackgroundArray:
+
+        if self._static_background_array is None:
+            self._static_background_array = StaticBackgroundArray.from_flyweight(self,
                                                                              rescale = self.rescale)
-        return self._static_baseline_array
+        return self._static_background_array
 
     @property
     def residual_array(self) -> ResidualArray:
@@ -523,7 +537,7 @@ class DemixingResults(Serializer, TensorFlyWeight):
             self._residual_array = ResidualArray(self.pmd_array,
                                                 self.ac_array,
                                                 self.fluctuating_background_array,
-                                                self.baseline,
+                                                self.static_background_array,
                                             )
         return self._residual_array
 

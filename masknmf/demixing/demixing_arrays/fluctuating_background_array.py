@@ -23,7 +23,7 @@ class FluctuatingBackgroundArray(ArrayLike):
         self.flyweight.validate_attributes(['u', 'factorized_bkgd_term1', 'factorized_bkgd_term2'])
         t = self.factorized_bkgd_term2.shape[1]
         self._shape = (t,) + fov_shape
-        self._pixel_mat = torch.arange(np.prod(self.shape[1:]), device=self.device, dtype=torch.long).reshape(self.shape[1], self.shape[2])
+        self._pixel_mat = torch.arange(self.shape[1] * self.shape[2], device=self.device, dtype=torch.long).reshape(self.shape[1], self.shape[2])
 
         self._default_normalizer = torch.ones(self.shape[1], self.shape[2], device=self.device).float()
         if hasattr(self.flyweight, "normalizer"):
@@ -69,6 +69,10 @@ class FluctuatingBackgroundArray(ArrayLike):
         return cls(fov_shape,
                    flyweight,
                    rescale=rescale)
+
+    @property
+    def flyweight(self) -> TensorFlyWeight:
+        return self._flyweight
 
     @property
     def u(self) -> torch.sparse_coo_tensor:

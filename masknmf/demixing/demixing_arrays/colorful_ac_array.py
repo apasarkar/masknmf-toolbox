@@ -26,7 +26,7 @@ class ColorfulACArray(ArrayLike):
         self._c_minsub = self.c - torch.amin(self.c, dim=0, keepdim=True)
         fov_shape = tuple(map(int, fov_shape))
         self._shape = (t, *fov_shape, 3)
-        self._pixel_mat = torch.arange(np.prod(self.shape[1:3]), device=self.device, dtype=torch.long).reshape(
+        self._pixel_mat = torch.arange(self.shape[1] * self.shape[2], device=self.device, dtype=torch.long).reshape(
             self.shape[1], self.shape[2])
         self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
 
@@ -81,6 +81,9 @@ class ColorfulACArray(ArrayLike):
             if not hasattr(self.flyweight, name):
                 raise ValueError(f"Required attribute: {name} missing from constructor")
 
+    @property
+    def device(self) -> str:
+        return self.flyweight.device
 
     @property
     def a(self) -> torch.sparse_coo_tensor:

@@ -23,7 +23,7 @@ class ACArray(ArrayLike):
         num_frames = self.c.shape[0]
         self._shape = tuple(map(int, (num_frames, *fov_shape)))
 
-        self._pixel_mat = torch.arange(np.prod(self.shape[1:]), device=self.device, dtype=torch.long).reshape(
+        self._pixel_mat = torch.arange(self.shape[1] * self.shape[2], device=self.device, dtype=torch.long).reshape(
             self.shape[1], self.shape[2])
         self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
         self._centers = None
@@ -313,8 +313,8 @@ class ACArray(ArrayLike):
         frame_indexer, item = self._parse_indices(item)
 
         # Step 3: Now slice the data with frame_indexer (careful: if the ndims has shrunk, add a dim)
-        c_crop = self._c[frame_indexer, :]
-        if c_crop.ndim < self._c.ndim:
+        c_crop = self.c[frame_indexer, :]
+        if c_crop.ndim < self.c.ndim:
             c_crop = c_crop.unsqueeze(0)
 
         c_crop = c_crop * self._mask[None, :]
@@ -322,16 +322,16 @@ class ACArray(ArrayLike):
         # Step 4: First do spatial subselection before multiplying by c
         if isinstance(item, tuple) and check_spatial_crop_effect(item[1:3], self.shape[1:3]):
 
-            pixel_space_crop = self.pixel_mat[item[1:3]]
+            pixel_space_crop = self._pixel_mat[item[1:3]]
             a_indices = pixel_space_crop.flatten()
-            a_crop = torch.index_select(self._a, 0, a_indices)
+            a_crop = torch.index_select(self.a, 0, a_indices)
             implied_fov = pixel_space_crop.shape
             product = torch.sparse.mm(a_crop, c_crop.T)
             product = product.reshape(implied_fov + (-1,))
             product = product.permute(-1, *range(product.ndim - 1))
 
         else:
-            a_crop = self._a
+            a_crop = self.a
             implied_fov = self.shape[-2], self.shape[-1]
             product = torch.sparse.mm(a_crop, c_crop.T)
             product = product.reshape((implied_fov[0], implied_fov[1], -1))
