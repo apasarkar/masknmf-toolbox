@@ -28,9 +28,9 @@ class ResidualCorrelationImages(ArrayLike):
                                             "factorized_bkgd_term2",
                                             "a",
                                             "c",
-                                            "support_correlation_values",
-                                            "residual_movie_mean",
-                                            "residual_movie_normalizer"])
+                                            "resid_corr_img_support_values",
+                                            "resid_corr_img_mean",
+                                            "resid_corr_img_normalizer"])
         self._c_norm = self.c - torch.mean(self.c, dim=0, keepdim=True)
         self._c_norm = self._c_norm / torch.linalg.norm(
             self._c_norm, dim=0, keepdim=True
@@ -56,9 +56,9 @@ class ResidualCorrelationImages(ArrayLike):
         factorized_bkgd_term2: torch.Tensor,
         a: torch.sparse_coo_tensor,
         c: torch.Tensor,
-        support_correlation_values: torch.sparse_coo_tensor,
-        residual_movie_mean: torch.Tensor,
-        residual_movie_normalizer: torch.Tensor,
+        resid_corr_img_support_values: torch.sparse_coo_tensor,
+        resid_corr_img_mean: torch.Tensor,
+        resid_corr_img_normalizer: torch.Tensor,
         fov_dims: tuple[int, int],
         mode: ResidCorrMode = ResidCorrMode.DEFAULT,
     ):
@@ -79,10 +79,10 @@ class ResidualCorrelationImages(ArrayLike):
             factorized_bkgd_term2 (torch.Tensor):
             a (torch.sparse_coo_tensor): shape (pixels, number of neural signals). Spatial components
             c (torch.tensor): shape (frames, number of neural signals). This is the temporal traces matrix
-            support_correlation_values (torch.sparse_coo_tensor): Shape (pixels, number of neural signals). The i-th
+            resid_corr_img_support_values (torch.sparse_coo_tensor): Shape (pixels, number of neural signals). The i-th
                 gives the residual correlation image for neural signal "i" on its spatial support.
-            residual_movie_mean (torch.Tensor): shape (pixels)
-            residual_movie_normalizer (torch.Tensor): shape (pixels)
+            resid_corr_img_mean (torch.Tensor): shape (pixels)
+            resid_corr_img_normalizer (torch.Tensor): shape (pixels)
             fov_dims (tuple): A tuple of two values describing the field height/width of the field of view.
             mode (ResidCorrMode): The mode of the residual correlation image
         """
@@ -92,9 +92,9 @@ class ResidualCorrelationImages(ArrayLike):
                                     factorized_bkgd_term2=factorized_bkgd_term2,
                                     a=a,
                                     c=c,
-                                    support_correlation_values=support_correlation_values,
-                                    residual_movie_mean=residual_movie_mean,
-                                    residual_movie_normalizer=residual_movie_normalizer,
+                                    resid_corr_img_support_values=resid_corr_img_support_values,
+                                    resid_corr_img_mean=resid_corr_img_mean,
+                                    resid_corr_img_normalizer=resid_corr_img_normalizer,
                                     )
 
         return cls(flyweight,
@@ -174,16 +174,16 @@ class ResidualCorrelationImages(ArrayLike):
         return self.flyweight.c
 
     @property
-    def support_correlation_values(self) -> torch.sparse_coo_tensor:
-        return self.flyweight.support_correlation_values
+    def resid_corr_img_support_values(self) -> torch.sparse_coo_tensor:
+        return self.flyweight.resid_corr_img_support_values
 
     @property
-    def residual_movie_mean(self) -> torch.Tensor:
-        return self.flyweight.residual_movie_mean
+    def resid_corr_img_mean(self) -> torch.Tensor:
+        return self.flyweight.resid_corr_img_mean
 
     @property
-    def residual_movie_normalizer(self) -> torch.Tensor:
-        return self.flyweight.residual_movie_normalizer
+    def resid_corr_img_normalizer(self) -> torch.Tensor:
+        return self.flyweight.resid_corr_img_normalizer
 
     @property
     def factorized_bkgd_term1(self) -> torch.Tensor:
@@ -218,7 +218,7 @@ class ResidualCorrelationImages(ArrayLike):
         if selected_neurons.ndim < 1:
             selected_neurons = selected_neurons.unsqueeze(0)
         support_values_crop = torch.index_select(
-            self.support_correlation_values, 1, selected_neurons
+            self.resid_corr_img_support_values, 1, selected_neurons
         ).coalesce()
 
         # Step 4: Deal with remaining indices after lazy computing the frame(s)
@@ -232,16 +232,16 @@ class ResidualCorrelationImages(ArrayLike):
             support_values_crop = torch.index_select(
                 support_values_crop, 0, u_indices
             ).coalesce()
-            mean_crop = torch.index_select(self.residual_movie_mean, 0, u_indices)
+            mean_crop = torch.index_select(self.resid_corr_img_mean, 0, u_indices)
             movie_normalizer_crop = torch.index_select(
-                self.residual_movie_normalizer, 0, u_indices
+                self.resid_corr_img_normalizer, 0, u_indices
             )
             implied_fov = pixel_space_crop.shape
         else:
             u_crop = self.u
             a_crop = self.a
-            mean_crop = self.residual_movie_mean
-            movie_normalizer_crop = self.residual_movie_normalizer
+            mean_crop = self.resid_corr_img_mean
+            movie_normalizer_crop = self.resid_corr_img_normalizer
             implied_fov = self.shape[1], self.shape[2]
 
         # Temporal term is guaranteed to have nonzero "T" dimension below

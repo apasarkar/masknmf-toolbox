@@ -15,20 +15,19 @@ class StandardCorrelationImages(ArrayLike):
         """
         see from_tensor docs for detailed parameter information
         """
-
+        self._fov_dims = fov_dims
         self._flyweight = flyweight
         self.flyweight.validate_attributes(['u',
                                             'v',
                                             'c',
-                                            'movie_mean',
-                                            'movie_normalizer'])
+                                            'std_corr_img_mean',
+                                            'std_corr_img_normalizer'])
 
         ## Caution: This tensor is "settable" (when you update self._c the correlation image dynamically changes). So the getter for c should just call flyweight.c
         self._c = None
         self.c = flyweight.c
         self._pixel_mat = torch.arange(self.shape[1]*self.shape[2], device=self.device, dtype=torch.long).reshape(
             self.shape[1], self.shape[2])
-        self._fov_dims = fov_dims
         self._ones_frames = torch.ones(
             (1, self.v.shape[1]), device=self.device, dtype=torch.float
         )
@@ -41,8 +40,8 @@ class StandardCorrelationImages(ArrayLike):
         u_sparse: torch.sparse_coo_tensor,
         v: torch.Tensor,
         c: torch.Tensor,
-        movie_mean: torch.Tensor,
-        movie_normalizer: torch.Tensor,
+        std_corr_img_mean: torch.Tensor,
+        std_corr_img_normalizer: torch.Tensor,
         fov_dims: Tuple[int, int],
     ):
         """
@@ -54,15 +53,15 @@ class StandardCorrelationImages(ArrayLike):
             v (torch.Tensor): shape (rank, frames)
             c (torch.Tensor): shape (frames, number of neural signals). This is the temporal traces matrix, where every
                 column has mean 0 and Frobenius norm 1.
-            movie_mean (torch.tensor): shape (pixels), the mean of u_sparse times v
-            movie_normalizer (torch.Tensor): shape (pixels), the pixelwise l2 norm of (u_sparse times v) - movie_mean
+            std_corr_img_mean (torch.Tensor): shape (pixels), the mean of u_sparse times v
+            std_corr_img_normalizer (torch.Tensor): shape (pixels), the pixelwise l2 norm of (u_sparse times v) - movie_mean
             fov_dims (tuple[int, int]): A (height, width) tuple describing field of view (fov) dimensions
         """
         flyweight = TensorFlyWeight(u=u_sparse,
                                     v=v,
                                     c=c,
-                                    movie_mean=movie_mean,
-                                    movie_normalizer=movie_normalizer)
+                                    std_corr_img_mean=std_corr_img_mean,
+                                    movie_normalizer=std_corr_img_normalizer)
         return cls(flyweight,
                    fov_dims)
 
@@ -124,12 +123,12 @@ class StandardCorrelationImages(ArrayLike):
 
 
     @property
-    def movie_mean(self) -> torch.Tensor:
-        return self.flyweight.movie_mean
+    def std_corr_img_mean(self) -> torch.Tensor:
+        return self.flyweight.std_corr_img_mean
 
     @property
-    def movie_normalizer(self) -> torch.Tensor:
-        return self.flyweight.movie_normalizer
+    def std_corr_img_normalizer(self) -> torch.Tensor:
+        return self.flyweight.std_corr_img_normalizer
 
     @property
     def shape(self) -> Tuple[int, int, int]:
@@ -165,15 +164,15 @@ class StandardCorrelationImages(ArrayLike):
             pixel_space_crop = self._pixel_mat[item[1:]]
             u_indices = pixel_space_crop.flatten()
             u_crop = torch.index_select(self.u, 0, u_indices)
-            mean_crop = torch.index_select(self.movie_mean, 0, u_indices)
+            mean_crop = torch.index_select(self.std_corr_img_mean, 0, u_indices)
             movie_normalizer_crop = torch.index_select(
-                self.movie_normalizer, 0, u_indices
+                self.std_corr_img_normalizer, 0, u_indices
             )
             implied_fov = pixel_space_crop.shape
         else:
             u_crop = self.u
-            mean_crop = self.movie_mean
-            movie_normalizer_crop = self.movie_normalizer
+            mean_crop = self.std_corr_img_mean
+            movie_normalizer_crop = self.std_corr_img_normalizer
             implied_fov = self.shape[1], self.shape[2]
 
         product = (
