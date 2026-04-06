@@ -61,7 +61,7 @@ class StandardCorrelationImages(ArrayLike):
                                     v=v,
                                     c=c,
                                     std_corr_img_mean=std_corr_img_mean,
-                                    movie_normalizer=std_corr_img_normalizer)
+                                    std_corr_img_normalizer=std_corr_img_normalizer)
         return cls(flyweight,
                    fov_dims)
 

@@ -224,7 +224,8 @@ def _compute_residual_correlation_image(
     residual_array = ResidualCorrelationImages.from_tensors(
         u_sparse,
         v,
-        factorized_ring_term,
+        factorized_ring_term[0],
+        factorized_ring_term[1],
         spatial_comps,
         temporal_comps,
         resid_corr_on_support,
@@ -1928,7 +1929,7 @@ class SignalDemixer:
         self.device = device
         self.pmd_obj = pmd_array
         self.pmd_obj.to(device)
-        self.data_order = self.pmd_obj.order
+        self.data_order = "C"
         self.shape = self.pmd_obj.shape
 
         self.u_sparse = self.pmd_obj.u.float().to(self.device).coalesce()
@@ -1991,7 +1992,7 @@ class InitializingState(SignalProcessingState):
         self.shape = pmd_arr.shape[1], pmd_arr.shape[2], pmd_arr.shape[0]
         self.d1, self.d2, self.T = dimensions
         self.pmd_obj = pmd_arr
-        self.data_order = pmd_arr.order
+        self.data_order = "C"
         self.device = device
         self.pmd_obj.to(self.device)
 
@@ -2716,7 +2717,7 @@ class DemixingState(SignalProcessingState):
                 "Deletion Routine requires that a residual correlation image was calculated"
             )
 
-        support_data = self.residual_correlation_image.support_correlation_values
+        support_data = self.residual_correlation_image.resid_corr_img_support_values
         rows, columns = support_data.indices()
         values = (support_data.values() > deletion_threshold).long()
 
@@ -2770,9 +2771,9 @@ class DemixingState(SignalProcessingState):
         (
             _,
             correlation_cols,
-        ) = residual_correlation_data.support_correlation_values.indices()
+        ) = residual_correlation_data.resid_corr_img_support_values.indices()
         correlation_values = (
-            residual_correlation_data.support_correlation_values.values()
+            residual_correlation_data.resid_corr_img_support_values.values()
         )
 
         max_correlation_values.scatter_reduce_(
@@ -3033,15 +3034,14 @@ class DemixingState(SignalProcessingState):
             factorized_bkgd_term1 = self.factorized_ring_term[0],
             factorized_bkgd_term2 = self.factorized_ring_term[1],
             b = self.b.squeeze(),
-            std_corr_img_mean=self.standard_correlation_image.movie_mean,
-            std_corr_img_normalizer=self.standard_correlation_image.movie_normalizer,
-            resid_corr_img_support_values=self.residual_correlation_image.support_correlation_values,
-            resid_corr_img_mean=self.residual_correlation_image.residual_movie_mean,
-            resid_corr_img_normalizer=self.residual_correlation_image.residual_movie_normalizer,
-            bkgd_corr_img_mean=background_to_signal_correlation_image.movie_mean,
-            bkgd_corr_img_normalizer=background_to_signal_correlation_image.movie_normalizer,
+            std_corr_img_mean=self.standard_correlation_image.std_corr_img_mean,
+            std_corr_img_normalizer=self.standard_correlation_image.std_corr_img_normalizer,
+            resid_corr_img_support_values=self.residual_correlation_image.resid_corr_img_support_values,
+            resid_corr_img_mean=self.residual_correlation_image.resid_corr_img_mean,
+            resid_corr_img_normalizer=self.residual_correlation_image.resid_corr_img_normalizer,
+            bkgd_corr_img_mean=background_to_signal_correlation_image.std_corr_img_mean,
+            bkgd_corr_img_normalizer=background_to_signal_correlation_image.std_corr_img_normalizer,
             global_residual_correlation_image=torch.from_numpy(self._curr_corr_image),
-            order=self.data_order,
             device="cpu",
         )
 

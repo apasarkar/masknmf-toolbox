@@ -160,9 +160,9 @@ class DemixingResults(Serializer, TensorFlyWeight):
         """
         self._device = device
         self._shape = tuple(shape)
-        self._u_sparse = u.to(self.device).float()
+        self._u_sparse = u.to(self.device).float().coalesce()
         self._v = v.to(self.device).float()
-        self._a = a.to(self.device).float()
+        self._a = a.to(self.device).float().coalesce()
         self._c = c.to(self.device).float()
 
         if pmd_mean_img is not None:
@@ -174,7 +174,7 @@ class DemixingResults(Serializer, TensorFlyWeight):
         else:
             self._pmd_var_img= torch.ones(self.shape[1], self.shape[2], device=self.device)
 
-        self._pmd_u_projector = pmd_u_projector
+        self._pmd_u_projector = pmd_u_projector.coalesce() if pmd_u_projector is not None else None
 
         if factorized_bkgd_term1 is None or factorized_bkgd_term2 is None:
             display("Background term empty")
@@ -219,7 +219,7 @@ class DemixingResults(Serializer, TensorFlyWeight):
             self._resid_corr_img_mean = None
             self._resid_corr_img_normalizer = None
         else:
-            self._resid_corr_img_support_values = resid_corr_img_support_values
+            self._resid_corr_img_support_values = resid_corr_img_support_values.coalesce()
             self._resid_corr_img_mean = resid_corr_img_mean
             self._resid_corr_img_normalizer = resid_corr_img_normalizer
 
