@@ -64,7 +64,6 @@ class SingleSessionDemixingVis:
                                      "traces")
 
         self._pmd_array = self.demixing_results.pmd_array
-        self._pmd_array.rescale = False
         self._fluctuating_background_array = self.demixing_results.fluctuating_background_array
         self._residual_array = self.demixing_results.residual_array
         self._colorful_ac_array = self.demixing_results.colorful_ac_array

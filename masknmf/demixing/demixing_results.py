@@ -230,9 +230,6 @@ class DemixingResults(Serializer, TensorFlyWeight):
             self._bkgd_corr_img_mean = bkgd_corr_img_mean
             self._bkgd_corr_img_normalizer = bkgd_corr_img_normalizer
 
-        # Move all tracked tensors to desired location so everything is on one device
-        self.to(self.device)
-
         self._pmd_roi_averages = None
         self._fluctuating_background_roi_averages = None
         self._residual_roi_averages = None
@@ -248,6 +245,9 @@ class DemixingResults(Serializer, TensorFlyWeight):
 
         self._rescale = False
 
+        # Move all tracked tensors to desired location so everything is on one device
+        self.to(self.device)
+
     @property
     def rescale(self):
         return self._rescale
@@ -258,7 +258,7 @@ class DemixingResults(Serializer, TensorFlyWeight):
 
         self.pmd_array.rescale = new_value
         self.ac_array.rescale = new_value
-        self.baseline.rescale = new_value
+        self.static_background_array.rescale = new_value
         self.fluctuating_background_array.rescale = new_value
 
     @property
@@ -306,6 +306,12 @@ class DemixingResults(Serializer, TensorFlyWeight):
         return self._device
 
     def to(self, new_device):
+        self._move_managed_tensors(new_device)
+
+        self._move_managed_arrays(new_device)
+
+
+    def _move_managed_tensors(self, new_device: str):
         self._device = new_device
         self._u_sparse = self._u_sparse.to(self.device)
         self._factorized_bkgd_term1 = self._factorized_bkgd_term1.to(self.device)
@@ -323,21 +329,44 @@ class DemixingResults(Serializer, TensorFlyWeight):
         if self._pmd_u_projector is not None:
             self._pmd_u_projector.to(self.device)
 
-        if self._std_corr_img_mean is not None: #This means all the std corr img data is not None from init logic
+        if self._std_corr_img_mean is not None:  # This means all the std corr img data is not None from init logic
             self._std_corr_img_mean = self._std_corr_img_mean.to(self.device)
             self._std_corr_img_normalizer = self._std_corr_img_normalizer.to(self.device)
 
-        if self._bkgd_corr_img_mean is not None: #This means all the bkgd corr img data is not None from init logic
+        if self._bkgd_corr_img_mean is not None:  # This means all the bkgd corr img data is not None from init logic
             self._bkgd_corr_img_mean = self._bkgd_corr_img_mean.to(self.device)
             self._bkgd_corr_img_normalizer = self._bkgd_corr_img_normalizer.to(self.device)
 
-        if self._resid_corr_img_mean is not None: #This means all the resid corr img data is not None from init logic
+        if self._resid_corr_img_mean is not None:  # This means all the resid corr img data is not None from init logic
             self._resid_corr_img_support_values = self._resid_corr_img_support_values.to(self.device)
             self._resid_corr_img_mean = self._resid_corr_img_mean.to(self.device)
             self._resid_corr_img_normalizer = self._resid_corr_img_normalizer.to(self.device)
 
         if self._global_residual_corr_img is not None:
             self._global_residual_corr_img = self._global_residual_corr_img.to(self.device)
+
+    def _move_managed_arrays(self, new_device: str):
+
+        if self._ac_array is not None:
+            self.ac_array.to(self.device)
+
+        if self._colorful_ac_array is not None:
+            self.colorful_ac_array.to(self.device)
+
+        if self._pmd_array is not None:
+            self.pmd_array.to(self.device)
+
+        if self._fluctuating_background_array is not None:
+            self.fluctuating_background_array.to(self.device)
+
+        if self._static_background_array is not None:
+            self.static_background_array.to(self.device)
+
+        if self._residual_correlation_images is not None:
+            self.residual_correlation_images.to(self.device)
+
+        if self._standard_correlation_images is not None:
+            self.standard_correlation_images.to(self.device)
 
     @property
     def fov_shape(self) -> Tuple[int, int]:

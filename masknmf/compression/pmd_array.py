@@ -211,9 +211,13 @@ class PMDArray(ArrayLike, Serializer):
     def var_img(self) -> torch.Tensor:
         return self.flyweight.var_img
 
-    def to(self, device: str):
-        self._flyweight.to(device)
-        self._pixel_mat = self._pixel_mat.to(device)
+    def to(self, new_device: str):
+        if self._flyweight.device != new_device:
+            self._flyweight.to(new_device)
+        self._move_local_tensors(new_device)
+
+    def _move_local_tensors(self, new_device: str):
+        self._pixel_mat = self._pixel_mat.to(new_device)
 
     @property
     def device(self) -> str:

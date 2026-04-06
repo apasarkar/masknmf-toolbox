@@ -22,20 +22,29 @@ class ResidualCorrelationImages(ArrayLike):
         """
 
         self._flyweight = flyweight
+        self.flyweight.validate_attributes(["u",
+                                            "v",
+                                            "factorized_bkgd_term1",
+                                            "factorized_bkgd_term2",
+                                            "a",
+                                            "c",
+                                            "support_correlation_values",
+                                            "residual_movie_mean",
+                                            "residual_movie_normalizer"])
         self._c_norm = self.c - torch.mean(self.c, dim=0, keepdim=True)
         self._c_norm = self._c_norm / torch.linalg.norm(
             self._c_norm, dim=0, keepdim=True
         )
         self._c_norm = torch.nan_to_num(self._c_norm, nan=0.0)
         self._fov_dims = (fov_dims[0], fov_dims[1])
-        self._index_values = torch.arange(self._c.shape[1], device=self.device).long()
+        self._index_values = torch.arange(self.c.shape[1], device=self.device).long()
 
         self._mode = mode
 
         self._ones_basis = (
-            torch.ones([1, self._v.shape[1]], device=self.device) @ self._v.T
+            torch.ones([1, self.v.shape[1]], device=self.device) @ self.v.T
         )
-        self._pixel_mat = torch.arange(np.prod(self.shape[1:3]), device=self.device, dtype=torch.long).reshape(
+        self._pixel_mat = torch.arange(self.shape[1] * self.shape[2], device=self.device, dtype=torch.long).reshape(
             self.shape[1], self.shape[2])
 
     @classmethod
@@ -111,7 +120,12 @@ class ResidualCorrelationImages(ArrayLike):
         return self.flyweight.device
 
     def to(self, new_device: str):
-        self.flyweight.to(new_device)
+        if self._flyweight.device != new_device:
+            self._flyweight.to(new_device)
+        self._move_local_tensors(new_device)
+
+    def _move_local_tensors(self, new_device: str):
+        self._index_values = self._index_values.to(new_device)
         self._pixel_mat = self._pixel_mat.to(new_device)
         self._ones_basis = self._ones_basis.to(new_device)
         self._c_norm = self._c_norm.to(new_device)
@@ -136,11 +150,11 @@ class ResidualCorrelationImages(ArrayLike):
         """
         This specifies what device the internal tensors used for the lazy computations are located.
         """
-        return self._device
+        return self.flyweight.device
 
     @property
     def shape(self) -> tuple[int, int, int]:
-        return self._c.shape[1], self._fov_dims[0], self._fov_dims[1]
+        return self.c.shape[1], self._fov_dims[0], self._fov_dims[1]
 
     @property
     def u(self) -> torch.sparse_coo_tensor:
@@ -161,15 +175,15 @@ class ResidualCorrelationImages(ArrayLike):
 
     @property
     def support_correlation_values(self) -> torch.sparse_coo_tensor:
-        return self._support_correlation_values
+        return self.flyweight.support_correlation_values
 
     @property
     def residual_movie_mean(self) -> torch.Tensor:
-        return self._residual_movie_mean
+        return self.flyweight.residual_movie_mean
 
     @property
     def residual_movie_normalizer(self) -> torch.Tensor:
-        return self._residual_movie_normalizer
+        return self.flyweight.residual_movie_normalizer
 
     @property
     def factorized_bkgd_term1(self) -> torch.Tensor:
@@ -204,7 +218,7 @@ class ResidualCorrelationImages(ArrayLike):
         if selected_neurons.ndim < 1:
             selected_neurons = selected_neurons.unsqueeze(0)
         support_values_crop = torch.index_select(
-            self._support_correlation_values, 1, selected_neurons
+            self.support_correlation_values, 1, selected_neurons
         ).coalesce()
 
         # Step 4: Deal with remaining indices after lazy computing the frame(s)

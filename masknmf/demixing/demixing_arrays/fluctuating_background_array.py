@@ -89,16 +89,25 @@ class FluctuatingBackgroundArray(ArrayLike):
     @property
     def normalizer(self) -> torch.Tensor:
         if not hasattr(self.flyweight, "normalizer"):
-            return self._default_normalizer
+            return self._default_normalizer.to(self.device)
+        return self.flyweight.normalizer
 
     @property
     def device(self):
         return self.flyweight.device
 
     def to(self, new_device: str):
-        self._flyweight.to(new_device)
-        self._pixel_mat.to(new_device)
-        self._default_normalizer.to(new_device)
+        """
+        Note: tensors that are not managed by flyweight need to be consistently moved to the device that flyweight is on
+        in the getitem implementation
+        """
+        if self._flyweight.device != new_device:
+            self._flyweight.to(new_device)
+        self._move_local_tensors(new_device)
+
+    def _move_local_tensors(self, new_device: str):
+        self._pixel_mat = self._pixel_mat.to(new_device)
+        self._default_normalizer = self._default_normalizer.to(new_device)
 
     @property
     def dtype(self) -> str:
@@ -166,12 +175,14 @@ class FluctuatingBackgroundArray(ArrayLike):
             spatial_crop_terms = (term_1, term_2)
 
             pixel_space_crop = self._pixel_mat[spatial_crop_terms]
+            normalizer_crop = self.normalizer[spatial_crop_terms][None, ...]
             u_indices = pixel_space_crop.flatten()
             u_crop = torch.index_select(self.u, 0, u_indices)
             implied_fov = pixel_space_crop.shape
 
         else:
             u_crop = self.u
+            normalizer_crop = self.normalizer[None, ...]
             implied_fov = self.shape[1], self.shape[2]
 
         # Temporal term is guaranteed to have nonzero "T" dimension below
@@ -188,7 +199,7 @@ class FluctuatingBackgroundArray(ArrayLike):
         product = product.permute(-1, *range(product.ndim - 1))
 
         if self.rescale:
-            product *= self.normalizer[None, :, :]
+            product *= normalizer_crop
 
         return product
 

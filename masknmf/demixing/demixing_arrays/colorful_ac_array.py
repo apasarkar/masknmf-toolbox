@@ -75,12 +75,6 @@ class ColorfulACArray(ArrayLike):
                    min_color=min_color,
                    max_color=max_color)
 
-
-    def _validate_attributes(self, attr_list):
-        for name in attr_list:
-            if not hasattr(self.flyweight, name):
-                raise ValueError(f"Required attribute: {name} missing from constructor")
-
     @property
     def device(self) -> str:
         return self.flyweight.device
@@ -94,7 +88,11 @@ class ColorfulACArray(ArrayLike):
         return self.flyweight.c
 
     def to(self, new_device):
-        self._flyweight.to(new_device)
+        if self._flyweight.device != new_device:
+            self._flyweight.to(new_device)
+        self._move_local_tensors(new_device)
+
+    def _move_local_tensors(self, new_device):
         self._pixel_mat = self._pixel_mat.to(new_device)
         self._c_minsub = self._c_minsub.to(new_device)
         self._mask = self._mask.to(new_device)

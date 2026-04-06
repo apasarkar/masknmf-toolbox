@@ -96,7 +96,7 @@ class ResidualArray(ArrayLike):
                 self.pmd_array.getitem_tensor(item)
                 - self.fluctuating_background_array.getitem_tensor(item)
                 - self.ac_array.getitem_tensor(item)
-                - self.baseline.getitem_tensor((slice(0, self.shape[1]), slice(0, self.shape[2])))[None, :]
+                - self.baseline.getitem_tensor((slice(0, self.shape[1]), slice(0, self.shape[2])))[None, ...]
             )
 
         return output.cpu().numpy()

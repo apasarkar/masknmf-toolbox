@@ -76,8 +76,13 @@ class ACArray(ArrayLike):
     def device(self):
         return self.flyweight.device
 
+
     def to(self, new_device):
-        self._flyweight.to(new_device)
+        if self._flyweight.device != new_device:
+            self._flyweight.to(new_device)
+        self._move_local_tensors(new_device)
+
+    def _move_local_tensors(self, new_device: str):
         self._pixel_mat = self._pixel_mat.to(new_device)
         self._mask = self._mask.to(new_device)
         self._default_normalizer = self._default_normalizer.to(new_device)
@@ -95,6 +100,7 @@ class ACArray(ArrayLike):
     def normalizer(self) -> torch.Tensor:
         if not hasattr(self.flyweight, "normalizer"):
             return self._default_normalizer
+        return self.flyweight.normalizer
 
     @property
     def rescale(self):
@@ -323,6 +329,7 @@ class ACArray(ArrayLike):
         if isinstance(item, tuple) and check_spatial_crop_effect(item[1:3], self.shape[1:3]):
 
             pixel_space_crop = self._pixel_mat[item[1:3]]
+            normalizer_crop = self.normalizer[item[1:3]][None, ...]
             a_indices = pixel_space_crop.flatten()
             a_crop = torch.index_select(self.a, 0, a_indices)
             implied_fov = pixel_space_crop.shape
@@ -332,13 +339,14 @@ class ACArray(ArrayLike):
 
         else:
             a_crop = self.a
+            normalizer_crop  = self.normalizer[None, :, :]
             implied_fov = self.shape[-2], self.shape[-1]
             product = torch.sparse.mm(a_crop, c_crop.T)
             product = product.reshape((implied_fov[0], implied_fov[1], -1))
             product = product.permute(2, 0, 1)
 
         if self.rescale:
-            product *= self.normalizer[None, :, :]
+            product *= normalizer_crop
 
         return product
 

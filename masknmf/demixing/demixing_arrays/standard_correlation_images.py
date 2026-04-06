@@ -17,12 +17,16 @@ class StandardCorrelationImages(ArrayLike):
         """
 
         self._flyweight = flyweight
-        self.flyweight.validate_attributes(['u', 'v', 'c', 'movie_mean', 'movie_normalizer'])
+        self.flyweight.validate_attributes(['u',
+                                            'v',
+                                            'c',
+                                            'movie_mean',
+                                            'movie_normalizer'])
 
         ## Caution: This tensor is "settable" (when you update self._c the correlation image dynamically changes). So the getter for c should just call flyweight.c
         self._c = None
         self.c = flyweight.c
-        self._pixel_mat = torch.arange(np.prod(self.shape[1:3]), device=self.device, dtype=torch.long).reshape(
+        self._pixel_mat = torch.arange(self.shape[1]*self.shape[2], device=self.device, dtype=torch.long).reshape(
             self.shape[1], self.shape[2])
         self._fov_dims = fov_dims
         self._ones_frames = torch.ones(
@@ -81,7 +85,11 @@ class StandardCorrelationImages(ArrayLike):
         return self._flyweight.device
 
     def to(self, new_device: str):
-        self.flyweight.to(new_device)
+        if self._flyweight.device != new_device:
+            self._flyweight.to(new_device)
+        self._move_local_tensors(new_device)
+
+    def _move_local_tensors(self, new_device: str):
         self._ones_frames = self._ones_frames.to(new_device)
         self._pixel_mat = self._pixel_mat.to(new_device)
         self._c = self._c.to(new_device)
