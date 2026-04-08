@@ -151,6 +151,9 @@ class TensorFlyWeight:
                 if device is None:
                     device = value.device
                 setattr(self, name, value.to(device))
+            ##Useful to track None types
+            if value is None:
+                setattr(self, name, None)
 
             else:
                 raise ValueError(f"field {name} is not a torch Tensor object")
@@ -160,14 +163,16 @@ class TensorFlyWeight:
         device = None
         for name in vars(self):
             data = getattr(self, name)
+            if data is None:
+                continue
             if device is None:
                 device = data.device
             if data.device != device:
                 raise ValueError("Not all attributes on same device")
         return device
 
-    def list_tensor_attributes(self) -> list[str]:
-        return list(vars(self).keys())
+    def list_tensor_attributes(self) -> dict[str, torch.Tensor | None]:
+        return vars(self)
 
     def validate_attributes(self, attr_list):
         for name in attr_list:
@@ -177,8 +182,9 @@ class TensorFlyWeight:
     def to(self, device: str):
         for name in vars(self):
             curr_tensor = getattr(self, name)
-            new_values = curr_tensor.to(device)
-            setattr(self, name, new_values)
+            if curr_tensor is not None:
+                new_values = curr_tensor.to(device)
+                setattr(self, name, new_values)
 
 
 class LazyFrameLoader(ArrayLike):
