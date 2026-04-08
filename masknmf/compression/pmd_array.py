@@ -1,4 +1,5 @@
-from masknmf.arrays.array_interfaces import LazyFrameLoader, FactorizedVideo, ArrayLike
+from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike, TensorFlyWeight
+from masknmf.utils._serialization import load_dict
 from masknmf.utils import Serializer
 import torch
 from typing import *
@@ -96,7 +97,7 @@ def _construct_identity_torch_sparse_tensor(dimsize: int, device: str = "cpu"):
     sparse_tensor = torch.sparse_coo_tensor(indices, values, (dimsize, dimsize))
     return sparse_tensor
 
-class PMDArray(FactorizedVideo, Serializer):
+class PMDArray(ArrayLike, Serializer):
     """
     Factorized demixing array for PMD movie
     """
@@ -112,49 +113,87 @@ class PMDArray(FactorizedVideo, Serializer):
     def __init__(
         self,
         shape: Tuple[int, int, int] | np.ndarray,
-        u: torch.sparse_coo_tensor,
-        v: torch.tensor,
-        mean_img: torch.tensor,
-        var_img: torch.tensor,
-        u_local_projector: Optional[torch.sparse_coo_tensor] = None,
+        flyweight: TensorFlyWeight,
         device: str = "cpu",
         rescale: bool = True,
     ):
         """
-        Key assumption: the spatial basis matrix U has n + k columns; the first n columns is blocksparse (this serves
-        as a local spatial basis for the data) and the last k columns can have unconstrained spatial support (these serve
-        as a global spatial basis for the data).
-
-        Args:
-            shape (tuple): (num_frames, fov_dim1, fov_dim2)
-            u (torch.sparse_coo_tensor): shape (pixels, rank)
-            v (torch.tensor): shape (rank, frames)
-            mean_img (torch.tensor): shape (fov_dim1, fov_dim2). The pixelwise mean of the data
-            var_img (torch.tensor): shape (fov_dim1, fov_dim2). A pixelwise noise normalizer for the data
-            u_local_projector (Optional[torch.sparse_coo_tensor]): shape (pixels, rank)
-            resid_std (torch.tensor): The residual standard deviation, shape (fov_dim1, fov_dim2)
-            device (str): The device on which computations occur/data is stored
-            rescale (bool): True if we rescale the PMD data (i.e. multiply by the pixelwise normalizer
-                and add back the mean) in __getitem__
+        See from_tensors class method for documentation
         """
-        self._u = u.to(device).coalesce()
-        self._device = self._u.device
-        self._v = v.to(device)
-        if u_local_projector is not None:
-            self._u_local_projector = u_local_projector.to(device).coalesce()
-        else:
-            self._u_local_projector = None
-
-        self._device = self._u.device
         self._shape = tuple(shape)
-
-        self.pixel_mat = torch.arange(
-            self.shape[1] * self.shape[2], device=self.device
-        ).reshape(self.shape[1], self.shape[2])
-        self._order = "C"
-        self._mean_img = mean_img.to(self.device).float()
-        self._var_img = var_img.to(self.device).float()
         self._rescale = rescale
+
+        ##Set up the flyweight and all other tensors
+        self._flyweight = flyweight
+        self._flyweight.to(device)
+
+        self._pixel_mat = torch.arange(
+            self.shape[1] * self.shape[2], device=self.flyweight.device,
+        ).reshape(self.shape[1], self.shape[2])
+
+
+
+    @property
+    def flyweight(self) -> TensorFlyWeight:
+        return self._flyweight
+    @classmethod
+    def from_tensors(cls,
+                   shape: Tuple[int, int, int] | np.ndarray,
+                   u: torch.sparse_coo_tensor,
+                   v: torch.tensor,
+                   mean_img: torch.tensor,
+                   var_img: torch.tensor,
+                   u_local_projector: Optional[torch.sparse_coo_tensor] = None,
+                   device: str = "cpu",
+                   rescale: bool = True):
+
+        """
+            Key assumption: the spatial basis matrix U has n + k columns; the first n columns is blocksparse (this serves
+            as a local spatial basis for the data) and the last k columns can have unconstrained spatial support (these serve
+            as a global spatial basis for the data).
+
+            Args:
+                shape (tuple): (num_frames, fov_dim1, fov_dim2)
+                u (torch.sparse_coo_tensor): shape (pixels, rank)
+                v (torch.tensor): shape (rank, frames)
+                mean_img (torch.tensor): shape (fov_dim1, fov_dim2). The pixelwise mean of the data
+                var_img (torch.tensor): shape (fov_dim1, fov_dim2). A pixelwise noise normalizer for the data
+                u_local_projector (Optional[torch.sparse_coo_tensor]): shape (pixels, rank)
+                resid_std (torch.tensor): The residual standard deviation, shape (fov_dim1, fov_dim2)
+                device (str): The device on which computations occur/data is stored
+                rescale (bool): True if we rescale the PMD data (i.e. multiply by the pixelwise normalizer
+                    and add back the mean) in __getitem__
+        """
+        flyweight = TensorFlyWeight(u=u.float(),
+                                    v=v.float(),
+                                    mean_img=mean_img.float(),
+                                    var_img=var_img.float(),
+                                    u_local_projector=u_local_projector.float() if u_local_projector is not None else None)
+        return cls(shape,
+                   flyweight,
+                   device=device,
+                   rescale = rescale)
+
+
+    @classmethod
+    def from_flyweight(cls,
+                       shape: Tuple[int, int, int] | np.ndarray,
+                       flyweight: TensorFlyWeight,
+                       device: str = "cpu",
+                       rescale: bool = True
+                       ):
+        """
+        Memory efficient way to construct PMD Array from a flyweight tensor manager. See from_array for parameter documentation
+        """
+        return cls(shape,
+                   flyweight,
+                   device=device,
+                   rescale=rescale)
+
+    @classmethod
+    def from_hdf5(cls, path, **kwargs):
+        d = load_dict(path, Serializer.__name__)
+        return cls.from_tensors(**d, **kwargs)
 
     @property
     def rescale(self) -> bool:
@@ -165,42 +204,42 @@ class PMDArray(FactorizedVideo, Serializer):
         self._rescale = new_state
 
     @property
-    def mean_img(self) -> torch.tensor:
-        return self._mean_img
+    def mean_img(self) -> torch.Tensor:
+        return self.flyweight.mean_img
 
     @property
-    def var_img(self) -> torch.tensor:
-        return self._var_img
+    def var_img(self) -> torch.Tensor:
+        return self.flyweight.var_img
+
+    def to(self, new_device: str):
+        if self._flyweight.device != new_device:
+            self._flyweight.to(new_device)
+        self._move_local_tensors(new_device)
+
+    def _move_local_tensors(self, new_device: str):
+        self._pixel_mat = self._pixel_mat.to(new_device)
 
     @property
-    def device(self) -> torch.device:
-        return self._device
-
-    def to(self, device: str):
-        self._u = self._u.to(device)
-        self._v = self._v.to(device)
-        self._mean_img = self._mean_img.to(device)
-        self._var_img = self._var_img.to(device)
-        self.pixel_mat = self.pixel_mat.to(device)
-        self._device = self._u.device
-        if self.u_local_projector is not None:
-            self._u_local_projector = self.u_local_projector.to(device)
+    def device(self) -> str:
+        return self.flyweight.device
 
     @property
     def u(self) -> torch.sparse_coo_tensor:
-        return self._u
+        return self.flyweight.u
 
     @property
     def u_local_projector(self) -> Optional[torch.sparse_coo_tensor]:
-        return self._u_local_projector
+        if hasattr(self.flyweight, "u_local_projector"):
+            return self.flyweight.u_local_projector
+        return None
 
     @property
     def pmd_rank(self) -> int:
         return self.u.shape[1]
 
     @property
-    def v(self) -> torch.tensor:
-        return self._v
+    def v(self) -> torch.Tensor:
+        return self.flyweight.v
 
     @property
     def dtype(self) -> str:
@@ -215,15 +254,6 @@ class PMDArray(FactorizedVideo, Serializer):
         Array shape (n_frames, dims_x, dims_y)
         """
         return self._shape
-
-    @property
-    def order(self) -> str:
-        """
-        The spatial data is "flattened" from 2D into 1D.
-        This is not user-modifiable; "F" ordering is undesirable in PyTorch
-        """
-        return self._order
-
     @property
     def ndim(self) -> int:
         """
@@ -231,11 +261,11 @@ class PMDArray(FactorizedVideo, Serializer):
         """
         return len(self.shape)
     
-    def calculate_rank_heatmap(self) -> torch.tensor:
+    def calculate_rank_heatmap(self) -> torch.Tensor:
         """
         Generates rank heatmap image based on U. Equal to row summation of binarized U matrix.
         Returns:
-            rank_heatmap (torch.tensor). Shape (fov_dim1, fov_dim2).
+            rank_heatmap (torch.Tensor). Shape (fov_dim1, fov_dim2).
         """
         binarized_u = torch.sparse_coo_tensor(
             self.u.indices(), 
@@ -247,16 +277,16 @@ class PMDArray(FactorizedVideo, Serializer):
                              (self.shape[1],self.shape[2]))
 
     def project_frames(
-        self, frames: torch.tensor, standardize: Optional[bool] = True
-    ) -> torch.tensor:
+        self, frames: torch.Tensor, standardize: Optional[bool] = True
+    ) -> torch.Tensor:
         """
         Projects frames onto the spatial basis, using the u_projector property. u_projector must be defined.
         Args:
-            frames (torch.tensor). Shape (fov_dim1, fov_dim2, num_frames) or (fov_dim1*fov_dim2, num_frames).
+            frames (torch.Tensor). Shape (fov_dim1, fov_dim2, num_frames) or (fov_dim1*fov_dim2, num_frames).
                 Frames which we want to project onto the spatial basis.
             standardize (Optional[bool]): Indicates whether the frames of data are standardized before projection is performed
         Returns:
-            projected_frames (torch.tensor). Shape (fov_dim1 * fov_dim2, num_frames).
+            projected_frames (torch.Tensor). Shape (fov_dim1 * fov_dim2, num_frames).
         """
         if self.u_local_projector is None:
             raise ValueError(
@@ -284,12 +314,12 @@ class PMDArray(FactorizedVideo, Serializer):
     def getitem_tensor(
         self,
         item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
-    ) -> torch.tensor:
+    ) -> torch.Tensor:
         frame_indexer, item = self._parse_indices(item)
 
         # Step 3: Now slice the data with frame_indexer (careful: if the ndims has shrunk, add a dim)
-        v_crop = self._v[:, frame_indexer]
-        if v_crop.ndim < self._v.ndim:
+        v_crop = self.v[:, frame_indexer]
+        if v_crop.ndim < self.v.ndim:
             v_crop = v_crop.unsqueeze(1)
 
 
@@ -317,14 +347,14 @@ class PMDArray(FactorizedVideo, Serializer):
 
             spatial_crop_terms = (term_1, term_2)
 
-            pixel_space_crop = self.pixel_mat[spatial_crop_terms]
+            pixel_space_crop = self._pixel_mat[spatial_crop_terms]
             mean_img_crop = self.mean_img[spatial_crop_terms].flatten()
             var_img_crop = self.var_img[spatial_crop_terms].flatten()
             u_indices = pixel_space_crop.flatten()
-            u_crop = torch.index_select(self._u, 0, u_indices)
+            u_crop = torch.index_select(self.u, 0, u_indices)
             implied_fov = pixel_space_crop.shape
         else:
-            u_crop = self._u
+            u_crop = self.u
             mean_img_crop = self.mean_img.flatten()
             var_img_crop = self.var_img.flatten()
             implied_fov = self.shape[1], self.shape[2]

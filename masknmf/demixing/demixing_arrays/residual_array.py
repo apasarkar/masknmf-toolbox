@@ -1,60 +1,69 @@
 from typing import *
 import numpy as np
-from masknmf.arrays.array_interfaces import FactorizedVideo
+from masknmf.arrays.array_interfaces import ArrayLike
 from masknmf.compression.pmd_array import PMDArray
 from masknmf.demixing.demixing_arrays.ac_array import ACArray
 from masknmf.demixing.demixing_arrays.fluctuating_background_array import FluctuatingBackgroundArray
+from masknmf.demixing.demixing_arrays.static_baseline import StaticBackgroundArray
 import torch
 
-class ResidualArray(FactorizedVideo):
+class ResidualArray(ArrayLike):
     """
     Factorized video for the spatial and temporal extracted sources from the data
     """
 
     def __init__(
         self,
-        pmd_arr: PMDArray,
-        ac_arr: ACArray,
-        fluctuating_arr: FluctuatingBackgroundArray,
-        baseline: torch.tensor,
+        pmd_array: PMDArray,
+        ac_array: ACArray,
+        fluctuating_background_array: FluctuatingBackgroundArray,
+        static_baseline_array: StaticBackgroundArray,
     ):
         """
         Args:
-            pmd_arr (PMDArray)
-            ac_arr (ACArray)
-            fluctuating_arr (FluctuatingBackgroundArray)
-            baseline (torch.tensor): Shape (fov dim 1, fov dim 2)
+            pmd_array (PMDArray)
+            ac_array (ACArray)
+            fluctuating_array (FluctuatingBackgroundArray)
+            baseline (StaticBackgroundArray): Shape (height, width)
         """
-        self.pmd_arr = pmd_arr
-        # Demixing is run on the U/V representation, without rescaling, so we set rescale = False here to make sure scales match
-        self.pmd_arr.rescale = False
-        self.ac_arr = ac_arr
-        self.baseline = baseline
-        self.fluctuating_arr = fluctuating_arr
 
-        if not (
-            self.pmd_arr.device
-            == self.ac_arr.device
-            == self.baseline.device
-            == self.fluctuating_arr.device
-        ):
-            raise ValueError(f"Input arrays not all on same device")
-        self._device = self.pmd_arr.device
-        self._shape = self.pmd_arr.shape
+        self._pmd_array = pmd_array
+        self._ac_array = ac_array
+        self._baseline = static_baseline_array
+        self._fluctuating_background_array = fluctuating_background_array
 
+        self._shape = self.pmd_array.shape
+
+    @property
+    def device(self) -> str:
+        if self.pmd_array.device == self.ac_array.device == self.fluctuating_background_array.device == self.baseline.device:
+            return self.pmd_array.device
+        else:
+            raise ValueError("Not all arrays are on same device")
+        
     @property
     def dtype(self) -> str:
         """
         data type, default np.float32
         """
-        return self.pmd_arr.dtype
+        return self.pmd_array.dtype
 
     @property
-    def device(self) -> str:
-        """
-        Returns the device that all the internal tensors are on at init time
-        """
-        return self._device
+    def pmd_array(self) -> PMDArray:
+        return self._pmd_array
+
+    @property
+    def ac_array(self) -> ACArray:
+        return self._ac_array
+
+    @property
+    def fluctuating_background_array(self) -> FluctuatingBackgroundArray:
+        return self._fluctuating_background_array
+
+    @property
+    def baseline(self) -> StaticBackgroundArray:
+        return self._baseline
+
 
     @property
     def shape(self) -> Tuple[int, int, int]:
@@ -77,17 +86,17 @@ class ResidualArray(FactorizedVideo):
         # In this case there is spatial cropping
         if isinstance(item, tuple) and len(item) > 1:
             output = (
-                self.pmd_arr.getitem_tensor(item)
-                - self.fluctuating_arr.getitem_tensor(item)
-                - self.ac_arr.getitem_tensor(item)
-                - self.baseline[item[1:]][None, ...]
+                self.pmd_array.getitem_tensor(item)
+                - self.fluctuating_background_array.getitem_tensor(item)
+                - self.ac_array.getitem_tensor(item)
+                - self.baseline.getitem_tensor(item[1:])[None, ...]
             )
         else:
             output = (
-                self.pmd_arr.getitem_tensor(item)
-                - self.fluctuating_arr.getitem_tensor(item)
-                - self.ac_arr.getitem_tensor(item)
-                - self.baseline[None, :]
+                self.pmd_array.getitem_tensor(item)
+                - self.fluctuating_background_array.getitem_tensor(item)
+                - self.ac_array.getitem_tensor(item)
+                - self.baseline.getitem_tensor((slice(0, self.shape[1]), slice(0, self.shape[2])))[None, ...]
             )
 
         return output.cpu().numpy()

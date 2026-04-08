@@ -1,10 +1,10 @@
 from typing import *
 import numpy as np
-from masknmf.arrays.array_interfaces import FactorizedVideo
+from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
 
-class ColorfulACArray(FactorizedVideo):
+class ColorfulACArray(ArrayLike):
     """
     Factorized video for the spatial and temporal extracted sources from the data
     """
@@ -12,11 +12,43 @@ class ColorfulACArray(FactorizedVideo):
     def __init__(
         self,
         fov_shape: Tuple[int, int],
-        a: torch.sparse_coo_tensor,
-        c: torch.tensor,
+        flyweight: TensorFlyWeight,
         min_color: int = 30,
         max_color: int = 255,
     ):
+        """
+        See from_tensors class method for documentation
+        """
+
+        self._flyweight = flyweight
+        self.flyweight.validate_attributes(["a", "c"])
+        t = self.c.shape[0]
+        self._c_minsub = self.c - torch.amin(self.c, dim=0, keepdim=True)
+        fov_shape = tuple(map(int, fov_shape))
+        self._shape = (t, *fov_shape, 3)
+        self._pixel_mat = torch.arange(self.shape[1] * self.shape[2], device=self.device, dtype=torch.long).reshape(
+            self.shape[1], self.shape[2])
+        self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
+
+        ## Establish the coloring scheme
+        num_neurons = self.c.shape[1]
+        colors = np.random.uniform(low=min_color, high=max_color, size=num_neurons * 3)
+        colors = colors.reshape((num_neurons, 3))
+        color_sum = np.sum(colors, axis=1, keepdims=True)
+        self._colors = torch.from_numpy(colors / color_sum).to(self.device).float()
+
+    @property
+    def flyweight(self) -> TensorFlyWeight:
+        return self._flyweight
+
+    @classmethod
+    def from_tensors(cls,
+                     fov_shape: tuple[int, int],
+                     a: torch.sparse_coo_tensor,
+                     c: torch.Tensor,
+                     min_color: int = 30,
+                     max_color: int = 255,
+                     ):
         """
         Args:
             fov_shape (tuple): (fov_dim1, fov_dim2)
@@ -25,47 +57,57 @@ class ColorfulACArray(FactorizedVideo):
             min_color (int): Minimum RGB value (from 0 to 255)
             max_color (int): Maximum RGB value (from 0 to 255)
         """
-        t = c.shape[0]
-        self._a = a
-        self._c = c - torch.amin(c, dim=0, keepdim=True)
-        if not (self.a.device == self.c.device):
-            raise ValueError(f"Input tensors not on same device")
-        self._device = self.a.device
-        fov_shape = tuple(map(int, fov_shape))
-        self._shape = (t, *fov_shape, 3)
-        self.pixel_mat = np.arange(np.prod(self.shape[1:3])).reshape([self.shape[1], self.shape[2]])
-        self.pixel_mat = torch.from_numpy(self.pixel_mat).long().to(self.device)
-        self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
+        flyweight = TensorFlyWeight(a=a, c=c)
+        return cls(fov_shape,
+                   flyweight,
+                   min_color=min_color,
+                   max_color=max_color)
 
-        ## Establish the coloring scheme
-        num_neurons = c.shape[1]
-        colors = np.random.uniform(low=min_color, high=max_color, size=num_neurons * 3)
-        colors = colors.reshape((num_neurons, 3))
-        color_sum = np.sum(colors, axis=1, keepdims=True)
-        self._colors = torch.from_numpy(colors / color_sum).to(self.device).float()
-
-    @property
-    def a(self) -> torch.sparse_coo_tensor:
-        return self._a
-
-    @property
-    def c(self) -> torch.tensor:
-        return self._c
-
-    @property
-    def mask(self) -> torch.tensor:
-        return self._mask
-
-    @mask.setter
-    def mask(self, new_mask: torch.tensor):
-        self._mask = new_mask.to(self.device).bool().to(self.c.dtype) #Ensures it's all 1s and 0s
+    @classmethod
+    def from_flyweight(cls,
+                       fov_shape,
+                       flyweight: TensorFlyWeight,
+                       min_color: int = 30,
+                       max_color: int = 255,
+                       ):
+        return cls(fov_shape,
+                   flyweight,
+                   min_color=min_color,
+                   max_color=max_color)
 
     @property
     def device(self) -> str:
-        return self._device
+        return self.flyweight.device
 
     @property
-    def colors(self) -> torch.tensor:
+    def a(self) -> torch.sparse_coo_tensor:
+        return self.flyweight.a
+
+    @property
+    def c(self) -> torch.Tensor:
+        return self.flyweight.c
+
+    def to(self, new_device):
+        if self._flyweight.device != new_device:
+            self._flyweight.to(new_device)
+        self._move_local_tensors(new_device)
+
+    def _move_local_tensors(self, new_device):
+        self._pixel_mat = self._pixel_mat.to(new_device)
+        self._c_minsub = self._c_minsub.to(new_device)
+        self._mask = self._mask.to(new_device)
+        self._colors = self._colors.to(new_device)
+
+    @property
+    def mask(self) -> torch.Tensor:
+        return self._mask
+
+    @mask.setter
+    def mask(self, new_mask: torch.Tensor):
+        self._mask = new_mask.to(self.device).bool().to(self.c.dtype) #Ensures it's all 1s and 0s
+
+    @property
+    def colors(self) -> torch.Tensor:
         """
         Colors used for each neuron
 
@@ -75,11 +117,11 @@ class ColorfulACArray(FactorizedVideo):
         return self._colors
 
     @colors.setter
-    def colors(self, new_colors: torch.tensor):
+    def colors(self, new_colors: torch.Tensor):
         """
         Updates the colors used here
         Args:
-            new_colors (torch.tensor): Shape (num_neurons, 3)
+            new_colors (torch.Tensor): Shape (num_neurons, 3)
         """
         self._colors = new_colors.to(self.device).to(self.c.dtype)
 
@@ -104,7 +146,7 @@ class ColorfulACArray(FactorizedVideo):
         """
         return len(self.shape)
 
-    def compute_mip(self) -> torch.tensor:
+    def compute_mip(self) -> torch.Tensor:
         updated_coloring = self.colors * torch.amax(self.c, dim=0, keepdims = True).T #(num_neurons, 3)
         updated_coloring = updated_coloring * self.mask[:, None].float()
         mip_image = torch.sparse.mm(self.a, updated_coloring)
@@ -123,7 +165,7 @@ class ColorfulACArray(FactorizedVideo):
         frame_indexer, item = self._parse_indices(item)
 
         # Step 3: Now slice the data with frame_indexer (careful: if the ndims has shrunk, add a dim)
-        c_crop = self.c[frame_indexer, :]
+        c_crop = self._c_minsub[frame_indexer, :]
         if c_crop.ndim < self.c.ndim:
             c_crop = c_crop[None, :]
 
@@ -134,9 +176,9 @@ class ColorfulACArray(FactorizedVideo):
         if isinstance(item, tuple) and check_spatial_crop_effect(
             item[1:3], self.shape[1:3]
         ):
-            pixel_space_crop = self.pixel_mat[item[1:3]]
+            pixel_space_crop = self._pixel_mat[item[1:3]]
             a_indices = pixel_space_crop.flatten()
-            a_crop = torch.index_select(self._a, 0, a_indices)
+            a_crop = torch.index_select(self.a, 0, a_indices)
             implied_fov = pixel_space_crop.shape
             product_list = []
             for k in range(3):
@@ -147,7 +189,7 @@ class ColorfulACArray(FactorizedVideo):
             product = product.reshape(implied_fov + (c_crop.shape[1],) + (3,))
             product = product.permute(product.ndim - 2, *range(product.ndim - 2), 3)
         else:
-            a_crop = self._a
+            a_crop = self.a
             implied_fov = self.shape[1], self.shape[2]
 
             product_list = []

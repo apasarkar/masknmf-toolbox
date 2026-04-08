@@ -37,7 +37,7 @@ def spatial_filter_pmd(pmd_obj: masknmf.PMDArray,
     new_mean = torch.sparse.mm(pmd_obj.u.to(device), torch.mean(final_v.to(device), dim=1, keepdim = True))
     new_mean = new_mean.reshape(d1, d2)
 
-    final_arr = masknmf.PMDArray(pmd_obj.shape,
+    final_arr = masknmf.PMDArray.from_tensors(pmd_obj.shape,
                                  pmd_obj.u.to(device),
                                  final_v.to(device),
                                  new_mean.to(device),
