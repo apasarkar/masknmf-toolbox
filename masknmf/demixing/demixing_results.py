@@ -77,7 +77,7 @@ def test_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
                 return True
     return False
 
-class DemixingResults(Serializer, TensorFlyWeight):
+class DemixingResults(Serializer):
     _serialized = {
         "shape",
         "u",
@@ -165,6 +165,8 @@ class DemixingResults(Serializer, TensorFlyWeight):
         self._a = a.to(self.device).float().coalesce()
         self._c = c.to(self.device).float()
 
+        self._flyweight = TensorFlyWeight()
+
         if pmd_mean_img is not None:
             self._pmd_mean_img = pmd_mean_img
         else:
@@ -202,10 +204,18 @@ class DemixingResults(Serializer, TensorFlyWeight):
 
         if pmd_roi_averages is not None:
             self._pmd_roi_averages = pmd_roi_averages
+        else:
+            self._pmd_roi_averages = None
+
         if fluctuating_background_roi_averages is not None:
             self._fluctuating_background_roi_averages = fluctuating_background_roi_averages
+        else:
+            self._fluctuating_background_roi_averages = None
+
         if residual_roi_averages is not None:
             self._residual_roi_averages = residual_roi_averages
+        else:
+            self._residual_roi_averages = None
 
         if std_corr_img_mean is None or std_corr_img_normalizer is None:
             self._std_corr_img_mean = None
@@ -229,10 +239,6 @@ class DemixingResults(Serializer, TensorFlyWeight):
         else:
             self._bkgd_corr_img_mean = bkgd_corr_img_mean
             self._bkgd_corr_img_normalizer = bkgd_corr_img_normalizer
-
-        self._pmd_roi_averages = None
-        self._fluctuating_background_roi_averages = None
-        self._residual_roi_averages = None
 
         self._ac_array = None
         self._colorful_ac_array = None
