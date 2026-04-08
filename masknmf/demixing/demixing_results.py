@@ -197,7 +197,7 @@ class DemixingResults(Serializer):
             self.flyweight.factorized_bkgd_term1 = factorized_bkgd_term1.to(self.device)
             self.flyweight.factorized_bkgd_term2 = factorized_bkgd_term2.to(self.device)
 
-        self.flyweight.global_residual_correlation_image = global_residual_correlation_image if global_residual_correlation_image is not None else torch.zeros(self.shape[1], self.shape[2], device=self.device, dtype=self._u_sparse.dtype)
+        self.flyweight.global_residual_correlation_image = global_residual_correlation_image if global_residual_correlation_image is not None else torch.zeros(self.shape[1], self.shape[2], device=self.device, dtype=self.u.dtype)
 
 
         if b is None:
@@ -471,7 +471,7 @@ class DemixingResults(Serializer):
         property. If this becomes crucial, can re-organize
         """
         if self.bkgd_corr_img_mean is not None:
-            return StandardCorrelationImages.from_tensors(self._u_sparse,
+            return StandardCorrelationImages.from_tensors(self.u,
                                              self.factorized_bkgd_term1 @ self.factorized_bkgd_term2,
                                              self.c,
                                              self.bkgd_corr_img_mean,
