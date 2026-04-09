@@ -60,19 +60,13 @@ class SingleSessionDemixingVis:
                         "colorful_signals",
                         "residual corr img")
 
-        self._local_signal_panels = ("signals",
-                                     "traces")
+
 
         self._pmd_array = self.demixing_results.pmd_array
         self._fluctuating_background_array = self.demixing_results.fluctuating_background_array
         self._residual_array = self.demixing_results.residual_array
         self._colorful_ac_array = self.demixing_results.colorful_ac_array
         self._ac_array = self.demixing_results.ac_array
-
-        self._trace_panels = ("compressed trace",
-                        "demixed trace",
-                        "background trace",
-                        "residual trace")
 
         self._video_extents =  {
                 self._video_panels[0]: (0, 0.333, 0.0, 0.5),
@@ -81,16 +75,7 @@ class SingleSessionDemixingVis:
                 self._video_panels[3]: (0.0, 0.333, 0.5, 1.0),
                 self._video_panels[4]: (0.333, 0.666, 0.5, 1.0),
                 self._video_panels[5]: (0.666, 1, 0.5, 1.0)}
-        self._trace_extents = {
-                self._trace_panels[0]: (0, 1, 0.0, 0.25),
-                self._trace_panels[1]: (0, 1, 0.25, 0.5),
-                self._trace_panels[2]: (0, 1, 0.5, 0.75),
-                self._trace_panels[3]: (0, 1, 0.75, 1.0)
-            }
-        self._local_signal_extents = {
-            self._local_signal_panels[0]: (0, 0.2, 0, 1),
-            self._local_signal_panels[1]: (0.2, 1, 0, 1)
-        }
+
 
         self._ndw_fov = fpl.NDWidget(
             ref_range,
@@ -158,6 +143,17 @@ class SingleSessionDemixingVis:
             name=self._video_panels[5],
         )
 
+        self._trace_panels = ("compressed trace",
+                        "demixed trace",
+                        "background trace",
+                        "residual trace")
+        self._trace_extents = {
+            self._trace_panels[0]: (0, 1, 0.0, 0.25),
+            self._trace_panels[1]: (0, 1, 0.25, 0.5),
+            self._trace_panels[2]: (0, 1, 0.5, 0.75),
+            self._trace_panels[3]: (0, 1, 0.75, 1.0)
+        }
+
         self._ndw_traces = fpl.NDWidget(
             ref_ranges=self.reference_index.ref_ranges,
             ref_index=self.reference_index,
@@ -217,6 +213,14 @@ class SingleSessionDemixingVis:
             name=self._trace_panels[3],
         )
 
+        self._local_signal_panels = ("signal",
+                                     "trace")
+
+        self._local_signal_extents = {
+            self._local_signal_panels[0]: (0, 0.2, 0, 1),
+            self._local_signal_panels[1]: (0.2, 1, 0, 1)
+        }
+
         self._ndw_local_signals = fpl.NDWidget(
             ref_ranges=self.reference_index.ref_ranges,
             ref_index=self.reference_index,
@@ -228,14 +232,68 @@ class SingleSessionDemixingVis:
             size=(1200, 1200),
         )
 
+        movie_dims_rgb = ["m", "n", "c"]
+        movie_spatial_dims_rgb = ["m", "n", "c"]
+        self._local_signal_mean_image_graphic = self._ndw_local_signals[self._local_signal_panels[0]].add_nd_image(
+            np.zeros((self._demixing_results.shape[1], self._demixing_results.shape[1], 4)),
+            movie_dims_rgb,
+            movie_spatial_dims_rgb,
+            slider_dim_transforms=None,
+            rgb_dim="c",
+            name=self._local_signal_panels[0],
+        )
+
+        self._local_signal_trace_graphic = self._ndw_local_signals[self._local_signal_panels[1]].add_nd_timeseries(
+            None,
+            ("l", "time", "d"),
+            ("l", "time", "d"),
+            slider_dim_transforms=movie_index_mapping.copy(),
+            max_display_datapoints=5000,
+            x_range_mode="auto",
+            display_window=None,
+            name=self._local_signal_panels[1],
+        )
+
+
+
         for name in self._video_panels:
             self._ndw_fov[name][name].graphic.add_event_handler(partial(self._click_update), "double_click")
+
+        #Associate the colorful signal panel with the local click update event
+        self._ndw_traces.figure.renderer.add_event_handler(partial(self._local_click_update), "double_click")
 
         for subplot in self._ndw_fov.figure:
             subplot.toolbar = False
 
         for subplot in self._ndw_traces.figure:
             subplot.toolbar = False
+
+    def _local_click_update(self, ev: pygfx.PointerEvent):
+
+        values = self._ndw_traces.figure['demixed trace'].map_screen_to_world(ev).astype("float")[None, :]  # Shape (1, 3)
+
+        min_distances = []
+        for graphic in self._ndw_traces['demixed trace']['demixed trace'].graphic.graphics:
+            print(graphic.data[:].shape)
+            curr_graphic_coords = graphic.map_model_to_world(graphic.data[:]).astype("float")  # Shape (num_points, 3)
+            curr_min_distance = np.amin(np.sum((curr_graphic_coords - values) ** 2, axis=1))
+            min_distances.append(curr_min_distance)
+
+        min_distances = np.array(min_distances)
+        final_min = np.argmin(min_distances)
+
+        ## Set the trace graphic data, ymin/ymax to match the other traces, and color
+        self._local_signal_trace_graphic.data = self._colorful_signal_trace_graphic.graphic.data[:][[int(final_min)], ...]
+        self._ndw_local_signals.figure[self._local_signal_panels[1]].y_range = self._ndw_traces.figure[self._trace_panels[0]].y_range
+        self._local_signal_trace_graphic.graphic.colors = self._colorful_signal_trace_graphic.graphic.colors[:][[int(final_min)], ...]
+
+        print(f"the clicked values is {values}")
+        print(f"the final min was {final_min} and the shape of the colorful graphic is {self._colorful_signal_trace_graphic.data.shape}")
+        print(f"the colors property of colorful graphic is {self._colorful_signal_trace_graphic.graphic.colors[:].shape}")
+
+
+
+        print(final_min)
 
     ## Let's make a dummy click event for now
     def _click_update(self, ev: pygfx.PointerEvent):
@@ -317,9 +375,9 @@ class SingleSessionDemixingVis:
         # parse based on canvas type
         if self.fov_widget.figure.canvas.__class__.__name__ == "JupyterRenderCanvas":
             from ipywidgets import VBox
-            return VBox([self.fov_widget.show(), self.trace_widget.show()])
+            return VBox([self.fov_widget.show(), self.trace_widget.show(), self.local_signal_widget.show()])
         else:
-            return self.fov_widget.show(), self.trace_widget.show()
+            return self.fov_widget.show(), self.trace_widget.show(), self.local_signal_widget.show()
 
 
 def extract_per_trace_roi_averages(colorful_ac_array: masknmf.ACArray,
