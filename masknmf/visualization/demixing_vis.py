@@ -213,8 +213,7 @@ class SingleSessionDemixingVis:
             name=self._trace_panels[3],
         )
 
-        self._local_signal_panels = ("signal",
-                                     "trace")
+        self._local_signal_panels = ("signal (scaled)", "trace")
 
         self._local_signal_extents = {
             self._local_signal_panels[0]: (0, 0.2, 0, 1),
@@ -226,20 +225,17 @@ class SingleSessionDemixingVis:
             ref_index=self.reference_index,
             extents=self._local_signal_extents,
             names=[*self._local_signal_panels],
-            controller_ids=[
-                tuple(self._local_signal_panels),
-            ],
-            size=(1200, 1200),
+            controller_ids=[[self._local_signal_panels[0]],  [self._local_signal_panels[1]]],
+            size=(1200, 600),
         )
 
-        movie_dims_rgb = ["m", "n", "c"]
-        movie_spatial_dims_rgb = ["m", "n", "c"]
+        movie_dims = ["m", "n"]
+        movie_spatial_dims = ["m", "n"]
         self._local_signal_mean_image_graphic = self._ndw_local_signals[self._local_signal_panels[0]].add_nd_image(
-            np.zeros((self._demixing_results.shape[1], self._demixing_results.shape[1], 4)),
-            movie_dims_rgb,
-            movie_spatial_dims_rgb,
+            np.zeros((self._demixing_results.shape[1], self._demixing_results.shape[1])),
+            movie_dims,
+            movie_spatial_dims,
             slider_dim_transforms=None,
-            rgb_dim="c",
             name=self._local_signal_panels[0],
         )
 
@@ -255,6 +251,7 @@ class SingleSessionDemixingVis:
         )
 
 
+        self._selected_signals = None
 
         for name in self._video_panels:
             self._ndw_fov[name][name].graphic.add_event_handler(partial(self._click_update), "double_click")
@@ -278,22 +275,24 @@ class SingleSessionDemixingVis:
             curr_graphic_coords = graphic.map_model_to_world(graphic.data[:]).astype("float")  # Shape (num_points, 3)
             curr_min_distance = np.amin(np.sum((curr_graphic_coords - values) ** 2, axis=1))
             min_distances.append(curr_min_distance)
+        if len(min_distances) == 0:
+            pass
+        else:
+            min_distances = np.array(min_distances)
+            final_min = np.argmin(min_distances)
 
-        min_distances = np.array(min_distances)
-        final_min = np.argmin(min_distances)
+            selected_data = self._selected_signals[final_min]
+            index_tensor = torch.Tensor([selected_data]).long().to(self._demixing_results.device)
+            a_subset = torch.index_select(self._demixing_results.ac_array.a, 1, index_tensor).cpu().to_dense().numpy()
+            a_subset = a_subset.reshape(self._demixing_results.shape[1], self._demixing_results.shape[2])
 
-        ## Set the trace graphic data, ymin/ymax to match the other traces, and color
-        self._local_signal_trace_graphic.data = self._colorful_signal_trace_graphic.graphic.data[:][[int(final_min)], ...]
-        self._ndw_local_signals.figure[self._local_signal_panels[1]].y_range = self._ndw_traces.figure[self._trace_panels[0]].y_range
-        self._local_signal_trace_graphic.graphic.colors = self._colorful_signal_trace_graphic.graphic.colors[:][[int(final_min)], ...]
+            a_subset /= np.amax(a_subset)
+            self._local_signal_mean_image_graphic.data = a_subset
 
-        print(f"the clicked values is {values}")
-        print(f"the final min was {final_min} and the shape of the colorful graphic is {self._colorful_signal_trace_graphic.data.shape}")
-        print(f"the colors property of colorful graphic is {self._colorful_signal_trace_graphic.graphic.colors[:].shape}")
-
-
-
-        print(final_min)
+            ## Set the trace graphic data, ymin/ymax to match the other traces, and color
+            self._local_signal_trace_graphic.data = self._colorful_signal_trace_graphic.graphic.data[:][[int(final_min)], ...]
+            self._ndw_local_signals.figure[self._local_signal_panels[1]].y_range = self._ndw_traces.figure[self._trace_panels[0]].y_range
+            self._local_signal_trace_graphic.graphic.colors = self._colorful_signal_trace_graphic.graphic.colors[:][[int(final_min)], ...]
 
     ## Let's make a dummy click event for now
     def _click_update(self, ev: pygfx.PointerEvent):
@@ -316,9 +315,11 @@ class SingleSessionDemixingVis:
         self._ndw_traces.figure[self._trace_panels[0]].y_range = (min_pmd_trace, max_pmd_trace)
 
         #Pull out colorful signals
-        separated_ac_signals, separated_colors = extract_per_trace_roi_averages(self._colorful_ac_array,
+        separated_ac_signals, separated_colors, unique_signals = extract_per_trace_roi_averages(self._colorful_ac_array,
                                                               slice(row_start, row_stop),
                                                               slice(col_start, col_stop))
+
+        self._selected_signals = unique_signals
 
         if separated_ac_signals is not None:
             colorful_signals_to_display = fpl.utils.heatmap_to_positions(separated_ac_signals, x_data)
@@ -330,6 +331,7 @@ class SingleSessionDemixingVis:
             colorful_signals_to_display = fpl.utils.heatmap_to_positions(np.ones((1, self.demixing_results.shape[0])), x_data)
             self._colorful_signal_trace_graphic.data = colorful_signals_to_display
             self._ndw_traces.figure[self._trace_panels[1]].title = "No signals here"
+            self._selected_signals = None
 
 
         self._fluctuating_background_trace_graphic.data = fpl.utils.heatmap_to_positions(background_trace[None, :], x_data)
@@ -419,7 +421,7 @@ def extract_per_trace_roi_averages(colorful_ac_array: masknmf.ACArray,
         weighted_signals = unique_means[None, :] * c[:, unique_signals] #Shape (num_frames, neural_signals)
         colors = colorful_ac_array.colors[unique_signals, :] #(neural_signals, 3)
 
-        return weighted_signals.T.cpu().numpy(), colors.cpu().numpy()
+        return weighted_signals.T.cpu().numpy(), colors.cpu().numpy(), unique_signals.cpu().numpy()
 
 
 
