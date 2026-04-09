@@ -1,9 +1,61 @@
 from .array_interfaces import LazyFrameLoader
 import tifffile
+from collections import defaultdict
 import numpy as np
 import h5py
 from typing import *
 
+
+class TiffSeriesLoader(LazyFrameLoader):
+    def __init__(self,
+                 file_paths: list[str],
+                 memmap: bool=False,):
+        self._arrays = [TiffArray(p, memmap=memmap) for p in file_paths]
+
+        total_frames = sum(arr.shape[0] for arr in self._arrays)
+        self._frame_map = np.empty((total_frames, 3), dtype=np.int64)
+
+        start = 0
+        for file_id, arr in enumerate(self._arrays):
+            n_frames = arr.shape[0]
+            end = start + n_frames
+            self._frame_map[start:end, 0] = np.arange(start, end)
+            self._frame_map[start:end, 1] = np.arange(n_frames)
+            self._frame_map[start:end, 2] = file_id
+            start = end
+
+    @property
+    def dtype(self):
+        return self._arrays[0].dtype
+
+    @property
+    def ndim(self) -> int:
+        return 3
+
+    @property
+    def shape(self) -> tuple:
+        _, h, w = self._arrays[0].shape
+        return (len(self._frame_map), h, w)
+
+    def _compute_at_indices(self, indices) -> np.ndarray:
+        if isinstance(indices, int):
+            indices = [indices]
+        elif isinstance(indices, slice):
+            indices = list(range(*indices.indices(self.shape[0])))
+        else:
+            indices = list(indices)
+
+        rows = self._frame_map[indices, :]
+        frames = np.empty((len(rows), self.shape[1], self.shape[2]), dtype=self.dtype)
+
+        active_file_ids = np.unique(rows[:, 2])
+        for file_id in active_file_ids:
+            mask = rows[:, 2] == file_id
+            out_indices = np.where(mask)[0]
+            local_indices = rows[mask, 1].tolist()
+            frames[out_indices] = self._arrays[file_id][local_indices]
+
+        return frames
 
 class TiffArray(LazyFrameLoader):
     def __init__(self, filename, memmap: bool = False):
