@@ -126,6 +126,16 @@ class MotionCorrectionVis:
                 name="applied shifts (width)",
             )
 
+        #Link the traces in X but not in Y
+        camera_height = self.widget.figure['applied shifts (height)'].camera
+        camera_width = self.widget.figure['applied shifts (width)'].camera
+
+        controller_height = self.widget.figure['applied shifts (height)'].controller
+        controller_width = self.widget.figure['applied shifts (width)'].controller
+
+        controller_height.add_camera(camera_width, include_state={"x", "width"})
+        controller_width.add_camera(camera_height, include_state={"x", "width"})
+
         for subplot in self._ndw.figure:
             subplot.toolbar = False
 
