@@ -75,8 +75,8 @@ class MotionCorrectionVis:
                     "applied shifts (width)",
                 ],
                 controller_ids=[
-                    ("raw data", "rigid motion correction"),
-                    ("applied shifts (height)", "applied shifts (width)"),
+                    ["raw data", "rigid motion correction"],
+                    ["applied shifts (height)"], ["applied shifts (width)"],
                 ],
                 size=(1200, 1200),
             )
@@ -103,7 +103,7 @@ class MotionCorrectionVis:
             height_shift_data = np.zeros((1, self.shifts.shape[0], 2))
             height_shift_data[0, :, 0] = np.arange(self.shifts.shape[0])
             height_shift_data[0, :, 1] = self.shifts[:, 0]
-            self._ndw["applied shifts (width)"].add_nd_timeseries(
+            self._ndw["applied shifts (height)"].add_nd_timeseries(
                 height_shift_data,
                 ("l", "time", "d"),
                 ("l", "time", "d"),
@@ -116,14 +116,14 @@ class MotionCorrectionVis:
             width_shift_data = np.zeros((1, self.shifts.shape[0], 2))
             width_shift_data[0, :, 0] = np.arange(self.shifts.shape[0])
             width_shift_data[0, :, 1] = self.shifts[:, 1]
-            self._ndw["applied shifts (height)"].add_nd_timeseries(
+            self._ndw["applied shifts (width)"].add_nd_timeseries(
                 width_shift_data,
                 ("l", "time", "d"),
                 ("l", "time", "d"),
                 slider_dim_transforms=movie_index_mapping.copy(),
                 x_range_mode="auto",
                 display_window=50.0,
-                name="applied shifts (height)",
+                name="applied shifts (width)",
             )
 
         for subplot in self._ndw.figure:
