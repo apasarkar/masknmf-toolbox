@@ -4,29 +4,50 @@ from collections import defaultdict
 import numpy as np
 import h5py
 from typing import *
+import os
 
 
 class TiffSeriesLoader(LazyFrameLoader):
     def __init__(self,
-                 file_paths: list[str],
-                 memmap: bool=False,):
-        self._arrays = [TiffArray(p, memmap=memmap) for p in file_paths]
+                 file_paths: list[str]):
+        self._filenames = [os.path.abspath(p) for p in file_paths]
+        self._array_shapes = [self._file_shape(filename) for filename in self._filenames]
+        self._dtype = self._get_dtype(self._filenames[0])
 
-        total_frames = sum(arr.shape[0] for arr in self._arrays)
-        self._frame_map = np.empty((total_frames, 3), dtype=np.int64)
+        self._n_frames = sum(k[0] for k in self._array_shapes)
+        self._height = self._array_shapes[0][1]
+        self._width = self._array_shapes[0][2]
+
+        self._frame_map = np.zeros((self._n_frames, 3), dtype=np.int64)
 
         start = 0
-        for file_id, arr in enumerate(self._arrays):
-            n_frames = arr.shape[0]
-            end = start + n_frames
+        for file_id, arr in enumerate(self._filenames):
+            curr_frames = self._array_shapes[file_id][0]
+            end = start + curr_frames
             self._frame_map[start:end, 0] = np.arange(start, end)
-            self._frame_map[start:end, 1] = np.arange(n_frames)
+            self._frame_map[start:end, 1] = np.arange(curr_frames)
             self._frame_map[start:end, 2] = file_id
             start = end
 
+    @staticmethod
+    def _file_shape(filename):
+        with tifffile.TiffFile(filename) as tffl:
+            num_frames = len(tffl.pages)
+            for page in tffl.pages[0:1]:
+                image = page.asarray()
+            x, y = page.shape
+        return num_frames, x, y
+
+    @staticmethod
+    def _get_dtype(filename):
+        with tifffile.TiffFile(filename) as tffl:
+            num_frames = len(tffl.pages)
+            for page in tffl.pages[0:1]:
+                image = page.asarray()
+                return image.dtype
     @property
     def dtype(self):
-        return self._arrays[0].dtype
+        return self._dtype
 
     @property
     def ndim(self) -> int:
@@ -34,8 +55,7 @@ class TiffSeriesLoader(LazyFrameLoader):
 
     @property
     def shape(self) -> tuple:
-        _, h, w = self._arrays[0].shape
-        return (len(self._frame_map), h, w)
+        return self._n_frames, self._height, self._width
 
     def _compute_at_indices(self, indices) -> np.ndarray:
         if isinstance(indices, int):
@@ -46,16 +66,29 @@ class TiffSeriesLoader(LazyFrameLoader):
             indices = list(indices)
 
         rows = self._frame_map[indices, :]
-        frames = np.empty((len(rows), self.shape[1], self.shape[2]), dtype=self.dtype)
+
+        chunks = []  # list of (out_indices, frames) tuples
+        insertion_order = np.zeros(len(rows), dtype=np.int64)
 
         active_file_ids = np.unique(rows[:, 2])
+        pos = 0
         for file_id in active_file_ids:
             mask = rows[:, 2] == file_id
             out_indices = np.where(mask)[0]
             local_indices = rows[mask, 1].tolist()
-            frames[out_indices] = self._arrays[file_id][local_indices]
 
-        return frames
+            file_frames = tifffile.imread(self._filenames[file_id], key=local_indices)
+            if file_frames.ndim == 2:
+                file_frames = file_frames[None, :, :]
+            chunks.append(file_frames)
+
+            insertion_order[pos:pos + len(out_indices)] = out_indices
+            pos += len(out_indices)
+
+        # Single stack, then single argsort-based permutation on axis 0
+        stacked = np.concatenate(chunks, axis=0)  # one allocation
+        perm = np.argsort(insertion_order)  # where each frame should go
+        return stacked[perm]  # single fancy-index read, not write
 
 class TiffArray(LazyFrameLoader):
     def __init__(self, filename, memmap: bool = False):
