@@ -217,7 +217,7 @@ class LazyFrameLoader(ArrayLike):
         # if frames.shape[0] == 1:
         #     return frames.squeeze(axis=0).astype(self.dtype)
         # else:
-        return frames.astype(self.dtype)
+        return frames.astype(self.dtype, copy=False)
 
     @abstractmethod
     def _compute_at_indices(self, indices: Union[list, int, slice]) -> np.ndarray:

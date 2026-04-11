@@ -9,42 +9,27 @@ import os
 
 class TiffSeriesLoader(LazyFrameLoader):
     def __init__(self,
-                 file_paths: list[str]):
-        self._filenames = [os.path.abspath(p) for p in file_paths]
-        self._array_shapes = [self._file_shape(filename) for filename in self._filenames]
-        self._dtype = self._get_dtype(self._filenames[0])
+                 file_paths: list[str],
+                 memmap: bool = False):
+        self._arrays = [TiffArray(p, memmap=memmap) for p in file_paths]
+        self._array_shapes = [arr.shape for arr in self._arrays]
+        self._dtype = self._arrays[0].dtype
 
         self._n_frames = sum(k[0] for k in self._array_shapes)
-        self._height = self._array_shapes[0][1]
-        self._width = self._array_shapes[0][2]
+        self._height = self._arrays[0].shape[1]
+        self._width = self._arrays[0].shape[2]
 
         self._frame_map = np.zeros((self._n_frames, 3), dtype=np.int64)
 
         start = 0
-        for file_id, arr in enumerate(self._filenames):
-            curr_frames = self._array_shapes[file_id][0]
+        for file_id, arr in enumerate(self._arrays):
+            curr_frames = self._arrays[file_id].shape[0]
             end = start + curr_frames
             self._frame_map[start:end, 0] = np.arange(start, end)
             self._frame_map[start:end, 1] = np.arange(curr_frames)
             self._frame_map[start:end, 2] = file_id
             start = end
 
-    @staticmethod
-    def _file_shape(filename):
-        with tifffile.TiffFile(filename) as tffl:
-            num_frames = len(tffl.pages)
-            for page in tffl.pages[0:1]:
-                image = page.asarray()
-            x, y = page.shape
-        return num_frames, x, y
-
-    @staticmethod
-    def _get_dtype(filename):
-        with tifffile.TiffFile(filename) as tffl:
-            num_frames = len(tffl.pages)
-            for page in tffl.pages[0:1]:
-                image = page.asarray()
-                return image.dtype
     @property
     def dtype(self):
         return self._dtype
@@ -77,7 +62,7 @@ class TiffSeriesLoader(LazyFrameLoader):
             out_indices = np.where(mask)[0]
             local_indices = rows[mask, 1].tolist()
 
-            file_frames = tifffile.imread(self._filenames[file_id], key=local_indices)
+            file_frames = self._arrays[file_id][local_indices]
             if file_frames.ndim == 2:
                 file_frames = file_frames[None, :, :]
             chunks.append(file_frames)
@@ -105,13 +90,36 @@ class TiffArray(LazyFrameLoader):
         else:
             self.filename = filename
 
+        self._dtype = self._get_dtype(self.filename)
+        self._shape = self._get_shape(self.filename)
+
+    @staticmethod
+    def _get_dtype(filename):
+        with tifffile.TiffFile(filename) as tffl:
+            num_frames = len(tffl.pages)
+            for page in tffl.pages[0:1]:
+                image = page.asarray()
+                return image.dtype
+
+    @staticmethod
+    def _get_shape(file: str | np.memmap):
+        if isinstance(file, np.memmap):
+            return file.shape
+        else:
+            with tifffile.TiffFile(file) as tffl:
+                num_frames = len(tffl.pages)
+                for page in tffl.pages[0:1]:
+                    image = page.asarray()
+                x, y = page.shape
+            return num_frames, x, y
+
     @property
     def dtype(self) -> str:
         """
         str
             data type
         """
-        return np.float32
+        return self._dtype
 
     @property
     def shape(self) -> Tuple[int, int, int]:
@@ -119,15 +127,7 @@ class TiffArray(LazyFrameLoader):
         Tuple[int]
             (n_frames, dims_x, dims_y)
         """
-        if self.memmap:
-            return self.filename.shape
-        else:
-            with tifffile.TiffFile(self.filename) as tffl:
-                num_frames = len(tffl.pages)
-                for page in tffl.pages[0:1]:
-                    image = page.asarray()
-                x, y = page.shape
-            return num_frames, x, y
+        return self._shape
 
     @property
     def ndim(self) -> int:
@@ -153,7 +153,9 @@ class TiffArray(LazyFrameLoader):
                 )
             )
             data = tifffile.imread(self.filename, key=indices_list)
-        return data.astype(self.dtype)
+            if data.ndim == 2:
+                data = data[None, ...]
+        return data.astype(self.dtype, copy=False)
 
     def __getitem__(
             self,
@@ -161,7 +163,7 @@ class TiffArray(LazyFrameLoader):
     ):
         if self.memmap:
             data = self.filename.__getitem__(item).copy()
-            return data.astype(self.dtype)
+            return data.astype(self.dtype, copy=False)
         else:
             return super().__getitem__(item)
 
@@ -187,13 +189,16 @@ class Hdf5Array(LazyFrameLoader):
             # Get the shape of the array
             self._shape = field_dataset.shape
 
+            # Get the dtype of the array
+            self._dtype = field_dataset.dtype
+
     @property
     def dtype(self) -> str:
         """
         str
             data type
         """
-        return np.float32
+        return self._dtype
 
     @property
     def shape(self) -> Tuple[int, int, int]:
@@ -228,4 +233,6 @@ class Hdf5Array(LazyFrameLoader):
                     )
                 )
                 data = field_dataset[indices_list, :, :]
-        return data.astype(self.dtype)
+            if data.ndim == 2:
+                data = data[None, :, :]
+        return data.astype(self.dtype, copy=False)
