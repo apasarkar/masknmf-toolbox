@@ -269,7 +269,7 @@ class FilteredArray(LazyFrameLoader):
         """
         data type
         """
-        return self.raw_data_loader.dtype
+        return np.float32
 
     @property
     def shape(self) -> tuple[int, int, int]:
