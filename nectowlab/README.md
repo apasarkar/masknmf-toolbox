@@ -1,4 +1,6 @@
 Installation instructions (April 9th). 
 
-- Install code from the beta/Nectowlab branch of masknmf-toolbox to a venv
-- Install the ndwidget branch from fastplotlib: https://github.com/fastplotlib/fastplotlib/tree/ndwidget
+- Install code from the beta/Nectowlab branch of masknmf-toolbox to a python virtual environment. Check the README from masknmf-toolbox for instructions. Branch is here: https://github.com/apasarkar/masknmf-toolbox/tree/beta/nectowlab
+- Install the ndwidget branch from fastplotlib: https://github.com/fastplotlib/fastplotlib/tree/ndwidget. You should clone this repository, get the NDWidget branch, and install this from source into the above python virtual environment. Do an editable install (something like uv pip install -e .) As Kushal and I make updates to the NDWidget branch, you will want to fetch these updates. Any updates to NDWidget should be pulled into this environment automatically if you do an editable install.
+
+There is a nectowlab folder which contains motion_correct_data.ipynb which shows how to motion correct your data. Use that to run the code, save the outputs (motion corrected stack + shifts) as hdf5 and then load the results into the viewer. 
