@@ -2,44 +2,20 @@ import torch
 import numpy as np
 from typing import *
 import math
-
+import cv2
 from typing import List
 
-def compute_highpass_filter_kernel(gaussian_sigma: List[float]) -> torch.Tensor:
-    """
-    Computes a high-pass filter kernel using a Gaussian filter.
+def compute_highpass_filter_kernel(sigma: List[float]):
+    "Idea attributed to Giovanucci et al (Caiman)"
+    ksize = tuple([(3 * i) // 2 * 2 + 1 for i in sigma])
+    ker = cv2.getGaussianKernel(ksize[0], sigma[0])
+    ker2D = ker.dot(ker.T)
+    nz = np.nonzero(ker2D >= ker2D[:, 0].max())
+    zz = np.nonzero(ker2D < ker2D[:, 0].max())
+    ker2D[nz] -= ker2D[nz].mean()
+    ker2D[zz] = 0
+    return torch.tensor(ker2D, dtype=torch.float32)
 
-    Args:
-        gaussian_sigma (list[int]): Standard deviations for the Gaussian kernel.
-
-    Returns:
-        torch.Tensor: High-pass filter kernel.
-    """
-
-    if len(gaussian_sigma) != 2:
-        raise ValueError("gaussian_sigma must have length 2")
-
-    if any(s <= 0 for s in gaussian_sigma):
-        raise ValueError("gaussian_sigma must contain positive values")
-
-    sigma_h, sigma_w = gaussian_sigma
-
-    radius_h = int(3 * sigma_h)
-    radius_w = int(3 * sigma_w)
-
-    coords_h = torch.arange(-radius_h, radius_h + 1, dtype=torch.float32)
-    coords_w = torch.arange(-radius_w, radius_w + 1, dtype=torch.float32)
-
-    g_h = torch.exp(-0.5 * (coords_h ** 2) / (sigma_h ** 2))
-    g_w = torch.exp(-0.5 * (coords_w ** 2) / (sigma_w ** 2))
-
-    kernel = g_h[:, None] @ g_w[None, :]
-    kernel /= kernel.sum()
-
-    kernel = -kernel
-    kernel[radius_h, radius_w] += 1.0
-
-    return kernel
 
 def gaussian_kernel(kernel_size: int = 3, sigma: float = 1.0) -> torch.tensor:
     """Generates a 2D Gaussian kernel."""
