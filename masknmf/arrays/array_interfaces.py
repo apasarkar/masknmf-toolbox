@@ -152,7 +152,7 @@ class TensorFlyWeight:
                     device = value.device
                 setattr(self, name, value.to(device))
             ##Useful to track None types
-            if value is None:
+            elif value is None:
                 setattr(self, name, None)
 
             else:

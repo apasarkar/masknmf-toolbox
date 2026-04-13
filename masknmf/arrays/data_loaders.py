@@ -87,11 +87,12 @@ class TiffArray(LazyFrameLoader):
         self._memmap = memmap
         if self.memmap:
             self.filename = tifffile.memmap(filename)
+            self._dtype =self.filename.dtype
+            self._shape = self.filename.shape
         else:
             self.filename = filename
-
-        self._dtype = self._get_dtype(self.filename)
-        self._shape = self._get_shape(self.filename)
+            self._dtype = self._get_dtype(self.filename)
+            self._shape = self._get_shape(self.filename)
 
     @staticmethod
     def _get_dtype(filename):
