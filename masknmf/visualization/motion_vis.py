@@ -59,10 +59,10 @@ class MotionCorrectionVis:
 
         elif self.shifts.ndim == 2:
             self._extents = {
-                "raw data": (0, 0.5, 0.0, 0.5),  # raw data
-                "rigid motion correction": (0.5, 1.0, 0.0, 0.5),  # motion correction
-                "applied shifts (height)": (0.0, 1, 0.5, 0.75),  # traces y axis
-                "applied shifts (width)": (0.0, 1, 0.75, 1.0),  # traces x axis
+                "raw data": (0, 0.5, 0.0, 0.6),  # raw data
+                "rigid motion correction": (0.5, 1.0, 0.0, 0.6),  # motion correction
+                "applied shifts (height)": (0.0, 1, 0.6, 0.8),  # traces y axis
+                "applied shifts (width)": (0.0, 1, 0.8, 1.0),  # traces x axis
             }
 
             self._ndw = fpl.NDWidget(
@@ -100,6 +100,9 @@ class MotionCorrectionVis:
                 name="motion correction",
             )
 
+            self._ndw.figure['raw data'].tooltip.enabled = False
+            self._ndw.figure['rigid motion correction'].tooltip.enabled = False
+
             height_shift_data = np.zeros((1, self.shifts.shape[0], 2))
             height_shift_data[0, :, 0] = np.arange(self.shifts.shape[0])
             height_shift_data[0, :, 1] = self.shifts[:, 0]
@@ -136,8 +139,10 @@ class MotionCorrectionVis:
         controller_height.add_camera(camera_width, include_state={"x", "width"})
         controller_width.add_camera(camera_height, include_state={"x", "width"})
 
-        for subplot in self._ndw.figure:
+        for subplot in self.widget.figure:
             subplot.toolbar = False
+
+
 
     @property
     def raw_stack(self) -> masknmf.LazyFrameLoader:
