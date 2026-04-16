@@ -45,89 +45,112 @@ class MotionCorrectionVis:
                 frame_timings = np.arange(registration_array.shape[0])
 
         if self.shifts.ndim == 4:  # This is piecewise rigid registration
-            raise NotImplementedError("Not fully supported yet")
-            ## TODO: Make a nicer vector field graphic here
-            # self._ndw = fpl.NDWidget(ref_range,
-            #                          extents=self._extents,
-            #                          names=['raw data',
-            #                                 'piecewise rigid motion correction',
-            #                                 'max applied shift (height)',
-            #                                 'max applied shift (width)'],
-            #                          controller_ids=[('raw data', 'rigid motion correction'),
-            #                                          ('applied shifts (height)', 'applied shifts (width)')],
-            #                          size=(1200, 1200))
-
+            rigid_shifts = False
         elif self.shifts.ndim == 2:
-            self._extents = {
-                "raw data": (0, 0.5, 0.0, 0.6),  # raw data
-                "rigid motion correction": (0.5, 1.0, 0.0, 0.6),  # motion correction
-                "applied shifts (height)": (0.0, 1, 0.6, 0.8),  # traces y axis
-                "applied shifts (width)": (0.0, 1, 0.8, 1.0),  # traces x axis
-            }
+            rigid_shifts = True
+        else:
+            raise ValueError("Shifts can either have ndim 2 or 4")
 
-            self._ndw = fpl.NDWidget(
-                ref_range,
-                extents=self._extents,
-                names=[
-                    "raw data",
-                    "rigid motion correction",
-                    "applied shifts (height)",
-                    "applied shifts (width)",
-                ],
-                controller_ids=[
-                    ["raw data", "rigid motion correction"],
-                    ["applied shifts (height)"], ["applied shifts (width)"],
-                ],
-                size=(1200, 1200),
+        self._extents = {
+            "raw data": (0, 0.5, 0.0, 0.6),  # raw data
+            "motion corrected": (0.5, 1.0, 0.0, 0.6),  # motion correction
+            "applied shifts (height)": (0.0, 1, 0.6, 0.8),  # traces y axis
+            "applied shifts (width)": (0.0, 1, 0.8, 1.0),  # traces x axis
+        }
+
+        self._ndw = fpl.NDWidget(
+            ref_range,
+            extents=self._extents,
+            names=[
+                "raw data",
+                "motion corrected",
+                "applied shifts (height)",
+                "applied shifts (width)",
+            ],
+            controller_ids=[
+                ["raw data", "motion corrected"],
+                ["applied shifts (height)"], ["applied shifts (width)"],
+            ],
+            size=(1200, 1200),
+        )
+
+        movie_dims = ["time", "m", "n"]
+        movie_spatial_dims = ["m", "n"]
+        movie_index_mapping = {"time": frame_timings}
+        self._ndw["raw data"].add_nd_image(
+            self.raw_stack,
+            movie_dims,
+            movie_spatial_dims,
+            slider_dim_transforms=movie_index_mapping.copy(),
+            name="raw data",
+        )
+
+        if not rigid_shifts:
+            vector_dims = ["time", "num vecs", "vec dim", "stack dim"]
+            spatial_dims = ["num vecs", "vec dim", "stack dim"]
+            vector_data = pwrigid_shifts_to_ndvector(self.shifts, self.registration_array.block_centers)
+            self._ndvec = self._ndw['raw data'].add_nd_vectors(
+                vector_data,
+                vector_dims,
+                spatial_dims,
+                name="vectors",
+                size=5
             )
+            self._ndw.figure['raw data'].title = "Raw Data + Applied Shift Vectors"
+        else:
+            self._ndvec = None
 
-            movie_dims = ["time", "m", "n"]
-            movie_spatial_dims = ["m", "n"]
-            movie_index_mapping = {"time": frame_timings}
-            self._ndw["raw data"].add_nd_image(
-                self.raw_stack,
-                movie_dims,
-                movie_spatial_dims,
-                slider_dim_transforms=movie_index_mapping.copy(),
-                name="raw data",
-            )
+        self._ndw["motion corrected"].add_nd_image(
+            self.registration_array,
+            movie_dims,
+            movie_spatial_dims,
+            slider_dim_transforms=movie_index_mapping.copy(),
+            name="motion corrected",
+        )
 
-            self._ndw["rigid motion correction"].add_nd_image(
-                self.registration_array,
-                movie_dims,
-                movie_spatial_dims,
-                slider_dim_transforms=movie_index_mapping.copy(),
-                name="motion correction",
-            )
 
-            self._ndw.figure['raw data'].tooltip.enabled = False
-            self._ndw.figure['rigid motion correction'].tooltip.enabled = False
+        self._ndw.figure['raw data'].tooltip.enabled = False
+        self._ndw.figure['motion corrected'].tooltip.enabled = False
 
-            height_shift_data = np.zeros((1, self.shifts.shape[0], 2))
-            height_shift_data[0, :, 0] = np.arange(self.shifts.shape[0])
-            height_shift_data[0, :, 1] = self.shifts[:, 0]
-            self._ndw["applied shifts (height)"].add_nd_timeseries(
-                height_shift_data,
-                ("l", "time", "d"),
-                ("l", "time", "d"),
-                slider_dim_transforms=movie_index_mapping.copy(),
-                x_range_mode="auto",
-                display_window=50.0,
-                name="applied shifts (height)",
-            )
+        #No matter what method was used, we construct a summary shift time series, one for each spatial dim (height, width)
+        if rigid_shifts:
+            summary_shifts = self.shifts
+            height_message = "applied rigid shifts height"
+            width_message = "applied rigid shifts width"
+        else:
+            summary_shifts = np.amax(np.abs(self.shifts), axis = (1, 2))
+            height_message = "max pwrigid shift height"
+            width_message = "max pwrigid shift width"
 
-            width_shift_data = np.zeros((1, self.shifts.shape[0], 2))
-            width_shift_data[0, :, 0] = np.arange(self.shifts.shape[0])
-            width_shift_data[0, :, 1] = self.shifts[:, 1]
-            self._ndw["applied shifts (width)"].add_nd_timeseries(
-                width_shift_data,
-                ("l", "time", "d"),
-                ("l", "time", "d"),
-                slider_dim_transforms=movie_index_mapping.copy(),
-                x_range_mode="auto",
-                display_window=50.0,
-                name="applied shifts (width)",
-            )
+        height_shift_data = np.zeros((1, summary_shifts.shape[0], 2))
+        height_shift_data[0, :, 0] = np.arange(summary_shifts.shape[0])
+        height_shift_data[0, :, 1] = summary_shifts[:, 0]
+        self._ndw["applied shifts (height)"].add_nd_timeseries(
+            height_shift_data,
+            ("l", "time", "d"),
+            ("l", "time", "d"),
+            slider_dim_transforms=movie_index_mapping.copy(),
+            x_range_mode="auto",
+            display_window=50.0,
+            name="applied shifts (height)",
+        )
+
+        self._ndw.figure['applied shifts (height)'].title = height_message
+
+        width_shift_data = np.zeros((1, summary_shifts.shape[0], 2))
+        width_shift_data[0, :, 0] = np.arange(summary_shifts.shape[0])
+        width_shift_data[0, :, 1] = summary_shifts[:, 1]
+        self._ndw["applied shifts (width)"].add_nd_timeseries(
+            width_shift_data,
+            ("l", "time", "d"),
+            ("l", "time", "d"),
+            slider_dim_transforms=movie_index_mapping.copy(),
+            x_range_mode="auto",
+            display_window=50.0,
+            name="applied shifts (width)",
+        )
+
+        self._ndw.figure['applied shifts (width)'].title = width_message
 
         #Link the traces in X but not in Y
         camera_height = self.widget.figure['applied shifts (height)'].camera
@@ -162,3 +185,18 @@ class MotionCorrectionVis:
 
     def show(self):
         return self.widget.show()
+
+
+def pwrigid_shifts_to_ndvector(shifts, block_centers):
+    """
+    shifts (np.ndarray): Shape (num_frames, height blocks, width blocks, 2)
+    block_centers (np.ndarray): Shape (height blocks, width_blocks, 2)
+
+    Returns a dataset of shape (num_frames, height_blocks*width_blocks, 2, 2) to construct ndvectors graphic
+    """
+    final_output = np.zeros((shifts.shape[0], shifts.shape[1]*shifts.shape[2], 2, 2))
+    shift_data = shifts.reshape(shifts.shape[0], -1, 2)
+    shift_data = shift_data - np.mean(shift_data, axis = 1, keepdims = True)
+    final_output[:, :, 1, :] = shift_data #shifts.reshape(shifts.shape[0], -1, 2)
+    final_output[:, :, 0, :] = block_centers.reshape(-1, 2)[None, :, :]
+    return final_output
