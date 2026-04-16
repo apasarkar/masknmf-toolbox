@@ -16,8 +16,11 @@ from tqdm import tqdm
 
 
 class Shifts(ArrayLike):
-    def __init__(self, reg_arr):
+    def __init__(self,
+                 reg_arr: ArrayLike,
+                 shift_dims: tuple):
         self._reg = reg_arr
+        self._shape = (reg_arr.shape[0], *shift_dims)
 
     @property
     def dtype(self) -> str:
@@ -25,7 +28,7 @@ class Shifts(ArrayLike):
 
     @property
     def shape(self) -> tuple[int, int, int]:
-        return self._reg.shape
+        return self._shape
 
     @property
     def ndim(self) -> int:
@@ -39,6 +42,7 @@ class RegistrationArray(LazyFrameLoader, Serializer):
 
     _motion_export_name = "motion_corrected"
     _shifts_export_name = "shifts"
+    _block_centers_name = "block_centers"
 
     def __init__(
         self,
@@ -71,7 +75,15 @@ class RegistrationArray(LazyFrameLoader, Serializer):
         self._ndim = self.reference_movie.ndim
 
         if shifts is None:
-            self._shifts = Shifts(self)
+            if isinstance(self.strategy, DummyMotionCorrector):
+                shift_shape = (2,)
+            elif isinstance(self.strategy, RigidMotionCorrector):
+                shift_shape = (2,)
+            elif isinstance(self.strategy, PiecewiseRigidMotionCorrector):
+                shift_shape = self.block_centers.shape
+            else:
+                raise ValueError("Invalid strategy object provided")
+            self._shifts = Shifts(self, shift_shape)
         else:
             #Here the shifts are pre-computed
             self._shifts = shifts
@@ -99,7 +111,8 @@ class RegistrationArray(LazyFrameLoader, Serializer):
         return self._target_movie
 
     @property
-    def shifts(self) -> Shifts:
+    def shifts(self) -> Shifts | np.ndarray:
+        """An array-like object that either lazily or directly exposes the per-frame estimated rigid/piecewise rigid shifts"""
         return self._shifts
 
     @property
@@ -124,6 +137,10 @@ class RegistrationArray(LazyFrameLoader, Serializer):
     def block_centers(self) -> None | np.ndarray:
         """centers of the blocks when using ``PiecewiseRigidMotionCorrector``, ``None`` otherwise"""
         return self._block_centers
+
+    @block_centers.setter
+    def block_centers(self, centers: np.ndarray | None):
+        self._block_centers = centers
 
     def _compute_at_indices(self, indices: list | int | slice) -> np.ndarray:
         """
@@ -167,14 +184,13 @@ class RegistrationArray(LazyFrameLoader, Serializer):
 
     def export(self, path: str | Path):
         data_output_shape = self.shape
-        if isinstance(self.strategy, masknmf.PiecewiseRigidMotionCorrector):
-            shifts_output_shape = self.shape[0], self.block_centers.shape[0], self.block_centers.shape[1], 2
-        elif isinstance(self.strategy, masknmf.RigidMotionCorrector) or isinstance(self.strategy, masknmf.GradientMotionCorrector):
-            shifts_output_shape = self.shape[0], 2
-        elif isinstance(self.strategy, masknmf.DummyMotionCorrector):
+        if isinstance(self.strategy, masknmf.DummyMotionCorrector):
             shifts_output_shape = None
         else:
-            raise ValueError("Strategy not valid")
+            shifts_output_shape = self.shifts.shape
+
+
+
         if os.path.isfile(path):
             raise FileExistsError
 
@@ -187,6 +203,12 @@ class RegistrationArray(LazyFrameLoader, Serializer):
                 shifts_dset = f.create_dataset(self._shifts_export_name, shifts_output_shape)
             else:
                 shifts_dset = None
+
+            if isinstance(self.strategy, masknmf.PiecewiseRigidMotionCorrector):
+                block_centers = self.block_centers
+                block_centers_dst = f.create_dataset(self._block_centers_name, block_centers.shape)
+                block_centers_dst[:] = block_centers
+
             batch_size = self.strategy.batch_size
             for k in tqdm(range(math.ceil(num_frames / batch_size))):
                 start = k * batch_size
@@ -205,9 +227,16 @@ class RegistrationArray(LazyFrameLoader, Serializer):
                 shifts = f[cls._shifts_export_name][()]
             else:
                 shifts = None
+            if cls._block_centers_name in f:
+                block_centers = f[cls._block_centers_name][()]
+            else:
+                block_centers = None
 
-        return cls(reference_movie=registered_array,
+        class_from_disk = cls(reference_movie=registered_array,
                    shifts=shifts)
+        class_from_disk.block_centers = block_centers
+        return class_from_disk
+
 
 
 class FilteredArray(LazyFrameLoader):
