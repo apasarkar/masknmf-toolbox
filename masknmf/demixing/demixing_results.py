@@ -252,10 +252,14 @@ class DemixingResults(Serializer):
         self._residual_correlation_images = None
         self._standard_correlation_images = None
 
+
+
         #Manage state of relevant arrays
-        self.rescale = False
+        self._rescale = False
+
         # Move all tracked tensors to desired location so everything is on one device
-        self.to(self.device)
+        self.to(self._device)
+
 
     @property
     def flyweight(self) -> TensorFlyWeight:
@@ -413,12 +417,13 @@ class DemixingResults(Serializer):
         and residual movie.
         """
         if self.flyweight.residual_roi_averages is None or self.flyweight.pmd_roi_averages is None or self.flyweight.fluctuating_background_roi_averages is None:
+            device = self.c.device
             residual_roi_averages = torch.zeros_like(self.c)
             pmd_roi_averages = torch.zeros_like(self.c)
             fluctuating_background_roi_averages = torch.zeros_like(self.c)
 
-            ind_select_tensor = torch.arange(self.a.shape[1], device=self.device).long()
-            avg_tensor = torch.zeros(self.a.shape[0], device=self.device)
+            ind_select_tensor = torch.arange(self.a.shape[1], device=device).long()
+            avg_tensor = torch.zeros(self.a.shape[0], device=device)
             u_t = self.u.t()
             a_t = self.a.t()
             for k in range(self.a.shape[1]):
