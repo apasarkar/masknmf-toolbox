@@ -89,12 +89,13 @@ class MotionCorrectionVis:
             vector_dims = ["time", "num vecs", "vec dim", "stack dim"]
             spatial_dims = ["num vecs", "vec dim", "stack dim"]
             vector_data = pwrigid_shifts_to_ndvector(self.shifts, self.registration_array.block_centers)
+            ndvec_graphic_kwargs = {'size': 5}
             self._ndvec = self._ndw['raw data'].add_nd_vectors(
                 vector_data,
                 vector_dims,
                 spatial_dims,
                 name="vectors",
-                size=5
+                graphic_kwargs=ndvec_graphic_kwargs
             )
             self._ndw.figure['raw data'].title = "Raw Data + Applied Shift Vectors"
         else:
