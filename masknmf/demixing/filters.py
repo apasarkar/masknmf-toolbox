@@ -52,6 +52,58 @@ def spatial_filter_pmd(pmd_obj: masknmf.PMDArray,
     return final_arr
 
 
+def detrend_pmd(pmd_obj: masknmf.PMDArray,
+                n_knots: int = 10) -> torch.Tensor:
+    """
+    Remove spline baseline from V using natural cubic spline basis.
+
+    Args:
+        V:       (rank, T) temporal components
+        n_knots: number of knots (evenly spaced)
+
+    Returns:
+        V_detrended: (rank, T)
+    """
+    V = pmd_obj.v
+    T = V.shape[1]
+    t = torch.linspace(0, 1, T, device=V.device, dtype=V.dtype)
+    knots = torch.linspace(0, 1, n_knots, device=V.device, dtype=V.dtype)
+
+    # --- Build truncated power spline basis (T, n_knots + 4) ---
+    # Cubic polynomial part
+    poly_basis = torch.stack([t ** d for d in range(4)], dim=1)  # (T, 4)
+
+    # Truncated cubic terms for each interior knot: max(t - knot, 0)^3
+    spline_basis = torch.stack(
+        [torch.clamp(t - k, min=0.0) ** 3 for k in knots], dim=1
+    )  # (T, n_knots)
+
+    A = torch.cat([poly_basis, spline_basis], dim=1)  # (T, 4 + n_knots)
+
+    # --- Fit all rank traces simultaneously ---
+    coeffs = torch.linalg.lstsq(A, V.T).solution  # (4 + n_knots, rank)
+
+    baseline = A @ coeffs  # (T, rank)
+    final_v = V - baseline.T  # (rank, T)
+
+    mean = torch.sparse.mm(pmd_obj.u, torch.mean(final_v, dim = 1, keepdims=True))
+    new_mean = mean.reshape(pmd_obj.shape[1], pmd_obj.shape[2])
+    final_v -= torch.mean(final_v, dim = 1, keepdims=True)
+
+    device = pmd_obj.device
+    final_arr = masknmf.PMDArray.from_tensors(pmd_obj.shape,
+                                              pmd_obj.u.to(device),
+                                              final_v.to(device),
+                                              new_mean.to(device),
+                                              torch.ones_like(new_mean),
+                                              u_local_projector=pmd_obj.u_local_projector,
+                                              device=device)
+
+    return final_arr
+
+
+
+
 ##Define the filtering operation
 def high_pass_filter(data: np.ndarray,
                      cutoff: float,
