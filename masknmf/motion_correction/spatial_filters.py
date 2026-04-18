@@ -7,7 +7,7 @@ from typing import List
 
 def compute_highpass_filter_kernel(sigma: List[float]):
     "Idea attributed to Giovanucci et al (Caiman)"
-    ksize = tuple([(3 * i) // 2 * 2 + 1 for i in sigma])
+    ksize = tuple([math.ceil((3 * i) // 2 * 2 + 1) for i in sigma])
     ker = cv2.getGaussianKernel(ksize[0], sigma[0])
     ker2D = ker.dot(ker.T)
     nz = np.nonzero(ker2D >= ker2D[:, 0].max())
