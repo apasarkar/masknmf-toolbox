@@ -199,5 +199,5 @@ def pwrigid_shifts_to_ndvector(shifts, block_centers):
     shift_data = shifts.reshape(shifts.shape[0], -1, 2)
     shift_data = shift_data - np.mean(shift_data, axis = 1, keepdims = True)
     final_output[:, :, 1, :] = shift_data #shifts.reshape(shifts.shape[0], -1, 2)
-    final_output[:, :, 0, :] = block_centers.reshape(-1, 2)[None, :, :]
+    final_output[:, :, 0, :] = block_centers.reshape(-1, 2)[None, :, ::-1]
     return final_output
