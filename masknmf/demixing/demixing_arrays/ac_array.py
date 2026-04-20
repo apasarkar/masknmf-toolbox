@@ -200,8 +200,12 @@ class ACArray(ArrayLike):
             values = self.a.values().float()
 
             # First get rid of values that are nonzero
-            row = row[values != 0]
-            col = col[values != 0]
+            values_keep = values != 0
+
+            row = row[values_keep]
+            col = col[values_keep]
+            values = values[values_keep]
+
 
             # Need to unvectorize row
             dim0_coords = row // width
