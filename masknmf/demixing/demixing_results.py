@@ -171,7 +171,6 @@ class DemixingResults(Serializer):
             global_resid_correlation_image (torch.Tensor): The global correlation image of the residual. Shape (FOV dim 1, FOV dim 2).
             device (str): 'cpu' or 'cuda'. used to manage where the tensors reside
         """
-        display("started")
         self._device = device
         self._shape = tuple(shape)
         self._flyweight = TensorFlyWeight()
