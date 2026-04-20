@@ -33,15 +33,16 @@ class ACArray(ArrayLike):
         self._rescale = rescale
         self._default_normalizer = torch.ones(self.shape[1], self.shape[2], device=self.device).float()
         if hasattr(self.flyweight, "normalizer"):
-            if self.flyweight.normalizer.shape[0] != self.shape[1] or self.flyweight.normalizer.shape[1] != self.shape[2]:
-                raise ValueError("Normalizer from flyweight had dimensions not equal to the fov dimensions")
+            if self.flyweight.normalizer is not None:
+                if self.flyweight.normalizer.shape[0] != self.shape[1] or self.flyweight.normalizer.shape[1] != self.shape[2]:
+                    raise ValueError("Normalizer from flyweight had dimensions not equal to the fov dimensions")
 
     @classmethod
     def from_tensors(cls,
                      fov_shape: tuple[int, int],
                      a: torch.sparse_coo_tensor,
                      c: torch.Tensor,
-                     normalizer: Optional[torch.Tensor],
+                     normalizer: torch.Tensor | None = None,
                      rescale: bool = False
                      ):
         """
