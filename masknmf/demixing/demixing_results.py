@@ -6,6 +6,7 @@ from masknmf.demixing.demixing_arrays import ACArray, ResidualCorrelationImages,
 import torch
 from masknmf.utils import Serializer
 from masknmf.arrays.array_interfaces import TensorFlyWeight
+from masknmf.utils import display
 
 
 def test_slice_effect(my_slice: slice, spatial_dim: int) -> bool:
@@ -149,12 +150,12 @@ class DemixingResults(Serializer):
             v (torch.tensor): shape (rank 2, num_frames)
             a (torch.sparse_coo_tensor): shape (pixels, number of neural signals)
             c (torch.tensor): shape (number of frames, number of neural signals)
-            pmd_mean_img (Optional[torch.tensor]): The mean image of the imaging data, used for reconstructing PMD Arrays
-            pmd_var_img (Optional[torch.tensor]): The pixelwise noise variance image of the data, used for reconstructing PMD Arrays
+            pmd_mean_img (Optional[torch.Tensor]): The mean image of the imaging data, used for reconstructing PMD Arrays
+            pmd_var_img (Optional[torch.Tensor]): The pixelwise noise variance image of the data, used for reconstructing PMD Arrays
             pmd_u_projector (Optional[torch.sparse_coo_tensor]): A projection matrix used to project frames of data onto the PMD U subspace
             factorized_bkgd_term1: Optional[torch.Tensor]: tensor used to express low-rank background estimate
-            factorized_bkgd_term2: Optioal[torch.Tensor]: tensor used to express low-rank background estimate
-            b (torch.tensor): Optional[torch.tensor]. The per-pixel static baseline.
+            factorized_bkgd_term2: Optional[torch.Tensor]: tensor used to express low-rank background estimate
+            b (torch.tensor): Optional[torch.Tensor]. The per-pixel static baseline.
                 If not provided, the below code will set it so that the residual movie has mean 0.
                 The residual is defined as UV - AC - Fluctuaating background - Static Background
             std_corr_img_mean (Optional[torch.Tensor]): the mean image used to lazily construct the standard correlation image per neuron
@@ -418,31 +419,36 @@ class DemixingResults(Serializer):
         """
         if self.flyweight.residual_roi_averages is None or self.flyweight.pmd_roi_averages is None or self.flyweight.fluctuating_background_roi_averages is None:
             device = self.c.device
-            residual_roi_averages = torch.zeros_like(self.c)
-            pmd_roi_averages = torch.zeros_like(self.c)
-            fluctuating_background_roi_averages = torch.zeros_like(self.c)
 
-            ind_select_tensor = torch.arange(self.a.shape[1], device=device).long()
-            avg_tensor = torch.zeros(self.a.shape[0], device=device)
-            u_t = self.u.t()
-            a_t = self.a.t()
-            for k in range(self.a.shape[1]):
-                row, col = torch.index_select(self.a, 1, ind_select_tensor[k:k+1]).coalesce().indices()
-                avg_tensor[row] = 1.0
-                divisor = torch.sum(avg_tensor)
-                avg_tensor[row] /= divisor
-                u_avg = torch.sparse.mm(u_t, avg_tensor[:, None]).T
-                avg_pmd = u_avg @ self.v
-                avg_bkgd = (u_avg @ self.factorized_bkgd_term1) @ self.factorized_bkgd_term2
-                avg_static_bkgd = avg_tensor[None, :] @ self.b
-                a_avg = torch.sparse.mm(a_t, avg_tensor[:, None])
-                ac_avg = (self.c @ a_avg).T
-                resid = avg_pmd - avg_bkgd - avg_static_bkgd - ac_avg
+            ## Compute an "ROI Average" tensor, which is just "a" where each neuron is binarized + normalized by size of support
+            values = self.a.values()
+            rows, cols = self.a.indices()
 
-                pmd_roi_averages[:, k] = avg_pmd.squeeze()
-                fluctuating_background_roi_averages[:, k] = avg_bkgd.squeeze()
-                residual_roi_averages[:, k] = resid.squeeze()
-                avg_tensor *= 0 #Reset this
+            values_keep = values != 0
+            values = values[values_keep]
+            rows = rows[values_keep]
+            cols = cols[values_keep]
+
+            values_bin = torch.ones_like(values)
+            counts = torch.zeros(self.a.shape[1])
+            counts.scatter_reduce_(0, cols, values_bin, reduce="sum")
+            values_bin /= counts[cols]
+            values_bin = torch.nan_to_num(values_bin, nan=0.0)
+
+            #Note we do [cols, rows] instead of [rows, cols] because we want the transposed mat
+            roi_avg_operator = torch.sparse_coo_tensor(torch.stack([cols, rows], dim=0),
+                                                   values_bin,
+                                                   size=(self.a.shape[1], self.a.shape[0])).to(self.a.device).coalesce()
+
+            rU = torch.sparse.mm(roi_avg_operator, self.u)
+            rA = torch.sparse.mm(roi_avg_operator, self.a)
+
+            pmd_roi_averages = torch.sparse.mm(rU, self.v)
+            ac_roi_averages = torch.sparse.mm(rA, self.c.T)
+            static_background_roi_averages = torch.sparse.mm(roi_avg_operator, self.b[..., None])
+            fluctuating_background_roi_averages = torch.sparse.mm(rU, self.factorized_bkgd_term1) @ self.factorized_bkgd_term2
+            residual_roi_averages = pmd_roi_averages - ac_roi_averages - static_background_roi_averages - fluctuating_background_roi_averages
+
             self.flyweight.pmd_roi_averages = pmd_roi_averages
             self.flyweight.fluctuating_background_roi_averages = fluctuating_background_roi_averages
             self.flyweight.residual_roi_averages = residual_roi_averages
