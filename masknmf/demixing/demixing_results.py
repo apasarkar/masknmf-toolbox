@@ -430,7 +430,7 @@ class DemixingResults(Serializer):
             cols = cols[values_keep]
 
             values_bin = torch.ones_like(values)
-            counts = torch.zeros(self.a.shape[1])
+            counts = torch.zeros(self.a.shape[1], device=device)
             counts.scatter_reduce_(0, cols, values_bin, reduce="sum")
             values_bin /= counts[cols]
             values_bin = torch.nan_to_num(values_bin, nan=0.0)
