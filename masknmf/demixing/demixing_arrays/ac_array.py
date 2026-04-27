@@ -99,7 +99,7 @@ class ACArray(ArrayLike):
 
     @property
     def normalizer(self) -> torch.Tensor:
-        if not hasattr(self.flyweight, "normalizer"):
+        if not hasattr(self.flyweight, "normalizer") or self.flyweight.normalizer is None:
             return self._default_normalizer
         return self.flyweight.normalizer
 
