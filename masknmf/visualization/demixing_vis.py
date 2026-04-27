@@ -405,7 +405,7 @@ def extract_per_trace_roi_averages(colorful_ac_array: masknmf.ACArray,
 
     valid_indices = torch.isin(row, good_row_values)
     if torch.count_nonzero(valid_indices) == 0:
-        return None, None
+        return None, None, None
     else:
         filtered_rows = row[valid_indices]
         filtered_col = col[valid_indices]
