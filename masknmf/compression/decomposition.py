@@ -1380,15 +1380,15 @@ def pmd_decomposition(
     num_rows = fov_dim1 * fov_dim2
     u_local_projector = torch.sparse_coo_tensor(
         final_indices, spatial_overall_unweighted_values, (num_rows, num_cols)
-    )
+    ).coalesce()
 
     final_indices = torch.stack([final_row_indices, final_column_indices], dim=0)
     u_aggregated = torch.sparse_coo_tensor(
         final_indices, spatial_overall_values, (num_rows, num_cols)
-    )
+    ).coalesce()
     display(f"Constructed U matrix. Rank of U is {u_aggregated.shape[1]}")
 
-    final_pmd_arr = PMDArray(
+    final_pmd_arr = PMDArray.from_tensors(
         (num_frames, fov_dim1, fov_dim2),
         u_aggregated.cpu(),
         v_aggregated.cpu(),

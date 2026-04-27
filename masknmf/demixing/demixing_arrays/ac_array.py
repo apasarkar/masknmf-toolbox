@@ -1,10 +1,10 @@
 from typing import *
 import numpy as np
-from masknmf.arrays.array_interfaces import FactorizedVideo
+from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
 
-class ACArray(FactorizedVideo):
+class ACArray(ArrayLike):
     """
     Factorized video for the spatial and temporal extracted sources from the data
     Computations happen transparently on GPU, if device = 'cuda' is specified
@@ -13,44 +13,103 @@ class ACArray(FactorizedVideo):
     def __init__(
         self,
         fov_shape: tuple[int, int],
-        a: torch.sparse_coo_tensor,
-        c: torch.tensor,
+        flyweight: TensorFlyWeight,
+        rescale: bool = False
     ):
-        """
-        Args:
-            fov_shape (tuple): (fov_dim1, fov_dim2)
-            a (torch.sparse_coo_tensor): Shape (pixels, components)
-            c (torch.tensor). Shape (frames, components)
-            mask (torch.tensor). Shape (num_components). A mask of 1s and 0s indicating which neurons are actively displayed
-                (and which are effectively zerod out). Can be toggled
-        """
 
-        self._a = a.coalesce()
-        self._c = c
-        # Check that both objects are on same device
-        if self._a.device != self._c.device:
-            raise ValueError(f"Spatial and Temporal matrices are not on same device")
-        self._device = self._a.device
-        num_frames = c.shape[0]
+
+        self._flyweight = flyweight
+        self.flyweight.validate_attributes(["a", "c"])
+        num_frames = self.c.shape[0]
         self._shape = tuple(map(int, (num_frames, *fov_shape)))
-        self.pixel_mat = np.arange(np.prod(self.shape[-2:])).reshape([self.shape[-2], self.shape[-1]])
-        self.pixel_mat = torch.from_numpy(self.pixel_mat).long().to(self.device)
+
+        self._pixel_mat = torch.arange(self.shape[1] * self.shape[2], device=self.device, dtype=torch.long).reshape(
+            self.shape[1], self.shape[2])
         self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
         self._centers = None
         self._bbox = None
         self._contours = None
 
-    @property
-    def device(self) -> str:
-        return self._device
+        self._rescale = rescale
+        self._default_normalizer = torch.ones(self.shape[1], self.shape[2], device=self.device).float()
+        if hasattr(self.flyweight, "normalizer"):
+            if self.flyweight.normalizer is not None:
+                if self.flyweight.normalizer.shape[0] != self.shape[1] or self.flyweight.normalizer.shape[1] != self.shape[2]:
+                    raise ValueError("Normalizer from flyweight had dimensions not equal to the fov dimensions")
+
+    @classmethod
+    def from_tensors(cls,
+                     fov_shape: tuple[int, int],
+                     a: torch.sparse_coo_tensor,
+                     c: torch.Tensor,
+                     normalizer: torch.Tensor | None = None,
+                     rescale: bool = False
+                     ):
+        """
+        Args:
+            fov_shape (tuple): (fov_dim1, fov_dim2)
+            a (torch.sparse_coo_tensor): Shape (pixels, components)
+            c (torch.Tensor). Shape (frames, components)
+            normalizer (Optional[torch.Tensor]): A (height, width)-shaped tensor. Multiply the array pixelwise by this
+                value to obtain results in the "raw data" space.
+            rescale (bool): Whether or not to rescale the data to the raw data space. This determines the output of getitem
+        """
+        flyweight = TensorFlyWeight(a=a, c=c, normalizer=normalizer)
+        return cls(fov_shape,
+                   flyweight,
+                   rescale=rescale)
+
+    @classmethod
+    def from_flyweight(cls,
+                       fov_shape: tuple[int, int],
+                       flyweight: TensorFlyWeight,
+                       rescale: bool = False):
+        return cls(fov_shape,
+                   flyweight,
+                   rescale=rescale)
+
 
     @property
-    def mask(self) -> torch.tensor:
+    def flyweight(self) -> TensorFlyWeight:
+        return self._flyweight
+
+    @property
+    def device(self):
+        return self.flyweight.device
+
+
+    def to(self, new_device):
+        if self._flyweight.device != new_device:
+            self._flyweight.to(new_device)
+        self._move_local_tensors(new_device)
+
+    def _move_local_tensors(self, new_device: str):
+        self._pixel_mat = self._pixel_mat.to(new_device)
+        self._mask = self._mask.to(new_device)
+        self._default_normalizer = self._default_normalizer.to(new_device)
+
+
+    @property
+    def mask(self) -> torch.Tensor:
         return self._mask
 
     @mask.setter
-    def mask(self, new_mask: torch.tensor):
+    def mask(self, new_mask: torch.Tensor):
         self._mask = new_mask.to(self.device).bool().to(self.c.dtype) #Ensures it's all 1s and 0s
+
+    @property
+    def normalizer(self) -> torch.Tensor:
+        if not hasattr(self.flyweight, "normalizer"):
+            return self._default_normalizer
+        return self.flyweight.normalizer
+
+    @property
+    def rescale(self):
+        return self._rescale
+
+    @rescale.setter
+    def rescale(self, new_value: bool):
+        self._rescale = new_value
 
     @property
     def contours(self) -> torch.sparse_coo_tensor:
@@ -129,7 +188,7 @@ class ACArray(FactorizedVideo):
         return self._contours
 
     @property
-    def centers(self) -> torch.tensor:
+    def centers(self) -> torch.Tensor:
         """
         Returns a (num_signals, 2) shaped tensor describing the height, width dimensions of each signals spatial center
             of mass. The center of mass might not be on an active pixel, but this is ok
@@ -141,8 +200,12 @@ class ACArray(FactorizedVideo):
             values = self.a.values().float()
 
             # First get rid of values that are nonzero
-            row = row[values != 0]
-            col = col[values != 0]
+            values_keep = values != 0
+
+            row = row[values_keep]
+            col = col[values_keep]
+            values = values[values_keep]
+
 
             # Need to unvectorize row
             dim0_coords = row // width
@@ -168,7 +231,7 @@ class ACArray(FactorizedVideo):
         return self._centers
 
     @property
-    def bbox(self) -> torch.tensor:
+    def bbox(self) -> torch.Tensor:
         """
         Returns a torch tensor of shape (num_signals, 4). Each row contains 4 elements a1, a2, b1, b2 which define a bounding box
             of a neuron image like img[a1:a2, b1:b2]
@@ -205,18 +268,18 @@ class ACArray(FactorizedVideo):
 
 
     @property
-    def c(self) -> torch.tensor:
+    def c(self) -> torch.Tensor:
         """
         return temporal time courses of all signals, shape (frames, components)
         """
-        return self._c
+        return self.flyweight.c
 
     @property
     def a(self) -> torch.sparse_coo_tensor:
         """
         return spatial profiles of all signals as sparse matrix, shape (pixels, components)
         """
-        return self._a
+        return self.flyweight.a
 
     def export_a(self) -> np.ndarray:
         """
@@ -231,13 +294,6 @@ class ACArray(FactorizedVideo):
         returns the temporal traces, where each trace is a n_frames-shaped time series. output shape (n_frames, n_components)
         """
         return self.c.cpu().numpy()
-
-    @property
-    def order(self) -> str:
-        """
-        The spatial data is "flattened" from 2D into 1D. This specifies the order ("F" for column-major or "C" for row-major) in which reshaping happened.
-        """
-        return self._order
 
     @property
     def dtype(self) -> str:
@@ -263,67 +319,13 @@ class ACArray(FactorizedVideo):
     def getitem_tensor(
         self,
         item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
-    ) -> torch.tensor:
+    ) -> torch.Tensor:
         # Step 1: index the frames (dimension 0)
-        if isinstance(item, tuple):
-            if len(item) > len(self.shape):
-                raise IndexError(
-                    f"Cannot index more dimensions than exist in the array. "
-                    f"You have tried to index with <{len(item)}> dimensions, "
-                    f"only <{len(self.shape)}> dimensions exist in the array"
-                )
-            frame_indexer = item[0]
-        else:
-            frame_indexer = item
-
-        if isinstance(frame_indexer, np.ndarray):
-            pass
-
-        elif isinstance(frame_indexer, list):
-            pass
-
-        elif isinstance(frame_indexer, int):
-            pass
-
-        # numpy int scaler
-        elif isinstance(frame_indexer, np.integer):
-            frame_indexer = frame_indexer.item()
-
-        # treat slice and range the same
-        elif isinstance(frame_indexer, (slice, range)):
-            start = frame_indexer.start
-            stop = frame_indexer.stop
-            step = frame_indexer.step
-
-            if start is not None:
-                if start > self.shape[0]:
-                    raise IndexError(
-                        f"Cannot index beyond `n_frames`.\n"
-                        f"Desired frame start index of <{start}> "
-                        f"lies beyond `n_frames` <{self.shape[0]}>"
-                    )
-            if stop is not None:
-                if stop > self.shape[0]:
-                    raise IndexError(
-                        f"Cannot index beyond `n_frames`.\n"
-                        f"Desired frame stop index of <{stop}> "
-                        f"lies beyond `n_frames` <{self.shape[0]}>"
-                    )
-
-            if step is None:
-                step = 1
-
-            # convert indexer to slice if it was a range, allows things like decord.VideoReader slicing
-            frame_indexer = slice(start, stop, step)  # in case it was a range object
-
-        else:
-            raise IndexError(
-                f"Invalid indexing method, " f"you have passed a: <{type(item)}>"
-            )
+        frame_indexer, item = self._parse_indices(item)
 
         # Step 3: Now slice the data with frame_indexer (careful: if the ndims has shrunk, add a dim)
-        c_crop = self._c[frame_indexer, :]
-        if c_crop.ndim < self._c.ndim:
+        c_crop = self.c[frame_indexer, :]
+        if c_crop.ndim < self.c.ndim:
             c_crop = c_crop.unsqueeze(0)
 
         c_crop = c_crop * self._mask[None, :]
@@ -331,20 +333,25 @@ class ACArray(FactorizedVideo):
         # Step 4: First do spatial subselection before multiplying by c
         if isinstance(item, tuple) and check_spatial_crop_effect(item[1:3], self.shape[1:3]):
 
-            pixel_space_crop = self.pixel_mat[item[1:3]]
+            pixel_space_crop = self._pixel_mat[item[1:3]]
+            normalizer_crop = self.normalizer[item[1:3]][None, ...]
             a_indices = pixel_space_crop.flatten()
-            a_crop = torch.index_select(self._a, 0, a_indices)
+            a_crop = torch.index_select(self.a, 0, a_indices)
             implied_fov = pixel_space_crop.shape
             product = torch.sparse.mm(a_crop, c_crop.T)
             product = product.reshape(implied_fov + (-1,))
             product = product.permute(-1, *range(product.ndim - 1))
 
         else:
-            a_crop = self._a
+            a_crop = self.a
+            normalizer_crop  = self.normalizer[None, :, :]
             implied_fov = self.shape[-2], self.shape[-1]
             product = torch.sparse.mm(a_crop, c_crop.T)
             product = product.reshape((implied_fov[0], implied_fov[1], -1))
             product = product.permute(2, 0, 1)
+
+        if self.rescale:
+            product *= normalizer_crop
 
         return product
 
@@ -354,4 +361,4 @@ class ACArray(FactorizedVideo):
     ) -> np.ndarray:
         product = self.getitem_tensor(item)
         product = product.cpu().numpy().astype(self.dtype)
-        return product.squeeze()
+        return product
