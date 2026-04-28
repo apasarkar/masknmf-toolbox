@@ -19,6 +19,7 @@ class CompressStrategy:
                  temporal_avg_factor:int=1,
                  compute_normalizer: Optional[bool] = True,
                  pixel_weighting: Optional[np.ndarray] = None,
+                 detrend_knots: Optional[int] = None,
                  device: Literal["auto", "cpu", "cuda"] = "auto",
                  ):
 
@@ -29,6 +30,7 @@ class CompressStrategy:
         self._frame_batch_size = frame_batch_size
         self._spatial_avg_factor = spatial_avg_factor
         self._temporal_avg_factor = temporal_avg_factor
+        self._detrend_knots = detrend_knots
         self._device=device
 
         ##Non user-settable parameters
@@ -104,6 +106,14 @@ class CompressStrategy:
         self._temporal_avg_factor = new_temporal_avg_factor
 
     @property
+    def detrend_knots(self) -> int | None:
+        return self._detrend_knots
+
+    @detrend_knots.setter
+    def detrend_knots(self, num_knots: int):
+        self._detrend_knots = detrend_knots
+
+    @property
     def device(self) ->str:
         return self._device
 
@@ -127,6 +137,7 @@ class CompressStrategy:
                                           temporal_avg_factor=self.temporal_avg_factor,
                                           compute_normalizer=self._compute_normalizer,
                                           pixel_weighting=self._pixel_weighting,
+                                          detrend_knots=self.detrend_knots,
                                           device=self.device)
 
         return self._results
@@ -147,7 +158,8 @@ class CompressDenoiseStrategy(CompressStrategy):
                  pixel_weighting: Optional[np.ndarray] = None,
                  device: Literal["auto", "cpu", "cuda"] = "auto",
                  noise_variance_quantile: float = 0.3,
-                 num_epochs: int = 10
+                 num_epochs: int = 10,
+                 detrend_knots: Optional[int] = None,
                  ):
 
         super().__init__(block_sizes,
@@ -160,7 +172,8 @@ class CompressDenoiseStrategy(CompressStrategy):
                          temporal_avg_factor,
                          compute_normalizer,
                          pixel_weighting,
-                         device)
+                         detrend_knots=detrend_knots,
+                         device=device)
         self._num_epochs = num_epochs
         self._noise_variance_quantile = noise_variance_quantile
 
@@ -193,6 +206,7 @@ class CompressDenoiseStrategy(CompressStrategy):
                                             temporal_avg_factor=self.temporal_avg_factor,
                                             compute_normalizer=self._compute_normalizer,
                                             pixel_weighting=self._pixel_weighting,
+                                            detrend_knots=self.detrend_knots,
                                             device=self.device)
 
         v = pmd_no_denoiser.v.cpu()
@@ -214,6 +228,7 @@ class CompressDenoiseStrategy(CompressStrategy):
                                                              temporal_avg_factor=self.temporal_avg_factor,
                                                              compute_normalizer=self._compute_normalizer,
                                                              pixel_weighting=self._pixel_weighting,
+                                                             detrend_knots=self.detrend_knots,
                                                              device=self.device,
                                                              temporal_denoiser=curr_temporal_denoiser)
 
