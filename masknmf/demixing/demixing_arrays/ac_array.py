@@ -288,7 +288,7 @@ class ACArray(ArrayLike):
         output = self.a.cpu().to_dense().numpy()
         output = output.reshape((self.shape[-2], self.shape[-1], -1))
         if apply_rescale:
-            output *= self.normalizer[..., None]
+            output *= self.normalizer[..., None].cpu().numpy()
         return output
 
     def export_c(self) -> np.ndarray:
