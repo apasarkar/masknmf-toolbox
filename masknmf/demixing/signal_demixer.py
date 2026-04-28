@@ -1691,7 +1691,7 @@ def merge_components(
             if plot_en:
                 spatial_comp_plot(
                     a_merge.cpu().to_dense().numpy(),
-                    standard_correlation_image_full[comp].cpu().numpy(),
+                    standard_correlation_image[comp],
                     ini=False,
                 )
 
@@ -1838,6 +1838,70 @@ def spatial_comp_plot(
     plt.tight_layout()
     plt.show()
     return fig
+
+
+
+# Code for min Laplacian re-assignment of signal from background to A/C components
+def construct_laplacian_matrix(height: int,
+                               width: int,
+                               offset: int = 20,
+                               device='cpu'):
+    """
+    Construct a sparse graph laplacian matrix describing the (offset)-dilated 8 neighborhood structure of an image.
+    """
+
+    rows = []
+    cols = []
+    vals = []
+    final_shape = (height * width, height * width)
+
+    y, x = torch.meshgrid(torch.arange(height, device=device),
+                          torch.arange(width, device=device), indexing='ij')
+
+    indices = y * width + x
+
+    degree_counter = torch.zeros(height * width, device=device, dtype=torch.float32)
+    for shift in [(0, offset),
+                  (offset, 0),
+                  (-1 * offset, 0),
+                  (0, -1 * offset),
+                  (-1 * offset, -1 * offset),
+                  (-1 * offset, offset),
+                  (offset, -1 * offset),
+                  (offset, offset)]:
+        y_shift = shift[0]
+        x_shift = shift[1]
+        curr_y = y + y_shift
+        curr_x = x + x_shift
+
+        good_elts_y = torch.logical_and(curr_y < height, curr_y >= 0)
+        good_elts_x = torch.logical_and(curr_x < width, curr_x >= 0)
+        good_elts = torch.logical_and(good_elts_y, good_elts_x)
+
+        curr_cols = curr_y * width + curr_x
+        curr_cols = curr_cols[good_elts]
+        curr_rows = indices[good_elts]
+        rows.append(curr_rows)
+        cols.append(curr_cols)
+        vals.append(torch.ones_like(curr_rows).float() * (-1))
+        degree_counter[curr_rows] -= 1
+
+    # Now add the center values
+    diag_indices = torch.arange(height * width, device=device)
+    diag_vals = degree_counter * -1
+    rows.append(diag_indices)
+    cols.append(diag_indices)
+    vals.append(diag_vals)
+
+    rows = torch.concatenate(rows, dim=0)
+    cols = torch.concatenate(cols, dim=0)
+    vals = torch.concatenate(vals, dim=0)
+
+    laplacian_mat = torch.sparse_coo_tensor(torch.stack([rows, cols]),
+                                            vals,
+                                            final_shape).coalesce()
+    return laplacian_mat
+
 
 
 class SignalProcessingState(ABC):
@@ -2532,7 +2596,8 @@ class DemixingState(SignalProcessingState):
     def lowrank_background_svd(self,
                                downsampling_factor: int,
                                background_rank: int,
-                               num_oversamples: int = 5):
+                               num_oversamples: int = 5,
+                               rank_threshold: float=1e-3):
         """
         Pipeline that sketches a rank-k SVD of downsampled(UV - AC - b) to get a temporal background estimate
         Regresses this back onto (UV - AC - b) to get the full background estimate
@@ -2698,6 +2763,33 @@ class DemixingState(SignalProcessingState):
                 order=self.data_order,
             )
             self.update_hals_scheduler()
+
+    def reassign_background_to_signal(self,
+                                      graph_laplacian: torch.sparse_coo_tensor):
+        """
+        TODO: Add documentation explaining what this is doing
+        V* = (a^T L a)^{-1} (a^T @ L @ U @ factorized_ring_term1 @ factorized_ring_term2)
+
+        Updates the temporal component so that it contains the signals
+
+        """
+
+        # Compute U @ factorized_ring_term1 to collapse rank
+        u_term1 = torch.sparse.mm(self.u_sparse, self.factorized_ring_term[0])
+        lu_term1 = torch.sparse.mm(graph_laplacian, u_term1)
+        alu_term1 = torch.sparse.mm(self.a.t(), lu_term1)  # Shape (num_neurons, background_rank)
+
+        La = torch.sparse.mm(graph_laplacian, self.a)  # sparse (p, n)
+
+        # a^T L a : (n, n) — dense, tiny
+        atLa = torch.sparse.mm(self.a.t(), La).to_dense()  # (n, n)
+
+        ### Get (atLa)^-1a^tLTerm1
+        appl_inverse = torch.linalg.lstsq(atLa, alu_term1).solution
+        c_modify = appl_inverse @ self.factorized_ring_term[1]
+        self.c += c_modify.T
+        self.c.clamp_(min=0)
+
 
     def _flag_components_for_deletion(self, deletion_threshold: float):
         """
@@ -2897,6 +2989,7 @@ class DemixingState(SignalProcessingState):
             c_nonneg: bool = True,
             denoise: Union[list, bool] = None,
             plot_en: bool = False,
+            reassign_background: bool = False
     ):
         """
         Function for computing background, spatial and temporal components of neurons. Uses HALS updates to iteratively
@@ -2934,6 +3027,7 @@ class DemixingState(SignalProcessingState):
             self.shape[0], self.shape[1], ring_radius, self.device, self.data_order
         )
         self.update_hals_scheduler()
+        graph_laplacian = None
         self.initialize_standard_correlation_image()
         self.compute_residual_correlation_image()
 
@@ -2961,13 +3055,21 @@ class DemixingState(SignalProcessingState):
             )
             denoise = [False for i in range(maxiter)]
 
+        background_enabled: bool = False
         for iters in tqdm(range(maxiter)):
             self.static_baseline_update()
 
             if ring_model_start_pt is not None and iters >= ring_model_start_pt:
+                background_enabled = True
+                graph_laplacian = construct_laplacian_matrix(self.shape[0],
+                                                             self.shape[1],
+                                                             offset=max(1, ring_radius // 2),
+                                                             device=self.device)
+
+            if background_enabled:
+                if self.factorized_ring_term is not None and reassign_background and iters == maxiter - 1:
+                    self.reassign_background_to_signal(graph_laplacian)
                 self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
-            else:
-                pass
 
             self.spatial_update(plot_en=plot_en)
             self.static_baseline_update()
@@ -2976,6 +3078,9 @@ class DemixingState(SignalProcessingState):
             self.temporal_update(
                 denoise=denoise_flag, plot_en=plot_en, c_nonneg=c_nonneg
             )
+            if background_enabled:
+                ## Reassign the signal from the background to the temporal components
+                pass
 
             if update_frequency and ((iters + 1) % update_frequency == 0):
                 ##First: Compute correlation images
@@ -3046,4 +3151,3 @@ class DemixingState(SignalProcessingState):
         )
 
         return self.results
-

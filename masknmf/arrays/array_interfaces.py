@@ -88,7 +88,7 @@ class ArrayLike(ABC):
         if isinstance(frame_indexer, np.ndarray):
             pass
 
-        if isinstance(frame_indexer, list):
+        elif isinstance(frame_indexer, list):
             pass
 
         elif isinstance(frame_indexer, int):
