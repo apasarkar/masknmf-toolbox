@@ -281,12 +281,14 @@ class ACArray(ArrayLike):
         """
         return self.flyweight.a
 
-    def export_a(self) -> np.ndarray:
+    def export_a(self, apply_rescale: bool = False) -> np.ndarray:
         """
         returns the spatial components, where each component is a 2D image. output shape (fov dim1, fov dim 2, n_frames)
         """
         output = self.a.cpu().to_dense().numpy()
         output = output.reshape((self.shape[-2], self.shape[-1], -1))
+        if apply_rescale:
+            output *= self.normalizer[..., None]
         return output
 
     def export_c(self) -> np.ndarray:
