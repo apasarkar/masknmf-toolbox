@@ -21,7 +21,7 @@ class CustomInitConfig:
 class NMFConfig:
     maxiter: int = 40
     support_threshold: tuple[int, int] = (0.95, 0.8)
-    deletion_threshold: float = 0.5
+    deletion_threshold: float = 0.2
     ring_model_start_pt: Optional[int] = 0
     ring_radius: int = 10
     background_downsampling_factor: int = 30
