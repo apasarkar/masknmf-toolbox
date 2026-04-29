@@ -2765,7 +2765,8 @@ class DemixingState(SignalProcessingState):
             self.update_hals_scheduler()
 
     def reassign_background_to_signal(self,
-                                      graph_laplacian: torch.sparse_coo_tensor):
+                                      graph_laplacian: torch.sparse_coo_tensor,
+                                      c_nonneg: bool = True):
         """
         TODO: Add documentation explaining what this is doing
         V* = (a^T L a)^{-1} (a^T @ L @ U @ factorized_ring_term1 @ factorized_ring_term2)
@@ -2788,7 +2789,8 @@ class DemixingState(SignalProcessingState):
         appl_inverse = torch.linalg.lstsq(atLa, alu_term1).solution
         c_modify = appl_inverse @ self.factorized_ring_term[1]
         self.c += c_modify.T
-        self.c.clamp_(min=0)
+        if c_nonneg:
+            self.c.clamp_(min=0)
 
 
     def _flag_components_for_deletion(self, deletion_threshold: float):
@@ -3068,7 +3070,7 @@ class DemixingState(SignalProcessingState):
 
             if background_enabled:
                 if self.factorized_ring_term is not None and reassign_background and iters == maxiter - 1:
-                    self.reassign_background_to_signal(graph_laplacian)
+                    self.reassign_background_to_signal(graph_laplacian, c_nonneg=c_nonneg)
                 self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
 
             self.spatial_update(plot_en=plot_en)
