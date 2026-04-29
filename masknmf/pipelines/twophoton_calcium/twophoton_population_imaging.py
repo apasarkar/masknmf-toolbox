@@ -157,9 +157,14 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         full_moco_arr.export(os.path.abspath(self.outpath_motion_correction))
 
         moco_data = masknmf.RegistrationArray.from_hdf5(self.outpath_motion_correction)
-        shift_mask = masknmf.motion_correction.moco_preprocessing.construct_moco_template(moco_data.shifts,
-                                                                                          moco_data.shape[1:]).astype(
-            "float")
+
+        if isinstance(moco_data.shifts, np.ndarray):
+            shift_mask = masknmf.motion_correction.moco_preprocessing.construct_moco_template(moco_data.shifts,
+                                                                                              moco_data.shape[1:]).astype(
+                "float")
+        else:
+            shift_mask = np.ones((moco_data.shape[1], moco_data.shape[2])).astype("float")
+
         if self.load_into_ram:
             moco_data = moco_data[:]
 

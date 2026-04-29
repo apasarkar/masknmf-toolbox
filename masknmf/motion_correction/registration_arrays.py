@@ -79,6 +79,8 @@ class RegistrationArray(LazyFrameLoader, Serializer):
                 shift_shape = (2,)
             elif isinstance(self.strategy, RigidMotionCorrector):
                 shift_shape = (2,)
+            elif isinstance(self.strategy, GradientMotionCorrector):
+                shift_shape = (2,)
             elif isinstance(self.strategy, PiecewiseRigidMotionCorrector):
                 shift_shape = self.block_centers.shape
             else:
