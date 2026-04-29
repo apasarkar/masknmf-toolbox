@@ -466,9 +466,15 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
             self,
             template: Optional[np.ndarray] = None,
             batch_size: int = 200,
+            pixel_weighting: Optional[np.ndarray] = None,
             device: str = "auto",
     ):
         super().__init__(template, batch_size=batch_size, device=device)
+        self._pixel_weighting = pixel_weighting.astype('float') if pixel_weighting is not None else None
+
+        if template is not None:
+            self._template = template
+            self._compute_gradient_matrix()
 
     @property
     def batch_size(self) -> int:
@@ -480,6 +486,10 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
         if not isinstance(value, int):
             raise ValueError(f"`batch_size` must be an <int>, you passed: {value}")
         self._batch_size = value
+
+    @property
+    def pixel_weighting(self) -> None | np.ndarray:
+        return self._pixel_weighting
 
     @property
     def template(self) -> None | np.ndarray:
@@ -502,19 +512,37 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
 
         reference_frames = torch.from_numpy(reference_frames).to(self.device).float()
         num_frames, height, width = reference_frames.shape
-        template = torch.from_numpy(self.template).to(self.device).float()
-        template_projector = torch.from_numpy(self._template_projector).to(self.device).float()
+        gradient = torch.from_numpy(self._gradient).to(self.device).float()
+        gradient_projector = torch.from_numpy(self._gradient_projector).to(self.device).float()
 
         ref_flat = reference_frames.permute(1, 2, 0).reshape(-1, num_frames)  # [H*W, F]
         if target_frames is not None:
             target_flat = target_frames.permute(1, 2, 0).reshape(-1, num_frames)
         else:
             target_flat = None
-        shift = template_projector @ ref_flat  # [2, F]
+        gradient_step = gradient_projector @ ref_flat  # [2, F]
+        net_correction = gradient @ gradient_step
+
         if target_frames is not None:
-            result = target_flat - template @ shift
+            result = target_flat - net_correction
         else:
-            result = ref_flat - template @ shift
+            result = ref_flat - net_correction
+
+        """
+        The actual "gradient step" from the observed data --> template requires more care: need to 
+        make sure the mean image matches the scale of the image in question (photobleaching etc. can affect this). 
+        If they don't match, the gradients will be "off" by some multiplicative factor. 
+        
+        So we do a least squares regression of the observed data onto the mean image
+        """
+        template = torch.from_numpy(self.template).to(self.device).float()
+        if self._pixel_weighting is not None:
+            mask = torch.from_numpy(self._pixel_weighting).to(self.device).float()
+            template = template * mask
+        alpha = torch.sum(reference_frames * template[None, ...], dim=(1, 2)) / torch.sum(template ** 2)
+        shift = gradient_step / alpha[None, :]
+
+        shift = torch.nan_to_num(shift, nan=0.0, posinf=0.0, neginf=0.0)
 
         result = result.reshape(height, width, num_frames).permute(2, 0, 1)
         return result.cpu().numpy(), shift.cpu().numpy().T
@@ -523,6 +551,9 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
             self,
             frames: masknmf.ArrayLike | masknmf.LazyFrameLoader
     ):
+
+        ## The template is the mean image
+        ## TODO: Accelerate this?
         num_iters = math.ceil(frames.shape[0] / self.batch_size)
         mean_img = np.zeros((frames.shape[1], frames.shape[2]))
         for k in tqdm(range(num_iters)):
@@ -530,7 +561,16 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
             end = start + self.batch_size
             mean_img += (np.sum(frames[start:end], axis = 0) / frames.shape[0])
 
-        f0 = torch.from_numpy(mean_img)
+        self._template = mean_img
+
+        self._compute_gradient_matrix()
+
+    def _compute_gradient_matrix(self):
+        """
+        Computes the gradient design matrix used for the motion correction
+        :return:
+        """
+        f0 = torch.from_numpy(self._template)
         dfdx = torch.nn.functional.pad(
             (f0[:, 2:] - f0[:, :-2]) / 2, (1, 1), mode="constant"
         )  # x-gradient [H, W]
@@ -538,21 +578,33 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
             (f0[2:, :] - f0[:-2, :]) / 2, (0, 0, 1, 1), mode="constant"
         )  # y-gradient [H, W]
 
+
+
+        if self._pixel_weighting is not None:
+            f0 = f0 * torch.from_numpy(self._pixel_weighting).to(f0.device).float()
+            mask = torch.from_numpy(self._pixel_weighting).to(dfdx.device).float()
+            dfdx *= mask
+            dfdy *= mask
+
         f0_flat = f0.flatten()  # [H*W]
         f0_norm_sq = f0_flat @ f0_flat
 
-        def orthogonalize_against_f0(v):
+        def orthogonalize_against_template(v):
+            """
+            This routine orthogonalizes against the mean image. This is important because it
+            makes the shift estimation insensitive to
+            """
             return v - (f0_flat @ v) / f0_norm_sq * f0_flat
 
-        dfdx_flat = orthogonalize_against_f0(dfdx.flatten())
-        dfdy_flat = orthogonalize_against_f0(dfdy.flatten())
+        dfdx_flat = orthogonalize_against_template(dfdx.flatten())
+        dfdy_flat = orthogonalize_against_template(dfdy.flatten())
 
         A = torch.stack([dfdx_flat, dfdy_flat], dim=1).float()  # [H*W, 2]
         AtA_inv = torch.linalg.inv(A.T @ A)  # [2, 2]
         A_projector = AtA_inv @ A.T  # [2, H*W]
 
-        self._template = A.cpu().numpy()
-        self._template_projector = A_projector.cpu().numpy()
+        self._gradient = A.cpu().numpy()
+        self._gradient_projector = A_projector.cpu().numpy()
 
 
 
