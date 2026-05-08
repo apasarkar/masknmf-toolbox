@@ -112,7 +112,7 @@ class ACArray(ArrayLike):
         self._rescale = new_value
 
     @property
-    def contours(self) -> torch.sparse_coo_tensor:
+    def contours(self) -> list[np.ndarray]:
         """
         Returns Each column describes a binary contour mask
         Since we are not computing statistics or doing any other analyses on this contour mask, this is computing via a simple 1-step dilation
@@ -184,7 +184,19 @@ class ACArray(ArrayLike):
                                                    val_dilated,
                                                    size=self.a.shape).coalesce()
 
-            self._contours = final_tensor
+            ## Now make a list of components
+            row, col = final_tensor.indices()
+            y = row // self.shape[2]
+            x = row % self.shape[2]
+            contour_list = [[] for i in range(final_tensor.shape[1])]
+            for k in range(len(y)):
+                list_id = col[k]
+                coords = [y[k], x[k]]
+                contour_list[list_id].append(coords)
+
+            self._contours = [np.array(i) for i in contour_list]
+
+
         return self._contours
 
     @property
