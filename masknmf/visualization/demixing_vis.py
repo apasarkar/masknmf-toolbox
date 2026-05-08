@@ -22,7 +22,8 @@ class SingleSessionDemixingVis:
         frame_timings: Optional[np.ndarray | List[np.ndarray]] = None,
         ref_range: Optional[dict] = None,
         roi_radius: int = 1,
-        summary_img: Literal["mean", "correlation"] = "correlation",
+        summary_img: np.ndarray | None = None,
+        summary_img_name: str | None = None,
         device='cpu'
     ):
         self._roi_radius = roi_radius
@@ -137,9 +138,9 @@ class SingleSessionDemixingVis:
             name=self._video_panels[4],
         )
 
-        if summary_img == "mean":
+        if summary_img is not None:
             self._summary_image = self._ndw_fov[self._video_panels[5]].add_nd_image(
-                self.demixing_results.pmd_array.mean_img.cpu().numpy(),
+                summary_img,
                 ["m", "n"],
                 ["m", "n"],
                 name=self._video_panels[5],
@@ -155,13 +156,17 @@ class SingleSessionDemixingVis:
                                                        )
             self._image_selector.add_graphic(self._summary_image.graphic)
 
-        elif summary_img == "correlation":
+            self._ndw_fov.figure[self._video_panels[5]].title = summary_img_name if summary_img_name is not None else "Summary Image"
+
+        else:
             self._summary_image = self._ndw_fov[self._video_panels[5]].add_nd_image(
                 self.demixing_results.global_residual_correlation_image.cpu().numpy(),
                 ["m", "n"],
                 ["m", "n"],
                 name=self._video_panels[5],
             )
+
+            self._ndw_fov.figure[self._video_panels[5]].title = summary_img_name if summary_img_name is not None else "Residual Correlation Image"
 
 
         self._trace_panels = ("compressed trace",
