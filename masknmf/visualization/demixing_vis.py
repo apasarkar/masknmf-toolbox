@@ -22,6 +22,7 @@ class SingleSessionDemixingVis:
         frame_timings: Optional[np.ndarray | List[np.ndarray]] = None,
         ref_range: Optional[dict] = None,
         roi_radius: int = 1,
+        summary_img: Literal["mean", "correlation"] = "correlation",
         device='cpu'
     ):
         self._roi_radius = roi_radius
@@ -58,7 +59,7 @@ class SingleSessionDemixingVis:
                         "background",
                         "residual",
                         "colorful_signals",
-                        "residual corr img")
+                        "summary img")
 
 
 
@@ -136,12 +137,32 @@ class SingleSessionDemixingVis:
             name=self._video_panels[4],
         )
 
-        self._residual_correlation_graphic = self._ndw_fov[self._video_panels[5]].add_nd_image(
-            self.demixing_results.global_residual_correlation_image.cpu().numpy(),
-            ["m", "n"],
-            ["m", "n"],
-            name=self._video_panels[5],
-        )
+        if summary_img == "mean":
+            self._summary_image = self._ndw_fov[self._video_panels[5]].add_nd_image(
+                self.demixing_results.pmd_array.mean_img.cpu().numpy(),
+                ["m", "n"],
+                ["m", "n"],
+                name=self._video_panels[5],
+            )
+            ##Code to show contours
+
+            self._image_selector = fpl.ImageHighlightSelector(lut="tab10",
+                                                       lut_wrap="repeat",
+                                                       selection_options={"pixels": self.demixing_results.ac_array.contours},
+                                                       options_color="w",
+                                                       options_alpha=0.1,
+                                                       alpha=0.7
+                                                       )
+            self._image_selector.add_graphic(self._summary_image.graphic)
+
+        elif summary_img == "correlation":
+            self._summary_image = self._ndw_fov[self._video_panels[5]].add_nd_image(
+                self.demixing_results.global_residual_correlation_image.cpu().numpy(),
+                ["m", "n"],
+                ["m", "n"],
+                name=self._video_panels[5],
+            )
+
 
         self._trace_panels = ("compressed trace",
                         "demixed trace",

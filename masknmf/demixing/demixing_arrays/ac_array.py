@@ -185,7 +185,7 @@ class ACArray(ArrayLike):
                                                    size=self.a.shape).coalesce()
 
             ## Now make a list of components
-            row, col = final_tensor.indices()
+            row, col = [i.cpu() for i in final_tensor.indices()]
             y = row // self.shape[2]
             x = row % self.shape[2]
             contour_list = [[] for i in range(final_tensor.shape[1])]
