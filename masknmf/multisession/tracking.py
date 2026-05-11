@@ -1,17 +1,14 @@
 from masknmf.demixing.demixing_results import DemixingResults
-import roicat
-from roicat.data_importing import Data_roicat
 import torch
 import os
 import sys
 from typing import *
 import masknmf
 from pathlib import Path
-import roicat
-from roicat.data_importing import Data_roicat
 import numpy as np
 import scipy
 import scipy.sparse
+from roicat.data_importing import Data_roicat
 
 
 class DemixingRoicat(Data_roicat):
@@ -33,6 +30,7 @@ class DemixingRoicat(Data_roicat):
             roi_image_dims (tuple[int, int]): Each ROI is spatially cropped for purposes of feature extraction in the ROICat pipeline. This specifies the crop dimensions.
             highpass_sigma (int): We highpass filter the mean image to define an "enhanced" mean image (this is what s2p does) for use in the tracking pipeline.
         """
+
 
         super().__init__()
         self.um_per_pixel = um_per_pixel
@@ -133,7 +131,7 @@ class DemixingRoicat(Data_roicat):
                    **kwargs)
 
 
-def extract_masknmf_spatial_footprints(dr):
+def extract_masknmf_spatial_footprints(dr: masknmf.DemixingResults):
     """
     Given a masknmf demixingresults object, extracts the spatial footprints in a format needed for ROICaT cross-session matching
     """
@@ -156,7 +154,7 @@ def extract_masknmf_spatial_footprints(dr):
     return curr_csr_scipy
 
 
-def extract_masknmf_mean_img(dr):
+def extract_masknmf_mean_img(dr: masknmf.DemixingResults):
     return dr.pmd_array.mean_img.cpu().numpy()
 
 
