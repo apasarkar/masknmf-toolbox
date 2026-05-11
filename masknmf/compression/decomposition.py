@@ -10,6 +10,7 @@ from tqdm import tqdm
 from masknmf import display
 from masknmf.utils import torch_select_device
 from typing import *
+from masknmf.compression.preprocessing import SplineDetrend
 
 
 def truncated_random_svd(
@@ -1100,6 +1101,7 @@ def pmd_decomposition(
         pixel_weighting: Optional[np.ndarray] = None,
         spatial_denoiser: Optional[torch.nn.Module] = None,
         temporal_denoiser: Optional[torch.nn.Module] = None,
+        detrend_knots: Optional[int] = None,
         device: Literal["auto", "cuda", "cpu"] = "auto",
 ) -> PMDArray:
     """
@@ -1262,6 +1264,14 @@ def pmd_decomposition(
         device=device,
     )
 
+    if detrend_knots is not None:
+        preprocessing_nn_module = SplineDetrend(num_frames,
+                                  num_knots=detrend_knots,
+                                  device=device)
+    else:
+        preprocessing_nn_module = None
+
+
     display("Running Blockwise Decompositions")
     for k in tqdm(dim_1_iters):
         for j in dim_2_iters:
@@ -1271,6 +1281,12 @@ def pmd_decomposition(
                 current_data_for_fit = torch.from_numpy(dataset[frames, slice_dim1, slice_dim2]).to(device).to(dtype)
             else:
                 current_data_for_fit = dataset[frames, slice_dim1, slice_dim2]
+
+            if preprocessing_nn_module is not None:
+                curr_shape = current_data_for_fit.shape
+                curr_data_r = current_data_for_fit.reshape(curr_shape[0], -1).T
+                current_data_for_fit = preprocessing_nn_module(curr_data_r).T.reshape(*curr_shape)
+
             (
                 unweighted_local_spatial_basis,
                 local_temporal_basis,
@@ -1357,7 +1373,7 @@ def pmd_decomposition(
 
     if total_temporal_fit[0].shape[1] != num_frames:
         display("Regressing the full dataset onto the learned spatial basis."
-                "Note that temporal denoising is not supported here. Submit a feature request if needed."
+                "Note that temporal denoising and preprocessing (like spline detrending) is not supported here. Submit a feature request if needed."
                 "(Or run the compression algorithm on the full set of frames)")
         v_aggregated = regress_onto_spatial_basis(
             dataset,
@@ -1380,15 +1396,15 @@ def pmd_decomposition(
     num_rows = fov_dim1 * fov_dim2
     u_local_projector = torch.sparse_coo_tensor(
         final_indices, spatial_overall_unweighted_values, (num_rows, num_cols)
-    )
+    ).coalesce()
 
     final_indices = torch.stack([final_row_indices, final_column_indices], dim=0)
     u_aggregated = torch.sparse_coo_tensor(
         final_indices, spatial_overall_values, (num_rows, num_cols)
-    )
+    ).coalesce()
     display(f"Constructed U matrix. Rank of U is {u_aggregated.shape[1]}")
 
-    final_pmd_arr = PMDArray(
+    final_pmd_arr = PMDArray.from_tensors(
         (num_frames, fov_dim1, fov_dim2),
         u_aggregated.cpu(),
         v_aggregated.cpu(),
@@ -1401,4 +1417,3 @@ def pmd_decomposition(
     )
     display("PMD Objected constructed")
     return final_pmd_arr
-

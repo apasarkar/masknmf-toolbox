@@ -157,9 +157,14 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         full_moco_arr.export(os.path.abspath(self.outpath_motion_correction))
 
         moco_data = masknmf.RegistrationArray.from_hdf5(self.outpath_motion_correction)
-        shift_mask = masknmf.motion_correction.moco_preprocessing.construct_moco_template(moco_data.shifts,
-                                                                                          moco_data.shape[1:]).astype(
-            "float")
+
+        if isinstance(moco_data.shifts, np.ndarray):
+            shift_mask = masknmf.motion_correction.moco_preprocessing.construct_moco_template(moco_data.shifts,
+                                                                                              moco_data.shape[1:]).astype(
+                "float")
+        else:
+            shift_mask = np.ones((moco_data.shape[1], moco_data.shape[2])).astype("float")
+
         if self.load_into_ram:
             moco_data = moco_data[:]
 
@@ -223,7 +228,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                                           ring_model_start_pt=0)
                 curr_demix_conf = SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf)
                 conf_list.append(curr_demix_conf)
-            unfiltered_demixing_config = MultipassDemixingConfig(conf_list)
+            self._unfiltered_demixing_config = MultipassDemixingConfig(conf_list)
+
 
         # Run the demixing rounds on the filtered data
         for k in range(len(filtered_demixing_config.DemixingConfigs)):
@@ -236,7 +242,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         c_init = ac_arr.export_c()
 
         ##Now overwrite the first pass of the UnfilteredDemixingConfig to be "custom" since we're using results from above
-        unfiltered_demixing_config.DemixingConfigs[0].InitConfig = CustomInitConfig(a_init, c_init, c_nonneg=True)
+        self._unfiltered_demixing_config.DemixingConfigs[0].InitConfig = CustomInitConfig(a_init, c_init, c_nonneg=True)
 
         unfiltered_pmd_demixer = masknmf.demixing.signal_demixer.SignalDemixer(
             pmd_denoise,
@@ -244,9 +250,9 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             frame_batch_size=self.frame_batch_size)
 
         # Run the demixing rounds on the unfiltered data
-        for k in range(len(unfiltered_demixing_config.DemixingConfigs)):
+        for k in range(len(self.unfiltered_demixing_config.DemixingConfigs)):
             unfiltered_pmd_demixer = run_singlepass_demixing(unfiltered_pmd_demixer,
-                                                             unfiltered_demixing_config.DemixingConfigs[k])
+                                                             self.unfiltered_demixing_config.DemixingConfigs[k])
 
         unfiltered_pmd_demixer.results.export(os.path.abspath(self.outpath_demixing))
         return unfiltered_pmd_demixer.results

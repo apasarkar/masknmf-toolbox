@@ -960,7 +960,7 @@ def register_frames_pwrigid(
     registered_frames = torch.nn.functional.grid_sample(
         target_frames[:, None, :, :],  # (N,1,H,W)
         sampling_grid,
-        mode="bilinear",
+        mode="bicubic",
         padding_mode="border",
         align_corners=True,
     ).squeeze(1)

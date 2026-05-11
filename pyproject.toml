@@ -44,6 +44,10 @@ docs = [
     "imageio[ffmpeg]",
 ]
 
+multisession = [
+    "roicat[tracking_algo] @ git+https://github.com/apasarkar/ROICaT.git@algo_install",
+]
+
 dev = [
     "pytest>=8.4.0",
     "ruff>=0.11.13",
