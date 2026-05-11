@@ -228,7 +228,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                                           ring_model_start_pt=0)
                 curr_demix_conf = SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf)
                 conf_list.append(curr_demix_conf)
-            unfiltered_demixing_config = MultipassDemixingConfig(conf_list)
+            self._unfiltered_demixing_config = MultipassDemixingConfig(conf_list)
+
 
         # Run the demixing rounds on the filtered data
         for k in range(len(filtered_demixing_config.DemixingConfigs)):
@@ -241,7 +242,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         c_init = ac_arr.export_c()
 
         ##Now overwrite the first pass of the UnfilteredDemixingConfig to be "custom" since we're using results from above
-        unfiltered_demixing_config.DemixingConfigs[0].InitConfig = CustomInitConfig(a_init, c_init, c_nonneg=True)
+        self._unfiltered_demixing_config.DemixingConfigs[0].InitConfig = CustomInitConfig(a_init, c_init, c_nonneg=True)
 
         unfiltered_pmd_demixer = masknmf.demixing.signal_demixer.SignalDemixer(
             pmd_denoise,
@@ -249,9 +250,9 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             frame_batch_size=self.frame_batch_size)
 
         # Run the demixing rounds on the unfiltered data
-        for k in range(len(unfiltered_demixing_config.DemixingConfigs)):
+        for k in range(len(self.unfiltered_demixing_config.DemixingConfigs)):
             unfiltered_pmd_demixer = run_singlepass_demixing(unfiltered_pmd_demixer,
-                                                             unfiltered_demixing_config.DemixingConfigs[k])
+                                                             self.unfiltered_demixing_config.DemixingConfigs[k])
 
         unfiltered_pmd_demixer.results.export(os.path.abspath(self.outpath_demixing))
         return unfiltered_pmd_demixer.results
