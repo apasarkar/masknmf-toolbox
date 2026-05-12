@@ -9,11 +9,12 @@ class SplineDetrend(nn.Module):
     Preprocessor that removes slow trends from time series data by projecting
     out a B-spline temporal basis.
 
-    Stores only the basis B (T, d) and the Gram inverse (B^T B)^{-1} (d, d).
+    Stores only the basis B (num_timepoints, spline_rank) and the Gram inverse (B^T B)^{-1} (spline_rank, spline_rank).
 
     Usage:
         detrend = SplineDetrend(num_frames=100000, num_knots=10, degree=3, device='cuda')
-        data_detrended = detrend(data)  # (P, T) -> (P, T)
+        data_detrended = detrend(data)  # (pixels, frames) -> (pixels, frames), (pixels, spline_rank)
+            First output is the detrended dataset, second are the regression coefficients
     """
 
     def __init__(
@@ -41,8 +42,8 @@ class SplineDetrend(nn.Module):
         BtB = basis_torch.T @ basis_torch
         BtB_inv = torch.linalg.inv(BtB)
 
-        self.register_buffer("basis", basis_torch)  # (T, d)
-        self.register_buffer("BtB_inv", BtB_inv)  # (d, d)
+        self.register_buffer("basis", basis_torch)  # (frames, basis rank)
+        self.register_buffer("BtB_inv", BtB_inv)  # (basis rank, basis rank)
 
     @staticmethod
     def _build_basis(num_frames: int, num_knots: int, degree: int) -> np.ndarray:
@@ -65,44 +66,21 @@ class SplineDetrend(nn.Module):
             basis[:, i] = spline(t)
         return basis
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, data: torch.Tensor) -> torch.Tensor:
         """
         Detrend input data by subtracting the spline fit.
 
-        Parameters
-        ----------
-        x : torch.Tensor
-            Shape (num_pixels, num_frames). Fully batched over dim 0.
+        Args:
+            data (torch.Tensor): Shape (num_frames, num_pixels)
 
         Returns
-        -------
-        torch.Tensor
-            Detrended data, same shape as input. (num_pixels, num_frames)
+        - torch.Tensor
+            Detrended data, same shape as input. (num_frames, num_pixels)
+        - torch.Tensor
+            Shape (spline_rank, num_pixels). The spline basis
         """
-        # x: (P, T),  basis: (T, d),  BtB_inv: (d, d)
-        #
-        # coeffs = (B^T B)^{-1} B^T x^T    ->  (d, P)
-        # trend  = B @ coeffs              ->  (T, P)
-        # out    = x - trend^T             ->  (P, T)
 
-        coeffs = self.BtB_inv @ (self.basis.T @ x.T)  # (d, P)
-        trend = self.basis @ coeffs  # (T, P)
-        return x - trend.T
-
-    def get_trend(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Return just the spline trend (the part that gets subtracted).
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Shape (num_pixels, num_frames).
-
-        Returns
-        -------
-        torch.Tensor
-            Trend, shape (num_pixels, num_frames).
-        """
-        coeffs = self.BtB_inv @ (self.basis.T @ x.T)  # (d, P)
-        trend = self.basis @ coeffs  # (T, P)
-        return trend.T
+        coeffs = self.BtB_inv @ (self.basis.T @ data)  # (spline_rank, pixels)
+        trend = self.basis @ coeffs  # (frames, pixels)
+        detrended = data - trend
+        return detrended, coeffs
