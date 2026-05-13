@@ -1559,6 +1559,7 @@ def _compute_corr_overlap_with_threshold(standard_correlation_image: StandardCor
     Routine for computing the overlap between all pairs of thresholded correlation images as well as the total number
     of correlation images.
     """
+    display("Started compute corr ovelap")
     dtype=torch.float32
     num_neurons = standard_correlation_image.shape[0]
     num_iters = math.ceil(standard_correlation_image.shape[0] / frame_batch_size)
@@ -1586,6 +1587,7 @@ def _compute_corr_overlap_with_threshold(standard_correlation_image: StandardCor
                                                                                           subset_second,
                                                                                           dims=([1, 2], [1, 2]))
     corr_tensor = torch.triu(corr_tensor, diagonal=1)
+    display("Ended it")
     return corr_tensor, corr_support
 
 
@@ -2826,7 +2828,7 @@ class DemixingState(SignalProcessingState):
         return indices_to_keep
 
     def connected_comps(
-            self, thresholded_images: torch.tensor, masks: torch.tensor, num_iters: int = 30
+            self, thresholded_images: torch.tensor, masks: torch.tensor
     ):
         """
         Args:
@@ -2836,11 +2838,10 @@ class DemixingState(SignalProcessingState):
             updated_masks (torch.tensor): Shape (images, fov dim 1, fov dim 2)
         """
 
-        for k in range(num_iters):
-            masks = torch.nn.functional.max_pool2d(
-                masks, kernel_size=3, stride=1, padding=1
-            )
-            masks = masks * thresholded_images
+        masks = torch.nn.functional.max_pool2d(
+            masks, kernel_size=11, stride=1, padding=5
+        )
+        masks = masks * thresholded_images
         return masks
 
     def _mask_expansion_routine(
@@ -3085,12 +3086,16 @@ class DemixingState(SignalProcessingState):
                 pass
 
             if update_frequency and ((iters + 1) % update_frequency == 0):
+                display("in update step")
                 ##First: Compute correlation images
                 self.standard_correlation_image.c = self.c
 
+                display("after standard corr img recomputation")
                 # Merge signals as needed and update the scheduler
                 original_shape = self.a.shape[1]
                 self.merge_signals(merge_threshold, merge_overlap_threshold, plot_en)
+
+                display("after merge signals")
                 if self.a.shape[1] < original_shape:
                     self.update_hals_scheduler()
 
@@ -3098,7 +3103,10 @@ class DemixingState(SignalProcessingState):
                     support_threshold[iters], deletion_threshold, plot_en
                 )
 
+                display("after support update")
+
                 self.update_hals_scheduler()
+                display("after final hals schedule")
 
         self.standard_correlation_image.c = self.c
         self.compute_residual_correlation_image()
