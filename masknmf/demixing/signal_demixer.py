@@ -1559,45 +1559,58 @@ def superpixel_init(
                                      pure_nmf_seed_map = pure_superpixel_img_1d.cpu().numpy().reshape((dims[0], dims[1]), order=data_order))
     return init_res
 
-def _compute_corr_overlap_with_threshold(standard_correlation_image: StandardCorrelationImages,
-                                      threshold: float= 0.6,
-                                      frame_batch_size: int = 200):
+def _compute_indices_to_merge(a: torch.sparse_coo_tensor,
+                              standard_correlation_image: StandardCorrelationImages,
+                              merge_correlation_threshold: float,
+                              merge_overlap_threshold: float,
+                              frame_batch_size: int = 200):
     """
-    Routine for computing the overlap between all pairs of thresholded correlation images as well as the total number
-    of correlation images.
+    Two signals A and B can be merged all conditions are met:
+    (1) They overlap spatially by even 1 pixel
+    (2) Their overlapped correlation image is a large fraction of the thresholded correlation image for A
+    (3) Their overlapped correlation image is a large fraction of the thresholded correlation image for B
     """
-    display("Started compute corr ovelap")
-    dtype=torch.float32
-    num_neurons = standard_correlation_image.shape[0]
-    num_iters = math.ceil(standard_correlation_image.shape[0] / frame_batch_size)
-    corr_tensor = torch.zeros(num_neurons,
-                              num_neurons,
-                              dtype=dtype,
-                              device=standard_correlation_image.device)
+    display('started compute corr overlap')
+    overlap_mat = torch.sparse.mm(a.t(), a).coalesce() #Shape (num_neurons, num_neurons)
+    rows, cols = overlap_mat.indices()
+    values = overlap_mat.values()
 
-    corr_support = torch.zeros(num_neurons,
-                               dtype=dtype,
-                               device=standard_correlation_image.device)
+    ##Select row/col pairs where value is nonzero (these are components that spatially overlap) and row < col (avoid duplicates)
+    selector = torch.logical_and(values > 0, rows < cols)
+    rows = rows[selector]
+    cols = cols[selector]
+    values = values[selector]
 
+    if values.numel() == 0:
+        return rows, cols
+
+    print(f'shape after selector is {cols.shape}')
+    dtype = torch.float32
+    num_iters = math.ceil(cols.shape[0] / frame_batch_size)
+    good_comps = []
     for k in range(num_iters):
-        start_first = k*frame_batch_size
-        end_first = min(start_first + frame_batch_size, num_neurons)
-        subset_first = (standard_correlation_image.getitem_tensor(slice(start_first,end_first)) > threshold).to(dtype)
-        sum_values = torch.sum(subset_first, dim=[1,2])
-        sum_values[sum_values == 0] = 1
-        corr_support[start_first:end_first] = sum_values
-        for j in range(k, num_iters):
-            start_second = j*frame_batch_size
-            end_second = min(start_second + frame_batch_size, num_neurons)
-            subset_second = (standard_correlation_image.getitem_tensor(slice(start_second,end_second)) > threshold).to(dtype)
-            corr_tensor[start_first:end_first, start_second:end_second] = torch.tensordot(subset_first,
-                                                                                          subset_second,
-                                                                                          dims=([1, 2], [1, 2]))
-    corr_tensor = torch.triu(corr_tensor, diagonal=1)
-    display("Ended it")
-    return corr_tensor, corr_support
+        start = k * frame_batch_size
+        end = min(cols.shape[0], start + frame_batch_size)
+        curr_rows = rows[start:end]
+        curr_cols = cols[start:end]
+        images_1 = standard_correlation_image.getitem_tensor(curr_rows.cpu().numpy()) #num_frames, height, width
+        images_2 = standard_correlation_image.getitem_tensor(curr_cols.cpu().numpy()) #num_frames, height, width
 
+        images_1 = (images_1 > merge_correlation_threshold).to(dtype)
+        total_image_1 = torch.sum(images_1, dim = [1, 2])
+        total_image_1[total_image_1 == 0] = 1.0
+        images_2 = (images_2 > merge_correlation_threshold).to(dtype)
+        total_image_2 = torch.sum(images_2, dim=[1, 2])
+        total_image_2[total_image_2 == 0] = 1.0
 
+        overlap_areas = torch.sum(images_1 * images_2, dim = [1, 2])
+        fractional_overlap_1 = overlap_areas / total_image_1
+        fractional_overlap_2 = overlap_areas / total_image_2
+        good_comps.append(torch.logical_and(fractional_overlap_1 > merge_overlap_threshold,
+                                            fractional_overlap_2 > merge_overlap_threshold))
+    good_comps = torch.concatenate(good_comps)
+    display('ended it')
+    return rows[good_comps], cols[good_comps]
 
 
 def merge_components(
@@ -1638,39 +1651,24 @@ def merge_components(
         standard_correlation_image (StandardCorrelationImages): Updated correlation images
     """
     device = c.device
+    row_comps, col_comps = _compute_indices_to_merge(a,
+                                                     standard_correlation_image,
+                                                     merge_corr_thr,
+                                                     merge_overlap_thr,
+                                                     frame_batch_size)
 
-    ############ calculate overlap area ###########
 
-    a_corr = torch.sparse.mm(a.t(), a).to_dense()
-    a_corr = torch.triu(a_corr, diagonal=1)
-    cor_corr, temp = _compute_corr_overlap_with_threshold(standard_correlation_image,
-                                                    merge_corr_thr,
-                                                    frame_batch_size=frame_batch_size
-                                                    )
-
-    # Test to see for each pair of neurons (a, b) whether overlap(a, b) / support_size(corr_img(a)) > merge_overlap_thres
-    condition1 = (cor_corr / temp.unsqueeze(1)) > merge_overlap_thr
-
-    # Test to see for each pair of neurons (a, b) whether overlap(a, b) / support_size(corr_img(b)) > merge_overlap_thres
-    condition2 = (cor_corr / temp.unsqueeze(0)) > merge_overlap_thr
-
-    # Test to make sure the two cells actually overlap
-    condition3 = a_corr > 0
-    cri = condition1 * condition2 * condition3
-
-    connect_comps = torch.argwhere(cri)
-
-    if torch.numel(connect_comps) > 0:
+    if row_comps.numel() > 0 and col_comps.numel() > 0:
         merge_graph = nx.Graph()
         merge_graph.add_edges_from(
             list(
                 zip(
-                    connect_comps[:, 0].cpu().numpy(), connect_comps[:, 1].cpu().numpy()
+                    row_comps.cpu().numpy(), col_comps.cpu().numpy()
                 )
             )
         )
         comps = list(nx.connected_components(merge_graph))
-        remove_indices = torch.unique(torch.flatten(connect_comps))
+        remove_indices = torch.unique(torch.concatenate([row_comps, col_comps]).flatten())
         all_indices = torch.ones([c.shape[1]], device=device)
         all_indices[remove_indices] = 0
         all_indices = all_indices.bool()
