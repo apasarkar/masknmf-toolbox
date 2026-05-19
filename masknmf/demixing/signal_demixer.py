@@ -33,6 +33,7 @@ from .demixing_utils import (
 from masknmf.demixing import regression_update
 from masknmf.demixing.background_estimation import RingModel
 from masknmf.compression import PMDArray
+from masknmf.compression.preprocessing import SplineDetrend
 from masknmf import display
 
 
@@ -456,6 +457,7 @@ def get_local_correlation_structure(
         tol: float = 0.000001,
         a: Optional[torch.sparse_coo_tensor] = None,
         c: torch.tensor = None,
+        detrender: torch.nn.Module | None = None
 ):
     """
     Computes a local correlation data structure, which describes the correlations between all neighboring pairs of pixels
@@ -537,6 +539,11 @@ def get_local_correlation_structure(
 
                 ac_mov = torch.sparse.mm(a_sparse_crop, c.T).reshape(x_interval, y_interval, -1)
                 Yd = torch.sub(Yd, ac_mov)
+
+            if detrender is not None:
+                curr_height, curr_width, curr_frames = Yd.shape
+                Yd, _ = detrender(Yd.reshape(curr_height * curr_width, curr_frames).T) #frames x pixels
+                Yd = Yd.T.reshape(curr_height, curr_width, curr_frames)
 
             # Get MAD-thresholded movie in-place
             if not th == 0:
@@ -2186,6 +2193,7 @@ class InitializingState(SignalProcessingState):
             min_peak_distance: int = 3,
             residual_threshold: float = 0.3,
             patch_size: Tuple[int, int] = (100, 100),
+            detrend_knots: int | None = None
     ):
         """
         Args:
@@ -2215,6 +2223,13 @@ class InitializingState(SignalProcessingState):
                 bg_subtract_temporal_basis = self.v - (self.factorized_ring_term[0] @ self.factorized_ring_term[1])
             else:
                 bg_subtract_temporal_basis = self.v
+
+            if detrend_knots is not None:
+                detrender = SplineDetrend(self.T,
+                                          detrend_knots,
+                                          device=self.device)
+            else:
+                detrender = None
             (
                 self._curr_corr_image
             ) = get_local_correlation_structure(
@@ -2226,6 +2241,7 @@ class InitializingState(SignalProcessingState):
                 batch_size=self.pixel_batch_size,
                 a=self.a,
                 c=self.c,
+                detrender=detrender
             )
             self._th = mad_threshold
         (
@@ -2795,7 +2811,9 @@ class DemixingState(SignalProcessingState):
             self.c.clamp_(min=0)
 
 
-    def _flag_components_for_deletion(self, deletion_threshold: float):
+    def _flag_components_for_deletion(self,
+                                      deletion_threshold: float,
+                                      min_brightness: float):
         """
         For each neuron, we check that its residual correlation image over its spatial support contains
         at least one pixel whose correlation value is above a specified threshold.
@@ -2804,6 +2822,7 @@ class DemixingState(SignalProcessingState):
 
         Args:
             deletion_threshold (float): The threshold for deciding whether a component should be deleted or not
+            min_brightness (float): If a component is less bright than this threshold for all time points, we delete it
 
         Returns:
             indices_to_keep (torch.tensor): The indices of the neural signals we should keep.
@@ -2821,6 +2840,23 @@ class DemixingState(SignalProcessingState):
             torch.stack([rows * 0, columns]), values, (1, support_data.shape[1])
         ).coalesce()
         boolean_indices = new_vector.to_dense().squeeze().bool()
+
+        ## Check for min brightness if applicable
+        if min_brightness is not None:
+            if self.detrender is not None and False:
+                c_used = self.detrender(self.c)[0]
+            else:
+                c_used = self.c
+            idx, brightnesses = masknmf.demixing.demixing_utils.brightness_order(self.a, c_used)
+            good_idx = brightnesses >= min_brightness
+            display(f"min brightness is {min_brightness}")
+            display(f"Deleting {int(good_idx.shape[0] - torch.count_nonzero(good_idx))} components via min brightness criteria")
+            display(f"Started with {support_data.shape[1]} neurons")
+            # boolean_indices[bad_idx] = False
+            boolean_indices *= good_idx.bool()
+            #Reset the background rank term in the ring model
+            self.background_rank = None
+
         indices_to_keep = torch.arange(support_data.shape[1], device=self.device)[
             boolean_indices
         ]
@@ -2938,10 +2974,14 @@ class DemixingState(SignalProcessingState):
         return final_mask, final_spatial
 
     def support_update_routine(
-            self, relative_correlation_fraction: float, corr_th_del: float, plot_en
+            self,
+            relative_correlation_fraction: float,
+            corr_th_del: float,
+            min_brightness: float | None = None
     ):
         self.compute_residual_correlation_image()
-        indices_to_keep = self._flag_components_for_deletion(corr_th_del)
+        indices_to_keep = self._flag_components_for_deletion(corr_th_del,
+                                                             min_brightness)
         if indices_to_keep.shape[0] < self.a.shape[1]:
             self.a = torch.index_select(self.a, 1, indices_to_keep).coalesce()
             self.mask_ab = torch.index_select(self.mask_ab, 1, indices_to_keep).coalesce()
@@ -2983,6 +3023,7 @@ class DemixingState(SignalProcessingState):
             maxiter: int = 25,
             support_threshold: Union[list, tuple, float] = 0.9,
             deletion_threshold: float = 0.2,
+            min_brightness: float | None = 1.0,
             ring_model_start_pt: Optional[int] = 0,
             background_downsampling_factor: int = 20,
             ring_radius: int = 10,
@@ -2992,7 +3033,8 @@ class DemixingState(SignalProcessingState):
             c_nonneg: bool = True,
             denoise: Union[list, bool] = None,
             plot_en: bool = False,
-            reassign_background: bool = False
+            reassign_background: bool = False,
+            detrend_knots: int | None = None,
     ):
         """
         Function for computing background, spatial and temporal components of neurons. Uses HALS updates to iteratively
@@ -3025,6 +3067,13 @@ class DemixingState(SignalProcessingState):
         """
         # Key: precompute_quantities is a setup function which must be run first in this routine
         # self.background_rank = None #Always estimate the background rank each time
+        if detrend_knots is not None:
+            self.detrender = SplineDetrend(self.shape[2],
+                                         detrend_knots,
+                                         device=self.device)
+        else:
+            self.detrender = None
+
         self.precompute_quantities()
         self.W = RingModel(
             self.shape[0], self.shape[1], ring_radius, self.device, self.data_order
@@ -3048,6 +3097,10 @@ class DemixingState(SignalProcessingState):
                 f"support_threshold has invalid type: {type(support_threshold)}"
             )
 
+        min_brightness_list = np.linspace(0, min_brightness, maxiter)
+        # min_brightness_list[:] = min_brightness
+        # min_brightness_list[:-2] = 0
+
         if denoise is None:
             denoise = [False for i in range(maxiter)]
         elif isinstance(denoise, bool):
@@ -3060,6 +3113,7 @@ class DemixingState(SignalProcessingState):
 
         background_enabled: bool = False
         for iters in tqdm(range(maxiter)):
+            display("AT THE TOP OF ITER")
             self.static_baseline_update()
 
             if ring_model_start_pt is not None and iters >= ring_model_start_pt:
@@ -3081,9 +3135,6 @@ class DemixingState(SignalProcessingState):
             self.temporal_update(
                 denoise=denoise_flag, plot_en=plot_en, c_nonneg=c_nonneg
             )
-            if background_enabled:
-                ## Reassign the signal from the background to the temporal components
-                pass
 
             if update_frequency and ((iters + 1) % update_frequency == 0):
                 display("in update step")
@@ -3100,7 +3151,9 @@ class DemixingState(SignalProcessingState):
                     self.update_hals_scheduler()
 
                 self.support_update_routine(
-                    support_threshold[iters], deletion_threshold, plot_en
+                    support_threshold[iters],
+                    deletion_threshold,
+                    min_brightness=min_brightness_list[iters]
                 )
 
                 display("after support update")
@@ -3108,6 +3161,7 @@ class DemixingState(SignalProcessingState):
                 self.update_hals_scheduler()
                 display("after final hals schedule")
 
+        display("we exited the loop")
         self.standard_correlation_image.c = self.c
         self.compute_residual_correlation_image()
         background_to_signal_correlation_image = _compute_standard_correlation_image(self.u_sparse,
@@ -3135,6 +3189,7 @@ class DemixingState(SignalProcessingState):
             batch_size=self.pixel_batch_size,
             a=self.a,
             c=self.c,
+            detrender=self.detrender
         )
 
         self._results = DemixingResults(
