@@ -2861,22 +2861,54 @@ class DemixingState(SignalProcessingState):
 
         return indices_to_keep
 
-    def connected_comps(
-            self, thresholded_images: torch.tensor, masks: torch.tensor
-    ):
+    def greedy_connected_comps(self,
+                               fov_height: int,
+                               fov_width: int,
+                               a_subset: torch.sparse_coo_tensor,
+                               thresholded_correlation_image_frames: torch.Tensor,
+                               expansion_radius:int = 5
+                               ):
         """
-        Args:
-            thresholded_images (torch.tensor): Shape (images, fov dim 1, fov dim 2). All binary
-            masks (torch.tensor): Shape (images, fov dim 1, fov dim 2). All binary
-        Returns:
-            updated_masks (torch.tensor): Shape (images, fov dim 1, fov dim 2)
+        We will get row, col values from the current mask. We will convert this to:
+        col, height, width index representation.
+        We will find out which of these indices have a value of at least 1 in the thresholded image
+        We will only keep those
+        We will re-vectorize the result. We can just "append" this to the original sparse tensor, so long as the values associated
+        with these new indices are 0. When we call coalesce() on this final tensor, the row/col indices with value 0 will
+        be included. This is desirable (this is how the spatial HALS code starts working with the expanded (or contracted) "a" footprints
         """
+        rows, frame_indices = a_subset.indices()
+        height_indices = rows // fov_width
+        width_indices = rows % fov_width
 
-        masks = torch.nn.functional.max_pool2d(
-            masks, kernel_size=11, stride=1, padding=5
-        )
-        masks = masks * thresholded_images
-        return masks
+        height_perturbations, width_perturbations = torch.meshgrid(torch.arange(-1 * expansion_radius, expansion_radius+1, device=self.device),
+                                                                   torch.arange(-1 * expansion_radius, expansion_radius+1, device=self.device),
+                                                                   indexing='ij')
+
+        height_indices = height_indices[:, None] + height_perturbations.flatten()[None, :]
+        width_indices = width_indices[:, None] + width_perturbations.flatten()[None, :]
+        frame_indices = frame_indices[:, None] + torch.zeros_like(width_perturbations.flatten()[None, :])
+
+        height_indices = height_indices.flatten()
+        width_indices = width_indices.flatten()
+        frame_indices = frame_indices.flatten()
+
+        keep_comps = (height_indices >= 0) & (height_indices < fov_height) & (width_indices >= 0) & (width_indices < fov_width)
+        height_indices = height_indices[keep_comps]
+        width_indices = width_indices[keep_comps]
+        frame_indices = frame_indices[keep_comps]
+
+        corr_bool_mask = thresholded_correlation_image_frames[frame_indices, height_indices, width_indices] > 0
+
+        height_indices = height_indices[corr_bool_mask]
+        width_indices = width_indices[corr_bool_mask]
+        frame_indices = frame_indices[corr_bool_mask]
+
+        final_rows = height_indices * fov_width + width_indices #C order vectorization
+        final_cols = frame_indices
+
+        return final_rows, final_cols
+
 
     def _mask_expansion_routine(
             self,
@@ -2926,30 +2958,30 @@ class DemixingState(SignalProcessingState):
             curr_thresholded_residual_images = (
                     curr_thresholds[:, None, None] < curr_residual_images
             ).float()
-            curr_masks = torch.index_select(mask, 1, neuron_indices).to_dense().float()
+            curr_masks = torch.index_select(mask, 1, neuron_indices).coalesce()
 
-            ## C reshaping
-            curr_masks = curr_masks.reshape((self.shape[0], self.shape[1], -1))
 
-            curr_masks = curr_masks.permute(2, 0, 1)
+            final_rows, local_cols = self.greedy_connected_comps(self.shape[0],
+                                                                    self.shape[1],
+                                                                    curr_masks,
+                                                                    curr_thresholded_residual_images)
+            final_cols = neuron_indices[local_cols]
+            final_vals = torch.zeros_like(final_cols).float()
 
-            new_masks = self.connected_comps(
-                curr_thresholded_residual_images, curr_masks
-            )
+            final_spatial_rows.append(final_rows)
+            final_spatial_cols.append(final_cols)
+            final_spatial_values.append(final_vals)
 
-            new_masks = new_masks.permute(1, 2, 0)
-            new_masks = new_masks.reshape((self.shape[0] * self.shape[1], -1))
+            final_mask_rows.append(final_rows)
+            final_mask_cols.append(final_cols)
 
-            a_crop = torch.index_select(spatial_comps, 1, neuron_indices).coalesce().to_dense()
-            new_a_row, new_a_col = torch.nonzero(new_masks, as_tuple=True)
-            new_a_values = a_crop[new_a_row, new_a_col] ## Some of these might be zeros, that is ok!
 
-            final_spatial_rows.append(new_a_row)
-            final_spatial_cols.append(start + new_a_col)
-            final_spatial_values.append(new_a_values)
+        original_a_rows, original_a_cols = spatial_comps.indices()
+        original_a_values = spatial_comps.values()
 
-            final_mask_rows.append(new_a_row)
-            final_mask_cols.append(start + new_a_col)
+        final_spatial_rows.append(original_a_rows)
+        final_spatial_cols.append(original_a_cols)
+        final_spatial_values.append(original_a_values)
 
         # Construct the new mask
         final_mask_rows = torch.cat(final_mask_rows, 0)
@@ -2959,6 +2991,13 @@ class DemixingState(SignalProcessingState):
             torch.stack([final_mask_rows, final_mask_cols]),
             final_mask_values,
             spatial_comps.shape,
+        ).coalesce()
+
+        ##Make sure all nonzero values are actually either 1 or 0.
+        final_mask = torch.sparse_coo_tensor(
+            final_mask.indices(),
+            torch.ones_like(final_mask.values(), dtype=final_mask.values().dtype),
+            final_mask.shape
         ).coalesce()
 
         final_spatial_rows = torch.cat(final_spatial_rows, 0)
