@@ -10,6 +10,7 @@ class SuperpixelInitConfig:
     residual_threshold: float = 0.3
     patch_size: tuple[int, int] = (40, 40)
     detrend_knots: int | None = None
+    sign: Literal["positive", "negative", "unconstrained"] = "unconstrained"
 
 @dataclass
 class CustomInitConfig:

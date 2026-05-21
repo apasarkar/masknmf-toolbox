@@ -433,18 +433,24 @@ def extract_per_trace_roi_averages(colorful_ac_array: masknmf.ACArray,
     if torch.count_nonzero(valid_indices) == 0:
         return None, None, None
     else:
-        filtered_rows = row[valid_indices]
-        filtered_col = col[valid_indices]
-        filtered_values = values[valid_indices]
+        valid_columns = col[valid_indices]
+        unique_signals = torch.unique(valid_columns)
 
-        reduce_tensor = torch.zeros(a.shape[1], device=device)
-        reduce_tensor.scatter_reduce_(0, filtered_col, filtered_values, reduce="sum")
-        reduce_tensor = reduce_tensor / num_pixels
+        a_subset = torch.index_select(a, 1, unique_signals).coalesce()
+        filtered_rows, filtered_col = a_subset.indices()
+        filtered_values = a_subset.values()
+        # filtered_rows = row[valid_indices]
+        # filtered_col = col[valid_indices]
+        # filtered_values = values[valid_indices]
 
-        unique_signals = torch.unique(filtered_col)
-        unique_means = reduce_tensor[unique_signals]
+        reduce_tensor = torch.zeros(a_subset.shape[1], device=device)
+        reduce_tensor.scatter_reduce_(0, filtered_col, filtered_values, reduce="amax")
+        # reduce_tensor = reduce_tensor / num_pixels
 
-        weighted_signals = unique_means[None, :] * c[:, unique_signals] #Shape (num_frames, neural_signals)
+        # unique_signals = torch.unique(filtered_col)
+        # unique_scales = reduce_tensor[unique_signals]
+
+        weighted_signals = reduce_tensor[None, :] * c[:, unique_signals] #Shape (num_frames, neural_signals)
         colors = colorful_ac_array.colors[unique_signals, :] #(neural_signals, 3)
 
         return weighted_signals.T.cpu().numpy(), colors.cpu().numpy(), unique_signals.cpu().numpy()

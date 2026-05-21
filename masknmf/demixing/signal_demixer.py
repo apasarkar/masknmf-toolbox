@@ -429,8 +429,46 @@ def get_median(tensor, axis):
     tensor_med = torch.mul(tensor_med_1 + tensor_med_2, 0.5)
     return tensor_med
 
+def median_filter_subtract(
+    x: torch.Tensor,
+    window: int,
+) -> torch.Tensor:
+    """
+    Subtract a running median (window-length neighborhood, along time) from each time series.
 
-def threshold_data_inplace(movie_chunk, mad_threshold_value: int = 2, dim: int = 2):
+    Args:
+        x: (T, N) tensor — T frames, N time series.
+        window: odd integer, length of the median filter neighborhood.
+
+    Returns:
+        Tensor of shape (T, N), same dtype/device as x.
+    """
+    if window % 2 == 0:
+        raise ValueError(f"window must be odd, got {window}")
+    if window == 1:
+        return torch.zeros_like(x)
+
+    pad = window // 2
+    # Transpose to (N, T) for unfolding along time, reflect-pad the time axis
+    x_t = x.t()  # (N, T)
+    x_padded = torch.nn.functional.pad(x_t.unsqueeze(1), (pad, pad), mode='reflect').squeeze(1)  # (N, T + 2*pad)
+
+    windows = x_padded.unfold(dimension=1, size=window, step=1)  # (N, T, window)
+    medians = windows.median(dim=-1).values                      # (N, T)
+
+    return x - medians.t()
+
+def median_filter_subtract_batched(x, window, batch=128):
+    out = torch.empty_like(x)
+    for i in range(0, x.shape[1], batch):
+        out[:, i:i+batch] = median_filter_subtract(x[:, i:i+batch], window)
+    return out
+
+
+def threshold_data_inplace(movie_chunk,
+                           mad_threshold_value: int = 2,
+                           dim: int = 2,
+                           sign: Literal["positive", "negative", "unconstrained"] = "unconstrained"):
     """
     Threshold data: in each pixel, compute the median and median absolute deviation (MAD),
     then zero all bins (x,t) such that Yd(x,t) < med(x) + th * MAD(x).
@@ -440,14 +478,21 @@ def threshold_data_inplace(movie_chunk, mad_threshold_value: int = 2, dim: int =
         mad_threshold_value (int): "th", as described above. The number of median absolute deviations in the threshold.
         dim (int): The axis over which operations are applied.
     Returns:
-        Yd: This is an in-place operation
+        Yd: A MAD thresholded version of the movie, where values that do not make it past the threhold are set to nan
     """
     movie_median = torch.median(movie_chunk, dim=dim, keepdim=True)[0]
     diff = torch.abs(movie_chunk - movie_median)
     mad_values = torch.median(diff, dim=dim, keepdim=True)[0]
 
-    weight_matrix = torch.where(diff >= mad_values * mad_threshold_value, 1.0, torch.nan)
-    # weight_matrix = torch.where(diff > mad_values * mad_threshold_value, 1.0, 0.0)
+    if sign == "unconstrained":
+        condition = diff >= mad_values * mad_threshold_value
+    elif sign == "positive":
+        condition = (diff >= mad_values * mad_threshold_value) & (movie_chunk > movie_median)
+    elif sign == "negative":
+        condition = (diff >= mad_values * mad_threshold_value) & (movie_chunk < movie_median)
+    else:
+        raise ValueError("Invalid sign parameter")
+    weight_matrix = torch.where(condition, 1.0, torch.nan)
 
     return movie_chunk * weight_matrix
 
@@ -480,7 +525,8 @@ def get_local_correlation_structure(
         tol: float = 0.000001,
         a: Optional[torch.sparse_coo_tensor] = None,
         c: torch.tensor = None,
-        detrender: torch.nn.Module | None = None
+        detrender: torch.nn.Module | None = None,
+        sign: Literal["positive", "negative", "unconstrained"] = "unconstrained"
 ):
     """
     Computes a local correlation data structure, which describes the correlations between all neighboring pairs of pixels
@@ -570,7 +616,7 @@ def get_local_correlation_structure(
 
             # Get MAD-thresholded movie in-place
             if not th == 0:
-                Yd = threshold_data_inplace(Yd, th)
+                Yd = threshold_data_inplace(Yd, th, sign=sign)
 
             # Permute the movie
             Yd = Yd.permute(2, 0, 1)
@@ -2217,7 +2263,8 @@ class InitializingState(SignalProcessingState):
             min_peak_distance: int = 3,
             residual_threshold: float = 0.3,
             patch_size: Tuple[int, int] = (100, 100),
-            detrend_knots: int | None = None
+            detrend_knots: int | None = None,
+            sign: Literal["positive", "negative", "unconstrained"] = "unconstrained"
     ):
         """
         Args:
@@ -2265,7 +2312,8 @@ class InitializingState(SignalProcessingState):
                 batch_size=self.pixel_batch_size,
                 a=self.a,
                 c=self.c,
-                detrender=detrender
+                detrender=detrender,
+                sign = sign
             )
             self._th = mad_threshold
         (

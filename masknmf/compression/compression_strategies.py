@@ -111,7 +111,7 @@ class CompressStrategy:
 
     @detrend_knots.setter
     def detrend_knots(self, num_knots: int):
-        self._detrend_knots = detrend_knots
+        self._detrend_knots = num_knots
 
     @property
     def device(self) ->str:

@@ -115,7 +115,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
     def run(self,
             data: np.ndarray | LazyFrameLoader | ArrayLike,
-            frame_rate: float):
+            frame_rate: float,
+            exclude_border_radius: int = 0):
         """
                 Uses the API to run rigid motion correction, compression (with denoising), and demixing.
 
@@ -175,6 +176,12 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                     "float")
             else:
                 shift_mask = np.ones((moco_data.shape[1], moco_data.shape[2])).astype("float")
+            if exclude_border_radius > 0:
+                print("AT KEY POINT")
+                shift_mask[:exclude_border_radius, :] = 0
+                shift_mask[:, :exclude_border_radius] = 0
+                shift_mask[-1 * exclude_border_radius:, :] = 0
+                shift_mask[:, -1 * exclude_border_radius:] = 0
 
             if self.load_into_ram:
                 moco_data = moco_data[:]
@@ -197,9 +204,14 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                     curr_config['pixel_weighting'] = curr_config['pixel_weighting'] * shift_mask
                 else:
                     curr_config['pixel_weighting'] = shift_mask
-                compress_strategy = CompressDenoiseStrategy(device=self.device, **asdict(self.compress_config))
+                compress_strategy = CompressDenoiseStrategy(device=self.device, **curr_config)
             else:
                 raise ValueError("Invalid compression config")
+
+            if compress_strategy.detrend_knots is None:
+                knot_interval = 200 * frame_rate
+                num_knots = math.ceil(data.shape[0] / knot_interval)
+                compress_strategy.detrend_knots = num_knots
 
             compressed_results = compress_strategy.compress(moco_data)
             compressed_results.export(self.outpath_compression)
@@ -227,7 +239,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             conf_list = []
             for corr_threshold in [0.8, 0.8]:
                 curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
-                                                      detrend_knots=num_knots)
+                                                      detrend_knots=num_knots,
+                                                      sign="positive") #Only prioritize positive deviations for 2p calcium imaging
                 curr_nmf_conf = NMFConfig(support_threshold=(0.95, corr_threshold),
                                           ring_model_start_pt=None,
                                           detrend_knots=num_knots)
@@ -239,14 +252,14 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             conf_list = []
             for corr_threshold, support_threshold in [(0.8, 0.4), (0.8, 0.4), (0.8, 0.4)]:
                 curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
-                                                      detrend_knots=num_knots)
+                                                      detrend_knots=num_knots,
+                                                      sign="positive")
                 curr_nmf_conf = NMFConfig(support_threshold=(0.95, support_threshold),
                                           ring_model_start_pt=0,
                                           detrend_knots=num_knots)
                 curr_demix_conf = SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf)
                 conf_list.append(curr_demix_conf)
             self._unfiltered_demixing_config = MultipassDemixingConfig(conf_list)
-
 
         # Run the demixing rounds on the filtered data
         for k in range(len(filtered_demixing_config.DemixingConfigs)):
@@ -270,6 +283,9 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         for k in range(len(self.unfiltered_demixing_config.DemixingConfigs)):
             unfiltered_pmd_demixer = run_singlepass_demixing(unfiltered_pmd_demixer,
                                                              self.unfiltered_demixing_config.DemixingConfigs[k])
+            if os.path.exists(os.path.abspath(self.outpath_demixing)):
+                os.remove(os.path.abspath(self.outpath_demixing))
+            unfiltered_pmd_demixer.results.export(os.path.abspath(self.outpath_demixing))
 
         unfiltered_pmd_demixer.results.export(os.path.abspath(self.outpath_demixing))
         return unfiltered_pmd_demixer.results
