@@ -10,7 +10,7 @@ from tqdm import tqdm
 from masknmf import display
 from masknmf.utils import torch_select_device
 from typing import *
-from masknmf.compression.preprocessing import SplineDetrend
+from masknmf.compression.preprocessing import SplineDetrend, SplineDetrenderBase
 
 
 def truncated_random_svd(
@@ -1101,7 +1101,7 @@ def pmd_decomposition(
         pixel_weighting: Optional[np.ndarray] = None,
         spatial_denoiser: Optional[torch.nn.Module] = None,
         temporal_denoiser: Optional[torch.nn.Module] = None,
-        detrend_knots: Optional[int] = None,
+        detrender: Optional[SplineDetrenderBase] = None,
         device: Literal["auto", "cuda", "cpu"] = "auto",
 ) -> PMDArray:
     """
@@ -1264,14 +1264,13 @@ def pmd_decomposition(
         device=device,
     )
 
-    if detrend_knots is not None:
-        preprocessing_nn_module = SplineDetrend(num_frames,
-                                  num_knots=detrend_knots,
-                                  device=device)
-        spatial_preprocess_basis = torch.zeros(fov_dim1, fov_dim2, preprocessing_nn_module.basis.shape[1], device=device)
-        temporal_preprocess_basis = preprocessing_nn_module.basis.T #(spline_rank, frames)
+    if detrender is not None:
+        detrender = detrender.to(device)
+        spatial_preprocess_basis = torch.zeros(
+            fov_dim1, fov_dim2, detrender.spline_rank, device=device
+        )
+        temporal_preprocess_basis = detrender.basis.T  # (spline_rank, frames)
     else:
-        preprocessing_nn_module = None
         spatial_preprocess_basis = None
         temporal_preprocess_basis = None
 
@@ -1286,10 +1285,14 @@ def pmd_decomposition(
             else:
                 current_data_for_fit = dataset[frames, slice_dim1, slice_dim2]
 
-            if preprocessing_nn_module is not None:
+            if detrender is not None:
                 curr_shape = current_data_for_fit.shape
-                current_data_for_fit, curr_spline_basis = preprocessing_nn_module(current_data_for_fit.reshape(curr_shape[0], -1))
-                spatial_preprocess_basis[slice_dim1, slice_dim2, :] = curr_spline_basis.T.reshape(curr_shape[1], curr_shape[2], -1)
+                current_data_for_fit, curr_spline_basis = detrender(
+                    current_data_for_fit.reshape(curr_shape[0], -1)
+                )
+                spatial_preprocess_basis[slice_dim1, slice_dim2, :] = (
+                    curr_spline_basis.T.reshape(curr_shape[1], curr_shape[2], -1)
+                )
                 current_data_for_fit = current_data_for_fit.reshape(*curr_shape)
 
             (

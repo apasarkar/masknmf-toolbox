@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 import numpy as np
 from typing import *
+from masknmf.compression.preprocessing import SplineDetrenderBase
 
 
 @dataclass
@@ -15,7 +16,7 @@ class CompressConfig:
     temporal_avg_factor: int = 1
     compute_normalizer: Optional[bool] = True
     pixel_weighting: Optional[np.ndarray] = None
-    detrend_knots: Optional[int] = None
+    detrender: Optional[SplineDetrenderBase] = None
 
 @dataclass
 class CompressDenoiseConfig:
@@ -30,4 +31,4 @@ class CompressDenoiseConfig:
     pixel_weighting: Optional[np.ndarray] = None
     noise_variance_quantile: float = 0.3
     num_epochs: int = 10
-    detrend_knots: Optional[int] = None
+    detrender: Optional[SplineDetrenderBase] = None

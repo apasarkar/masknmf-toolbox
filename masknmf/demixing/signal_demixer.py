@@ -13,7 +13,7 @@ import networkx as nx
 from tqdm import tqdm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from typing import Tuple
-
+from masknmf.compression.preprocessing import SplineDetrenderBase
 import masknmf.demixing.regression_update
 from masknmf.demixing.demixing_arrays import (
     StandardCorrelationImages,
@@ -2263,7 +2263,7 @@ class InitializingState(SignalProcessingState):
             min_peak_distance: int = 3,
             residual_threshold: float = 0.3,
             patch_size: Tuple[int, int] = (100, 100),
-            detrend_knots: int | None = None,
+            detrender: Optional[SplineDetrenderBase] = None,
             sign: Literal["positive", "negative", "unconstrained"] = "unconstrained"
     ):
         """
@@ -2295,12 +2295,6 @@ class InitializingState(SignalProcessingState):
             else:
                 bg_subtract_temporal_basis = self.v
 
-            if detrend_knots is not None:
-                detrender = SplineDetrend(self.T,
-                                          detrend_knots,
-                                          device=self.device)
-            else:
-                detrender = None
             (
                 self._curr_corr_image
             ) = get_local_correlation_structure(
@@ -3148,7 +3142,7 @@ class DemixingState(SignalProcessingState):
             denoise: Union[list, bool] = None,
             plot_en: bool = False,
             reassign_background: bool = False,
-            detrend_knots: int | None = None,
+            detrender: Optional[SplineDetrenderBase] = None,
     ):
         """
         Function for computing background, spatial and temporal components of neurons. Uses HALS updates to iteratively
@@ -3181,12 +3175,8 @@ class DemixingState(SignalProcessingState):
         """
         # Key: precompute_quantities is a setup function which must be run first in this routine
         # self.background_rank = None #Always estimate the background rank each time
-        if detrend_knots is not None:
-            self.detrender = SplineDetrend(self.shape[2],
-                                         detrend_knots,
-                                         device=self.device)
-        else:
-            self.detrender = None
+        self.detrender = detrender
+        self.detrender.to(self.device)
 
         self.precompute_quantities()
         self.W = RingModel(
@@ -3212,8 +3202,6 @@ class DemixingState(SignalProcessingState):
             )
 
         min_brightness_list = np.linspace(0, min_brightness, maxiter)
-        # min_brightness_list[:] = min_brightness
-        # min_brightness_list[:-2] = 0
 
         if denoise is None:
             denoise = [False for i in range(maxiter)]

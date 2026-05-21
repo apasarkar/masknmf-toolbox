@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 import numpy as np
 from typing import *
+from masknmf.compression.preprocessing import SplineDetrenderBase
 
 @dataclass
 class SuperpixelInitConfig:
@@ -9,7 +10,7 @@ class SuperpixelInitConfig:
     mad_threshold: float =  1
     residual_threshold: float = 0.3
     patch_size: tuple[int, int] = (40, 40)
-    detrend_knots: int | None = None
+    detrender: Optional[SplineDetrenderBase] = None
     sign: Literal["positive", "negative", "unconstrained"] = "unconstrained"
 
 @dataclass
@@ -35,7 +36,7 @@ class NMFConfig:
     denoise: bool = False
     plot_en: bool = False
     reassign_background: bool = True
-    detrend_knots: int | None = None
+    detrender: Optional[SplineDetrenderBase] = None,
 
 @dataclass
 class SinglepassDemixingConfig:

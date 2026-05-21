@@ -5,6 +5,8 @@ from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import RegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.utils import display
 
+from masknmf.compression.preprocessing import MaximinSplineDetrend
+
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
@@ -133,6 +135,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                     outpath_compression (Optional[str]): Where to write out the compression + results
                     load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
                 """
+
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
                 if not os.path.exists(self.outpath_compression):
@@ -177,7 +180,6 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             else:
                 shift_mask = np.ones((moco_data.shape[1], moco_data.shape[2])).astype("float")
             if exclude_border_radius > 0:
-                print("AT KEY POINT")
                 shift_mask[:exclude_border_radius, :] = 0
                 shift_mask[:, :exclude_border_radius] = 0
                 shift_mask[-1 * exclude_border_radius:, :] = 0
@@ -208,10 +210,26 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             else:
                 raise ValueError("Invalid compression config")
 
-            if compress_strategy.detrend_knots is None:
-                knot_interval = 200 * frame_rate
-                num_knots = math.ceil(data.shape[0] / knot_interval)
-                compress_strategy.detrend_knots = num_knots
+
+            num_frames = data.shape[0]
+            recording_seconds = num_frames / frame_rate
+            window = int(40 * frame_rate)  # 40s rolling window
+            sigma = max(2.0, 0.3 * frame_rate)  # 0.3s smoothing
+            num_knots = max(4, int(recording_seconds / 25))  # one knot per ~25s
+
+            detrender_device = (
+                torch_select_device() if self.device == "auto" else self.device
+            )
+
+            detrender = MaximinSplineDetrend(
+                num_frames=num_frames,
+                num_knots=num_knots,
+                window=window,
+                sigma=sigma,
+                device=detrender_device,
+            )
+
+            compress_strategy.detrender = detrender
 
             compressed_results = compress_strategy.compress(moco_data)
             compressed_results.export(self.outpath_compression)
@@ -232,6 +250,24 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                                                                              device=device,
                                                                              frame_batch_size=self.frame_batch_size)
 
+        num_frames = data.shape[0]
+        recording_seconds = num_frames / frame_rate
+        window = int(20 * frame_rate)  # 20s rolling window
+        sigma = max(2.0, 0.3 * frame_rate)  # 0.3s smoothing
+        num_knots = max(4, int(recording_seconds / 20))  # one knot per ~20s
+
+        detrender_device = (
+            torch_select_device() if self.device == "auto" else self.device
+        )
+
+        detrender = MaximinSplineDetrend(
+            num_frames=num_frames,
+            num_knots=num_knots,
+            window=window,
+            sigma=sigma,
+            device=detrender_device,
+        )
+
         ## Use spline detrending to more effectively pick out signals. 1 knot point per 20 seconds of data
         knot_interval = 20 * frame_rate
         num_knots = math.ceil(data.shape[0] / knot_interval)
@@ -239,11 +275,11 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             conf_list = []
             for corr_threshold in [0.8, 0.8]:
                 curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
-                                                      detrend_knots=num_knots,
+                                                      detrender=detrender,
                                                       sign="positive") #Only prioritize positive deviations for 2p calcium imaging
                 curr_nmf_conf = NMFConfig(support_threshold=(0.95, corr_threshold),
                                           ring_model_start_pt=None,
-                                          detrend_knots=num_knots)
+                                          detrender=detrender)
                 curr_demix_conf = SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf)
                 conf_list.append(curr_demix_conf)
             filtered_demixing_config = MultipassDemixingConfig(conf_list)
@@ -252,11 +288,11 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             conf_list = []
             for corr_threshold, support_threshold in [(0.8, 0.4), (0.8, 0.4), (0.8, 0.4)]:
                 curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
-                                                      detrend_knots=num_knots,
+                                                      detrender=detrender,
                                                       sign="positive")
                 curr_nmf_conf = NMFConfig(support_threshold=(0.95, support_threshold),
                                           ring_model_start_pt=0,
-                                          detrend_knots=num_knots)
+                                          detrender=detrender)
                 curr_demix_conf = SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf)
                 conf_list.append(curr_demix_conf)
             self._unfiltered_demixing_config = MultipassDemixingConfig(conf_list)

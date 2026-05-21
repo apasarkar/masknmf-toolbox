@@ -5,6 +5,7 @@ from masknmf.compression.denoising import train_total_variance_denoiser
 from masknmf.compression.decomposition import pmd_decomposition
 from masknmf import ArrayLike
 import numpy as np
+from masknmf.compression.preprocessing import SplineDetrenderBase
 
 class CompressStrategy:
 
@@ -19,7 +20,7 @@ class CompressStrategy:
                  temporal_avg_factor:int=1,
                  compute_normalizer: Optional[bool] = True,
                  pixel_weighting: Optional[np.ndarray] = None,
-                 detrend_knots: Optional[int] = None,
+                 detrender: Optional[SplineDetrenderBase] = None,
                  device: Literal["auto", "cpu", "cuda"] = "auto",
                  ):
 
@@ -30,7 +31,7 @@ class CompressStrategy:
         self._frame_batch_size = frame_batch_size
         self._spatial_avg_factor = spatial_avg_factor
         self._temporal_avg_factor = temporal_avg_factor
-        self._detrend_knots = detrend_knots
+        self._detrender = detrender
         self._device=device
 
         ##Non user-settable parameters
@@ -106,12 +107,12 @@ class CompressStrategy:
         self._temporal_avg_factor = new_temporal_avg_factor
 
     @property
-    def detrend_knots(self) -> int | None:
-        return self._detrend_knots
+    def detrender(self) -> SplineDetrenderBase | None:
+        return self._detrender
 
-    @detrend_knots.setter
-    def detrend_knots(self, num_knots: int):
-        self._detrend_knots = num_knots
+    @detrender.setter
+    def detrender(self, new_detrender: SplineDetrenderBase):
+        self._detrender = new_detrender
 
     @property
     def device(self) ->str:
@@ -137,7 +138,7 @@ class CompressStrategy:
                                           temporal_avg_factor=self.temporal_avg_factor,
                                           compute_normalizer=self._compute_normalizer,
                                           pixel_weighting=self._pixel_weighting,
-                                          detrend_knots=self.detrend_knots,
+                                          detrender=self.detrender,
                                           device=self.device)
 
         return self._results
@@ -159,7 +160,7 @@ class CompressDenoiseStrategy(CompressStrategy):
                  device: Literal["auto", "cpu", "cuda"] = "auto",
                  noise_variance_quantile: float = 0.3,
                  num_epochs: int = 10,
-                 detrend_knots: Optional[int] = None,
+                 detrender: Optional[SplineDetrenderBase] = None,
                  ):
 
         super().__init__(block_sizes,
@@ -172,7 +173,7 @@ class CompressDenoiseStrategy(CompressStrategy):
                          temporal_avg_factor,
                          compute_normalizer,
                          pixel_weighting,
-                         detrend_knots=detrend_knots,
+                         detrender=detrender,
                          device=device)
         self._num_epochs = num_epochs
         self._noise_variance_quantile = noise_variance_quantile
@@ -206,7 +207,7 @@ class CompressDenoiseStrategy(CompressStrategy):
                                             temporal_avg_factor=self.temporal_avg_factor,
                                             compute_normalizer=self._compute_normalizer,
                                             pixel_weighting=self._pixel_weighting,
-                                            detrend_knots=self.detrend_knots,
+                                            detrender=self.detrender,
                                             device=self.device)
 
         v = pmd_no_denoiser.v.cpu()
@@ -228,7 +229,7 @@ class CompressDenoiseStrategy(CompressStrategy):
                                                              temporal_avg_factor=self.temporal_avg_factor,
                                                              compute_normalizer=self._compute_normalizer,
                                                              pixel_weighting=self._pixel_weighting,
-                                                             detrend_knots=self.detrend_knots,
+                                                             detrender=self.detrender,
                                                              device=self.device,
                                                              temporal_denoiser=curr_temporal_denoiser)
 
