@@ -5,6 +5,8 @@ from masknmf.demixing.demixing_arrays.fluctuating_background_array import Fluctu
 from masknmf.demixing.demixing_arrays.static_baseline import StaticBackgroundArray
 from masknmf.demixing.demixing_arrays.colorful_ac_array import ColorfulACArray
 from masknmf.demixing.demixing_arrays.residual_array import ResidualArray
+from masknmf.demixing.demixing_arrays.multiunit_background_array import MultiunitBackgroundArray
+
 __all__ = [
     "ACArray",
     "StandardCorrelationImages",
@@ -13,5 +15,6 @@ __all__ = [
     "FluctuatingBackgroundArray",
     "StaticBackgroundArray",
     "ColorfulACArray",
-    "ResidualArray"
+    "ResidualArray",
+    "MultiunitBackgroundArray"
 ]

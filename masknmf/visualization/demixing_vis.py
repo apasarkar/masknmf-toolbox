@@ -22,8 +22,9 @@ class SingleSessionDemixingVis:
         frame_timings: Optional[np.ndarray | List[np.ndarray]] = None,
         ref_range: Optional[dict] = None,
         roi_radius: int = 1,
-        summary_img: np.ndarray | None = None,
+        summary_img: np.ndarray | masknmf.ArrayLike | None = None,
         summary_img_name: str | None = None,
+        show_contours: bool = True,
         device='cpu'
     ):
         self._roi_radius = roi_radius
@@ -139,9 +140,10 @@ class SingleSessionDemixingVis:
         )
 
         if summary_img is not None:
+            dimension_data = ["m", "n"] if summary_img.ndim == 2 else ["time", "m", "n"]
             self._summary_image = self._ndw_fov[self._video_panels[5]].add_nd_image(
                 summary_img,
-                ["m", "n"],
+                dimension_data,
                 ["m", "n"],
                 name=self._video_panels[5],
             )
@@ -154,7 +156,9 @@ class SingleSessionDemixingVis:
                                                        options_alpha=0.1,
                                                        alpha=0.7
                                                        )
-            self._image_selector.add_graphic(self._summary_image.graphic)
+
+            if show_contours:
+                self._image_selector.add_graphic(self._summary_image.graphic)
 
             self._ndw_fov.figure[self._video_panels[5]].title = summary_img_name if summary_img_name is not None else "Summary Image"
 
@@ -433,18 +437,24 @@ def extract_per_trace_roi_averages(colorful_ac_array: masknmf.ACArray,
     if torch.count_nonzero(valid_indices) == 0:
         return None, None, None
     else:
-        filtered_rows = row[valid_indices]
-        filtered_col = col[valid_indices]
-        filtered_values = values[valid_indices]
+        valid_columns = col[valid_indices]
+        unique_signals = torch.unique(valid_columns)
 
-        reduce_tensor = torch.zeros(a.shape[1], device=device)
-        reduce_tensor.scatter_reduce_(0, filtered_col, filtered_values, reduce="sum")
-        reduce_tensor = reduce_tensor / num_pixels
+        a_subset = torch.index_select(a, 1, unique_signals).coalesce()
+        filtered_rows, filtered_col = a_subset.indices()
+        filtered_values = a_subset.values()
+        # filtered_rows = row[valid_indices]
+        # filtered_col = col[valid_indices]
+        # filtered_values = values[valid_indices]
 
-        unique_signals = torch.unique(filtered_col)
-        unique_means = reduce_tensor[unique_signals]
+        reduce_tensor = torch.zeros(a_subset.shape[1], device=device)
+        reduce_tensor.scatter_reduce_(0, filtered_col, filtered_values, reduce="amax")
+        # reduce_tensor = reduce_tensor / num_pixels
 
-        weighted_signals = unique_means[None, :] * c[:, unique_signals] #Shape (num_frames, neural_signals)
+        # unique_signals = torch.unique(filtered_col)
+        # unique_scales = reduce_tensor[unique_signals]
+
+        weighted_signals = reduce_tensor[None, :] * c[:, unique_signals] #Shape (num_frames, neural_signals)
         colors = colorful_ac_array.colors[unique_signals, :] #(neural_signals, 3)
 
         return weighted_signals.T.cpu().numpy(), colors.cpu().numpy(), unique_signals.cpu().numpy()

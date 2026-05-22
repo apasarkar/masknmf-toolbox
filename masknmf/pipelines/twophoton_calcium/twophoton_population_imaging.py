@@ -5,6 +5,8 @@ from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import RegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.utils import display
 
+from masknmf.compression.preprocessing import MaximinSplineDetrend
+
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
@@ -13,6 +15,7 @@ from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConf
 from masknmf.utils import torch_select_device
 from typing import *
 import numpy as np
+import math
 import os
 
 
@@ -30,7 +33,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
     def __init__(self,
                  motion_correct_config: RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig | Literal[
                      "skip"] | None = None,
-                 compress_config: CompressConfig | CompressDenoiseConfig | None = None,
+                 compress_config: CompressConfig | CompressDenoiseConfig | Literal["skip"] | None = None,
                  spatial_highpass_config: SpatialHighpassConfig | None = None,
                  filtered_demixing_config: MultipassDemixingConfig | None = None,
                  unfiltered_demixing_config: MultipassDemixingConfig | None = None,
@@ -112,7 +115,10 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 'frame_batch_size': self.frame_batch_size,
                 'device': self.device}
 
-    def run(self, data: np.ndarray | LazyFrameLoader | ArrayLike):
+    def run(self,
+            data: np.ndarray | LazyFrameLoader | ArrayLike,
+            frame_rate: float,
+            exclude_border_radius: int = 0):
         """
                 Uses the API to run rigid motion correction, compression (with denoising), and demixing.
 
@@ -129,70 +135,104 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                     outpath_compression (Optional[str]): Where to write out the compression + results
                     load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
                 """
-        ## Decide whether to motion correct data or not
-        if self.motion_correct_config is None:
-            moco_strategy = RigidMotionCorrector(**asdict(RigidMotionCorrectionConfig()), device=self.device,
-                                                 batch_size=self.frame_batch_size)
-        elif isinstance(self.motion_correct_config, RigidMotionCorrectionConfig):
-            moco_strategy = RigidMotionCorrector(**asdict(self.motion_correct_config), device=self.device,
-                                                 batch_size=self.frame_batch_size)
-        elif isinstance(self.motion_correct_config, PiecewiseRigidMotionCorrectionConfig):
-            moco_strategy = PiecewiseRigidMotionCorrector(**asdict(self.motion_correct_config), device=self.device,
-                                                          batch_size=self.frame_batch_size)
-        elif isinstance(self.motion_correct_config, str):
-            if self.motion_correct_config.lower() == "skip":
-                moco_strategy = DummyMotionCorrector()
-                display("Not Running Motion Correction")
+
+        if isinstance(self.compress_config, str):
+            if self.compress_config.lower() == "skip":
+                if not os.path.exists(self.outpath_compression):
+                    raise ValueError("You specified that compression should be skipped but did not specify a valid location for the "
+                                     "compression hdf5 file")
+            else:
+                raise ValueError(f"If compress_config is a string, it can only be `skip`")
+        else:
+            ## Decide whether to motion correct data or not
+            if self.motion_correct_config is None:
+                moco_strategy = RigidMotionCorrector(**asdict(RigidMotionCorrectionConfig()), device=self.device,
+                                                     batch_size=self.frame_batch_size)
+            elif isinstance(self.motion_correct_config, RigidMotionCorrectionConfig):
+                moco_strategy = RigidMotionCorrector(**asdict(self.motion_correct_config), device=self.device,
+                                                     batch_size=self.frame_batch_size)
+            elif isinstance(self.motion_correct_config, PiecewiseRigidMotionCorrectionConfig):
+                moco_strategy = PiecewiseRigidMotionCorrector(**asdict(self.motion_correct_config), device=self.device,
+                                                              batch_size=self.frame_batch_size)
+            elif isinstance(self.motion_correct_config, str):
+                if self.motion_correct_config.lower() == "skip":
+                    moco_strategy = DummyMotionCorrector()
+                    display("Not Running Motion Correction")
+                else:
+                    raise ValueError("Invalid MotionCorrectionConfig input")
             else:
                 raise ValueError("Invalid MotionCorrectionConfig input")
-        else:
-            raise ValueError("Invalid MotionCorrectionConfig input")
 
-        ##Compute template if one is not provided
-        if moco_strategy.template is None:
-            moco_strategy.compute_template(data)
+            ##Compute template if one is not provided
+            if moco_strategy.template is None:
+                moco_strategy.compute_template(data)
 
-        full_moco_arr = RegistrationArray(data, strategy=moco_strategy)
-        # Export the motion correction to a new file
-        full_moco_arr.export(os.path.abspath(self.outpath_motion_correction))
+            full_moco_arr = RegistrationArray(data, strategy=moco_strategy)
+            # Export the motion correction to a new file
+            full_moco_arr.export(os.path.abspath(self.outpath_motion_correction))
 
-        moco_data = masknmf.RegistrationArray.from_hdf5(self.outpath_motion_correction)
+            moco_data = masknmf.RegistrationArray.from_hdf5(self.outpath_motion_correction)
 
-        if isinstance(moco_data.shifts, np.ndarray):
-            shift_mask = masknmf.motion_correction.moco_preprocessing.construct_moco_template(moco_data.shifts,
-                                                                                              moco_data.shape[1:]).astype(
-                "float")
-        else:
-            shift_mask = np.ones((moco_data.shape[1], moco_data.shape[2])).astype("float")
-
-        if self.load_into_ram:
-            moco_data = moco_data[:]
-
-        display("Running Compression")
-        if self.compress_config is None:
-            curr_config = CompressDenoiseConfig()
-            curr_config.pixel_weighting = shift_mask
-            compress_strategy = CompressDenoiseStrategy(device=self.device, **asdict(curr_config))
-        elif isinstance(self.compress_config, CompressConfig):
-            curr_config = asdict(self.compress_config)
-            if self.compress_config.pixel_weighting is not None:
-                curr_config['pixel_weighting'] = curr_config['pixel_weighting'] * shift_mask
+            if isinstance(moco_data.shifts, np.ndarray):
+                shift_mask = masknmf.motion_correction.moco_preprocessing.construct_moco_template(moco_data.shifts,
+                                                                                                  moco_data.shape[1:]).astype(
+                    "float")
             else:
-                curr_config['pixel_weighting'] = shift_mask
-            compress_strategy = CompressStrategy(device=self.device, **curr_config)
-        elif isinstance(self.compress_config, CompressDenoiseConfig):
-            curr_config = asdict(self.compress_config)
-            if self.compress_config.pixel_weighting is not None:
-                curr_config['pixel_weighting'] = curr_config['pixel_weighting'] * shift_mask
+                shift_mask = np.ones((moco_data.shape[1], moco_data.shape[2])).astype("float")
+            if exclude_border_radius > 0:
+                shift_mask[:exclude_border_radius, :] = 0
+                shift_mask[:, :exclude_border_radius] = 0
+                shift_mask[-1 * exclude_border_radius:, :] = 0
+                shift_mask[:, -1 * exclude_border_radius:] = 0
+
+            if self.load_into_ram:
+                moco_data = moco_data[:]
+
+            display("Running Compression")
+            if self.compress_config is None:
+                curr_config = CompressDenoiseConfig()
+                curr_config.pixel_weighting = shift_mask
+                compress_strategy = CompressDenoiseStrategy(device=self.device, **asdict(curr_config))
+            elif isinstance(self.compress_config, CompressConfig):
+                curr_config = asdict(self.compress_config)
+                if self.compress_config.pixel_weighting is not None:
+                    curr_config['pixel_weighting'] = curr_config['pixel_weighting'] * shift_mask
+                else:
+                    curr_config['pixel_weighting'] = shift_mask
+                compress_strategy = CompressStrategy(device=self.device, **curr_config)
+            elif isinstance(self.compress_config, CompressDenoiseConfig):
+                curr_config = asdict(self.compress_config)
+                if self.compress_config.pixel_weighting is not None:
+                    curr_config['pixel_weighting'] = curr_config['pixel_weighting'] * shift_mask
+                else:
+                    curr_config['pixel_weighting'] = shift_mask
+                compress_strategy = CompressDenoiseStrategy(device=self.device, **curr_config)
             else:
-                curr_config['pixel_weighting'] = shift_mask
-            compress_strategy = CompressDenoiseStrategy(device=self.device, **asdict(self.compress_config))
-        else:
-            raise ValueError("Invalid compression config")
+                raise ValueError("Invalid compression config")
 
-        compressed_results = compress_strategy.compress(moco_data)
 
-        compressed_results.export(self.outpath_compression)
+            num_frames = data.shape[0]
+            recording_seconds = num_frames / frame_rate
+            window = int(40 * frame_rate)  # 40s rolling window
+            sigma = max(2.0, 0.3 * frame_rate)  # 0.3s smoothing
+            num_knots = max(4, int(recording_seconds / 25))  # one knot per ~25s
+
+            detrender_device = (
+                torch_select_device() if self.device == "auto" else self.device
+            )
+
+            detrender = MaximinSplineDetrend(
+                num_frames=num_frames,
+                num_knots=num_knots,
+                window=window,
+                sigma=sigma,
+                device=detrender_device,
+            )
+
+            compress_strategy.detrender = detrender
+
+            compressed_results = compress_strategy.compress(moco_data)
+            compressed_results.export(self.outpath_compression)
 
         if self.device == "auto":
             device = torch_select_device()
@@ -210,26 +250,52 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                                                                              device=device,
                                                                              frame_batch_size=self.frame_batch_size)
 
+        num_frames = data.shape[0]
+        recording_seconds = num_frames / frame_rate
+        window = int(20 * frame_rate)  # 20s rolling window
+        sigma = max(2.0, 0.3 * frame_rate)  # 0.3s smoothing
+        num_knots = max(4, int(recording_seconds / 20))  # one knot per ~20s
+
+        detrender_device = (
+            torch_select_device() if self.device == "auto" else self.device
+        )
+
+        detrender = MaximinSplineDetrend(
+            num_frames=num_frames,
+            num_knots=num_knots,
+            window=window,
+            sigma=sigma,
+            device=detrender_device,
+        )
+
+        ## Use spline detrending to more effectively pick out signals. 1 knot point per 20 seconds of data
+        knot_interval = 20 * frame_rate
+        num_knots = math.ceil(data.shape[0] / knot_interval)
         if self.filtered_demixing_config is None:
             conf_list = []
-            for corr_threshold in [0.8, 0.6]:
-                curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold)
+            for corr_threshold in [0.8, 0.8]:
+                curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
+                                                      detrender=detrender,
+                                                      sign="positive") #Only prioritize positive deviations for 2p calcium imaging
                 curr_nmf_conf = NMFConfig(support_threshold=(0.95, corr_threshold),
-                                          ring_model_start_pt=None)
+                                          ring_model_start_pt=None,
+                                          detrender=detrender)
                 curr_demix_conf = SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf)
                 conf_list.append(curr_demix_conf)
             filtered_demixing_config = MultipassDemixingConfig(conf_list)
 
         if self.unfiltered_demixing_config is None:
             conf_list = []
-            for corr_threshold in [0.8, 0.6, 0.4]:
-                curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold)
-                curr_nmf_conf = NMFConfig(support_threshold=(0.95, corr_threshold),
-                                          ring_model_start_pt=0)
+            for corr_threshold, support_threshold in [(0.8, 0.4), (0.8, 0.4), (0.8, 0.4)]:
+                curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
+                                                      detrender=detrender,
+                                                      sign="positive")
+                curr_nmf_conf = NMFConfig(support_threshold=(0.95, support_threshold),
+                                          ring_model_start_pt=0,
+                                          detrender=detrender)
                 curr_demix_conf = SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf)
                 conf_list.append(curr_demix_conf)
             self._unfiltered_demixing_config = MultipassDemixingConfig(conf_list)
-
 
         # Run the demixing rounds on the filtered data
         for k in range(len(filtered_demixing_config.DemixingConfigs)):
@@ -253,11 +319,13 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         for k in range(len(self.unfiltered_demixing_config.DemixingConfigs)):
             unfiltered_pmd_demixer = run_singlepass_demixing(unfiltered_pmd_demixer,
                                                              self.unfiltered_demixing_config.DemixingConfigs[k])
+            if os.path.exists(os.path.abspath(self.outpath_demixing)):
+                os.remove(os.path.abspath(self.outpath_demixing))
+            unfiltered_pmd_demixer.results.export(os.path.abspath(self.outpath_demixing))
 
-        unfiltered_pmd_demixer.results.export(os.path.abspath(self.outpath_demixing))
+        if not os.path.exists(os.path.abspath(self.outpath_demixing)):
+            unfiltered_pmd_demixer.results.export(os.path.abspath(self.outpath_demixing))
         return unfiltered_pmd_demixer.results
-
-
 
 
 

@@ -2,7 +2,7 @@ from typing import *
 import numpy as np
 from masknmf import display
 from masknmf.compression import PMDArray
-from masknmf.demixing.demixing_arrays import ACArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulACArray, StaticBackgroundArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode
+from masknmf.demixing.demixing_arrays import ACArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulACArray, StaticBackgroundArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode, MultiunitBackgroundArray
 import torch
 from masknmf.utils import Serializer
 from masknmf.arrays.array_interfaces import TensorFlyWeight
@@ -101,7 +101,9 @@ class DemixingResults(Serializer):
         "bkgd_corr_img_normalizer",
         "pmd_roi_averages",
         "fluctuating_background_roi_averages",
-        "residual_roi_averages"
+        "residual_roi_averages",
+        "multiunit_basis_term1",
+        "multiunit_basis_term2",
     }
 
     """
@@ -115,6 +117,7 @@ class DemixingResults(Serializer):
                        "static_background_array",
                        "standard_correlation_images",
                        "residual_correlation_images",
+                       "multiunit_background_array"
                        ]
     def __init__(
             self,
@@ -140,6 +143,8 @@ class DemixingResults(Serializer):
             pmd_roi_averages: Optional[torch.Tensor] = None,
             fluctuating_background_roi_averages: Optional[torch.Tensor] = None,
             residual_roi_averages: Optional[torch.Tensor] = None,
+            multiunit_basis_term1: torch.Tensor | None = None,
+            multiunit_basis_term2: torch.Tensor | None = None,
             device="cpu",
     ):
         """
@@ -174,13 +179,13 @@ class DemixingResults(Serializer):
         self._device = device
         self._shape = tuple(shape)
         self._flyweight = TensorFlyWeight()
-        self.flyweight.u = u.to(self.device).float().coalesce()
-        self.flyweight.v = v.to(self.device).float()
-        self.flyweight.a = a.to(self.device).float().coalesce()
-        self.flyweight.c = c.to(self.device).float()
+        self.flyweight.u = u.to(self._device).float().coalesce()
+        self.flyweight.v = v.to(self._device).float()
+        self.flyweight.a = a.to(self._device).float().coalesce()
+        self.flyweight.c = c.to(self._device).float()
 
-        self.flyweight.pmd_mean_img = pmd_mean_img if pmd_mean_img is not None else torch.zeros(self.shape[1], self.shape[2], device=self.device)
-        self.flyweight.pmd_var_img = pmd_var_img if pmd_var_img is not None else torch.ones(self.shape[1], self.shape[2], device=self.device)
+        self.flyweight.pmd_mean_img = pmd_mean_img.to(self._device) if pmd_mean_img is not None else torch.zeros(self.shape[1], self.shape[2], device=self._device)
+        self.flyweight.pmd_var_img = pmd_var_img.to(self._device) if pmd_var_img is not None else torch.ones(self.shape[1], self.shape[2], device=self._device)
         ## Below two lines are for compatibility with existing results
         self.flyweight.mean_img = self.flyweight.pmd_mean_img
         self.flyweight.var_img = self.flyweight.pmd_var_img
@@ -188,17 +193,17 @@ class DemixingResults(Serializer):
         #This is called
         self.flyweight.normalizer = self.flyweight.pmd_var_img
 
-        self.flyweight.pmd_u_projector = pmd_u_projector.float().coalesce() if pmd_u_projector is not None else None
+        self.flyweight.pmd_u_projector = pmd_u_projector.float().coalesce().to(self._device) if pmd_u_projector is not None else None
 
         if factorized_bkgd_term1 is None or factorized_bkgd_term2 is None:
             display("Background term empty")
-            self.flyweight.factorized_bkgd_term1 = torch.zeros(self.u.shape[1], 1, dtype=self.u.dtype, device=self.device)
-            self.flyweight.factorized_bkgd_term2 = torch.zeros((1, self.v.shape[1]), dtype=self.u.dtype, device=self.device)
+            self.flyweight.factorized_bkgd_term1 = torch.zeros(self.u.shape[1], 1, dtype=self.u.dtype, device=self._device)
+            self.flyweight.factorized_bkgd_term2 = torch.zeros((1, self.v.shape[1]), dtype=self.u.dtype, device=self._device)
         else:
-            self.flyweight.factorized_bkgd_term1 = factorized_bkgd_term1.to(self.device)
-            self.flyweight.factorized_bkgd_term2 = factorized_bkgd_term2.to(self.device)
+            self.flyweight.factorized_bkgd_term1 = factorized_bkgd_term1.to(self._device)
+            self.flyweight.factorized_bkgd_term2 = factorized_bkgd_term2.to(self._device)
 
-        self.flyweight.global_residual_correlation_image = global_residual_correlation_image if global_residual_correlation_image is not None else torch.zeros(self.shape[1], self.shape[2], device=self.device, dtype=self.u.dtype)
+        self.flyweight.global_residual_correlation_image = global_residual_correlation_image.to(self._device) if global_residual_correlation_image is not None else torch.zeros(self.shape[1], self.shape[2], device=self._device, dtype=self.u.dtype)
 
 
         if b is None:
@@ -207,9 +212,9 @@ class DemixingResults(Serializer):
                        torch.sparse.mm(self.a, torch.mean(self.c.T, dim=1, keepdim=True)) -
                        torch.sparse.mm(self.u, (
                                    self.factorized_bkgd_term1 @ torch.mean(self.factorized_bkgd_term2, axis=1,
-                                                                           keepdim=True))))
+                                                                           keepdim=True)))).to(self._device)
         else:
-            self.flyweight.b = b
+            self.flyweight.b = b.to(self._device)
         self.flyweight.baseline = self.b.reshape(self.fov_shape)
 
         self.flyweight.pmd_roi_averages = pmd_roi_averages
@@ -225,29 +230,39 @@ class DemixingResults(Serializer):
             self.flyweight.std_corr_img_mean = None
             self.flyweight.std_corr_img_normalizer = None
         else:
-            self.flyweight.std_corr_img_mean = std_corr_img_mean  # standard_correlation_image.movie_mean
-            self.flyweight.std_corr_img_normalizer = std_corr_img_normalizer  # standard_correlation_image.movie_normalizer
+            self.flyweight.std_corr_img_mean = std_corr_img_mean.to(self._device)  # standard_correlation_image.movie_mean
+            self.flyweight.std_corr_img_normalizer = std_corr_img_normalizer.to(self._device)  # standard_correlation_image.movie_normalizer
 
         if resid_corr_img_mean is None or resid_corr_img_support_values is None or resid_corr_img_normalizer is None:
             self.flyweight.resid_corr_img_support_values = None
             self.flyweight.resid_corr_img_mean = None
             self.flyweight.resid_corr_img_normalizer = None
         else:
-            self.flyweight.resid_corr_img_support_values = resid_corr_img_support_values.coalesce()
-            self.flyweight.resid_corr_img_mean = resid_corr_img_mean
-            self.flyweight.resid_corr_img_normalizer = resid_corr_img_normalizer
+            self.flyweight.resid_corr_img_support_values = resid_corr_img_support_values.coalesce().to(self._device)
+            self.flyweight.resid_corr_img_mean = resid_corr_img_mean.to(self._device)
+            self.flyweight.resid_corr_img_normalizer = resid_corr_img_normalizer.to(self._device)
 
         if bkgd_corr_img_mean is None or bkgd_corr_img_normalizer is None:
             self.flyweight.bkgd_corr_img_mean = None
             self.flyweight.bkgd_corr_img_normalizer = None
         else:
-            self.flyweight.bkgd_corr_img_mean = bkgd_corr_img_mean
-            self.flyweight.bkgd_corr_img_normalizer = bkgd_corr_img_normalizer
+            self.flyweight.bkgd_corr_img_mean = bkgd_corr_img_mean.to(self._device)
+            self.flyweight.bkgd_corr_img_normalizer = bkgd_corr_img_normalizer.to(self._device)
+
+        if multiunit_basis_term1 is None or multiunit_basis_term2 is None:
+            self.flyweight.multiunit_basis_term1 = torch.zeros(self.u.shape[1], 1, dtype=self.u.dtype,
+                                                               device=self._device)
+            self.flyweight.multiunit_basis_term2 = torch.zeros((1, self.v.shape[1]), dtype=self.u.dtype,
+                                                               device=self._device)
+        else:
+            self.flyweight.multiunit_basis_term1 = multiunit_basis_term1.to(self._device)
+            self.flyweight.multiunit_basis_term2 = multiunit_basis_term2.to(self._device)
 
         self._ac_array = None
         self._colorful_ac_array = None
         self._pmd_array = None
         self._fluctuating_background_array = None
+        self._multiunit_background_array = None
         self._static_background_array = None
         self._residual_array = None
         self._residual_correlation_images = None
@@ -279,7 +294,8 @@ class DemixingResults(Serializer):
         managed_arrays_rescale = ['pmd_array',
                           'ac_array',
                           'static_background_array',
-                          'fluctuating_background_array']
+                          'fluctuating_background_array',
+                          'multiunit_background_array']
 
         self._rescale = new_value
         for name in managed_arrays_rescale:
@@ -323,6 +339,15 @@ class DemixingResults(Serializer):
     @property
     def factorized_bkgd_term2(self) -> None | torch.Tensor:
         return self.flyweight.factorized_bkgd_term2
+
+    @property
+    def multiunit_basis_term1(self) -> None | torch.Tensor:
+        return self.flyweight.multiunit_basis_term1
+
+    @property
+    def multiunit_basis_term2(self) -> None | torch.Tensor:
+        return self.flyweight.multiunit_basis_term2
+
 
     @property
     def shape(self):
@@ -537,6 +562,14 @@ class DemixingResults(Serializer):
         return self._fluctuating_background_array
 
     @property
+    def multiunit_background_array(self) -> MultiunitBackgroundArray:
+        if self._multiunit_background_array is None:
+            self._multiunit_background_array = MultiunitBackgroundArray.from_flyweight(self.fov_shape,
+                                                                                       self.flyweight,
+                                                                                       rescale=self.rescale)
+        return self._multiunit_background_array
+
+    @property
     def static_background_array(self) -> StaticBackgroundArray:
 
         if self._static_background_array is None:
@@ -559,4 +592,3 @@ class DemixingResults(Serializer):
         if self._colorful_ac_array is None:
             self._colorful_ac_array = ColorfulACArray.from_flyweight(self.fov_shape, self.flyweight)
         return self._colorful_ac_array
-

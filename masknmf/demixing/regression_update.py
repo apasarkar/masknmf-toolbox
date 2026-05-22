@@ -71,8 +71,7 @@ def spatial_update_hals(
     We will now compute the following expression: 
     This is part of the 'residual video' that we regress onto the spatial components below
     """
-    baseline_projection = b @ (torch.sum(c, dim=0, keepdim=True))
-    baseline_projection /= c_sq_norm
+    normalized_c_sum = (torch.sum(c, dim=0, keepdim=True) / c_sq_norm).squeeze(0)
 
     # rows, cols = a_sparse.indices()
     if blocks is None:
@@ -104,7 +103,7 @@ def spatial_update_hals(
             term2 = torch.sparse.mm(a_sparse, ctc[:, subset_tensor])
 
             updated_values = term1[row_indices, remapped_col_indices] - term2[row_indices, remapped_col_indices] - \
-                             baseline_projection[row_indices, col_indices]
+                             b[row_indices, :].squeeze() * normalized_c_sum[col_indices] #baseline_projection[row_indices, col_indices]
             curr_values += updated_values
             curr_values.relu_()
             a_sparse.values().masked_scatter_(col_mask, curr_values)

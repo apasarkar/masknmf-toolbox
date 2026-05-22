@@ -5,7 +5,6 @@ import torch
 from typing import *
 import numpy as np
 
-
 def test_slice_effect(my_slice: slice, spatial_dim: int) -> bool:
     """
     Returns True if slice will actually have an effect
@@ -107,7 +106,9 @@ class PMDArray(ArrayLike, Serializer):
         "v",
         "u_local_projector",
         "mean_img",
-        "var_img"
+        "var_img",
+        "spatial_trend_basis",
+        "temporal_trend_basis",
     }
 
     def __init__(
@@ -116,12 +117,14 @@ class PMDArray(ArrayLike, Serializer):
         flyweight: TensorFlyWeight,
         device: str = "cpu",
         rescale: bool = True,
+        include_trend: bool = False
     ):
         """
         See from_tensors class method for documentation
         """
         self._shape = tuple(shape)
         self._rescale = rescale
+        self._include_trend = include_trend
 
         ##Set up the flyweight and all other tensors
         self._flyweight = flyweight
@@ -140,12 +143,15 @@ class PMDArray(ArrayLike, Serializer):
     def from_tensors(cls,
                    shape: Tuple[int, int, int] | np.ndarray,
                    u: torch.sparse_coo_tensor,
-                   v: torch.tensor,
-                   mean_img: torch.tensor,
-                   var_img: torch.tensor,
+                   v: torch.Tensor,
+                   mean_img: torch.Tensor,
+                   var_img: torch.Tensor,
                    u_local_projector: Optional[torch.sparse_coo_tensor] = None,
+                   spatial_trend_basis: Optional[torch.Tensor] = None,
+                   temporal_trend_basis: Optional[torch.Tensor] = None,
                    device: str = "cpu",
-                   rescale: bool = True):
+                   rescale: bool = True,
+                   include_trend: bool = False):
 
         """
             Key assumption: the spatial basis matrix U has n + k columns; the first n columns is blocksparse (this serves
@@ -159,20 +165,26 @@ class PMDArray(ArrayLike, Serializer):
                 mean_img (torch.tensor): shape (fov_dim1, fov_dim2). The pixelwise mean of the data
                 var_img (torch.tensor): shape (fov_dim1, fov_dim2). A pixelwise noise normalizer for the data
                 u_local_projector (Optional[torch.sparse_coo_tensor]): shape (pixels, rank)
-                resid_std (torch.tensor): The residual standard deviation, shape (fov_dim1, fov_dim2)
+                spatial_trend_basis (Optional[torch.Tensor]): Shape (pixels, trend_rank)
+                temporal_trend_basis (Optional[torch.Tensor]): Shape (trend_rank, num_frames)
+                    spatial_trend_basis @ temporal_trend_basis gives the trend estimate across the full movie
                 device (str): The device on which computations occur/data is stored
                 rescale (bool): True if we rescale the PMD data (i.e. multiply by the pixelwise normalizer
                     and add back the mean) in __getitem__
+                include_trend (bool): Whether or not to include the trend for this data
         """
         flyweight = TensorFlyWeight(u=u.float(),
                                     v=v.float(),
                                     mean_img=mean_img.float(),
                                     var_img=var_img.float(),
-                                    u_local_projector=u_local_projector.float() if u_local_projector is not None else None)
+                                    u_local_projector=u_local_projector.float() if u_local_projector is not None else None,
+                                    spatial_trend_basis=spatial_trend_basis.float() if spatial_trend_basis is not None else None,
+                                    temporal_trend_basis=temporal_trend_basis.float() if temporal_trend_basis is not None else None)
         return cls(shape,
                    flyweight,
                    device=device,
-                   rescale = rescale)
+                   rescale = rescale,
+                   include_trend=include_trend)
 
 
     @classmethod
@@ -202,6 +214,17 @@ class PMDArray(ArrayLike, Serializer):
     @rescale.setter
     def rescale(self, new_state: bool):
         self._rescale = new_state
+
+    @property
+    def include_trend(self) -> bool:
+        return self._include_trend
+
+    @include_trend.setter
+    def include_trend(self, new_val: bool):
+        if not self.rescale:
+            raise ValueError("Cannot add back trend if the data is being scaled back to the raw data space. First run my_pmd_arr.rescale = True.")
+        else:
+            self._include_trend = new_val
 
     @property
     def mean_img(self) -> torch.Tensor:
@@ -234,12 +257,24 @@ class PMDArray(ArrayLike, Serializer):
         return None
 
     @property
-    def pmd_rank(self) -> int:
-        return self.u.shape[1]
-
-    @property
     def v(self) -> torch.Tensor:
         return self.flyweight.v
+
+    @property
+    def spatial_trend_basis(self) -> torch.Tensor | None:
+        if hasattr(self.flyweight, "spatial_trend_basis"):
+            return self.flyweight.spatial_trend_basis
+        return None
+
+    @property
+    def temporal_trend_basis(self) -> torch.Tensor | None:
+        if hasattr(self.flyweight, "temporal_trend_basis"):
+            return self.flyweight.temporal_trend_basis
+        return None
+
+    @property
+    def pmd_rank(self) -> int:
+        return self.u.shape[1]
 
     @property
     def dtype(self) -> str:
@@ -354,6 +389,7 @@ class PMDArray(ArrayLike, Serializer):
             u_crop = torch.index_select(self.u, 0, u_indices)
             implied_fov = pixel_space_crop.shape
         else:
+            spatial_crop_terms = None
             u_crop = self.u
             mean_img_crop = self.mean_img.flatten()
             var_img_crop = self.var_img.flatten()
@@ -363,6 +399,16 @@ class PMDArray(ArrayLike, Serializer):
         if self.rescale:
             product *= var_img_crop.unsqueeze(1)
             product += mean_img_crop.unsqueeze(1)
+
+            if self.include_trend:
+                if spatial_crop_terms is not None:
+                    spatial_trend_crop = self.spatial_trend_basis[spatial_crop_terms]
+                else:
+                    spatial_trend_crop = self.spatial_trend_basis
+                temporal_trend_crop = self.temporal_trend_basis[:, frame_indexer]
+                if temporal_trend_crop.ndim < self.temporal_trend_basis.ndim:
+                     temporal_trend_crop = temporal_trend_crop.unsqueeze(1)
+                product += spatial_trend_crop @ temporal_trend_crop
 
         product = product.reshape((implied_fov[0], implied_fov[1], -1))
         product = product.permute(2, 0, 1)

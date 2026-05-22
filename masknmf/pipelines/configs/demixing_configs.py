@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 import numpy as np
 from typing import *
+from masknmf.compression.preprocessing import SplineDetrenderBase
 
 @dataclass
 class SuperpixelInitConfig:
@@ -9,6 +10,8 @@ class SuperpixelInitConfig:
     mad_threshold: float =  1
     residual_threshold: float = 0.3
     patch_size: tuple[int, int] = (40, 40)
+    detrender: Optional[SplineDetrenderBase] = None
+    sign: Literal["positive", "negative", "unconstrained"] = "unconstrained"
 
 @dataclass
 class CustomInitConfig:
@@ -22,6 +25,7 @@ class NMFConfig:
     maxiter: int = 40
     support_threshold: tuple[int, int] = (0.95, 0.8)
     deletion_threshold: float = 0.2
+    min_brightness: float = 1
     ring_model_start_pt: Optional[int] = 0
     ring_radius: int = 10
     background_downsampling_factor: int = 30
@@ -32,6 +36,7 @@ class NMFConfig:
     denoise: bool = False
     plot_en: bool = False
     reassign_background: bool = True
+    detrender: Optional[SplineDetrenderBase] = None,
 
 @dataclass
 class SinglepassDemixingConfig:
