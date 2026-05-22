@@ -2680,6 +2680,62 @@ class DemixingState(SignalProcessingState):
         indicator = (torch.sparse.mm(self.a, ones_vec).squeeze() == 0).to(torch.float32)
         self.W.support = indicator
 
+    def extract_multiunit_factorization(self,
+                                        test_rank: int = 200,
+                                        num_oversamples:int=5):
+        left_svd, sing, right_sing = self._multiunit_factorization_routine(background_rank=test_rank,
+                                                                           num_oversamples=num_oversamples)
+        explained_variance_term = torch.cumsum(sing ** 2, dim=0) / torch.sum(sing ** 2)
+        min_rank = int(torch.argmax((explained_variance_term >= 0.99).float()).item())
+        effective_rank = min_rank + 1  ## This is the new estimate
+
+        left_svd = left_svd[:, :effective_rank]
+        left_svd = self.pmd_obj.project_frames(left_svd, standardize=False)
+        sing_svd = sing[:effective_rank]
+        right_svd = right_sing[:effective_rank, :]
+
+        return left_svd, sing_svd[:, None] * right_svd
+
+    def _multiunit_factorization_routine(self,
+                                        background_rank: int = 200,
+                                        num_oversamples:int = 5) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Strategy here is to return the factorization
+        """
+
+
+        device = self.device
+        num_frames = self.v.shape[1]
+        random_data = torch.randn(num_frames, background_rank + num_oversamples, device=device)
+        resid_projection = (torch.sparse.mm(self.u_sparse, self.v @ random_data) -
+                            torch.sparse.mm(self.a, self.c.T @ random_data) -
+                            self.b @ torch.sum(random_data, dim=0, keepdim=True))
+        if self.factorized_ring_term is not None:
+            resid_projection -= torch.sparse.mm(self.u_sparse, self.factorized_ring_term[0] @ (self.factorized_ring_term[1] @ random_data))
+
+        resid_projection -= torch.mean(resid_projection, dim=1, keepdims=True)
+        orth_qr, tri_qr = torch.linalg.qr(resid_projection, mode="reduced")
+        proj_u = torch.sparse.mm(self.u_sparse.t(), orth_qr)
+        right_term = proj_u.T @ self.v
+        if self.factorized_ring_term is not None:
+            right_term -= (proj_u.T @ self.factorized_ring_term[0]) @ self.factorized_ring_term[1]
+        right_term -= torch.sparse.mm(self.a.t(), orth_qr).T @ self.c.T
+        right_term -= orth_qr.T @ self.b
+
+        left_svd, sing_svd, right_svd = torch.linalg.svd(right_term, full_matrices=False)
+
+        left_term = orth_qr @ left_svd
+
+        return left_term[:, :background_rank], sing_svd[:background_rank], right_svd[:background_rank, :]
+
+
+
+
+
+
+
+
+
     def lowrank_background_svd(self,
                                downsampling_factor: int,
                                background_rank: int,
@@ -3143,6 +3199,7 @@ class DemixingState(SignalProcessingState):
             plot_en: bool = False,
             reassign_background: bool = False,
             detrender: Optional[SplineDetrenderBase] = None,
+            extract_multiunit: bool = False
     ):
         """
         Function for computing background, spatial and temporal components of neurons. Uses HALS updates to iteratively
@@ -3286,6 +3343,8 @@ class DemixingState(SignalProcessingState):
             detrender=self.detrender
         )
 
+        multiunit_basis_term1, multiunit_basis_term2 = self.extract_multiunit_factorization()
+
         self._results = DemixingResults(
             (self.T, self.d1, self.d2),
             self.pmd_obj.u,
@@ -3306,6 +3365,8 @@ class DemixingState(SignalProcessingState):
             bkgd_corr_img_mean=background_to_signal_correlation_image.std_corr_img_mean,
             bkgd_corr_img_normalizer=background_to_signal_correlation_image.std_corr_img_normalizer,
             global_residual_correlation_image=torch.from_numpy(self._curr_corr_image),
+            multiunit_basis_term1=multiunit_basis_term1,
+            multiunit_basis_term2=multiunit_basis_term2,
             device="cpu",
         )
 

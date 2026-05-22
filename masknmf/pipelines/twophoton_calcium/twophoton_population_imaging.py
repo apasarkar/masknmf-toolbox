@@ -323,7 +323,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 os.remove(os.path.abspath(self.outpath_demixing))
             unfiltered_pmd_demixer.results.export(os.path.abspath(self.outpath_demixing))
 
-        unfiltered_pmd_demixer.results.export(os.path.abspath(self.outpath_demixing))
+        if not os.path.exists(os.path.abspath(self.outpath_demixing)):
+            unfiltered_pmd_demixer.results.export(os.path.abspath(self.outpath_demixing))
         return unfiltered_pmd_demixer.results
 
 
