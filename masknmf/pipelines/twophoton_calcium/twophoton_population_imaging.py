@@ -118,7 +118,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
     def run(self,
             data: np.ndarray | LazyFrameLoader | ArrayLike,
             frame_rate: float,
-            exclude_border_radius: int = 0):
+            exclude_border_radius: int = 0,
+            remove_intermediates: bool = True):
         """
                 Uses the API to run rigid motion correction, compression (with denoising), and demixing.
 
@@ -325,6 +326,11 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
         if not os.path.exists(os.path.abspath(self.outpath_demixing)):
             unfiltered_pmd_demixer.results.export(os.path.abspath(self.outpath_demixing))
+
+        if remove_intermediates:
+            display("Removing intermediates")
+            os.remove(os.path.abspath(self.outpath_motion_correction))
+            os.remove(os.path.abspath(self.outpath_compression))
         return unfiltered_pmd_demixer.results
 
 
