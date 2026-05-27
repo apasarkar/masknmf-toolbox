@@ -290,10 +290,10 @@ class SingleSessionDemixingVis:
         self._ndw_traces.figure.renderer.add_event_handler(partial(self._local_click_update), "double_click")
 
         for subplot in self._ndw_fov.figure:
-            subplot.toolbar = False
+            subplot.tooltip.enabled = False
 
         for subplot in self._ndw_traces.figure:
-            subplot.toolbar = False
+            subplot.tooltip.enabled = False
 
     def _local_click_update(self, ev: pygfx.PointerEvent):
 
@@ -443,13 +443,15 @@ def extract_per_trace_roi_averages(colorful_ac_array: masknmf.ACArray,
         a_subset = torch.index_select(a, 1, unique_signals).coalesce()
         filtered_rows, filtered_col = a_subset.indices()
         filtered_values = a_subset.values()
-        # filtered_rows = row[valid_indices]
-        # filtered_col = col[valid_indices]
-        # filtered_values = values[valid_indices]
+
+        valid_indices = valid_indices = torch.isin(filtered_rows, good_row_values)
+        filtered_rows = filtered_rows[valid_indices]
+        filtered_col = filtered_col[valid_indices]
+        filtered_values = filtered_values[valid_indices]
 
         reduce_tensor = torch.zeros(a_subset.shape[1], device=device)
-        reduce_tensor.scatter_reduce_(0, filtered_col, filtered_values, reduce="amax")
-        # reduce_tensor = reduce_tensor / num_pixels
+        reduce_tensor.scatter_reduce_(0, filtered_col, filtered_values, reduce="sum")
+        reduce_tensor = reduce_tensor / num_pixels
 
         # unique_signals = torch.unique(filtered_col)
         # unique_scales = reduce_tensor[unique_signals]
