@@ -462,6 +462,51 @@ def extract_per_trace_roi_averages(colorful_ac_array: masknmf.ACArray,
         return weighted_signals.T.cpu().numpy(), colors.cpu().numpy(), unique_signals.cpu().numpy()
 
 
+def visualize_superpixels_peaks(init_results: masknmf.InitializationResults):
+    superpixel_map = init_results.nmf_seed_map
+    pure_superpixel_map = init_results.pure_nmf_seed_map
+    correlation_image = init_results.correlation_img
+
+    superpixel_img = np.stack([correlation_image.copy()] * 3, axis=-1)
+    superpixel_img[superpixel_map > 0] = [4, 0, 0]
+
+    pure_superpixel_img = np.stack([correlation_image.copy()] * 3, axis=-1)
+    pure_superpixel_img[pure_superpixel_map > 0] = [4, 0, 0]
+
+    corr_rgb = np.stack([correlation_image] * 3, axis=-1)
+
+    image_panels = ("corr image",
+                    "nmf seed map",
+                    "pure nmf seed map")
+
+    extents = {
+        image_panels[0]: (0, 0.333, 0.0, 1),
+        image_panels[1]: (0.33, 0.666, 0.0, 1),
+        image_panels[2]: (0.666, 1, 0.0, 1)}
+
+    ndw_corr = fpl.NDWidget(
+        extents=extents,
+        names=[*image_panels],
+        controller_ids=[
+            tuple(image_panels),
+        ],
+        size=(1200, 1200),
+    )
+
+    corr_img_graphic = ndw_corr[image_panels[0]].add_nd_image(corr_rgb, ["m", "n", "c"], ["m", "n", "c"], rgb_dim="c",
+                                                              name=image_panels[0])
+    nmf_seed_graphic = ndw_corr[image_panels[1]].add_nd_image(superpixel_img,
+                                                              ["m", "n", "c"],
+                                                              ["m", "n", "c"],
+                                                              rgb_dim="c",
+                                                              name=image_panels[1])
+    pure_seed_graphic = ndw_corr[image_panels[2]].add_nd_image(pure_superpixel_img,
+                                                               ["m", "n", "c"],
+                                                               ["m", "n", "c"],
+                                                               rgb_dim="c",
+                                                               name=image_panels[2])
+
+    return ndw_corr.show()
 
 
 

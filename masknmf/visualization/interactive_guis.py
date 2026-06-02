@@ -583,21 +583,3 @@ def quantile_segregated_signal_gui(ac_arr: masknmf.ACArray,
                          rgb = rgb)
     iw.cmap = "gray"
     return iw
-
-def visualize_superpixels_peaks(init_results: InitializationResults):
-    superpixel_map = init_results.nmf_seed_map
-    pure_superpixel_map = init_results.pure_nmf_seed_map
-    correlation_image = init_results.correlation_img
-
-    superpixel_img = np.stack([correlation_image.copy()] * 3, axis=-1)
-    superpixel_img[superpixel_map > 0] = [4, 0, 0]
-
-    pure_superpixel_img = np.stack([correlation_image.copy()] * 3, axis=-1)
-    pure_superpixel_img[pure_superpixel_map > 0] = [4, 0, 0]
-    iw = fpl.ImageWidget(data=[np.stack([correlation_image] * 3, axis=-1),
-                               superpixel_img,
-                               pure_superpixel_img],
-                         rgb=[True, True, True],
-                         figure_shape=(1, 3),
-                         names=['corr', 'nmf seed map', 'pure nmf seed map'])
-    return iw

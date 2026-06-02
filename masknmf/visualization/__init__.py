@@ -4,7 +4,6 @@ from masknmf.visualization.interactive_guis import (
     get_correlation_widget,
     make_demixing_video,
     PMDWidget,
-    visualize_superpixels_peaks,
     quantile_segregated_signal_gui
 )
 from masknmf.visualization.plots import (
@@ -17,7 +16,7 @@ from masknmf.visualization.plots import (
 )
 
 from masknmf.visualization.motion_vis import MotionCorrectionVis
-from masknmf.visualization.demixing_vis import SingleSessionDemixingVis
+from masknmf.visualization.demixing_vis import SingleSessionDemixingVis, visualize_superpixels_peaks
 
 __all__ = [
     "PMDWidget",
@@ -26,5 +25,5 @@ __all__ = [
     "construct_index",
     "make_demixing_video",
     "MotionCorrectionVis",
-    "SingleSessionDemixingVis"
+    "SingleSessionDemixingVis",
 ]
