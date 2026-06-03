@@ -515,6 +515,50 @@ def get_total_edges(d1, d2):
     return math.ceil(overcount / 2)
 
 
+def sparse_dilation_routine(fov_height: int,
+                            fov_width: int,
+                            a: torch.sparse_coo_tensor,
+                            expansion_radius:int = 5):
+    """
+    Greedily performs a "n"-pixel dilation of each spatial footprint
+    Args:
+        fov_height (int): The height of the field of view
+        fov_width (int): The width of the field of view
+        a (torch.sparse_coo_tensor): (num_pixels, num_signals) shaped sparse tensor
+        expansion_radius (int): The number of pixels by which to do the expansion
+    Returns:
+        height_indices (torch.Tensor): The height indices
+        width_indices (torch.Tensor): The width indices
+        frame_indices (torch.Tensor): The frame indices
+
+        Together these define a (height, width, num_frames) sparse tensor
+    """
+    device = a.device
+    rows, frame_indices = a.indices()
+    height_indices = rows // fov_width
+    width_indices = rows % fov_width
+
+    height_perturbations, width_perturbations = torch.meshgrid(
+        torch.arange(-1 * expansion_radius, expansion_radius + 1, device=device),
+        torch.arange(-1 * expansion_radius, expansion_radius + 1, device=device),
+        indexing='ij')
+
+    height_indices = height_indices[:, None] + height_perturbations.flatten()[None, :]
+    width_indices = width_indices[:, None] + width_perturbations.flatten()[None, :]
+    frame_indices = frame_indices[:, None] + torch.zeros_like(width_perturbations.flatten()[None, :])
+
+    height_indices = height_indices.flatten()
+    width_indices = width_indices.flatten()
+    frame_indices = frame_indices.flatten()
+
+    keep_comps = (height_indices >= 0) & (height_indices < fov_height) & (width_indices >= 0) & (
+                width_indices < fov_width)
+    height_indices = height_indices[keep_comps]
+    width_indices = width_indices[keep_comps]
+    frame_indices = frame_indices[keep_comps]
+
+    return height_indices, width_indices, frame_indices
+
 def get_local_correlation_structure(
         u_sparse: torch.sparse_coo_tensor,
         v: torch.tensor,
@@ -1646,7 +1690,22 @@ def _compute_indices_to_merge(a: torch.sparse_coo_tensor,
     (2) Their overlapped correlation image is a large fraction of the thresholded correlation image for A
     (3) Their overlapped correlation image is a large fraction of the thresholded correlation image for B
     """
-    overlap_mat = torch.sparse.mm(a.t(), a).coalesce() #Shape (num_neurons, num_neurons)
+
+    fov_height, fov_width = standard_correlation_image.shape[1:]
+    ## Create an overlap matrix
+    dil_h, dil_w, dil_col = sparse_dilation_routine(fov_height,
+                                                    fov_width,
+                                                    a)
+    dil_row = dil_h * fov_width + dil_w
+    a_dilated = torch.sparse_coo_tensor(
+        torch.stack([dil_row, dil_col]),
+        torch.ones_like(dil_row).to(torch.float32),
+        a.shape,
+    ).coalesce()
+
+
+
+    overlap_mat = torch.sparse.mm(a_dilated.t(), a_dilated).coalesce() #Shape (num_neurons, num_neurons)
     rows, cols = overlap_mat.indices()
     values = overlap_mat.values()
 
@@ -2988,6 +3047,7 @@ class DemixingState(SignalProcessingState):
 
         return indices_to_keep
 
+
     def greedy_connected_comps(self,
                                fov_height: int,
                                fov_width: int,
@@ -3004,26 +3064,10 @@ class DemixingState(SignalProcessingState):
         with these new indices are 0. When we call coalesce() on this final tensor, the row/col indices with value 0 will
         be included. This is desirable (this is how the spatial HALS code starts working with the expanded (or contracted) "a" footprints
         """
-        rows, frame_indices = a_subset.indices()
-        height_indices = rows // fov_width
-        width_indices = rows % fov_width
-
-        height_perturbations, width_perturbations = torch.meshgrid(torch.arange(-1 * expansion_radius, expansion_radius+1, device=self.device),
-                                                                   torch.arange(-1 * expansion_radius, expansion_radius+1, device=self.device),
-                                                                   indexing='ij')
-
-        height_indices = height_indices[:, None] + height_perturbations.flatten()[None, :]
-        width_indices = width_indices[:, None] + width_perturbations.flatten()[None, :]
-        frame_indices = frame_indices[:, None] + torch.zeros_like(width_perturbations.flatten()[None, :])
-
-        height_indices = height_indices.flatten()
-        width_indices = width_indices.flatten()
-        frame_indices = frame_indices.flatten()
-
-        keep_comps = (height_indices >= 0) & (height_indices < fov_height) & (width_indices >= 0) & (width_indices < fov_width)
-        height_indices = height_indices[keep_comps]
-        width_indices = width_indices[keep_comps]
-        frame_indices = frame_indices[keep_comps]
+        height_indices, width_indices, frame_indices = sparse_dilation_routine(fov_height,
+                                                                                    fov_width,
+                                                                                    a_subset,
+                                                                                    expansion_radius=expansion_radius)
 
         corr_bool_mask = thresholded_correlation_image_frames[frame_indices, height_indices, width_indices] > 0
 
@@ -3199,7 +3243,8 @@ class DemixingState(SignalProcessingState):
             plot_en: bool = False,
             reassign_background: bool = False,
             detrender: Optional[SplineDetrenderBase] = None,
-            extract_multiunit: bool = False
+            extract_multiunit: bool = False,
+            sign: Literal["positive", "negative", "unconstrained"] = "unconstrained"
     ):
         """
         Function for computing background, spatial and temporal components of neurons. Uses HALS updates to iteratively
@@ -3233,7 +3278,8 @@ class DemixingState(SignalProcessingState):
         # Key: precompute_quantities is a setup function which must be run first in this routine
         # self.background_rank = None #Always estimate the background rank each time
         self.detrender = detrender
-        self.detrender.to(self.device)
+        if self.detrender is not None:
+            self.detrender.to(self.device)
 
         self.precompute_quantities()
         self.W = RingModel(
@@ -3271,6 +3317,7 @@ class DemixingState(SignalProcessingState):
             denoise = [False for i in range(maxiter)]
 
         background_enabled: bool = False
+        background_reassigned: bool = False
         for iters in tqdm(range(maxiter)):
             self.static_baseline_update()
 
@@ -3284,6 +3331,7 @@ class DemixingState(SignalProcessingState):
             if background_enabled:
                 if self.factorized_ring_term is not None and reassign_background and iters == maxiter - 1:
                     self.reassign_background_to_signal(graph_laplacian, c_nonneg=c_nonneg)
+                    background_reassigned = True
                 self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
 
             self.spatial_update(plot_en=plot_en)
@@ -3299,11 +3347,12 @@ class DemixingState(SignalProcessingState):
                 self.standard_correlation_image.c = self.c
 
                 # Merge signals as needed and update the scheduler
-                original_shape = self.a.shape[1]
-                self.merge_signals(merge_threshold, merge_overlap_threshold, plot_en)
+                if not background_reassigned:
+                    original_shape = self.a.shape[1]
+                    self.merge_signals(merge_threshold, merge_overlap_threshold, plot_en)
 
-                if self.a.shape[1] < original_shape:
-                    self.update_hals_scheduler()
+                    if self.a.shape[1] < original_shape:
+                        self.update_hals_scheduler()
 
                 self.support_update_routine(
                     support_threshold[iters],
@@ -3340,7 +3389,8 @@ class DemixingState(SignalProcessingState):
             batch_size=self.pixel_batch_size,
             a=self.a,
             c=self.c,
-            detrender=self.detrender
+            detrender=self.detrender,
+            sign=sign
         )
 
         multiunit_basis_term1, multiunit_basis_term2 = self.extract_multiunit_factorization()
