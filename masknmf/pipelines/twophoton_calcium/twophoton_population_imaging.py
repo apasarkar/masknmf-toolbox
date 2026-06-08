@@ -4,6 +4,7 @@ from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import RegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.utils import display
+from masknmf.demixing import NoSignalsDetectedError, DemixingError
 
 from masknmf.compression.preprocessing import MaximinSplineDetrend
 
@@ -15,18 +16,21 @@ from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConf
 from masknmf.utils import torch_select_device
 from typing import *
 import numpy as np
-import math
 import os
 
 
 def run_singlepass_demixing(demixing_obj: masknmf.SignalDemixer,
-                            singlepass_config: SinglepassDemixingConfig) -> masknmf.SignalDemixer:
+                            singlepass_config: SinglepassDemixingConfig) -> None | masknmf.SignalDemixer:
     init_config = singlepass_config.InitConfig
     nmf_config = singlepass_config.NMFConfig
 
-    demixing_obj.initialize_signals(**asdict(init_config))
-    demixing_obj.demix(**asdict(nmf_config))
-    return demixing_obj
+    try:
+        demixing_obj.initialize_signals(**asdict(init_config))
+    except NoSignalsDetectedError:
+        return None
+    else:
+        demixing_obj.demix(**asdict(nmf_config))
+        return demixing_obj
 
 
 class TwoPhotonCalciumPipeline(BasePipeline):
@@ -237,6 +241,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
         if self.device == "auto":
             device = torch_select_device()
+        else:
+            device = self.device
         display("Running demixing analysis")
 
         pmd_denoise = masknmf.PMDArray.from_hdf5(self.outpath_compression)
@@ -270,8 +276,6 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         )
 
         ## Use spline detrending to more effectively pick out signals. 1 knot point per 20 seconds of data
-        knot_interval = 20 * frame_rate
-        num_knots = math.ceil(data.shape[0] / knot_interval)
         if self.filtered_demixing_config is None:
             conf_list = []
             for corr_threshold in [0.8, 0.8]:
@@ -283,7 +287,9 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                                           detrender=detrender)
                 curr_demix_conf = SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf)
                 conf_list.append(curr_demix_conf)
-            filtered_demixing_config = MultipassDemixingConfig(conf_list)
+            filtered_demixing_config_used = MultipassDemixingConfig(conf_list)
+        else:
+            filtered_demixing_config_used = self.filtered_demixing_config
 
         if self.unfiltered_demixing_config is None:
             conf_list = []
@@ -296,20 +302,33 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                                           detrender=detrender)
                 curr_demix_conf = SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf)
                 conf_list.append(curr_demix_conf)
-            self._unfiltered_demixing_config = MultipassDemixingConfig(conf_list)
+            unfiltered_demixing_config_used = MultipassDemixingConfig(conf_list)
+        else:
+            unfiltered_demixing_config_used = self.unfiltered_demixing_config
 
         # Run the demixing rounds on the filtered data
-        for k in range(len(filtered_demixing_config.DemixingConfigs)):
+        curr_demix_results = None
+        for k in range(len(filtered_demixing_config_used.DemixingConfigs)):
             highpass_pmd_demixer = run_singlepass_demixing(highpass_pmd_demixer,
-                                                           filtered_demixing_config.DemixingConfigs[k])
+                                                           filtered_demixing_config_used.DemixingConfigs[k])
+            if highpass_pmd_demixer is not None:
+                curr_demix_results = highpass_pmd_demixer.results
+            if highpass_pmd_demixer is None:
+                if curr_demix_results is None:
+                    raise ValueError("The demixer did not identify any signals in the highpass filtered movie. Lower thresholds or inspect"
+                                     "data to resolve this issue.")
+                else:
+                    break
 
         ## Define the unfiltered demixer object
-        ac_arr = highpass_pmd_demixer.results.ac_array
+        ac_arr = curr_demix_results.ac_array
         a_init = ac_arr.export_a()
         c_init = ac_arr.export_c()
 
         ##Now overwrite the first pass of the UnfilteredDemixingConfig to be "custom" since we're using results from above
-        self._unfiltered_demixing_config.DemixingConfigs[0].InitConfig = CustomInitConfig(a_init, c_init, c_nonneg=True)
+        # unfiltered_demixing_config_used.DemixingConfigs[0].InitConfig = CustomInitConfig(a_init, c_init, c_nonneg=True)
+        custom_unfiltered_conf = SinglepassDemixingConfig(CustomInitConfig(a_init, c_init, c_nonneg=True),
+                                                          unfiltered_demixing_config_used.DemixingConfigs[0].NMFConfig)
 
         unfiltered_pmd_demixer = masknmf.demixing.signal_demixer.SignalDemixer(
             pmd_denoise,
@@ -317,21 +336,31 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             frame_batch_size=self.frame_batch_size)
 
         # Run the demixing rounds on the unfiltered data
-        for k in range(len(self.unfiltered_demixing_config.DemixingConfigs)):
-            unfiltered_pmd_demixer = run_singlepass_demixing(unfiltered_pmd_demixer,
-                                                             self.unfiltered_demixing_config.DemixingConfigs[k])
-            if os.path.exists(os.path.abspath(self.outpath_demixing)):
-                os.remove(os.path.abspath(self.outpath_demixing))
-            unfiltered_pmd_demixer.results.export(os.path.abspath(self.outpath_demixing))
+        latest_demix_results = None
+        for k in range(len(unfiltered_demixing_config_used.DemixingConfigs)):
+            if k == 0:
+                unfiltered_pmd_demixer = run_singlepass_demixing(unfiltered_pmd_demixer,
+                                                                 custom_unfiltered_conf)
+            else:
+                unfiltered_pmd_demixer = run_singlepass_demixing(unfiltered_pmd_demixer,
+                                                                 unfiltered_demixing_config_used.DemixingConfigs[k])
+            if unfiltered_pmd_demixer is not None:
+                latest_demix_results = unfiltered_pmd_demixer.results
+            elif unfiltered_pmd_demixer is None:
+                if latest_demix_results is None:
+                    raise ValueError("The unfiltered pmd demixer did not complete a full round of demixing.")
+                else:
+                    break
 
-        if not os.path.exists(os.path.abspath(self.outpath_demixing)):
-            unfiltered_pmd_demixer.results.export(os.path.abspath(self.outpath_demixing))
+        if os.path.exists(os.path.abspath(self.outpath_demixing)):
+            os.remove(os.path.abspath(self.outpath_demixing))
+        latest_demix_results.export(os.path.abspath(self.outpath_demixing))
 
         if remove_intermediates:
             display("Removing intermediates")
             os.remove(os.path.abspath(self.outpath_motion_correction))
             os.remove(os.path.abspath(self.outpath_compression))
-        return unfiltered_pmd_demixer.results
+        return latest_demix_results
 
 
 

@@ -37,6 +37,17 @@ from masknmf.compression.preprocessing import SplineDetrend
 from masknmf import display
 
 
+class DemixingError(Exception):
+    """Base class for SignalDemixer errors."""
+
+
+class NoSignalsDetectedError(DemixingError):
+    """Raised by initialize_signals when zero signals pass the correlation threshold.
+
+    The demixer cannot transition to the demixing state without at least one
+    detected signal. Callers should either lower the threshold and retry, or
+    treat this as a terminal condition for the current input.
+    """
 
 def make_mask_dynamic(
         corr_img_all_r: np.ndarray,
@@ -1537,7 +1548,7 @@ def superpixel_init(
     torch.Tensor,
     torch.Tensor,
     Dict[str, torch.Tensor]
-]:
+] | None:
     """
     Args:
         u_sparse (torch.sparse_coo_tensor): Shape (d1*d2, R)
@@ -1577,7 +1588,7 @@ def superpixel_init(
     display(f" peaks shape is {peaks.shape}")
     if peaks.shape[0] == 0:
         display("No superpixels found, set lower correlation threshold!")
-        return None, None, None, None, None
+        return None
 
     a_ini, connectivity_mat, unique_pix = superpixel_adapter(peaks,
                                                              dims,
@@ -2386,6 +2397,8 @@ class InitializingState(SignalProcessingState):
             c=self.c,
             frame_batch_size=self.frame_batch_size
         )
+        if self._init_results is None:
+            raise NoSignalsDetectedError("No Signals passed correlation threshold. Lower the threshold or verify input data quality.")
 
     def _initialize_signals_custom(
             self,
