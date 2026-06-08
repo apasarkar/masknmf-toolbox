@@ -71,7 +71,7 @@ class RegistrationArray(LazyFrameLoader, Serializer):
             self.strategy = strategy
 
         self._target_movie = target_movie
-        self._shape = self.reference_movie.shape
+        self._shape = self.target_movie.shape if self._target_movie is not None else self.reference_movie.shape
         self._ndim = self.reference_movie.ndim
 
         if shifts is None:
