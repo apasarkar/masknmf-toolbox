@@ -483,3 +483,149 @@ class PMDResidualArray(ArrayLike):
         if switch:
             self.pmd_arr.rescale = False
         return output
+
+class TrendArray(ArrayLike):
+    """
+    Utility class that exposes the trend estimates in PMD as an array-like object.
+    We don't support serialization or any other things here to keep it simple -- all of that is in the PMD class
+    """
+    def __init__(self,
+                 shape: tuple[int] | np.ndarray,
+                 flyweight: TensorFlyWeight,
+                 device: str = "cpu"):
+        self._shape = tuple(shape)
+
+        ##Set up the flyweight and all other tensors
+        self._flyweight = flyweight
+        self._flyweight.to(device)
+
+        self._pixel_mat = torch.arange(
+            self.shape[1] * self.shape[2], device=self.device,
+        ).reshape(self.shape[1], self.shape[2])
+
+    @classmethod
+    def from_flyweight(cls,
+                       shape: tuple[int, int, int] | np.ndarray,
+                       flyweight: TensorFlyWeight,
+                       device: str = "cpu",
+                       ):
+        """
+        Memory efficient way to construct PMD Array from a flyweight tensor manager. See from_tensors for parameter documentation
+        """
+        return cls(shape,
+                   flyweight,
+                   device=device)
+
+    @classmethod
+    def from_tensors(cls,
+                     shape: Tuple[int, int, int] | np.ndarray,
+                     spatial_trend_basis: torch.Tensor,
+                     temporal_trend_basis: torch.Tensor,
+                     device: str = "cpu"):
+        """
+            The trend estimate is a pixels x frames estimate given by the product spatial_trend_basis x temporal_trend_basis.
+            This class provides array-like access to this trend estimate across the full movie
+
+            Args:
+                shape (tuple): (num_frames, fov_dim1, fov_dim2)
+                spatial_trend_basis (torch.Tensor): The spatial basis for the trend estimate, shape (num_pixels, rank)
+                temporal_trend_basis (torch.Tensor): The temporal basis for the trend estimate, shape (rank, num_frames)
+                device (str): The device on which computations occur/data is stored
+        """
+        flyweight = TensorFlyWeight(spatial_trend_basis=spatial_trend_basis.float(),
+                                    temporal_trend_basis=temporal_trend_basis.float())
+        return cls(shape,
+                   flyweight,
+                   device=device)
+
+    @property
+    def flyweight(self):
+        return self._flyweight
+
+    @property
+    def dtype(self) -> str:
+        """
+        data type, default np.float32
+        """
+        return np.float32
+
+    @property
+    def spatial_trend_basis(self):
+        return self.flyweight.spatial_trend_basis
+
+    @property
+    def temporal_trend_basis(self):
+        return self.flyweight.temporal_trend_basis
+
+    def to(self, new_device: str):
+        if self._flyweight.device != new_device:
+            self._flyweight.to(new_device)
+        self._move_local_tensors(new_device)
+
+    def _move_local_tensors(self, new_device: str):
+        self._pixel_mat = self._pixel_mat.to(new_device)
+    @property
+    def device(self) -> str:
+        return self.flyweight.device
+    @property
+    def shape(self) -> tuple[int]:
+        return self._shape
+
+    def getitem_tensor(
+            self,
+            item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+    ) -> torch.Tensor:
+        frame_indexer, item = self._parse_indices(item)
+
+        # Step 3: Now slice the data with frame_indexer (careful: if the ndims has shrunk, add a dim)
+        temporal_crop = self.temporal_trend_basis[:, frame_indexer]
+        if temporal_crop.ndim < self.temporal_trend_basis.ndim:
+            temporal_crop = temporal_crop.unsqueeze(1)
+
+        # Step 4: Deal with remaining indices after lazy computing the frame(s)
+        if isinstance(item, tuple) and test_spatial_crop_effect(
+                item[1:], self.shape[1:]
+        ):
+            if isinstance(item[1], np.ndarray) and len(item[1]) == 1:
+                term_1 = slice(int(item[1]), int(item[1]) + 1)
+            elif isinstance(item[1], np.integer):
+                term_1 = slice(int(item[1]), int(item[1]) + 1)
+            elif isinstance(item[1], int):
+                term_1 = slice(item[1], item[1] + 1)
+            else:
+                term_1 = item[1]
+
+            if isinstance(item[2], np.ndarray) and len(item[2]) == 1:
+                term_2 = slice(int(item[2]), int(item[2]) + 1)
+            elif isinstance(item[2], np.integer):
+                term_2 = slice(int(item[2]), int(item[2]) + 1)
+            elif isinstance(item[2], int):
+                term_2 = slice(item[2], item[2] + 1)
+            else:
+                term_2 = item[2]
+
+            spatial_crop_terms = (term_1, term_2)
+
+            pixel_space_crop = self._pixel_mat[spatial_crop_terms]
+            spatial_indices = pixel_space_crop.flatten()
+            spatial_crop = torch.index_select(self.spatial_trend_basis, 0, spatial_indices)
+            implied_fov = pixel_space_crop.shape
+        else:
+
+            spatial_crop = self.spatial_trend_basis
+            implied_fov = self.shape[1], self.shape[2]
+
+        product = torch.sparse.mm(spatial_crop, temporal_crop)
+
+        product = product.reshape((implied_fov[0], implied_fov[1], -1))
+        product = product.permute(2, 0, 1)
+
+        return product
+
+    def __getitem__(
+            self,
+            item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+    ) -> np.ndarray:
+        product = self.getitem_tensor(item)
+        product = product.cpu().numpy().astype(self.dtype)
+        return product
