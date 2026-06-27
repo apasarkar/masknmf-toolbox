@@ -151,6 +151,7 @@ class DemixingResults(Serializer):
             multiunit_basis_term1: torch.Tensor | None = None,
             multiunit_basis_term2: torch.Tensor | None = None,
             device="cpu",
+            **kwargs
     ):
         """
         This class provides a convenient way to export all demixing result as array-like objects.
