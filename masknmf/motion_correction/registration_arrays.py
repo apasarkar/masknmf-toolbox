@@ -239,8 +239,6 @@ class RegistrationArray(LazyFrameLoader, Serializer):
         class_from_disk.block_centers = block_centers
         return class_from_disk
 
-
-
 class FilteredArray(LazyFrameLoader):
     def __init__(
         self,
@@ -436,9 +434,17 @@ class VoltageArray(masknmf.ArrayLike):
 
     def __getitem__(self,
                     item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> torch.Tensor:
+        return self._get(item, include_mean=self.include_mean)
 
-        data_subset = torch.from_numpy(self._dataset[item]).to(self.device).to(self.dtype)
+    def _get(self,
+             item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+             include_mean: bool | None = None) -> torch.Tensor:
+        ## Private helper method designed to avoid race conditions associated with state variables like include_mean
+        if include_mean is None:
+            include_mean = self.include_mean
+
         frame_indexer, item = self._parse_indices(item)
+        data_subset = torch.as_tensor(self._dataset[item]).to(self.device).to(self.dtype) ## Parse indices first to ensure consistent output
 
         # Check if spatial cropping occurred, deal with mean image accordingly
         if isinstance(item, tuple):
@@ -446,16 +452,130 @@ class VoltageArray(masknmf.ArrayLike):
         else:
             mean_crop = self._mean_image
 
+        if data_subset.ndim > mean_crop.ndim: #This means that there is a temporal dimension, which means we need to broadcast
+            mean_crop = mean_crop[None, ...]
+
         if self.negative_indicator:
             data_subset *= -1
-            if self.include_mean:
-                data_subset += 2 * mean_crop[None, ...]
+            if include_mean:
+                data_subset += 2 * mean_crop
             else:
-                data_subset += mean_crop[None, ...]
+                data_subset += mean_crop
         else:
-            if self.include_mean:
+            if include_mean:
                 pass
             else:
-                data_subset -= mean_crop[None, ...]
+                data_subset -= mean_crop
         return data_subset
+
+
+
+
+class GradientRegistrationArray(ArrayLike):
+    """
+    This is a special registration array which provides fast slicing in all dimensions (pixels AND frames)
+    The key idea is that the per-frame correction (which uses the gradient of the template image) is low-rank,
+    so we can adaptively compute frames/pixels of this movie very quickly if we just store the low-rank info
+
+    This array is not meant to be serialized
+    """
+    def __init__(self,
+                 raw_data: VoltageArray,
+                 strategy: GradientMotionCorrector,
+                 output_device: str | None = None):
+
+        self._dataset = raw_data
+        self._strategy = strategy
+        self._output_device = self.strategy.device if output_device is None else output_device
+        self._gradient_steps = None
+        self._gradient_steps_mean = None
+        self._gradient = None
+        self._extract_lowrank_shifts()
+
+    @property
+    def shape(self) -> Tuple[int, int, int]:
+        return self.raw_data.shape
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return self.strategy.dtype
+
+    @property
+    def output_device(self) -> str:
+        return self._output_device
+
+    @output_device.setter
+    def output_device(self, new_device:str):
+        self._output_device = new_device
+
+    @property
+    def nbytes(self) -> int:
+        return math.prod(self.shape) * self.dtype.itemsize
+
+    @property
+    def raw_data(self) -> VoltageArray:
+        return self._dataset
+
+    @property
+    def include_mean(self) -> bool:
+        return self._include_mean
+
+    @include_mean.setter
+    def include_mean(self, new_flag: bool):
+        self._include_mean = new_flag
+
+    @property
+    def strategy(self) -> GradientMotionCorrector:
+        return self._strategy
+
+    @property
+    def gradient_steps(self) -> torch.Tensor | None:
+        return self._gradient_steps
+
+
+    @property
+    def gradient(self) -> torch.Tensor | None:
+        return self._gradient
+    def _extract_lowrank_shifts(self):
+        batch_size = self.strategy.batch_size
+        num_iters = math.ceil(self.shape[0] / batch_size)
+
+        gradient_steps = []
+        for k in tqdm(range(num_iters)):
+            start = k * batch_size
+            end = min(start + batch_size, self.shape[0])
+            subset = torch.as_tensor(self.raw_data._get(slice(start,end), include_mean=True), device=self.strategy.device, dtype=self.dtype)
+            frames, shifts, scale = self.strategy.correction_routine(subset)
+            gradient_step = self.strategy.compute_gradient_step(shifts, scale)
+            gradient_steps.append(gradient_step)
+
+        self._gradient_steps = torch.concatenate(gradient_steps, dim=0) #Shape (frames, 2)
+        self._gradient_steps_mean = torch.mean(self._gradient_steps, dim = 0)
+        self._gradient = self.strategy.gradient.reshape(self.shape[1], self.shape[2], 2)
+
+    def __getitem__(self,
+                    item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> torch.Tensor:
+
+        data_subset = torch.as_tensor(self.raw_data._get(item, include_mean=self.include_mean), device=self.output_device, dtype=self.dtype)
+        frame_indexer, item = self._parse_indices(item)
+
+        gradient_step_used = self.gradient_steps[frame_indexer, :]
+
+        if not self.include_mean:
+            if gradient_step_used.ndim > self._gradient_steps_mean.ndim:
+                grad_sub = self._gradient_steps_mean[None, :]
+            else:
+                grad_sub = self._gradient_steps_mean
+            gradient_step_used -= grad_sub
+
+        # Check if spatial cropping occurred, deal with factorized tensors appropriately
+        if isinstance(item, tuple):
+            gradient_crop = self.gradient[item[1:]]
+        else:
+            gradient_crop = self.gradient
+
+        grad_movie = gradient_crop @ gradient_step_used.T
+        grad_movie = grad_movie.permute(2, 0, 1).to(self.output_device)
+
+        return data_subset - grad_movie
 

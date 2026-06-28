@@ -466,17 +466,26 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
     }
     def __init__(
             self,
-            template: Optional[np.ndarray] = None,
+            template: np.ndarray | torch.Tensor | None = None,
             batch_size: int = 200,
-            pixel_weighting: Optional[np.ndarray] = None,
+            pixel_weighting: np.ndarray | torch.Tensor | None = None,
             device: str = "auto",
     ):
-        super().__init__(template, batch_size=batch_size, device=device)
-        self._pixel_weighting = pixel_weighting.astype('float') if pixel_weighting is not None else None
+        self._device = torch_select_device(device)
+        self.batch_size = batch_size
+        self._pixel_weighting = None
+        self._template = None
 
-        if template is not None:
-            self._template = template
-            self._compute_gradient_matrix()
+        self.pixel_weighting = pixel_weighting
+        self.template = template
+
+
+    @property
+    def dtype(self):
+        """
+        What dtype is used for computations
+        """
+        return torch.float32
 
     @property
     def batch_size(self) -> int:
@@ -490,36 +499,71 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
         self._batch_size = value
 
     @property
-    def pixel_weighting(self) -> None | np.ndarray:
-        return self._pixel_weighting
-
-    @property
-    def template(self) -> None | np.ndarray:
-        """registration template to map raw frames onto"""
+    def template(self) -> None | torch.Tensor:
         return self._template
 
-    def _correct_singlebatch(
+    @template.setter
+    def template(self, new_template: None | np.ndarray | torch.Tensor):
+        if new_template is None:
+            self._template = new_template
+        elif isinstance(new_template, (np.ndarray, torch.Tensor)):
+            self._template = torch.as_tensor(new_template, dtype=self.dtype, device=self.device)
+            self._compute_gradient_matrix()
+        else:
+            raise TypeError(f"template should be None, np.ndarray, or torch.Tensor")
+
+    @property
+    def pixel_weighting(self) -> None | torch.Tensor:
+        return self._pixel_weighting
+
+    @pixel_weighting.setter
+    def pixel_weighting(self, weighting: np.ndarray | torch.Tensor):
+        if weighting is None:
+            self._pixel_weighting = None
+        elif isinstance(weighting, (np.ndarray, torch.Tensor)):
+            self._pixel_weighting = torch.as_tensor(weighting, dtype=self.dtype, device=self.device)
+        else:
+            raise TypeError(f"pixel_weighting should be None, np.ndarray, or torch.Tensor")
+
+    def correction_routine(
             self,
             reference_frames: np.ndarray,
-            target_frames: Optional[np.ndarray],
-    ) -> tuple[np.ndarray, np.ndarray]:
+            target_frames: Optional[np.ndarray] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        The model here is we'd like to approximate the motion at frame F_1(x, y) as:
+        Basic model: we want to register a frame F_1 to a template frame, F_0:
 
         F_0(x, y) + grad_F0 @ w = alpha * F_1(x, y)
+        where w is a 2D vector of gradient coefficients indicating the size of the shift w.r.t. the template F0.
+        alpha is a scalar (to account for scale differences between F_0 and F_1 because of things like photobleaching)
 
-        where w is a 2D vector of weights, alpha is a scalar (to account for photobleaching)
+        This models assumes that the shift between F_0(x, y) and alpha * F_1(x, y) can be explained by the gradient of F0.
 
         By projecting both sides of this equation to the subspace orthogonal to F_0, we can solve for the vector
-        w / alpha. Afterwards we can crudely infer alpha as well.
+        w / alpha:
 
         w/alpha = projection of Orth_F0(F1) onto Orth_F0(grad_F0)
-        alpha can be estimated afterwards as a least squares coefficient relating F_0 and F_1, and the effective
-        "shift" vector, "w" can be recovered
+
+        We can then estimate alpha as well as the least squares coefficient relating F_0 and F_1. "w" describes the gradient step
+        in each dimension at the scale of the template image.
+
+        Note that the actual correction applied to frame F_1(x, y) is:
+
+        F_1(x, y) - gradF_0 @ (w / alpha)
 
         Where this approach breaks down:
         - Lots of noise relative to the prominent features of the template/reference image
         - Large dF/F
+
+        Args:
+            reference_frames (np.ndarray): Shape (num_frames, height, width). Frames used to decide gradient shifts in each dimension
+            target_frames (np.ndarray): Shape (num_frames, height, width). Frames to which the correction is applied
+                If None, motion correction is applied to reference_frames
+        Returns:
+            Corrected frame (torch.Tensor): Motion corrected frame. Shape (num_frames, height, width)
+            Shift (torch.Tensor): The shift vectors in gradient space, at the scale of the template image; this is the "w" vector
+            alpha (torch.Tensor): The scale mismatch between the reference frame and template. w / alpha gives the actual gradient coefficients
+                applied to do the correction, as mentioned above.
         """
 
         if self.template is None:
@@ -528,12 +572,12 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
             )
 
         if target_frames is not None:
-            target_frames = torch.from_numpy(target_frames).to(self.device).float()
+            target_frames = torch.as_tensor(target_frames, device=self.device, dtype=self.dtype)
 
-        reference_frames = torch.from_numpy(reference_frames).to(self.device).float()
+        reference_frames = torch.as_tensor(reference_frames, device=self.device, dtype=self.dtype)
         num_frames, height, width = reference_frames.shape
-        gradient = torch.from_numpy(self._gradient).to(self.device).float()
-        gradient_projector = torch.from_numpy(self._gradient_projector).to(self.device).float()
+        gradient = torch.as_tensor(self._gradient, device=self.device, dtype=self.dtype)
+        gradient_projector = torch.as_tensor(self._gradient_projector, device=self.device, dtype=self.dtype)
 
         ref_flat = reference_frames.permute(1, 2, 0).reshape(-1, num_frames)  # [H*W, F]
         if target_frames is not None:
@@ -552,36 +596,71 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
         The actual "gradient step" from the observed data --> template requires more care: need to 
         make sure the mean image matches the scale of the image in question (photobleaching etc. can affect this). 
         If they don't match, the gradients will be "off" by some multiplicative factor. 
-        
+
         So we do a least squares regression of the observed data onto the mean image
         """
-        template = torch.from_numpy(self.template).to(self.device).float()
-        if self._pixel_weighting is not None:
-            mask = torch.from_numpy(self._pixel_weighting).to(self.device).float()
-            template = template * mask
-        # alpha = torch.sum(reference_frames * template[None, ...], dim=(1, 2)) / torch.sum(template ** 2)
-        alpha = torch.sum(reference_frames * template[None, ...], dim =(1, 2)) / torch.sum(reference_frames**2, dim = (1, 2))
+        template = self.template
+        if self.pixel_weighting is not None:
+            template = template * self.pixel_weighting
+        alpha = torch.sum(reference_frames * template[None, ...], dim=(1, 2)) / torch.sum(reference_frames ** 2,
+                                                                                          dim=(1, 2))
         shift = gradient_step * alpha[None, :]
 
-        shift = torch.nan_to_num(shift, nan=0.0, posinf=0.0, neginf=0.0)
+        shift = torch.nan_to_num(shift, nan=0.0, posinf=0.0, neginf=0.0).permute(1, 0) #Shape (frames, 2)
 
         result = result.reshape(height, width, num_frames).permute(2, 0, 1)
-        return result.cpu().numpy(), shift.cpu().numpy().T
+
+        return result, shift, alpha
+
+    @property
+    def gradient(self) -> torch.Tensor | None:
+        """
+        A (pixels, 2) tensor describing the gradients in X and Y dimensions
+        """
+        return self._gradient
+
+    @property
+    def gradient_projector(self) -> torch.Tensor | None:
+        return self._gradient_projector
+    def compute_gradient_step(self,
+                              shifts: torch.Tensor,
+                              alpha: torch.Tensor):
+        """
+        The shifts computed by the gradient strategy are at the scale of the template image. This routine computes the
+        gradient coefficients that are used to correct the i-th frame of data, this routine returns w / alpha
+
+        Args:
+            shifts (torch.Tensor): Shape (num_frames, 2). The gradient shifts in each dimension, at the scale of the template
+            alpha (torch.Tensor): Shape (num_frames). The scale mismatch between the template and the frames
+        """
+        gradient_steps = shifts / alpha[:, None]
+        gradient_steps = torch.nan_to_num(gradient_steps, nan=0.0, posinf=0.0, neginf=0.0)
+        return gradient_steps
+
+    def _correct_singlebatch(
+            self,
+            reference_frames: np.ndarray,
+            target_frames: Optional[np.ndarray],
+            apply_alpha_correction: bool = True
+    ) -> tuple[np.ndarray, np.ndarray]:
+        result, shifts, _ = self.correction_routine(reference_frames,
+                                                         target_frames)
+
+
+        return result.cpu().numpy(), shifts.cpu().numpy()
 
     def compute_template(
             self,
             frames: masknmf.ArrayLike | masknmf.LazyFrameLoader
     ):
-        display("compute_template just selects the first frame as the template")
-        self._template = frames[0].squeeze(0)
-        self._compute_gradient_matrix()
+        self.template = frames[0].squeeze(0)
 
     def _compute_gradient_matrix(self):
         """
         Computes the gradient design matrix used for the motion correction
         :return:
         """
-        f0 = torch.from_numpy(self._template)
+        f0 = self.template
         dfdx_orig = torch.nn.functional.pad(
             (f0[:, 2:] - f0[:, :-2]) / 2, (1, 1), mode="constant"
         )  # x-gradient [H, W]
@@ -591,9 +670,9 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
 
 
 
-        if self._pixel_weighting is not None:
-            f0 = f0 * torch.from_numpy(self._pixel_weighting).to(f0.device).float()
-            mask = torch.from_numpy(self._pixel_weighting).to(dfdx_orig.device).float()
+        if self.pixel_weighting is not None:
+            f0 = f0 * self.pixel_weighting
+            mask =self.pixel_weighting
             dfdx = dfdx_orig * mask
             dfdy = dfdy_orig * mask
         else:
@@ -617,8 +696,8 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
         AtA_inv = torch.linalg.inv(A.T @ A)  # [2, 2]
         A_projector = AtA_inv @ A.T  # [2, H*W]
 
-        self._gradient = torch.stack([dfdx_orig.flatten(), dfdy_orig.flatten()], dim=1).float().cpu().numpy() ## The design matrix doesn't change
-        self._gradient_projector = A_projector.cpu().numpy() ## The projector can be orthogonalized w.r.t. f0
+        self._gradient = torch.stack([dfdx_orig.flatten(), dfdy_orig.flatten()], dim=1).to(self.dtype).to(self.device) ## The design matrix doesn't change
+        self._gradient_projector = A_projector.to(self.dtype).to(self.device) ## The projector can be orthogonalized w.r.t. f0
 
 
 
