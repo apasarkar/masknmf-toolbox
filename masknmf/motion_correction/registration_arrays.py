@@ -490,6 +490,7 @@ class GradientRegistrationArray(ArrayLike):
         self._gradient_steps = None
         self._gradient_steps_mean = None
         self._gradient = None
+        self._include_mean = True
         self._extract_lowrank_shifts()
 
     @property

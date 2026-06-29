@@ -1197,9 +1197,6 @@ def pmd_decomposition(
 
     if frame_batch_size >= num_frames:
         dataset = torch.from_numpy(dataset[:]).to(device).to(dtype)
-        move_to_torch = False
-    else:
-        move_to_torch = True
 
     if pixel_weighting is None:
         pixel_weighting = torch.ones((fov_dim1, fov_dim2), device=device, dtype=dtype)
@@ -1280,10 +1277,7 @@ def pmd_decomposition(
         for j in dim_2_iters:
             slice_dim1 = slice(k, k + block_sizes[0])
             slice_dim2 = slice(j, j + block_sizes[1])
-            if move_to_torch:
-                current_data_for_fit = torch.from_numpy(dataset[frames, slice_dim1, slice_dim2]).to(device).to(dtype)
-            else:
-                current_data_for_fit = dataset[frames, slice_dim1, slice_dim2]
+            current_data_for_fit = torch.as_tensor(dataset[frames, slice_dim1, slice_dim2], device=device, dtype=dtype)
 
             if detrender is not None:
                 curr_shape = current_data_for_fit.shape
