@@ -561,6 +561,8 @@ class GradientRegistrationArray(ArrayLike):
         frame_indexer, item = self._parse_indices(item)
 
         gradient_step_used = self.gradient_steps[frame_indexer, :]
+        if gradient_step_used.ndim == 1:
+            gradient_step_used = gradient_step_used[None, :]
 
         if not self.include_mean:
             if gradient_step_used.ndim > self._gradient_steps_mean.ndim:
@@ -576,7 +578,7 @@ class GradientRegistrationArray(ArrayLike):
             gradient_crop = self.gradient
 
         grad_movie = gradient_crop @ gradient_step_used.T
-        grad_movie = grad_movie.permute(2, 0, 1).to(self.output_device)
+        grad_movie = grad_movie.movedim(-1, 0).to(self.output_device)
 
         return data_subset - grad_movie
 
