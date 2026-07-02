@@ -2861,7 +2861,7 @@ class DemixingState(SignalProcessingState):
                                                         torch.mean(self.factorized_ring_term[1], dim=1, keepdim=True)))
         else:
             mean_used = self.uv_mean
-        self.b = regression_update.baseline_update(mean_used, self.a, self.c)
+        self.b = regression_update.baseline_update(mean_used, self.a, self.c) * 0
 
     def lowrank_ring_update(self,
                             x: torch.tensor):
