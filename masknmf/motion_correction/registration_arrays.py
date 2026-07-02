@@ -482,6 +482,8 @@ class GradientRegistrationArray(ArrayLike):
     def __init__(self,
                  raw_data: VoltageArray,
                  strategy: GradientMotionCorrector,
+                 gradient: torch.Tensor | None = None,
+                 gradient_steps: torch.Tensor | None = None,
                  output_device: str | None = None):
 
         self._dataset = raw_data
@@ -491,7 +493,12 @@ class GradientRegistrationArray(ArrayLike):
         self._gradient_steps_mean = None
         self._gradient = None
         self._include_mean = True
-        self._extract_lowrank_shifts()
+        if gradient is not None and gradient_steps is not None:
+            self._gradient = gradient.reshape(self.shape[1], self.shape[2], 2).to(self.strategy.device).to(self.dtype)
+            self._gradient_steps = gradient_steps.to(self.strategy.device).to(self.dtype)
+            self._gradient_steps_mean = torch.mean(self._gradient_steps, dim = 0)
+        else:
+            self._extract_lowrank_shifts()
 
     @property
     def shape(self) -> Tuple[int, int, int]:
@@ -531,12 +538,21 @@ class GradientRegistrationArray(ArrayLike):
 
     @property
     def gradient_steps(self) -> torch.Tensor | None:
+        """
+        Shape (frames, 2)
+        :return:
+        """
         return self._gradient_steps
 
 
     @property
     def gradient(self) -> torch.Tensor | None:
+        """
+        Shape (height, width, 2)
+        :return:
+        """
         return self._gradient
+
     def _extract_lowrank_shifts(self):
         batch_size = self.strategy.batch_size
         num_iters = math.ceil(self.shape[0] / batch_size)
