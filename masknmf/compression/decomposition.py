@@ -747,7 +747,8 @@ def _temporal_basis_pca(temporal_basis: torch.tensor,
 
 def blockwise_decomposition(
         video_subset: torch.tensor,
-        subset_pixel_weighting: torch.tensor,
+        subset_pixel_weighting: torch.Tensor,
+        subset_frame_weighting: torch.Tensor,
         max_components: int,
         spatial_avg_factor: int,
         temporal_avg_factor: int,
@@ -761,6 +762,7 @@ def blockwise_decomposition(
 
     first_spatial, first_temporal, subset_mean, subset_noise_std = blockwise_decomposition_singlepass(video_subset,
                                                                        subset_pixel_weighting,
+                                                                       subset_frame_weighting,
                                                                        max_components,
                                                                        spatial_avg_factor,
                                                                        temporal_avg_factor,
@@ -814,7 +816,8 @@ def blockwise_decomposition(
     #     return final_spatial, final_temporal
 def blockwise_decomposition_singlepass(
         video_subset: torch.tensor,
-        subset_pixel_weighting: torch.tensor,
+        subset_pixel_weighting: torch.Tensor,
+        subset_frame_weighting: torch.Tensor,
         max_components: int,
         spatial_avg_factor: int,
         temporal_avg_factor: int,
@@ -846,6 +849,7 @@ def blockwise_decomposition_singlepass(
 
     subset = subset.permute(1, 2, 0)
     subset_weighted = subset * subset_pixel_weighting.to(device).to(dtype)[:, :, None]
+    subset_weighted *= subset_frame_weighting[None, None, :]
 
     if spatial_avg_factor != 1:
         spatial_pooled_subset = spatial_downsample(subset_weighted, spatial_avg_factor)
@@ -944,7 +948,8 @@ def residual_std_calculation(spatial_decomposition: torch.tensor,
 
 def blockwise_decomposition_with_rank_selection(
         video_subset: torch.tensor,
-        subset_pixel_weighting: torch.tensor,
+        subset_pixel_weighting: torch.Tensor,
+        subset_frame_weighting: torch.Tensor,
         max_components: int,
         max_consecutive_failures: int,
         spatial_roughness_threshold: float,
@@ -961,6 +966,7 @@ def blockwise_decomposition_with_rank_selection(
     local_spatial_basis, local_temporal_basis, subset_mean, subset_noise_std = blockwise_decomposition(
         video_subset,
         subset_pixel_weighting,
+        subset_frame_weighting,
         max_components,
         spatial_avg_factor,
         temporal_avg_factor,
@@ -1037,6 +1043,7 @@ def threshold_heuristic(
     sim_mean = torch.zeros((d1, d2), device=device, dtype=dtype)
     sim_noise_normalizer = torch.ones((d1, d2), device=device, dtype=dtype)
     pixel_weighting = torch.ones((d1, d2), device=device, dtype=dtype)
+    frame_weighting = torch.ones(t, device=device, dtype=dtype)
     max_components = num_comps
 
     for k in tqdm(range(iters)):
@@ -1047,6 +1054,7 @@ def threshold_heuristic(
         spatial, temporal, _, _ = blockwise_decomposition(
             sim_data,
             pixel_weighting,
+            frame_weighting,
             max_components,
             spatial_avg_factor,
             temporal_avg_factor,
@@ -1099,6 +1107,7 @@ def pmd_decomposition(
         window_chunks: Optional[int] = None,
         compute_normalizer: bool = True,
         pixel_weighting: Optional[np.ndarray] = None,
+        frame_weighting: np.ndarray | torch.Tensor | None = None,
         spatial_denoiser: Optional[torch.nn.Module] = None,
         temporal_denoiser: Optional[torch.nn.Module] = None,
         detrender: Optional[SplineDetrenderBase] = None,
@@ -1125,6 +1134,7 @@ def pmd_decomposition(
          compute_normalizer (bool): Whether or not we estimate a pixelwise noise variance. If False, the normalizer is set to 1 (no normalization).
          pixel_weighting (Optional[np.ndarray]): Shape (fov_dim1, fov_dim2). We weight the data by this value to estimate a cleaner spatial basis. The pixel_weighting
             should intuitively boost the relative variance of pixels containing signal to those that do not contain signal.
+        frame_Weighting (np.ndarray | torch.Tensor | None): Shape (num_frames,). Weight certain frames of data as being "more important" in learning the low-rank data subspace
         spatial_denoiser (Optional[torch.nn.Module]): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
         temporal_denoiser (Optional[torch.nn.Module]): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
         device ("auto" | "cuda" | "cpu"): Which device the computations should be performed on.
@@ -1202,6 +1212,11 @@ def pmd_decomposition(
         pixel_weighting = torch.ones((fov_dim1, fov_dim2), device=device, dtype=dtype)
     else:
         pixel_weighting = torch.from_numpy(pixel_weighting).to(device).to(dtype)
+
+    if frame_weighting is None:
+        frame_weighting = torch.ones(num_frames, device=device, dtype=dtype)
+    else:
+        frame_weighting = torch.as_tensor(frame_weighting, device=device, dtype=dtype)
 
     ## Define
     dim_1_iters = list(
@@ -1297,6 +1312,7 @@ def pmd_decomposition(
             ) = blockwise_decomposition_with_rank_selection(
                 current_data_for_fit,
                 pixel_weighting[slice_dim1, slice_dim2],
+                frame_weighting,
                 max_components,
                 max_consecutive_failures,
                 spatial_roughness_threshold,
