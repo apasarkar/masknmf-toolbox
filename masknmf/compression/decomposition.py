@@ -1206,12 +1206,12 @@ def pmd_decomposition(
         max_components = int(len(frames) // temporal_avg_factor)
 
     if frame_batch_size >= num_frames:
-        dataset = torch.from_numpy(dataset[:]).to(device).to(dtype)
+        dataset = torch.as_tensor(dataset[:], device=device, dtype=dtype)
 
     if pixel_weighting is None:
         pixel_weighting = torch.ones((fov_dim1, fov_dim2), device=device, dtype=dtype)
     else:
-        pixel_weighting = torch.from_numpy(pixel_weighting).to(device).to(dtype)
+        pixel_weighting = torch.as_tensor(pixel_weighting, device=device, dtype=dtype)
 
     if frame_weighting is None:
         frame_weighting = torch.ones(num_frames, device=device, dtype=dtype)
