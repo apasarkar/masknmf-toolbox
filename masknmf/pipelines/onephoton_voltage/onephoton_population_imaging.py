@@ -406,8 +406,10 @@ class OnePhotonCulturePipeline(BasePipeline):
                 else:
                     raise ValueError("Invalid MotionCorrectionConfig input")
             else:
+                negative_indicator = True if indicator_sign == "negative" else False
+                print(f"negative indicator is {negative_indicator}")
                 mov = masknmf.VoltageArray(data,
-                                           negative_indicator=True if indicator_sign == "negative" else False,
+                                           negative_indicator=negative_indicator,
                                            include_mean=True,
                                            device=device)
 
@@ -416,7 +418,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                 corrector = masknmf.GradientMotionCorrector(template=mean_img)
                 moco_array = masknmf.GradientRegistrationArray(mov,
                                                                corrector,
-                                                               output_device='cuda')
+                                                               output_device=device)
 
             display("Running Compression")
 
