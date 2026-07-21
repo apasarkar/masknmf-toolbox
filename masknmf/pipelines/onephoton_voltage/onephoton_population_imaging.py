@@ -311,7 +311,8 @@ class OnePhotonCulturePipeline(BasePipeline):
             for corr_threshold, support_threshold in [(0.8, 0.7), (0.8, 0.5)]:
                 curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
                                                       detrender=None,  # If we truncate the frames, detrending should be off
-                                                      sign="positive")  # Only prioritize positive deviations for 2p calcium imaging
+                                                      sign="positive",
+                                                      residual_threshold=0.1)  # Only prioritize positive deviations to pick spikes
                 curr_nmf_conf = NMFConfig(support_threshold=(0.95, support_threshold),
                                           ring_model_start_pt=None,
                                           merge_overlap_threshold=0.9,
@@ -391,6 +392,30 @@ class OnePhotonCulturePipeline(BasePipeline):
                 """
 
         device = torch_select_device()
+
+        ## Decide whether to motion correct data or not. You must have access to raw data
+        negative_indicator = True if indicator_sign == "negative" else False
+        if isinstance(self.motion_correct_config, str):
+            if self.motion_correct_config.lower() == "skip":
+                moco_array = masknmf.VoltageArray(data,
+                                                  negative_indicator=negative_indicator,
+                                                  include_mean=True,
+                                                  device=device)
+            else:
+                raise ValueError("Invalid MotionCorrectionConfig input")
+        else:
+            mov = masknmf.VoltageArray(data,
+                                       negative_indicator=negative_indicator,
+                                       include_mean=True,
+                                       device=device)
+
+            ## TODO: The template estimation should be something the user can more cleanly specify
+            mean_img = torch.mean(mov[:300], dim=0)
+            corrector = masknmf.GradientMotionCorrector(template=mean_img)
+            moco_array = masknmf.GradientRegistrationArray(mov,
+                                                           corrector,
+                                                           output_device=device)
+
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
                 if not os.path.exists(self.outpath_compression):
@@ -399,31 +424,10 @@ class OnePhotonCulturePipeline(BasePipeline):
             else:
                 raise ValueError(f"If compress_config is a string, it can only be `skip`")
         else:
-            ## Decide whether to motion correct data or not
-            if isinstance(self.motion_correct_config, str):
-                if self.motion_correct_config.lower() == "skip":
-                    moco_array = data
-                else:
-                    raise ValueError("Invalid MotionCorrectionConfig input")
-            else:
-                negative_indicator = True if indicator_sign == "negative" else False
-                print(f"negative indicator is {negative_indicator}")
-                mov = masknmf.VoltageArray(data,
-                                           negative_indicator=negative_indicator,
-                                           include_mean=True,
-                                           device=device)
-
-                ## TODO: The template estimation should be something the user can more cleanly specify
-                mean_img = torch.mean(mov[:300], dim=0)
-                corrector = masknmf.GradientMotionCorrector(template=mean_img)
-                moco_array = masknmf.GradientRegistrationArray(mov,
-                                                               corrector,
-                                                               output_device=device)
 
             display("Running Compression")
 
             ## First add in the run-specific parameters to the config object:
-            self.compress_config.device=device
             if self.compress_config.frame_weighting is not None:
                 self.compress_config.frame_weighting *= active_frames.astype(self.compress_config.frame_weighting.dtype)
             else:
@@ -432,9 +436,9 @@ class OnePhotonCulturePipeline(BasePipeline):
 
             ## Make the strategy object
             if isinstance(self.compress_config, CompressConfig):
-                compress_strategy = CompressStrategy(**asdict(self.compress_config))
+                compress_strategy = CompressStrategy(device=device, **asdict(self.compress_config))
             elif isinstance(self.compress_config, CompressDenoiseConfig):
-                compress_strategy = CompressDenoiseStrategy(**asdict(self.compress_config))
+                compress_strategy = CompressDenoiseStrategy(device=device, **asdict(self.compress_config))
             else:
                 raise ValueError("Invalid config")
 
@@ -442,7 +446,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             recording_seconds = num_frames / frame_rate
             window = int(0.05 * frame_rate)  # rolling window time interval
             sigma = max(2.0, 0.01 * frame_rate)  # less smoothing
-            num_knots = max(4, int(recording_seconds / 0.05))  # one knot per 0.05 seconds
+            num_knots = max(4, int(recording_seconds / 0.05))  # one knot per 0.1 seconds
 
             detrender_device = (
                 torch_select_device() if self.device == "auto" else self.device
@@ -456,9 +460,10 @@ class OnePhotonCulturePipeline(BasePipeline):
                 device=detrender_device,
             )
 
+            print(f'compress strategy frame weighting is {compress_strategy._frame_weighting}')
             compress_strategy.detrender = detrender
             compress_strategy.frame_batch_size = self.frame_batch_size
-
+            # raise ValueError("Just a test")
             compressed_results = compress_strategy.compress(moco_array)
             compressed_results.export(self.outpath_compression)
 

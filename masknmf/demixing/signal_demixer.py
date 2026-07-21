@@ -3036,8 +3036,7 @@ class DemixingState(SignalProcessingState):
         new_vector = torch.sparse_coo_tensor(
             torch.stack([rows * 0, columns]), values, (1, support_data.shape[1])
         ).coalesce()
-        boolean_indices = new_vector.to_dense().squeeze().bool()
-
+        boolean_indices = new_vector.to_dense().squeeze(0).bool()
         ## Check for min brightness if applicable
         if min_brightness is not None:
             if self.detrender is not None and False:
