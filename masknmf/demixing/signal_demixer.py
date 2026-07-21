@@ -2861,7 +2861,7 @@ class DemixingState(SignalProcessingState):
                                                         torch.mean(self.factorized_ring_term[1], dim=1, keepdim=True)))
         else:
             mean_used = self.uv_mean
-        self.b = regression_update.baseline_update(mean_used, self.a, self.c)
+        self.b = regression_update.baseline_update(mean_used, self.a, self.c) * 0
 
     def lowrank_ring_update(self,
                             x: torch.tensor):
@@ -3036,8 +3036,7 @@ class DemixingState(SignalProcessingState):
         new_vector = torch.sparse_coo_tensor(
             torch.stack([rows * 0, columns]), values, (1, support_data.shape[1])
         ).coalesce()
-        boolean_indices = new_vector.to_dense().squeeze().bool()
-
+        boolean_indices = new_vector.to_dense().squeeze(0).bool()
         ## Check for min brightness if applicable
         if min_brightness is not None:
             if self.detrender is not None and False:
@@ -3414,9 +3413,11 @@ class DemixingState(SignalProcessingState):
             self.pmd_obj.v,
             self.a,
             self.c,
-            pmd_mean_img=self.pmd_obj.mean_img,
-            pmd_var_img=self.pmd_obj.var_img,
-            pmd_u_projector=self.pmd_obj.u_local_projector,
+            mean_img=self.pmd_obj.mean_img,
+            var_img=self.pmd_obj.var_img,
+            u_local_projector=self.pmd_obj.u_local_projector,
+            spatial_trend_basis=self.pmd_obj.spatial_trend_basis,
+            temporal_trend_basis=self.pmd_obj.temporal_trend_basis,
             factorized_bkgd_term1 = self.factorized_ring_term[0],
             factorized_bkgd_term2 = self.factorized_ring_term[1],
             b = self.b.squeeze(),

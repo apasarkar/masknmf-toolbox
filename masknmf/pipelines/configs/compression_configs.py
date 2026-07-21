@@ -14,9 +14,10 @@ class CompressConfig:
     max_consecutive_failures: int = 1
     spatial_avg_factor: int = 1
     temporal_avg_factor: int = 1
-    compute_normalizer: Optional[bool] = True
-    pixel_weighting: Optional[np.ndarray] = None
-    detrender: Optional[SplineDetrenderBase] = None
+    compute_normalizer: bool | None = True
+    pixel_weighting: np.ndarray | None = None
+    frame_weighting: np.ndarray | None = None
+    detrender: SplineDetrenderBase | None = None
 
 @dataclass
 class CompressDenoiseConfig:
@@ -27,8 +28,9 @@ class CompressDenoiseConfig:
     max_consecutive_failures: int = 1
     spatial_avg_factor: int = 1
     temporal_avg_factor: int = 1
-    compute_normalizer: Optional[bool] = True
-    pixel_weighting: Optional[np.ndarray] = None
+    compute_normalizer: bool | None = True
+    pixel_weighting: np.ndarray | None = None
+    frame_weighting: np.ndarray | None = None
     noise_variance_quantile: float = 0.3
     num_epochs: int = 10
-    detrender: Optional[SplineDetrenderBase] = None
+    detrender: SplineDetrenderBase | None = None

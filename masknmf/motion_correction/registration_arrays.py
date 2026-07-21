@@ -1,5 +1,5 @@
 import math
-from typing import Optional, Callable, Union
+from typing import Optional, Callable, Union, Tuple
 import numpy as np
 from numpy.typing import DTypeLike
 
@@ -239,8 +239,6 @@ class RegistrationArray(LazyFrameLoader, Serializer):
         class_from_disk.block_centers = block_centers
         return class_from_disk
 
-
-
 class FilteredArray(LazyFrameLoader):
     def __init__(
         self,
@@ -349,3 +347,254 @@ class FilteredArray(LazyFrameLoader):
                 output.append(self.filter_function(curr_frames).cpu())
 
             return torch.concatenate(output, dim=0).numpy()
+
+
+class VoltageArray(masknmf.ArrayLike):
+
+    def __init__(self,
+                 dataset: ArrayLike,
+                 negative_indicator: bool = True,
+                 include_mean: bool = True,
+                 device='cuda',
+                 batch_size: int = 200):
+        """
+        Array-like object for viewing inverted, mean subtracted, and/or raw voltage data
+        Args:
+            dataset (masknmf.ArrayLike): Shape (num_frames, height, width)
+            negative_indicator (bool): True if indicator is negatively tuned, else False
+            include_mean (bool): If True, includes the mean into the "getitem" call. If false, getitem shows the "mean subtracted" movie
+            device (str): Which device to perform computations/return the tensor from getitem
+        """
+        self._dataset = dataset
+        self._device = device
+        self._batch_size = batch_size
+        self._negative_indicator = negative_indicator
+        self._compute_mean()
+        self._include_mean = include_mean
+
+    @property
+    def batch_size(self) -> int:
+        return self._batch_size
+
+    @batch_size.setter
+    def batch_size(self, new_size: int):
+        self._batch_size = new_size
+
+    def _compute_mean(self):
+        num_frames = self.shape[0]
+        cumulated_mean = torch.zeros(self.shape[1], self.shape[2], dtype=self.dtype, device=self.device)
+        num_batches = math.ceil(self.shape[0] / self.batch_size)
+        for ind in range(num_batches):
+            start_pt = ind * self.batch_size
+            end_pt = min(self.shape[0], start_pt + self.batch_size)
+            data_subset = self._dataset[start_pt:end_pt]
+            if isinstance(data_subset, np.ndarray):
+                subset = torch.from_numpy(data_subset).to(self.device).to(self.dtype)
+            elif isinstance(data_subset, torch.Tensor):
+                subset = data_subset.to(self.device).to(self.dtype)
+            else:
+                raise ValueError("Calling getitem on dataset should return either a torch tensor or np.ndarray")
+            cumulated_mean += torch.sum(subset, dim=0) / num_frames
+        self._mean_image = cumulated_mean
+
+    @property
+    def include_mean(self) -> bool:
+        return self._include_mean
+
+    @include_mean.setter
+    def include_mean(self, new_flag: bool):
+        self._include_mean = new_flag
+
+    @property
+    def negative_indicator(self) -> bool:
+        return self._negative_indicator
+
+    @property
+    def device(self) -> str:
+        return self._device
+
+    @property
+    def mean_image(self) -> torch.Tensor:
+        return self._mean_image
+
+    @property
+    def dtype(self) -> torch.dtype:
+        """
+        data type
+        """
+        return torch.float32
+
+    @property
+    def shape(self) -> Tuple[int, int, int]:
+        return self._dataset.shape
+
+    @property
+    def nbytes(self) -> int:
+        return math.prod(self.shape) * self.dtype.itemsize
+
+    def __getitem__(self,
+                    item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> torch.Tensor:
+        return self._get(item, include_mean=self.include_mean)
+
+    def _get(self,
+             item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+             include_mean: bool | None = None) -> torch.Tensor:
+        ## Private helper method designed to avoid race conditions associated with state variables like include_mean
+        if include_mean is None:
+            include_mean = self.include_mean
+
+        frame_indexer, item = self._parse_indices(item)
+        data_subset = torch.as_tensor(self._dataset[item]).to(self.device).to(self.dtype) ## Parse indices first to ensure consistent output
+
+        # Check if spatial cropping occurred, deal with mean image accordingly
+        if isinstance(item, tuple):
+            mean_crop = self._mean_image[item[1:]]
+        else:
+            mean_crop = self._mean_image
+
+        if data_subset.ndim > mean_crop.ndim: #This means that there is a temporal dimension, which means we need to broadcast
+            mean_crop = mean_crop[None, ...]
+
+        if self.negative_indicator:
+            data_subset *= -1
+            if include_mean:
+                data_subset += 2 * mean_crop
+            else:
+                data_subset += mean_crop
+        else:
+            if include_mean:
+                pass
+            else:
+                data_subset -= mean_crop
+        return data_subset
+
+
+
+
+class GradientRegistrationArray(ArrayLike):
+    """
+    This is a special registration array which provides fast slicing in all dimensions (pixels AND frames)
+    The key idea is that the per-frame correction (which uses the gradient of the template image) is low-rank,
+    so we can adaptively compute frames/pixels of this movie very quickly if we just store the low-rank info
+
+    This array is not meant to be serialized
+    """
+    def __init__(self,
+                 raw_data: VoltageArray,
+                 strategy: GradientMotionCorrector,
+                 gradient: torch.Tensor | None = None,
+                 gradient_steps: torch.Tensor | None = None,
+                 output_device: str | None = None):
+
+        self._dataset = raw_data
+        self._strategy = strategy
+        self._output_device = self.strategy.device if output_device is None else output_device
+        self._gradient_steps = None
+        self._gradient_steps_mean = None
+        self._gradient = None
+        self._include_mean = True
+        if gradient is not None and gradient_steps is not None:
+            self._gradient = gradient.reshape(self.shape[1], self.shape[2], 2).to(self.strategy.device).to(self.dtype)
+            self._gradient_steps = gradient_steps.to(self.strategy.device).to(self.dtype)
+            self._gradient_steps_mean = torch.mean(self._gradient_steps, dim = 0)
+        else:
+            self._extract_lowrank_shifts()
+
+    @property
+    def shape(self) -> Tuple[int, int, int]:
+        return self.raw_data.shape
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return self.strategy.dtype
+
+    @property
+    def output_device(self) -> str:
+        return self._output_device
+
+    @output_device.setter
+    def output_device(self, new_device:str):
+        self._output_device = new_device
+
+    @property
+    def nbytes(self) -> int:
+        return math.prod(self.shape) * self.dtype.itemsize
+
+    @property
+    def raw_data(self) -> VoltageArray:
+        return self._dataset
+
+    @property
+    def include_mean(self) -> bool:
+        return self._include_mean
+
+    @include_mean.setter
+    def include_mean(self, new_flag: bool):
+        self._include_mean = new_flag
+
+    @property
+    def strategy(self) -> GradientMotionCorrector:
+        return self._strategy
+
+    @property
+    def gradient_steps(self) -> torch.Tensor | None:
+        """
+        Shape (frames, 2)
+        :return:
+        """
+        return self._gradient_steps
+
+
+    @property
+    def gradient(self) -> torch.Tensor | None:
+        """
+        Shape (height, width, 2)
+        :return:
+        """
+        return self._gradient
+
+    def _extract_lowrank_shifts(self):
+        batch_size = self.strategy.batch_size
+        num_iters = math.ceil(self.shape[0] / batch_size)
+
+        gradient_steps = []
+        for k in tqdm(range(num_iters)):
+            start = k * batch_size
+            end = min(start + batch_size, self.shape[0])
+            subset = torch.as_tensor(self.raw_data._get(slice(start,end), include_mean=True), device=self.strategy.device, dtype=self.dtype)
+            frames, shifts, scale = self.strategy.correction_routine(subset)
+            gradient_step = self.strategy.compute_gradient_step(shifts, scale)
+            gradient_steps.append(gradient_step)
+
+        self._gradient_steps = torch.concatenate(gradient_steps, dim=0) #Shape (frames, 2)
+        self._gradient_steps_mean = torch.mean(self._gradient_steps, dim = 0)
+        self._gradient = self.strategy.gradient.reshape(self.shape[1], self.shape[2], 2)
+
+    def __getitem__(self,
+                    item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> torch.Tensor:
+
+        data_subset = torch.as_tensor(self.raw_data._get(item, include_mean=self.include_mean), device=self.output_device, dtype=self.dtype)
+        frame_indexer, item = self._parse_indices(item)
+
+        gradient_step_used = self.gradient_steps[frame_indexer, :]
+        if gradient_step_used.ndim == 1:
+            gradient_step_used = gradient_step_used[None, :]
+
+        if not self.include_mean:
+            if gradient_step_used.ndim > self._gradient_steps_mean.ndim:
+                grad_sub = self._gradient_steps_mean[None, :]
+            else:
+                grad_sub = self._gradient_steps_mean
+            gradient_step_used -= grad_sub
+
+        # Check if spatial cropping occurred, deal with factorized tensors appropriately
+        if isinstance(item, tuple):
+            gradient_crop = self.gradient[item[1:]]
+        else:
+            gradient_crop = self.gradient
+
+        grad_movie = gradient_crop @ gradient_step_used.T
+        grad_movie = grad_movie.movedim(-1, 0).to(self.output_device)
+
+        return data_subset - grad_movie
+

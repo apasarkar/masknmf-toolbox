@@ -1,7 +1,7 @@
 from typing import *
 import numpy as np
 from masknmf import display
-from masknmf.compression import PMDArray
+from masknmf.compression import PMDArray, TrendArray
 from masknmf.demixing.demixing_arrays import ACArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulACArray, StaticBackgroundArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode, MultiunitBackgroundArray
 import torch
 from masknmf.utils import Serializer
@@ -86,9 +86,11 @@ class DemixingResults(Serializer):
         "a",
         "c",
         "b",
-        "pmd_mean_img",
-        "pmd_var_img",
-        "pmd_u_projector",
+        "mean_img",
+        "var_img",
+        "u_local_projector",
+        "spatial_trend_basis",
+        "temporal_trend_basis",
         "factorized_bkgd_term1",
         "factorized_bkgd_term2",
         "global_residual_correlation_image",
@@ -117,7 +119,8 @@ class DemixingResults(Serializer):
                        "static_background_array",
                        "standard_correlation_images",
                        "residual_correlation_images",
-                       "multiunit_background_array"
+                       "multiunit_background_array",
+                       "trend_array"
                        ]
     def __init__(
             self,
@@ -126,9 +129,11 @@ class DemixingResults(Serializer):
             v: torch.tensor,
             a: torch.sparse_coo_tensor,
             c: torch.tensor,
-            pmd_mean_img: Optional[torch.Tensor] = None,
-            pmd_var_img: Optional[torch.Tensor] = None,
-            pmd_u_projector: Optional[torch.sparse_coo_tensor] = None,
+            mean_img: Optional[torch.Tensor] = None,
+            var_img: Optional[torch.Tensor] = None,
+            u_local_projector: Optional[torch.sparse_coo_tensor] = None,
+            spatial_trend_basis: Optional[torch.Tensor] = None,
+            temporal_trend_basis: Optional[torch.Tensor] = None,
             factorized_bkgd_term1: Optional[torch.Tensor] = None,
             factorized_bkgd_term2: Optional[torch.Tensor] = None,
             b: Optional[torch.tensor] = None,
@@ -146,18 +151,25 @@ class DemixingResults(Serializer):
             multiunit_basis_term1: torch.Tensor | None = None,
             multiunit_basis_term2: torch.Tensor | None = None,
             device="cpu",
+            **kwargs
     ):
         """
         This class provides a convenient way to export all demixing result as array-like objects.
+
+        All input parameters must be symmetric with the arrays that demixing results manages.
+        For example, if PMDArray has u_local_projector as a constructor arg, the same name is used here
+
         Args:
             shape (tuple): (number of frames, field of view dimension 1, field of view dimension 2)
             u (torch.sparse_coo_tensor): shape (pixels, rank 1)
             v (torch.tensor): shape (rank 2, num_frames)
             a (torch.sparse_coo_tensor): shape (pixels, number of neural signals)
             c (torch.tensor): shape (number of frames, number of neural signals)
-            pmd_mean_img (Optional[torch.Tensor]): The mean image of the imaging data, used for reconstructing PMD Arrays
-            pmd_var_img (Optional[torch.Tensor]): The pixelwise noise variance image of the data, used for reconstructing PMD Arrays
-            pmd_u_projector (Optional[torch.sparse_coo_tensor]): A projection matrix used to project frames of data onto the PMD U subspace
+            mean_img (Optional[torch.Tensor]): The mean image of the imaging data, used for reconstructing PMD Arrays
+            var_img (Optional[torch.Tensor]): The pixelwise noise variance image of the data, used for reconstructing PMD Arrays
+            u_local_projector (Optional[torch.sparse_coo_tensor]): A projection matrix used to project frames of data onto the PMD U subspace
+            spatial_trend_basis (Optional[torch.Tensor]): Shape (num_pixels, basis_rank). The spatial trend basis identified by PMD
+            temporal_trend_basis (Optional[torch.Tensor]): Shape (basis_rank, num_frames). The temporal trend basis identified by PMD
             factorized_bkgd_term1: Optional[torch.Tensor]: tensor used to express low-rank background estimate
             factorized_bkgd_term2: Optional[torch.Tensor]: tensor used to express low-rank background estimate
             b (torch.tensor): Optional[torch.Tensor]. The per-pixel static baseline.
@@ -184,16 +196,23 @@ class DemixingResults(Serializer):
         self.flyweight.a = a.to(self._device).float().coalesce()
         self.flyweight.c = c.to(self._device).float()
 
-        self.flyweight.pmd_mean_img = pmd_mean_img.to(self._device) if pmd_mean_img is not None else torch.zeros(self.shape[1], self.shape[2], device=self._device)
-        self.flyweight.pmd_var_img = pmd_var_img.to(self._device) if pmd_var_img is not None else torch.ones(self.shape[1], self.shape[2], device=self._device)
-        ## Below two lines are for compatibility with existing results
-        self.flyweight.mean_img = self.flyweight.pmd_mean_img
-        self.flyweight.var_img = self.flyweight.pmd_var_img
+        self.flyweight.mean_img = mean_img.to(self._device) if mean_img is not None else torch.zeros(self.shape[1], self.shape[2], device=self._device)
+        self.flyweight.var_img = var_img.to(self._device) if var_img is not None else torch.ones(self.shape[1], self.shape[2], device=self._device)
 
         #This is called
-        self.flyweight.normalizer = self.flyweight.pmd_var_img
+        self.flyweight.normalizer = self.flyweight.var_img
 
-        self.flyweight.pmd_u_projector = pmd_u_projector.float().coalesce().to(self._device) if pmd_u_projector is not None else None
+        self.flyweight.u_local_projector = u_local_projector.float().coalesce().to(self._device) if u_local_projector is not None else None
+
+
+        if spatial_trend_basis is None or temporal_trend_basis is None:
+            self.flyweight.spatial_trend_basis = torch.zeros(self.u.shape[0], 1, dtype=self.u.dtype,
+                                                               device=self._device)
+            self.flyweight.temporal_trend_basis = torch.zeros((1, self.v.shape[1]), dtype=self.u.dtype,
+                                                               device=self._device)
+        else:
+            self.flyweight.spatial_trend_basis = spatial_trend_basis.to(self._device)
+            self.flyweight.temporal_trend_basis = temporal_trend_basis.to(self._device)
 
         if factorized_bkgd_term1 is None or factorized_bkgd_term2 is None:
             display("Background term empty")
@@ -267,6 +286,7 @@ class DemixingResults(Serializer):
         self._residual_array = None
         self._residual_correlation_images = None
         self._standard_correlation_images = None
+        self._trend_array = None
 
 
 
@@ -303,34 +323,31 @@ class DemixingResults(Serializer):
             arr.rescale = new_value
 
     @property
-    def pmd_mean_img(self) -> torch.Tensor:
-        return self.flyweight.pmd_mean_img
-
-    @property
     def mean_img(self) -> torch.Tensor:
-        """
-        Property added for compatibility purposes -- identical to pmd mean img
-        """
         return self.flyweight.mean_img
-
-    @property
-    def pmd_var_img(self) -> torch.Tensor:
-        return self.flyweight.pmd_var_img
 
     @property
     def var_img(self) -> torch.Tensor:
         """
-        Property added for compatibility purposes -- identical to pmd var img
+        This is the PMD Noise variance image
         """
         return self.flyweight.var_img
+
+    @property
+    def spatial_trend_basis(self) -> torch.Tensor | None:
+        return self.flyweight.spatial_trend_basis
+
+    @property
+    def temporal_trend_basis(self) -> torch.Tensor | None:
+        return self.flyweight.temporal_trend_basis
 
     @property
     def normalizer(self) -> torch.Tensor:
         return self.flyweight.normalizer
 
     @property
-    def pmd_u_projector(self) -> None | torch.Tensor:
-        return self.flyweight.pmd_u_projector
+    def u_local_projector(self) -> None | torch.Tensor:
+        return self.flyweight.u_local_projector
 
     @property
     def factorized_bkgd_term1(self) -> None | torch.Tensor:
@@ -549,6 +566,15 @@ class DemixingResults(Serializer):
                 rescale=self.rescale,
             )
         return self._pmd_array
+
+    @property
+    def trend_array(self) -> TrendArray:
+        if self._trend_array is None:
+            self._trend_array = TrendArray.from_flyweight(self.shape,
+                                          self.flyweight,
+                                          self.device)
+
+        return self._trend_array
 
     @property
     def fluctuating_background_array(self) -> FluctuatingBackgroundArray:

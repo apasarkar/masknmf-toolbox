@@ -14,7 +14,7 @@ from .strategies import (
     MotionCorrectionStrategy,
     GradientMotionCorrector
 )
-from .registration_arrays import RegistrationArray, FilteredArray
+from .registration_arrays import RegistrationArray, FilteredArray, VoltageArray, GradientRegistrationArray
 from .spatial_filters import (
     image_filter,
     gaussian_kernel,
@@ -30,6 +30,8 @@ from .moco_preprocessing import (
 __all__ = [
     "RegistrationArray",
     "FilteredArray",
+    "VoltageArray",
+    "GradientRegistrationArray",
     "RigidMotionCorrector",
     "PiecewiseRigidMotionCorrector",
     "DummyMotionCorrector",
