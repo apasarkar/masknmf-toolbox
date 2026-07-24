@@ -6,9 +6,55 @@ from masknmf.motion_correction.strategies import MotionCorrectionStrategy
 from masknmf.motion_correction.rigid_strategy import RigidMotionCorrector
 from typing import *
 import numpy as np
-from masknmf.motion_correction.registration_methods import register_frames_pwrigid
+from masknmf.motion_correction.registration_methods import register_frames_pwrigid, pwrigid_shift_estimation_routine, apply_pwrigid_shifts
 import math
 from tqdm import tqdm
+import copy
+
+
+def _axis_indices(indexer, dim: int) -> tuple[np.ndarray, bool]:
+    """
+    Normalize a single-axis indexer into an explicit array of positive indices.
+
+    Returns:
+        (indices, drop_axis). ``drop_axis`` is True for integer indexers, which remove the
+        axis from the result (matching numpy semantics).
+    """
+    if isinstance(indexer, (bool, np.bool_)):
+        raise IndexError("Scalar boolean indices are not supported")
+
+    if isinstance(indexer, (int, np.integer)):
+        i = int(indexer)
+        if i < 0:
+            i += dim
+        if not (0 <= i < dim):
+            raise IndexError(f"Index {indexer} is out of bounds for axis of size {dim}")
+        return np.array([i], dtype=np.int64), True
+
+    if isinstance(indexer, slice):
+        return np.arange(*indexer.indices(dim), dtype=np.int64), False
+
+    if isinstance(indexer, range):
+        return np.asarray(list(indexer), dtype=np.int64), False
+
+    arr = np.asarray(indexer)
+    if arr.dtype == np.bool_:
+        if arr.shape != (dim,):
+            raise IndexError(
+                f"Boolean mask of shape {arr.shape} does not match axis of size {dim}"
+            )
+        return np.nonzero(arr)[0].astype(np.int64), False
+
+    arr = arr.astype(np.int64, copy=True).ravel()
+    arr[arr < 0] += dim
+    if arr.size and (arr.min() < 0 or arr.max() >= dim):
+        raise IndexError(f"Index out of bounds for axis of size {dim}")
+    return arr, False
+
+def _is_contiguous_run(idx: np.ndarray) -> bool:
+    """True if ``idx`` is an ascending run with step 1 (so it can be read as a slice)."""
+    return idx.size > 0 and bool(np.all(np.diff(idx) == 1))
+
 
 class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
     _serialized = {
@@ -196,15 +242,13 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
             if reference_subset.ndim == 2:
                 reference_subset = reference_subset[None, ...]
 
-            ## TODO: Make a function that just computes the low-rank shift vectors and does not apply them
-            current_shifts = register_frames_pwrigid(reference_subset,
+            current_shifts = pwrigid_shift_estimation_routine(reference_subset,
                                                      template,
                                                      self.num_blocks,
                                                      self.overlaps,
                                                      self.max_rigid_shifts,
                                                      self.max_deviation_rigid,
-                                                     target_frames=None,
-                                                     pixel_weighting=pixel_weighting)[1]
+                                                     pixel_weighting=pixel_weighting)
             shifts_total.append(current_shifts.cpu()) ## Move to CPU to avoid overloading
 
         shifts_total = torch.concatenate(shifts_total, dim=0)
@@ -215,10 +259,141 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
             reference_movie: ArrayLike,
             target_movie: ArrayLike | None = None,
     ) -> ArrayLike:
-        ## TODO: Update this with actual implementation
+
         shift_data = self._compute_all_shifts(reference_movie)
-        return shift_data
+        return PiecewiseRigidRegistrationArray(reference_movie,
+                                               shift_data,
+                                               copy.deepcopy(self),
+                                               target_movie=target_movie)
 
+class PiecewiseRigidRegistrationArray(ArrayLike, Serializer):
 
+    def __init__(self,
+                 reference_movie: ArrayLike,
+                 shifts: torch.Tensor,
+                 strategy: PiecewiseRigidMotionCorrector,
+                 output_device: str = 'cpu',
+                 target_movie: ArrayLike | None = None):
+        self._reference_movie = reference_movie
+        self._shifts = shifts
+        self._strategy = strategy
+        self._device = self.strategy.device
+        self._output_device = output_device
+        if target_movie is None:
+            self._target_movie = self.reference_movie
+        else:
+            self._target_movie = target_movie
+
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
+
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        return self._target_movie.shape
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return torch.float32
+
+    @property
+    def nbytes(self) -> int:
+        return math.prod(self.shape) * self.dtype.itemsize
+
+    @property
+    def reference_movie(self) -> ArrayLike:
+        return self._reference_movie
+
+    @property
+    def target_movie(self) -> ArrayLike:
+        return self._target_movie
+
+    @property
+    def shifts(self) -> torch.Tensor:
+        return self._shifts
+
+    @property
+    def strategy(self) -> PiecewiseRigidMotionCorrector:
+        return self._strategy
+
+    @property
+    def output_device(self):
+        return self._output_device
+
+    @output_device.setter
+    def output_device(self, new_device:str):
+        self._output_device = new_device
+
+    def _corrected_roi(self,
+                       frames,
+                       row_slice,
+                       col_slice):
+        num_batches = math.ceil(frames.shape[0] / self.strategy.batch_size)
+
+        outputs = []
+        for k in range(num_batches):
+            start = k * self.strategy.batch_size
+            end = start + self.strategy.batch_size
+
+            ## Below routine intelligently slices the smallest subset of data possible
+            block = apply_pwrigid_shifts(self.target_movie,
+                                         self.shifts,
+                                         row_slice,
+                                         col_slice,
+                                         temporal_indices=frames[start:end],
+                                         device=self._device).to(self.output_device)
+            outputs.append(block)
+
+        return torch.concatenate(outputs, dim=0)
+
+    def __getitem__(self, idx):
+        frame_indexer, item = self._parse_indices(idx)
+
+        frames, _ = _axis_indices(frame_indexer, self.shape[0])
+
+        spatial = item[1:] if isinstance(item, tuple) else ()
+        spatial = tuple(spatial) + (slice(None),) * (2 - len(spatial))
+
+        rows, drop_rows = _axis_indices(spatial[0], self.shape[1])
+        cols, drop_cols = _axis_indices(spatial[1], self.shape[2])
+
+        if frames.size == 0 or rows.size == 0 or cols.size == 0:
+            empty = torch.empty(
+                (frames.size, rows.size, cols.size),
+                dtype=self.dtype,
+                device=self._output_device,
+            )
+            return self._drop_axes(empty, drop_rows, drop_cols)
+
+        row_lo, row_hi = int(rows.min()), int(rows.max())
+        col_lo, col_hi = int(cols.min()), int(cols.max())
+
+        row_slice = slice(row_lo, row_hi + 1, 1)
+        col_slice = slice(col_lo, col_hi + 1, 1)
+
+        block = self._corrected_roi(frames,
+                                    row_slice,
+                                    col_slice)
+
+        # Residual selection inside the bounding box. Only the (small) materialized block is
+        # touched here, so steps / fancy indices / boolean masks cost essentially nothing.
+        row_local = rows - row_lo
+        col_local = cols - col_lo
+        if not (_is_contiguous_run(row_local) and row_local.size == block.shape[1]):
+            block = block[:, torch.as_tensor(row_local, device=block.device), :]
+        if not (_is_contiguous_run(col_local) and col_local.size == block.shape[2]):
+            block = block[:, :, torch.as_tensor(col_local, device=block.device)]
+
+        block = block.to(self._output_device)
+        return self._drop_axes(block, drop_rows, drop_cols)
+
+    @staticmethod
+    def _drop_axes(block: torch.Tensor, drop_rows: bool, drop_cols: bool) -> torch.Tensor:
+        """Collapse axes selected by an integer index, meant to match numpy"""
+        if drop_cols:
+            block = block[:, :, 0]
+        if drop_rows:
+            block = block[:, 0]
+        return block
 
 

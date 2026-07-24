@@ -2,19 +2,22 @@ from .registration_methods import (
     apply_rigid_shifts,
     estimate_rigid_shifts,
     interpolate_to_border,
-    apply_displacement_vector_field,
-    generate_motion_field_from_pwrigid_shifts,
-    register_frames_pwrigid,
     register_frames_rigid,
+
+    ## Pwrigid functions
+    register_frames_pwrigid,
+    pwrigid_shift_estimation_routine,
+    apply_pwrigid_shifts
 )
 from .strategies import (
-    RigidMotionCorrector,
-    PiecewiseRigidMotionCorrector,
     DummyMotionCorrector,
     MotionCorrectionStrategy,
-    GradientMotionCorrector
 )
-from .registration_arrays import RegistrationArray, FilteredArray, VoltageArray, GradientRegistrationArray
+
+from .piecewise_rigid_strategy import PiecewiseRigidMotionCorrector
+from .rigid_strategy import RigidMotionCorrector
+from .gradient_strategy import GradientMotionCorrector, GradientRegistrationArray
+from .registration_arrays import RegistrationArray, FilteredArray, VoltageArray
 from .spatial_filters import (
     image_filter,
     gaussian_kernel,
