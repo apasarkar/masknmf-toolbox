@@ -8,6 +8,8 @@ from typing import *
 import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, LazyFrameLoader
 from tqdm import tqdm
+from masknmf.motion_correction.registration_arrays import OphysArray
+import copy
 
 class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
     """
@@ -80,8 +82,8 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
 
     def correction_routine(
             self,
-            reference_frames: np.ndarray,
-            target_frames: Optional[np.ndarray] = None,
+            reference_frames: np.ndarray | torch.Tensor | None,
+            target_frames: np.ndarray | torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Basic model: we want to register a frame F_1 to a template frame, F_0:
@@ -175,6 +177,7 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
     @property
     def gradient_projector(self) -> torch.Tensor | None:
         return self._gradient_projector
+
     def compute_gradient_step(self,
                               shifts: torch.Tensor,
                               alpha: torch.Tensor):
@@ -204,7 +207,7 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
 
     def compute_template(
             self,
-            frames: ArrayLike | LazyFrameLoader
+            frames: ArrayLike
     ):
         self.template = frames[0].squeeze(0)
 
@@ -252,6 +255,37 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
         self._gradient = torch.stack([dfdx_orig.flatten(), dfdy_orig.flatten()], dim=1).to(self.dtype).to(self.device) ## The design matrix doesn't change
         self._gradient_projector = A_projector.to(self.dtype).to(self.device) ## The projector can be orthogonalized w.r.t. f0
 
+    def _extract_all_shifts(self,
+                            reference_movie: OphysArray):
+        num_frames, height, width = reference_movie.shape
+        batch_size = self.batch_size
+        num_iters = math.ceil(num_frames / batch_size)
+
+        gradient_steps = []
+        total_shifts = []
+        for k in tqdm(range(num_iters)):
+            start = k * batch_size
+            end = min(start + batch_size, num_frames)
+            subset = torch.as_tensor(reference_movie._get(slice(start, end), include_mean=True), device=self.device,
+                                     dtype=self.dtype)
+            frames, shifts, scale = self.correction_routine(subset)
+            gradient_step = self.compute_gradient_step(shifts, scale)
+            gradient_steps.append(gradient_step.cpu())
+            total_shifts.append(shifts.cpu())
+
+        gradient_steps = torch.concatenate(gradient_steps, dim=0)  # Shape (frames, 2)
+        total_shifts = torch.concatenate(total_shifts, dim=0)
+        return gradient_steps, total_shifts
+
+    def motion_correct(self,
+                       reference_movie: OphysArray) -> ArrayLike:
+
+        gradient_steps, shifts = self._extract_all_shifts(reference_movie)
+        return GradientRegistrationArray(reference_movie,
+                                         copy.deepcopy(self),
+                                         gradient_steps,
+                                         shifts)
+
 
 
 class GradientRegistrationArray(ArrayLike):
@@ -260,28 +294,23 @@ class GradientRegistrationArray(ArrayLike):
     The key idea is that the per-frame correction (which uses the gradient of the template image) is low-rank,
     so we can adaptively compute frames/pixels of this movie very quickly if we just store the low-rank info
 
-    This array is not meant to be serialized
     """
     def __init__(self,
-                 raw_data: ArrayLike,
+                 raw_data: OphysArray,
                  strategy: GradientMotionCorrector,
-                 gradient: torch.Tensor | None = None,
-                 gradient_steps: torch.Tensor | None = None,
-                 output_device: str | None = None):
+                 gradient_steps: torch.Tensor,
+                 shifts: torch.Tensor,
+                 output_device: str = "cpu"):
 
-        self._dataset = raw_data
+        self._raw_data = raw_data
         self._strategy = strategy
-        self._output_device = self.strategy.device if output_device is None else output_device
-        self._gradient_steps = None
+        self._output_device = output_device
         self._gradient_steps_mean = None
-        self._gradient = None
+        self._gradient = self.strategy.gradient.reshape(self.shape[1], self.shape[2], 2).to(self.strategy.device).to(self.dtype)
+        self._shifts = shifts
+        self._gradient_steps = gradient_steps.to(self.strategy.device).to(self.dtype)
+        self._gradient_steps_mean = torch.mean(self._gradient_steps, dim=0)
         self._include_mean = True
-        if gradient is not None and gradient_steps is not None:
-            self._gradient = gradient.reshape(self.shape[1], self.shape[2], 2).to(self.strategy.device).to(self.dtype)
-            self._gradient_steps = gradient_steps.to(self.strategy.device).to(self.dtype)
-            self._gradient_steps_mean = torch.mean(self._gradient_steps, dim = 0)
-        else:
-            self._extract_lowrank_shifts()
 
     @property
     def shape(self) -> Tuple[int, int, int]:
@@ -305,7 +334,7 @@ class GradientRegistrationArray(ArrayLike):
 
     @property
     def raw_data(self) -> ArrayLike:
-        return self._dataset
+        return self._raw_data
 
     @property
     def include_mean(self) -> bool:
@@ -320,10 +349,19 @@ class GradientRegistrationArray(ArrayLike):
         return self._strategy
 
     @property
+    def shifts(self) -> torch.Tensor:
+        """
+        The shift estimates for all frames of the data. THe scale of these shifts are relative to the template used; see
+        GradientMotionCorrector for details
+        Shape (num_frames, 2)
+        """
+        return self._shifts
+
+    @property
     def gradient_steps(self) -> torch.Tensor | None:
         """
-        Shape (frames, 2)
-        :return:
+        The gradient steps (in the height and width dimensions respectively) that are applied to each frame of the
+        input data shape (frames, 2)
         """
         return self._gradient_steps
 
@@ -331,27 +369,10 @@ class GradientRegistrationArray(ArrayLike):
     @property
     def gradient(self) -> torch.Tensor | None:
         """
+        The template gradient image. The first image (gradient[:, :, 0]) is the height gradient and the second image is the width gradient
         Shape (height, width, 2)
-        :return:
         """
         return self._gradient
-
-    def _extract_lowrank_shifts(self):
-        batch_size = self.strategy.batch_size
-        num_iters = math.ceil(self.shape[0] / batch_size)
-
-        gradient_steps = []
-        for k in tqdm(range(num_iters)):
-            start = k * batch_size
-            end = min(start + batch_size, self.shape[0])
-            subset = torch.as_tensor(self.raw_data._get(slice(start,end), include_mean=True), device=self.strategy.device, dtype=self.dtype)
-            frames, shifts, scale = self.strategy.correction_routine(subset)
-            gradient_step = self.strategy.compute_gradient_step(shifts, scale)
-            gradient_steps.append(gradient_step)
-
-        self._gradient_steps = torch.concatenate(gradient_steps, dim=0) #Shape (frames, 2)
-        self._gradient_steps_mean = torch.mean(self._gradient_steps, dim = 0)
-        self._gradient = self.strategy.gradient.reshape(self.shape[1], self.shape[2], 2)
 
     def __getitem__(self,
                     item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> torch.Tensor:

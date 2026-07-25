@@ -124,7 +124,7 @@ class FilteredArray(LazyFrameLoader):
             return torch.concatenate(output, dim=0).numpy()
 
 
-class VoltageArray(ArrayLike):
+class OphysArray(ArrayLike):
 
     def __init__(self,
                  dataset: ArrayLike,
@@ -133,7 +133,7 @@ class VoltageArray(ArrayLike):
                  device='cuda',
                  batch_size: int = 200):
         """
-        Array-like object for viewing inverted, mean subtracted, and/or raw voltage data
+        Array-like object for viewing inverted, mean subtracted, and/or raw optical physiology data
         Args:
             dataset (masknmf.ArrayLike): Shape (num_frames, height, width)
             negative_indicator (bool): True if indicator is negatively tuned, else False
