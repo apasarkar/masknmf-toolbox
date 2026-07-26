@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
 from masknmf.utils import Serializer
 import torch
@@ -10,6 +12,8 @@ from masknmf.motion_correction.registration_methods import register_frames_pwrig
 import math
 from tqdm import tqdm
 import copy
+
+from masknmf.utils._serialization import save_dict, load_dict
 
 
 def _axis_indices(indexer, dim: int) -> tuple[np.ndarray, bool]:
@@ -268,6 +272,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
 
 class PiecewiseRigidRegistrationArray(ArrayLike, Serializer):
 
+    _serialized = {'shifts'}
     def __init__(self,
                  reference_movie: ArrayLike,
                  shifts: torch.Tensor,
@@ -395,5 +400,22 @@ class PiecewiseRigidRegistrationArray(ArrayLike, Serializer):
         if drop_rows:
             block = block[:, 0]
         return block
+
+    def export(self, path: str | Path):
+        d_array = self._to_dict()
+        d_strategy = self.strategy._to_dict()
+        save_dict(d_array, filename=path, group=__class__.__name__)
+        save_dict(d_strategy, filename=path, exists_ok=True, group=PiecewiseRigidMotionCorrector.__name__)
+
+    @classmethod
+    def from_hdf5(cls,
+                  path,
+                  reference_movie: ArrayLike,
+                  target_movie: ArrayLike | None = None,
+                  **kwargs):
+        strat = PiecewiseRigidMotionCorrector(load_dict(path, PiecewiseRigidMotionCorrector.__name__))
+        reg_arr_dict = load_dict(path, __class__.__name__)
+        return cls(reference_movie=reference_movie, target_movie=target_movie, strategy=strat, **reg_arr_dict)
+
 
 
