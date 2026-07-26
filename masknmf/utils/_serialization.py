@@ -8,9 +8,9 @@ import h5py
 import torch
 
 
-def save_dict(d, filename, group, raise_type_fail=True):
+def save_dict(d, filename, group, exists_ok=False, raise_type_fail=True):
     """
-    Recursively save a dict to an hdf5 group in a new file.
+    Recursively save a dict to a hdf5 group in a new file.
 
     Args:
         d (dict): dict to save as an hdf5 file
@@ -18,6 +18,8 @@ def save_dict(d, filename, group, raise_type_fail=True):
         filename (str | Path): Full path to save the file to. File must not already exist.
 
         group (str): group name to save the dict to
+
+        exists_ok (bool): Whether to write to an existing file. Useful for writing multiple serialized objects to a file
 
         raise_type_fail (bool): If True: raise an exception if saving a part of the dict fails.
         If False: prints a warning instead and saves the
@@ -34,13 +36,26 @@ def save_dict(d, filename, group, raise_type_fail=True):
             If a particular entry within the dict cannot be saved to hdf5 AND
             the argument `raise_type_fail` is set to `True`
     """
-
     if os.path.isfile(filename):
-        raise FileExistsError
+        if not exists_ok:
+            raise FileExistsError
+        else:
+            writemode = 'r+'
+    else:
+        writemode = 'w'
 
-    with h5py.File(filename, 'w') as h5file:
+
+    with h5py.File(filename, writemode) as h5file:
         _dicts_to_group(h5file, "{}/".format(group), d,
                         raise_meta_fail=raise_type_fail)
+    #
+    # if not exists_ok:
+    #     if os.path.isfile(filename):
+    #         raise FileExistsError
+    #
+    # with h5py.File(filename, 'w') as h5file:
+    #     _dicts_to_group(h5file, "{}/".format(group), d,
+    #                     raise_meta_fail=raise_type_fail)
 
 
 def _dicts_to_group(h5file, path, d, raise_meta_fail):

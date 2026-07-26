@@ -1,5 +1,6 @@
 import copy
 import math
+from pathlib import Path
 from typing import Optional, Union, Sequence
 
 import numpy as np
@@ -16,6 +17,7 @@ from masknmf.motion_correction.registration_methods import (
 )
 from tqdm import tqdm
 
+from masknmf.utils._serialization import save_dict, load_dict
 
 _FAST_FFT_FACTORS = (2, 3, 5, 7)
 
@@ -236,13 +238,14 @@ class RigidRegistrationArray(ArrayLike, Serializer):
 
     _motion_export_name = "motion_corrected"
     _shifts_export_name = "shifts"
+    _serialized = {"shifts", "sinc_margin"}
 
     def __init__(
         self,
-        reference_movie: Union[LazyFrameLoader, ArrayLike],
+        reference_movie: ArrayLike,
         shifts: torch.Tensor,
         strategy: RigidMotionCorrector,
-        target_movie: LazyFrameLoader | ArrayLike | None = None,
+        target_movie: ArrayLike | None = None,
         sinc_margin: int = 12,
         output_device: Optional[str] = None,
     ):
@@ -327,6 +330,10 @@ class RigidRegistrationArray(ArrayLike, Serializer):
     def padding(self) -> tuple[int, int]:
         """Guard band (rows, cols) used when reading a windowed ROI."""
         return self._padding
+
+    @property
+    def sinc_margin(self) -> int:
+        return self._sinc_margin
 
     @property
     def output_device(self) -> str:
@@ -491,6 +498,21 @@ class RigidRegistrationArray(ArrayLike, Serializer):
             block = block[:, 0]
         return block
 
+    def export(self, path: str | Path):
+        d_array = self._to_dict()
+        d_strategy = self.strategy._to_dict()
+        save_dict(d_array, filename=path, group=__class__.__name__)
+        save_dict(d_strategy, filename=path, exists_ok=True, group=RigidMotionCorrector.__name__)
+
+    @classmethod
+    def from_hdf5(cls,
+                  path,
+                  reference_movie: ArrayLike,
+                  target_movie: ArrayLike | None = None,
+                  **kwargs):
+        strat = RigidMotionCorrector(load_dict(path, RigidMotionCorrector.__name__))
+        reg_arr_dict = load_dict(path, __class__.__name__)
+        return cls(reference_movie=reference_movie, target_movie=target_movie, strategy=strat, **reg_arr_dict)
 
 # --------------------------------------------------------------------------------------
 # Validation
