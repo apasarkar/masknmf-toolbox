@@ -510,7 +510,7 @@ class RigidRegistrationArray(ArrayLike, Serializer):
                   reference_movie: ArrayLike,
                   target_movie: ArrayLike | None = None,
                   **kwargs):
-        strat = RigidMotionCorrector(load_dict(path, RigidMotionCorrector.__name__))
+        strat = RigidMotionCorrector(**load_dict(path, RigidMotionCorrector.__name__))
         reg_arr_dict = load_dict(path, __class__.__name__)
         return cls(reference_movie=reference_movie, target_movie=target_movie, strategy=strat, **reg_arr_dict)
 

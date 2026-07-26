@@ -10,6 +10,7 @@ from tqdm import tqdm
 
 import masknmf
 from masknmf.utils import torch_select_device, display
+import numbers
 from .registration_methods import register_frames_rigid, register_frames_pwrigid
 from masknmf.utils import Serializer
 from masknmf.arrays.array_interfaces import ArrayLike
@@ -49,9 +50,9 @@ class MotionCorrectionStrategy:
 
     @batch_size.setter
     def batch_size(self, value: int):
-        if not isinstance(value, int):
-            raise ValueError(f"`batch_size` must be an <int>, you passed: {value}")
-        self._batch_size = value
+        if not isinstance(value, numbers.Integral):
+            raise ValueError(f"`batch_size` must be an int-like, you passed: {type(value)}")
+        self._batch_size = int(value)
 
     @property
     def device(self) -> str:

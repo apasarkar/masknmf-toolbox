@@ -1,4 +1,6 @@
 import math
+from pathlib import Path
+import numbers
 
 from masknmf.utils import Serializer
 from masknmf.utils import torch_select_device
@@ -11,12 +13,16 @@ from tqdm import tqdm
 from masknmf.motion_correction.registration_arrays import OphysArray
 import copy
 
+from masknmf.utils._serialization import load_dict, save_dict
+
+
 class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
     """
     This is a motion corrector designed to correct small (<2 pixel) jitter. Primarily for culture imaging data
     """
     _serialized = {
         "template",
+        "pixel_weighting",
         "batch_size"
     }
     def __init__(
@@ -49,9 +55,9 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
 
     @batch_size.setter
     def batch_size(self, value: int):
-        if not isinstance(value, int):
-            raise ValueError(f"`batch_size` must be an <int>, you passed: {value}")
-        self._batch_size = value
+        if not isinstance(value, numbers.Integral):
+            raise ValueError(f"`batch_size` must be an int-like, you passed: {type(value)}")
+        self._batch_size = int(value)
 
     @property
     def template(self) -> None | torch.Tensor:
@@ -65,7 +71,7 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
             self._template = torch.as_tensor(new_template, dtype=self.dtype, device=self.device)
             self._compute_gradient_matrix()
         else:
-            raise TypeError(f"template should be None, np.ndarray, or torch.Tensor")
+            raise TypeError(f"template should be None, np.ndarray, or torch.Tensor, instead type was {type(new_template)}")
 
     @property
     def pixel_weighting(self) -> None | torch.Tensor:
@@ -288,13 +294,15 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
 
 
 
-class GradientRegistrationArray(ArrayLike):
+class GradientRegistrationArray(ArrayLike, Serializer):
     """
     This is a special registration array which provides fast slicing in all dimensions (pixels AND frames)
     The key idea is that the per-frame correction (which uses the gradient of the template image) is low-rank,
     so we can adaptively compute frames/pixels of this movie very quickly if we just store the low-rank info
 
     """
+    _serialized = {"shifts", "gradient_steps"}
+
     def __init__(self,
                  raw_data: OphysArray,
                  strategy: GradientMotionCorrector,
@@ -401,5 +409,23 @@ class GradientRegistrationArray(ArrayLike):
         grad_movie = grad_movie.movedim(-1, 0).to(self.output_device)
 
         return data_subset - grad_movie
+
+
+    def export(self, path: str | Path):
+        d_array = self._to_dict()
+        d_strategy = self.strategy._to_dict()
+        save_dict(d_array, filename=path, group=__class__.__name__)
+        save_dict(d_strategy, filename=path, exists_ok=True, group=GradientMotionCorrector.__name__)
+
+    @classmethod
+    def from_hdf5(cls,
+                  path,
+                  raw_data: OphysArray,
+                  **kwargs):
+        strat = GradientMotionCorrector(**load_dict(path, GradientMotionCorrector.__name__))
+        reg_arr_dict = load_dict(path, __class__.__name__)
+        return cls(raw_data=raw_data, strategy=strat, **reg_arr_dict)
+
+
 
 
