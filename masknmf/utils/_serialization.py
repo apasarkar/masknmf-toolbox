@@ -249,10 +249,10 @@ class Serializer:
         """
 
         d = self._to_dict()
-        save_dict(d, filename=path, group=__class__.__name__)
+        save_dict(d, filename=path, group=self.__class__.__name__)
 
     @classmethod
     def from_hdf5(cls, path, **kwargs):
         """Load result from an hdf5 file. Any additional kwargs are passed to the constructor"""
-        d = load_dict(path, __class__.__name__)
+        d = load_dict(path, cls.__name__)
         return cls(**d, **kwargs)

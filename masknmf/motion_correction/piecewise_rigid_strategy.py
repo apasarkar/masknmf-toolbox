@@ -9,6 +9,8 @@ from masknmf.motion_correction.rigid_strategy import RigidMotionCorrector
 from typing import *
 import numpy as np
 from masknmf.motion_correction.registration_methods import register_frames_pwrigid, pwrigid_shift_estimation_routine, apply_pwrigid_shifts, compute_pwrigid_patch_midpoints
+from masknmf.motion_correction.registration_arrays import BaseRegistrationArray
+from masknmf.utils import Serializer, display
 import math
 from tqdm import tqdm
 import copy
@@ -269,9 +271,11 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
                                                shifts=shift_data,
                                                strategy=copy.deepcopy(self))
 
-class PiecewiseRigidRegistrationArray(ArrayLike, Serializer):
+class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
 
     _serialized = {'shifts'}
+    _strategy_cls = PiecewiseRigidMotionCorrector
+
     def __init__(self,
                  input_movie: ArrayLike,
                  shifts: torch.Tensor,
@@ -403,21 +407,4 @@ class PiecewiseRigidRegistrationArray(ArrayLike, Serializer):
         if drop_rows:
             block = block[:, 0]
         return block
-
-    def export(self, path: str | Path):
-        d_array = self._to_dict()
-        d_strategy = self.strategy._to_dict()
-        save_dict(d_array, filename=path, group=__class__.__name__)
-        save_dict(d_strategy, filename=path, exists_ok=True, group=PiecewiseRigidMotionCorrector.__name__)
-
-    @classmethod
-    def from_hdf5(cls,
-                  path,
-                  input_movie: ArrayLike,
-                  **kwargs):
-        strat = PiecewiseRigidMotionCorrector(**load_dict(path, PiecewiseRigidMotionCorrector.__name__))
-        reg_arr_dict = load_dict(path, __class__.__name__)
-        return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict)
-
-
 

@@ -17,7 +17,7 @@ from .strategies import (
 from .piecewise_rigid_strategy import PiecewiseRigidMotionCorrector, PiecewiseRigidRegistrationArray
 from .rigid_strategy import RigidMotionCorrector, RigidRegistrationArray
 from .gradient_strategy import GradientMotionCorrector, GradientRegistrationArray
-from .registration_arrays import FilteredArray, OphysArray
+from .registration_arrays import FilteredArray, OphysArray, BaseRegistrationArray
 from .spatial_filters import (
     image_filter,
     gaussian_kernel,

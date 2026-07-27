@@ -5,12 +5,13 @@ import numbers
 from masknmf.utils import Serializer
 from masknmf.utils import torch_select_device
 import torch
+from masknmf.utils import Serializer, display
 from masknmf.motion_correction.strategies import MotionCorrectionStrategy
 from typing import *
 import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, LazyFrameLoader
 from tqdm import tqdm
-from masknmf.motion_correction.registration_arrays import OphysArray
+from masknmf.motion_correction.registration_arrays import OphysArray, BaseRegistrationArray
 import copy
 
 from masknmf.utils._serialization import load_dict, save_dict
@@ -294,14 +295,16 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
 
 
 
-class GradientRegistrationArray(ArrayLike, Serializer):
+class GradientRegistrationArray(BaseRegistrationArray):
+
     """
     This is a special registration array which provides fast slicing in all dimensions (pixels AND frames)
     The key idea is that the per-frame correction (which uses the gradient of the template image) is low-rank,
     so we can adaptively compute frames/pixels of this movie very quickly if we just store the low-rank info
-
     """
+
     _serialized = {"shifts", "gradient_steps"}
+    _strategy_cls = GradientMotionCorrector
 
     def __init__(self,
                  input_movie: OphysArray,
@@ -397,7 +400,7 @@ class GradientRegistrationArray(ArrayLike, Serializer):
                 grad_sub = self._gradient_steps_mean[None, :]
             else:
                 grad_sub = self._gradient_steps_mean
-            gradient_step_used -= grad_sub
+            gradient_step_used = gradient_step_used - grad_sub
 
         # Check if spatial cropping occurred, deal with factorized tensors appropriately
         if isinstance(item, tuple):
@@ -409,23 +412,4 @@ class GradientRegistrationArray(ArrayLike, Serializer):
         grad_movie = grad_movie.movedim(-1, 0).to(self.output_device)
 
         return data_subset - grad_movie
-
-
-    def export(self, path: str | Path):
-        d_array = self._to_dict()
-        d_strategy = self.strategy._to_dict()
-        save_dict(d_array, filename=path, group=__class__.__name__)
-        save_dict(d_strategy, filename=path, exists_ok=True, group=GradientMotionCorrector.__name__)
-
-    @classmethod
-    def from_hdf5(cls,
-                  path,
-                  input_movie: OphysArray,
-                  **kwargs):
-        strat = GradientMotionCorrector(**load_dict(path, GradientMotionCorrector.__name__))
-        reg_arr_dict = load_dict(path, __class__.__name__)
-        return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict)
-
-
-
 

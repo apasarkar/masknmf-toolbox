@@ -13,6 +13,47 @@ from pathlib import Path
 import h5py
 import os
 from tqdm import tqdm
+from abc import ABC, abstractmethod
+from masknmf.utils._serialization import save_dict, load_dict
+
+
+class BaseRegistrationArray(ArrayLike, Serializer, ABC):
+    _strategy_cls: type = None
+
+    @property
+    @abstractmethod
+    def shifts(self): ...
+
+    @property
+    @abstractmethod
+    def input_movie(self): ...
+
+    @property
+    @abstractmethod
+    def strategy(self) -> Serializer: ...
+
+    def export(self, path: str | Path):
+        d_array = self._to_dict()
+        d_strategy = self.strategy._to_dict()
+        save_dict(d_array, filename=path, group=self.__class__.__name__)
+        save_dict(d_strategy, filename=path, exists_ok=True, group=self._strategy_cls.__name__)
+
+    @classmethod
+    def from_hdf5(cls,
+                  path,
+                  input_movie: ArrayLike,
+                  **kwargs):
+        if cls._strategy_cls is None:
+            raise NotImplementedError(
+                f"{cls.__name__} must set `_strategy_cls` to enable from_hdf5"
+            )
+        strat = cls._strategy_cls(**load_dict(path, cls._strategy_cls.__name__))
+        reg_arr_dict = load_dict(path, cls.__name__)
+        return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict)
+
+
+
+
 
 class FilteredArray(LazyFrameLoader):
     def __init__(

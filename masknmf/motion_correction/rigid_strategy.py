@@ -9,6 +9,7 @@ import torch
 from masknmf import ArrayLike, LazyFrameLoader
 from masknmf.utils import Serializer, display
 from masknmf.motion_correction.strategies import MotionCorrectionStrategy
+from masknmf.motion_correction.registration_arrays import BaseRegistrationArray
 from masknmf.motion_correction.registration_methods import (
     register_frames_rigid,
     estimate_rigid_shifts,
@@ -213,7 +214,7 @@ class RigidMotionCorrector(MotionCorrectionStrategy, Serializer):
             strategy=copy.deepcopy(self)
         )
 
-class RigidRegistrationArray(ArrayLike, Serializer):
+class RigidRegistrationArray(BaseRegistrationArray):
     """
     Lazy rigid-motion-corrected array supporting fast slicing in all dimensions.
 
@@ -237,9 +238,8 @@ class RigidRegistrationArray(ArrayLike, Serializer):
     Fourier interpolation. Use :func:`roi_consistency_error` to verify the margin is adequate for your data.
     """
 
-    _motion_export_name = "motion_corrected"
-    _shifts_export_name = "shifts"
     _serialized = {"shifts", "sinc_margin"}
+    _strategy_cls = RigidMotionCorrector
 
     def __init__(
         self,
@@ -486,21 +486,6 @@ class RigidRegistrationArray(ArrayLike, Serializer):
             block = block[:, 0]
         return block
 
-    def export(self, path: str | Path):
-        d_array = self._to_dict()
-        d_strategy = self.strategy._to_dict()
-        save_dict(d_array, filename=path, group=__class__.__name__)
-        save_dict(d_strategy, filename=path, exists_ok=True, group=RigidMotionCorrector.__name__)
-
-    @classmethod
-    def from_hdf5(cls,
-                  path,
-                  input_movie: ArrayLike,
-                  **kwargs):
-        strat = RigidMotionCorrector(**load_dict(path, RigidMotionCorrector.__name__))
-        reg_arr_dict = load_dict(path, __class__.__name__)
-        return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict)
-
 # --------------------------------------------------------------------------------------
 # Validation
 # --------------------------------------------------------------------------------------
@@ -526,7 +511,7 @@ def roi_consistency_error(
     frame_idx = np.arange(*frames.indices(array.shape[0]), dtype=np.int64)
 
     full = torch.as_tensor(
-        array.target_movie[_read_key(frame_idx)],
+        array.input_movie[_read_key(frame_idx)],
         device=array.strategy.device,
         dtype=array.dtype,
     )
