@@ -265,29 +265,23 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
     ) -> ArrayLike:
 
         shift_data = self._compute_all_shifts(reference_movie)
-        return PiecewiseRigidRegistrationArray(reference_movie,
-                                               shift_data,
-                                               copy.deepcopy(self),
-                                               target_movie=target_movie)
+        return PiecewiseRigidRegistrationArray(input_movie = target_movie if target_movie is not None else reference_movie,
+                                               shifts=shift_data,
+                                               strategy=copy.deepcopy(self))
 
 class PiecewiseRigidRegistrationArray(ArrayLike, Serializer):
 
     _serialized = {'shifts'}
     def __init__(self,
-                 reference_movie: ArrayLike,
+                 input_movie: ArrayLike,
                  shifts: torch.Tensor,
                  strategy: PiecewiseRigidMotionCorrector,
-                 output_device: str = 'cpu',
-                 target_movie: ArrayLike | None = None):
-        self._reference_movie = reference_movie
+                 output_device: str = 'cpu'):
+        self._input_movie = input_movie
         self._shifts = shifts
         self._strategy = strategy
         self._device = self.strategy.device
         self._output_device = output_device
-        if target_movie is None:
-            self._target_movie = self.reference_movie
-        else:
-            self._target_movie = target_movie
 
     @property
     def ndim(self) -> int:
@@ -295,7 +289,7 @@ class PiecewiseRigidRegistrationArray(ArrayLike, Serializer):
 
     @property
     def shape(self) -> tuple[int, int, int]:
-        return self._target_movie.shape
+        return self._input_movie.shape
 
     @property
     def dtype(self) -> torch.dtype:
@@ -306,12 +300,8 @@ class PiecewiseRigidRegistrationArray(ArrayLike, Serializer):
         return math.prod(self.shape) * self.dtype.itemsize
 
     @property
-    def reference_movie(self) -> ArrayLike:
-        return self._reference_movie
-
-    @property
-    def target_movie(self) -> ArrayLike:
-        return self._target_movie
+    def input_movie(self) -> ArrayLike:
+        return self._input_movie
 
     @property
     def shifts(self) -> torch.Tensor:
@@ -341,7 +331,7 @@ class PiecewiseRigidRegistrationArray(ArrayLike, Serializer):
             end = start + self.strategy.batch_size
 
             ## Below routine intelligently slices the smallest subset of data possible
-            block = apply_pwrigid_shifts(self.target_movie,
+            block = apply_pwrigid_shifts(self.input_movie,
                                          self.shifts,
                                          row_slice,
                                          col_slice,
@@ -410,12 +400,11 @@ class PiecewiseRigidRegistrationArray(ArrayLike, Serializer):
     @classmethod
     def from_hdf5(cls,
                   path,
-                  reference_movie: ArrayLike,
-                  target_movie: ArrayLike | None = None,
+                  input_movie: ArrayLike,
                   **kwargs):
         strat = PiecewiseRigidMotionCorrector(**load_dict(path, PiecewiseRigidMotionCorrector.__name__))
         reg_arr_dict = load_dict(path, __class__.__name__)
-        return cls(reference_movie=reference_movie, target_movie=target_movie, strategy=strat, **reg_arr_dict)
+        return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict)
 
 
 

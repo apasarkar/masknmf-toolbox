@@ -304,13 +304,13 @@ class GradientRegistrationArray(ArrayLike, Serializer):
     _serialized = {"shifts", "gradient_steps"}
 
     def __init__(self,
-                 raw_data: OphysArray,
+                 input_movie: OphysArray,
                  strategy: GradientMotionCorrector,
                  gradient_steps: torch.Tensor,
                  shifts: torch.Tensor,
                  output_device: str = "cpu"):
 
-        self._raw_data = raw_data
+        self._input_movie = input_movie
         self._strategy = strategy
         self._output_device = output_device
         self._gradient_steps_mean = None
@@ -322,7 +322,7 @@ class GradientRegistrationArray(ArrayLike, Serializer):
 
     @property
     def shape(self) -> Tuple[int, int, int]:
-        return self.raw_data.shape
+        return self.input_movie.shape
 
     @property
     def dtype(self) -> torch.dtype:
@@ -341,8 +341,8 @@ class GradientRegistrationArray(ArrayLike, Serializer):
         return math.prod(self.shape) * self.dtype.itemsize
 
     @property
-    def raw_data(self) -> ArrayLike:
-        return self._raw_data
+    def input_movie(self) -> ArrayLike:
+        return self._input_movie
 
     @property
     def include_mean(self) -> bool:
@@ -385,7 +385,7 @@ class GradientRegistrationArray(ArrayLike, Serializer):
     def __getitem__(self,
                     item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> torch.Tensor:
 
-        data_subset = torch.as_tensor(self.raw_data._get(item, include_mean=self.include_mean), device=self.output_device, dtype=self.dtype)
+        data_subset = torch.as_tensor(self.input_movie._get(item, include_mean=self.include_mean), device=self.output_device, dtype=self.dtype)
         frame_indexer, item = self._parse_indices(item)
 
         gradient_step_used = self.gradient_steps[frame_indexer, :]
@@ -420,11 +420,11 @@ class GradientRegistrationArray(ArrayLike, Serializer):
     @classmethod
     def from_hdf5(cls,
                   path,
-                  raw_data: OphysArray,
+                  input_movie: OphysArray,
                   **kwargs):
         strat = GradientMotionCorrector(**load_dict(path, GradientMotionCorrector.__name__))
         reg_arr_dict = load_dict(path, __class__.__name__)
-        return cls(raw_data=raw_data, strategy=strat, **reg_arr_dict)
+        return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict)
 
 
 

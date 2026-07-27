@@ -204,12 +204,13 @@ class RigidMotionCorrector(MotionCorrectionStrategy, Serializer):
         reference_movie: ArrayLike,
         target_movie: Optional[ArrayLike] = None,
     ) -> ArrayLike:
+
         all_shifts = self._compute_all_shifts(reference_movie)
+
         return RigidRegistrationArray(
-            reference_movie,
-            all_shifts,
-            copy.deepcopy(self),
-            target_movie,
+            input_movie=target_movie if target_movie is not None else reference_movie,
+            shifts=all_shifts,
+            strategy=copy.deepcopy(self)
         )
 
 class RigidRegistrationArray(ArrayLike, Serializer):
@@ -242,16 +243,15 @@ class RigidRegistrationArray(ArrayLike, Serializer):
 
     def __init__(
         self,
-        reference_movie: ArrayLike,
+        input_movie: ArrayLike,
         shifts: torch.Tensor,
         strategy: RigidMotionCorrector,
-        target_movie: ArrayLike | None = None,
         sinc_margin: int = 12,
         output_device: Optional[str] = None,
     ):
         """
         Args:
-            reference_movie: Stack the shifts were estimated from.
+            input_movie: Stack the shifts were estimated from.
             shifts (torch.Tensor): Shape (n_frames, 2). Precomputed per-frame shifts.
             strategy (RigidMotionCorrector): Snapshot of the RigidMotionCorrector strategy that produced ``shifts`` (params + template).
             target_movie (LazyFrameLoader | ArrayLike): The stack to which shifts are applied. If ``None``, it is assumed that
@@ -262,11 +262,9 @@ class RigidRegistrationArray(ArrayLike, Serializer):
                 requirement.
             output_device: Device of the returned tensor. Defaults to the strategy device.
         """
-        self._reference_movie = reference_movie
-        self._target_movie = target_movie if target_movie is not None else self.reference_movie
+        self._input_movie = input_movie
         self._strategy = strategy
 
-        self._shape = self.target_movie.shape
         self._device = strategy.device
         self._output_device = self._device if output_device is None else output_device
 
@@ -274,18 +272,12 @@ class RigidRegistrationArray(ArrayLike, Serializer):
             raise ValueError(
                 f"shifts must have shape (n_frames, 2); got {shifts.shape}"
             )
-        if shifts.shape[0] != self._shape[0]:
+        if shifts.shape[0] != self.shape[0]:
             raise ValueError(
-                f"Got {shifts.shape[0]} shifts for {self._shape[0]} frames"
+                f"Got {shifts.shape[0]} shifts for {self.shape[0]} frames"
             )
         self._shifts = torch.as_tensor(shifts, device=self._device, dtype=self.dtype)
 
-        if target_movie is not None:
-            if tuple(reference_movie.shape) != tuple(target_movie.shape):
-                raise ValueError(
-                    f"reference_movie shape {tuple(reference_movie.shape)} does not match "
-                    f"target_movie shape {tuple(target_movie.shape)}"
-                )
 
 
 
@@ -303,7 +295,7 @@ class RigidRegistrationArray(ArrayLike, Serializer):
 
     @property
     def shape(self) -> tuple[int, int, int]:
-        return self._shape
+        return self.input_movie.shape
 
     @property
     def dtype(self) -> torch.dtype:
@@ -314,12 +306,8 @@ class RigidRegistrationArray(ArrayLike, Serializer):
         return math.prod(self.shape) * self.dtype.itemsize
 
     @property
-    def reference_movie(self) -> ArrayLike:
-        return self._reference_movie
-
-    @property
-    def target_movie(self) -> ArrayLike:
-        return self._target_movie
+    def input_movie(self) -> ArrayLike:
+        return self._input_movie
 
     @property
     def shifts(self) -> torch.Tensor:
@@ -389,7 +377,7 @@ class RigidRegistrationArray(ArrayLike, Serializer):
         read_r0, read_r1 = max(0, row_start), min(height, row_stop)
         read_c0, read_c1 = max(0, col_start), min(width, col_stop)
 
-        block = self.target_movie[frame_key, read_r0:read_r1, read_c0:read_c1]
+        block = self.input_movie[frame_key, read_r0:read_r1, read_c0:read_c1]
         block = torch.as_tensor(block, device=self._device, dtype=self.dtype)
         if block.ndim == 2:
             block = block[None, ...]
@@ -507,12 +495,11 @@ class RigidRegistrationArray(ArrayLike, Serializer):
     @classmethod
     def from_hdf5(cls,
                   path,
-                  reference_movie: ArrayLike,
-                  target_movie: ArrayLike | None = None,
+                  input_movie: ArrayLike,
                   **kwargs):
         strat = RigidMotionCorrector(**load_dict(path, RigidMotionCorrector.__name__))
         reg_arr_dict = load_dict(path, __class__.__name__)
-        return cls(reference_movie=reference_movie, target_movie=target_movie, strategy=strat, **reg_arr_dict)
+        return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict)
 
 # --------------------------------------------------------------------------------------
 # Validation
