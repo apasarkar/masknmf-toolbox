@@ -8,7 +8,7 @@ from masknmf.motion_correction.strategies import MotionCorrectionStrategy
 from masknmf.motion_correction.rigid_strategy import RigidMotionCorrector
 from typing import *
 import numpy as np
-from masknmf.motion_correction.registration_methods import register_frames_pwrigid, pwrigid_shift_estimation_routine, apply_pwrigid_shifts
+from masknmf.motion_correction.registration_methods import register_frames_pwrigid, pwrigid_shift_estimation_routine, apply_pwrigid_shifts, compute_pwrigid_patch_midpoints
 import math
 from tqdm import tqdm
 import copy
@@ -282,6 +282,7 @@ class PiecewiseRigidRegistrationArray(ArrayLike, Serializer):
         self._strategy = strategy
         self._device = self.strategy.device
         self._output_device = output_device
+        self._compute_block_centers()
 
     @property
     def ndim(self) -> int:
@@ -302,6 +303,18 @@ class PiecewiseRigidRegistrationArray(ArrayLike, Serializer):
     @property
     def input_movie(self) -> ArrayLike:
         return self._input_movie
+
+    def _compute_block_centers(self):
+        self._block_centers = compute_pwrigid_patch_midpoints(
+            num_blocks=self.strategy.num_blocks,
+            overlaps=self.strategy.overlaps,
+            fov_height=self.input_movie.shape[1],
+            fov_width=self.input_movie.shape[2]
+        )
+
+    @property
+    def block_centers(self):
+        return self._block_centers
 
     @property
     def shifts(self) -> torch.Tensor:
