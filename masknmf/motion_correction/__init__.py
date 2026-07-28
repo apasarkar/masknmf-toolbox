@@ -33,6 +33,7 @@ from .moco_preprocessing import (
 __all__ = [
     "FilteredArray",
     "OphysArray",
+    "BaseRegistrationArray",
     "GradientMotionCorrector",
     "GradientRegistrationArray",
     "RigidRegistrationArray",

@@ -2053,6 +2053,9 @@ def construct_laplacian_matrix(height: int,
 
 
 
+def pixel_batch_size_from_frame_batch_size(height: int, width: int, frames: int, frame_batch_size) -> float:
+    return math.floor(height * width * frame_batch_size / frames)
+
 class SignalProcessingState(ABC):
     def __init__(self, pixel_batch_size: int, frame_batch_size: int):
         """Constructor to initialize pixel_batch_size and frame_batch_size."""
@@ -2123,7 +2126,6 @@ class SignalDemixer:
             pmd_array,
             device: str = "cpu",
             frame_batch_size: int = 5000,
-            pixel_batch_size: int = 10000,
     ):
         """
         A class to manage the state and execution of the maskNMF demixing pipeline
@@ -2155,12 +2157,10 @@ class SignalDemixer:
         # Start with an initialization state
         self._state = InitializingState(
             self.pmd_obj,
-            (self.d1, self.d2, self.T),
             device=self.device,
             a=None,
             c=None,
             frame_batch_size=frame_batch_size,
-            pixel_batch_size=pixel_batch_size,
         )
 
     @property
@@ -2189,21 +2189,20 @@ class InitializingState(SignalProcessingState):
     def __init__(
             self,
             pmd_arr: PMDArray,
-            dimensions: Tuple[int, int, int],
             device: str = "cpu",
             a: Optional[torch.sparse_coo_tensor] = None,
             c: Optional[torch.tensor] = None,
-            pixel_batch_size: int = 40000,
             frame_batch_size: int = 2000,
             factorized_ring_term: Optional[Tuple[torch.tensor, torch.tensor]] = None,
             robust_noise_term: Optional[float] = None,
     ):
+        self.shape = pmd_arr.shape[1], pmd_arr.shape[2], pmd_arr.shape[0] #height, width, frames
+        pixel_batch_size = pixel_batch_size_from_frame_batch_size(self.d1, self.d2, self.T, frame_batch_size)
         super().__init__(pixel_batch_size, frame_batch_size)
         """
         Class for initializing the signals
         """
-        self.shape = pmd_arr.shape[1], pmd_arr.shape[2], pmd_arr.shape[0]
-        self.d1, self.d2, self.T = dimensions
+
         self.pmd_obj = pmd_arr
         self.data_order = "C"
         self.device = device
@@ -2221,12 +2220,6 @@ class InitializingState(SignalProcessingState):
 
 
         self._init_results = None
-        # self.a_init = None
-        # self.mask_a_init = None
-        # self.c_init = None
-        # self.b_init = None
-        # self._curr_corr_image = None
-        # self.superpixel_dict = None
 
         if a is not None:
             self.a = a.to(self.device).coalesce()
@@ -2281,6 +2274,19 @@ class InitializingState(SignalProcessingState):
 
 
     @property
+    def d1(self) -> int:
+        return self.shape[0]
+
+    @property
+    def d2(self) -> int:
+        return self.shape[1]
+
+    @property
+    def T(self) -> int:
+        return self.shape[2]
+
+
+    @property
     def frame_batch_size(self):
         return self._frame_batch_size
 
@@ -2313,7 +2319,6 @@ class InitializingState(SignalProcessingState):
             context.state = DemixingState(
                 self.pmd_obj,
                 self.results,
-                (self.d1, self.d2, self.T),
                 factorized_ring_term=background_term,
                 data_order=self.data_order,
                 device=self.device,
@@ -2543,18 +2548,17 @@ class DemixingState(SignalProcessingState):
             self,
             pmd_arr: PMDArray,
             init_results: InitializationResults,
-            dimensions: Tuple[int, int, int],
             factorized_ring_term: Optional[Tuple[torch.tensor, torch.tensor]] = None,
             data_order: str = "C",
             device: str = "cpu",
-            pixel_batch_size: int = 10000,
             frame_batch_size: int = 10000,
             robust_noise_term: Optional[float] = None
     ):
+        self._shape = pmd_arr.shape[1], pmd_arr.shape[2], pmd_arr.shape[0] #height, width, frames
+        pixel_batch_size = pixel_batch_size_from_frame_batch_size(self.d1, self.d2, self.T, frame_batch_size)
         super().__init__(pixel_batch_size, frame_batch_size)
         # Define the data dimensions, data ordering scheme, and device
-        self.d1, self.d2, self.T = dimensions
-        self.shape = (self.d1, self.d2, self.T)
+
         self.data_order = data_order
         self.device = device
         self._results = None
@@ -2596,6 +2600,22 @@ class DemixingState(SignalProcessingState):
 
         self.a_summand = torch.ones((self.d1 * self.d2, 1)).to(self.device)
         self.blocks = None
+
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        return self._shape
+
+    @property
+    def d1(self) -> int:
+        return self.shape[0]
+
+    @property
+    def d2(self) -> int:
+        return self.shape[1]
+
+    @property
+    def T(self) -> int:
+        return self.shape[2]
 
     def _sketch_robust_variance_term(self, num_frames: int = 5000):
         """
@@ -2664,11 +2684,9 @@ class DemixingState(SignalProcessingState):
                 background_term = None
             context.state = InitializingState(
                 self.pmd_obj,
-                (self.d1, self.d2, self.T),
                 self.device,
                 self.a,
                 self.c,
-                pixel_batch_size=self.pixel_batch_size,
                 frame_batch_size=self.frame_batch_size,
                 factorized_ring_term=background_term,
                 robust_noise_term=self.robust_noise_term
