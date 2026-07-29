@@ -2,7 +2,7 @@ from dataclasses import asdict
 import masknmf
 from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
 from masknmf.arrays import LazyFrameLoader, ArrayLike
-from masknmf.motion_correction import RegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector
+from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector, GradientMotionCorrector, GradientRegistrationArray
 from masknmf.utils import display
 from masknmf.demixing import NoSignalsDetectedError, DemixingError
 import torch
@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from masknmf.compression.preprocessing import MaximinSplineDetrend
 
-from masknmf.motion_correction.registration_arrays import VoltageArray
+from masknmf.motion_correction.registration_arrays import OphysArray
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig
@@ -364,7 +364,6 @@ class OnePhotonCulturePipeline(BasePipeline):
                 'compress_config': self.compress_config,
                 'outpath_compression': self.outpath_compression,
                 'outpath_demixing': self.outpath_demixing,
-                'load_into_ram': self.load_into_ram,
                 'frame_batch_size': self.frame_batch_size,
                 'device': self.device}
 
@@ -397,24 +396,23 @@ class OnePhotonCulturePipeline(BasePipeline):
         negative_indicator = True if indicator_sign == "negative" else False
         if isinstance(self.motion_correct_config, str):
             if self.motion_correct_config.lower() == "skip":
-                moco_array = masknmf.VoltageArray(data,
-                                                  negative_indicator=negative_indicator,
-                                                  include_mean=True,
-                                                  device=device)
+                moco_array = OphysArray(data,
+                                        negative_indicator=negative_indicator,
+                                        include_mean=True,
+                                        device=device)
             else:
                 raise ValueError("Invalid MotionCorrectionConfig input")
         else:
-            mov = masknmf.VoltageArray(data,
-                                       negative_indicator=negative_indicator,
-                                       include_mean=True,
-                                       device=device)
+            mov = OphysArray(data,
+                             negative_indicator=negative_indicator,
+                             include_mean=True,
+                             device=device)
 
             ## TODO: The template estimation should be something the user can more cleanly specify
             mean_img = torch.mean(mov[:300], dim=0)
-            corrector = masknmf.GradientMotionCorrector(template=mean_img)
-            moco_array = masknmf.GradientRegistrationArray(mov,
-                                                           corrector,
-                                                           output_device=device)
+            corrector = GradientMotionCorrector(template=mean_img)
+            moco_array = corrector.motion_correct(mov)
+            moco_array.output_device=device
 
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
@@ -536,7 +534,9 @@ class OnePhotonCulturePipeline(BasePipeline):
 
         if remove_intermediates:
             display("Removing intermediates")
-            os.remove(os.path.abspath(self.outpath_compression))
+            compression_path = os.path.abspath(self.outpath_compression)
+            if os.path.exists(compression_path):
+                os.remove(compression_path)
 
         return curr_demix_results, a_rawdata_scale, full_c_estimate_denoised, c_regressed_on_raw
 
