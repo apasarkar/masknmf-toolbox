@@ -8,23 +8,21 @@ import pygfx
 import torch
 from collections import OrderedDict
 import masknmf.arrays
+from masknmf.arrays.array_interfaces import ArrayLike
 from masknmf.utils import display
 
 
 class MotionCorrectionVis:
     def __init__(
         self,
-        raw_stack: masknmf.LazyFrameLoader,
-        registration_array: masknmf.RegistrationArray,
+        registration_array: ArrayLike, ## TODO: Make a clear interface object for this
         ref_range: Optional[dict] = None,
         frame_timings: Optional[np.ndarray] = None,
     ):
-        self._raw_stack = raw_stack
         self._registration_array = registration_array
-        display(
-            "Extracting shifts, this may take a moment if shifts were not precomputed"
-        )
-        self._shifts = self.registration_array.shifts[:]
+        self._raw_stack = self.registration_array.input_movie
+
+        self._shifts = self.registration_array.shifts
 
         if frame_timings is not None:
             if ref_range is None:
@@ -88,7 +86,7 @@ class MotionCorrectionVis:
         if not rigid_shifts:
             vector_dims = ["time", "num vecs", "vec dim", "stack dim"]
             spatial_dims = ["num vecs", "vec dim", "stack dim"]
-            vector_data = pwrigid_shifts_to_ndvector(self.shifts, self.registration_array.block_centers)
+            vector_data = pwrigid_shifts_to_ndvector(self.shifts.cpu().numpy(), self.registration_array.block_centers.cpu().numpy())
             ndvec_graphic_kwargs = {'size': 5}
             self._ndvec = self._ndw['raw data'].add_nd_vectors(
                 vector_data,
@@ -119,7 +117,7 @@ class MotionCorrectionVis:
             height_message = "applied rigid shifts height"
             width_message = "applied rigid shifts width"
         else:
-            summary_shifts = np.amax(np.abs(self.shifts), axis = (1, 2))
+            summary_shifts = np.amax(np.abs(self.shifts.cpu().numpy()), axis = (1, 2))
             height_message = "max pwrigid shift height"
             width_message = "max pwrigid shift width"
 
@@ -170,10 +168,10 @@ class MotionCorrectionVis:
 
     @property
     def raw_stack(self) -> masknmf.LazyFrameLoader:
-        return self._raw_stack
+        return self.registration_array.input_movie
 
     @property
-    def registration_array(self) -> masknmf.RegistrationArray:
+    def registration_array(self) -> ArrayLike:
         return self._registration_array
 
     @property

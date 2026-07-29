@@ -2,7 +2,7 @@ from dataclasses import asdict
 import masknmf
 from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
 from masknmf.arrays import LazyFrameLoader, ArrayLike
-from masknmf.motion_correction import RegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector
+from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.utils import display
 from masknmf.demixing import NoSignalsDetectedError, DemixingError
 
@@ -17,6 +17,7 @@ from masknmf.utils import torch_select_device
 from typing import *
 import numpy as np
 import os
+import torch
 
 
 def run_singlepass_demixing(demixing_obj: masknmf.SignalDemixer,
@@ -44,7 +45,6 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                  outpath_motion_correction: Optional[str] = "motion_correction.hdf5",
                  outpath_compression: Optional[str] = "compression.hdf5",
                  outpath_demixing: Optional[str] = "demixing_results.hdf5",
-                 load_into_ram: bool = False,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"
                  ):
@@ -56,7 +56,6 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         self._outpath_motion_correction = outpath_motion_correction
         self._outpath_compression = outpath_compression
         self._outpath_demixing = outpath_demixing
-        self._load_into_ram = load_into_ram
         self._frame_batch_size = frame_batch_size
         self._device = device
 
@@ -94,10 +93,6 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         return self._outpath_demixing
 
     @property
-    def load_into_ram(self) -> bool:
-        return self._load_into_ram
-
-    @property
     def frame_batch_size(self) -> int:
         return self._frame_batch_size
 
@@ -115,12 +110,11 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 'outpath_motion_correction': self.outpath_motion_correction,
                 'outpath_compression': self.outpath_compression,
                 'outpath_demixing': self.outpath_demixing,
-                'load_into_ram': self.load_into_ram,
                 'frame_batch_size': self.frame_batch_size,
                 'device': self.device}
 
     def run(self,
-            data: np.ndarray | LazyFrameLoader | ArrayLike,
+            data: np.ndarray | ArrayLike,
             frame_rate: float,
             exclude_border_radius: int = 0,
             remove_intermediates: bool = True):
@@ -130,7 +124,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 The pipeline takes the compressed data and filters to suppress background and identify signal. After demixing
                 this filtered data, it returns to the unfiltered data to further demix.
                 Args:
-                    data (Union[np.ndarray, LazyFrameLoader, ArrayLike]): The raw (frames, height, width) data stack
+                    data (Union[np.ndarray, ArrayLike]): The raw (frames, height, width) data stack
                     motion_correct_config: Config object specifying parameters for motion correcting the data. If None,
                         uses RigidMotionCorrectionConfig defaults. If "skip", skips motion correction entirely.
                     compress_config: Config object specifying parameters for compressing the data.
@@ -153,33 +147,34 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             if self.motion_correct_config is None:
                 moco_strategy = RigidMotionCorrector(**asdict(RigidMotionCorrectionConfig()), device=self.device,
                                                      batch_size=self.frame_batch_size)
+
             elif isinstance(self.motion_correct_config, RigidMotionCorrectionConfig):
                 moco_strategy = RigidMotionCorrector(**asdict(self.motion_correct_config), device=self.device,
                                                      batch_size=self.frame_batch_size)
             elif isinstance(self.motion_correct_config, PiecewiseRigidMotionCorrectionConfig):
                 moco_strategy = PiecewiseRigidMotionCorrector(**asdict(self.motion_correct_config), device=self.device,
                                                               batch_size=self.frame_batch_size)
-            elif isinstance(self.motion_correct_config, str):
+            else:
+                moco_strategy = None
+
+            if isinstance(self.motion_correct_config, str):
                 if self.motion_correct_config.lower() == "skip":
-                    moco_strategy = DummyMotionCorrector()
+                    moco_data = data
                     display("Not Running Motion Correction")
                 else:
                     raise ValueError("Invalid MotionCorrectionConfig input")
-            else:
+            elif moco_strategy is None:
                 raise ValueError("Invalid MotionCorrectionConfig input")
+            else: ## If motion correction is meant to be run, this branch must execute
+                ##Compute template if one is not provided
+                if moco_strategy.template is None:
+                    moco_strategy.compute_template(data)
+                moco_data = moco_strategy.motion_correct(data)
+                moco_data.output_device = moco_data.strategy.device
+                moco_data.export(os.path.abspath(self.outpath_motion_correction))
 
-            ##Compute template if one is not provided
-            if moco_strategy.template is None:
-                moco_strategy.compute_template(data)
-
-            full_moco_arr = RegistrationArray(data, strategy=moco_strategy)
-            # Export the motion correction to a new file
-            full_moco_arr.export(os.path.abspath(self.outpath_motion_correction))
-
-            moco_data = masknmf.RegistrationArray.from_hdf5(self.outpath_motion_correction)
-
-            if isinstance(moco_data.shifts, np.ndarray):
-                shift_mask = masknmf.motion_correction.moco_preprocessing.construct_moco_template(moco_data.shifts,
+            if isinstance(moco_data, BaseRegistrationArray):
+                shift_mask = masknmf.motion_correction.moco_preprocessing.construct_moco_template(moco_data.shifts.cpu().numpy(),
                                                                                                   moco_data.shape[1:]).astype(
                     "float")
             else:
@@ -189,9 +184,6 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 shift_mask[:, :exclude_border_radius] = 0
                 shift_mask[-1 * exclude_border_radius:, :] = 0
                 shift_mask[:, -1 * exclude_border_radius:] = 0
-
-            if self.load_into_ram:
-                moco_data = moco_data[:]
 
             display("Running Compression")
             if self.compress_config is None:
@@ -253,6 +245,10 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                                                                        filter_sigma=spatial_highpass_config.filter_sigma,
                                                                        device=device)
 
+        torch.cuda.empty_cache()
+
+
+        ## Define the pixel batch size so that the max number of full pixels loaded matches frame batch size
         highpass_pmd_demixer = masknmf.demixing.signal_demixer.SignalDemixer(spatial_filt_pmd,
                                                                              device=device,
                                                                              frame_batch_size=self.frame_batch_size)
@@ -319,6 +315,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                                      "data to resolve this issue.")
                 else:
                     break
+            torch.cuda.empty_cache()
 
         ## Define the unfiltered demixer object
         ac_arr = curr_demix_results.ac_array
@@ -358,8 +355,12 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
         if remove_intermediates:
             display("Removing intermediates")
-            os.remove(os.path.abspath(self.outpath_motion_correction))
-            os.remove(os.path.abspath(self.outpath_compression))
+            moco_path = os.path.abspath(self.outpath_motion_correction)
+            if os.path.exists(moco_path):
+                os.remove(moco_path)
+            pmd_path = os.path.abspath(self.outpath_compression)
+            if os.path.exists(pmd_path):
+                os.remove(pmd_path)
         return latest_demix_results
 
 

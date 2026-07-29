@@ -204,7 +204,7 @@ class PMDArray(ArrayLike, Serializer):
 
     @classmethod
     def from_hdf5(cls, path, **kwargs):
-        d = load_dict(path, Serializer.__name__)
+        d = load_dict(path, cls.__name__)
         return cls.from_tensors(**d, **kwargs)
 
     @property

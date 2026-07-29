@@ -45,7 +45,8 @@ def construct_gaussian_highpass_filter_kernel(gaussian_sigma: List[float]) -> to
 def spatial_filter_pmd(pmd_obj: masknmf.PMDArray,
                        batch_size: int = 200,
                        filter_sigma: int = 3,
-                       device: str = 'cpu') -> masknmf.PMDArray:
+                       device: str = 'cpu',
+                       target_device: str = 'cpu') -> masknmf.PMDArray:
     if pmd_obj.rescale is False:
         switch = True
         pmd_obj.rescale = True
@@ -69,20 +70,21 @@ def spatial_filter_pmd(pmd_obj: masknmf.PMDArray,
         filtered_frames = relu_obj(filtered_frames)
         filtered_frames = filtered_frames.permute(1, 2, 0)
         projection = pmd_obj.project_frames(filtered_frames, standardize=False)
-        results.append(projection)
-    final_v = torch.cat(results, dim=1)
+        results.append(projection.to(target_device))
+    pmd_obj.to(target_device)
+    final_v = torch.cat(results, dim=1).to(target_device)
 
-    new_mean = torch.sparse.mm(pmd_obj.u.to(device), torch.mean(final_v.to(device), dim=1, keepdim = True))
+    new_mean = torch.sparse.mm(pmd_obj.u, torch.mean(final_v.to(target_device), dim=1, keepdim = True))
     new_mean = new_mean.reshape(d1, d2)
     final_v -= torch.mean(final_v, dim=1, keepdim=True)
 
     final_arr = masknmf.PMDArray.from_tensors(pmd_obj.shape,
-                                 pmd_obj.u.to(device),
-                                 final_v.to(device),
-                                 new_mean.to(device),
+                                 pmd_obj.u,
+                                 final_v,
+                                 new_mean,
                                  torch.ones_like(new_mean),
                                  u_local_projector=pmd_obj.u_local_projector,
-                                 device='cpu')
+                                 device=target_device)
 
     if switch:
         pmd_obj.rescale = False
