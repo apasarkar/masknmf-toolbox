@@ -32,6 +32,10 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
     @abstractmethod
     def strategy(self) -> Serializer: ...
 
+    @property
+    @abstractmethod
+    def output_device(self): ...
+
     def export(self, path: str | Path):
         d_array = self._to_dict()
         d_strategy = self.strategy._to_dict()

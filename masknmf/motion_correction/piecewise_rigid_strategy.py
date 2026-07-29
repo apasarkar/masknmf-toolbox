@@ -17,7 +17,6 @@ import copy
 
 from masknmf.utils._serialization import save_dict, load_dict
 
-
 def _axis_indices(indexer, dim: int) -> tuple[np.ndarray, bool]:
     """
     Normalize a single-axis indexer into an explicit array of positive indices.
@@ -60,6 +59,14 @@ def _axis_indices(indexer, dim: int) -> tuple[np.ndarray, bool]:
 def _is_contiguous_run(idx: np.ndarray) -> bool:
     """True if ``idx`` is an ascending run with step 1 (so it can be read as a slice)."""
     return idx.size > 0 and bool(np.all(np.diff(idx) == 1))
+
+
+def _frame_key(chunk: np.ndarray):
+    """Return a basic slice for a step-1 run (view / sequential read),
+    else the original index array (advanced indexing)."""
+    if _is_contiguous_run(chunk):
+        return slice(int(chunk[0]), int(chunk[-1]) + 1)
+    return chunk
 
 
 class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
@@ -340,23 +347,32 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
                        frames,
                        row_slice,
                        col_slice):
-        num_batches = math.ceil(frames.shape[0] / self.strategy.batch_size)
+        # num_batches = math.ceil(frames.shape[0] / self.strategy.batch_size)
 
+        ## Greedy batch size computation so we load as much data as possible for smaller spatial crops
+        row_indices = row_slice.indices(self.shape[1])
+        col_indices = col_slice.indices(self.shape[2])
+        row_extent = max(1, row_indices[1] - row_indices[0])
+        col_extent = max(1, col_indices[1] - col_indices[0])
+
+        batch_size = math.floor(self.shape[1] * self.shape[2] * self.strategy.batch_size / (row_extent * col_extent))
+        batch_size = max(batch_size, 1)
+        num_batches = math.ceil(frames.shape[0] / batch_size)
         outputs = []
         for k in range(num_batches):
-            start = k * self.strategy.batch_size
-            end = start + self.strategy.batch_size
+            start = k * batch_size #self.strategy.batch_size
+            end = start + batch_size #self.strategy.batch_size
 
             ## Below routine intelligently slices the smallest subset of data possible
             block = apply_pwrigid_shifts(self.input_movie,
                                          self.shifts,
                                          row_slice,
                                          col_slice,
-                                         temporal_indices=frames[start:end],
+                                         temporal_indices=_frame_key(frames[start:end]),
                                          device=self._device).to(self.output_device)
             outputs.append(block)
 
-        return torch.concatenate(outputs, dim=0)
+        return torch.concatenate(outputs, dim=0) if num_batches > 1 else outputs[0]
 
     def __getitem__(self, idx):
         frame_indexer, item = self._parse_indices(idx)

@@ -170,6 +170,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 if moco_strategy.template is None:
                     moco_strategy.compute_template(data)
                 moco_data = moco_strategy.motion_correct(data)
+                moco_data.output_device = moco_data.strategy.device
                 moco_data.export(os.path.abspath(self.outpath_motion_correction))
 
             if isinstance(moco_data, BaseRegistrationArray):
