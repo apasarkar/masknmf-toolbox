@@ -20,6 +20,7 @@ dependencies = [
     "scipy",
     "h5py",
     "scikit-image",
+    "opencv-contrib-python-headless",
     "cvxpy>=1.6.5",
     "networkx",
     "tqdm",
@@ -46,7 +47,7 @@ docs = [
 ]
 
 multisession = [
-    "roicat[tracking_algo] @ git+https://github.com/apasarkar/ROICaT.git@algo_install",
+    "roicat[tracking_latest] >= 1.7.7", #First release that has this extras structure
 ]
 
 dev = [
