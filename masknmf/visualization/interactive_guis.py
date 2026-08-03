@@ -1,6 +1,6 @@
 from typing import *
 import numpy as np
-from fastplotlib.widgets import ImageWidget
+from fastplotlib.widgets.image_widget import ImageWidget
 from ipywidgets import HBox, VBox
 import fastplotlib as fpl
 from imgui_bundle import imgui
