@@ -3,14 +3,19 @@ import torch
 import os
 import sys
 from typing import *
-import masknmf
 from pathlib import Path
-import numpy as np
 import scipy
 import scipy.sparse
 from roicat.data_importing import Data_roicat
 from roicat.pipelines import pipeline_tracking
 from roicat.util import get_default_parameters
+
+import warnings
+from typing import Callable, Optional, Sequence
+
+import numpy as np
+import scipy.sparse
+
 
 class RoicatDataAdapter(Data_roicat):
 
@@ -36,7 +41,7 @@ class RoicatDataAdapter(Data_roicat):
         self.um_per_pixel = um_per_pixel
         self._highpass_sigma = highpass_sigma
         self._mean_img_list = mean_img_list
-        self.set_FOVHeightWidth(int(mean_img_list[0].shape[0]), int(mean_img_list[1].shape[1]))
+        self.set_FOVHeightWidth(int(mean_img_list[0].shape[0]), int(mean_img_list[0].shape[1]))
         self.set_fov_imgs_from_mean_imgs()
         self.set_spatialFootprints(spatial_fp_list, self.um_per_pixel)
         self.transform_spatialFootprints_to_ROIImages(out_height_width=roi_image_dims)
@@ -100,7 +105,7 @@ class RoicatDataAdapter(Data_roicat):
         spatial_footprint_list = []
         mean_img_list = []
         for fname in demixing_result_files:
-            dmr = masknmf.DemixingResults.from_hdf5(fname)
+            dmr = DemixingResults.from_hdf5(fname)
             footprint = extract_masknmf_spatial_footprints(dmr)
             mean_img = extract_masknmf_mean_img(dmr)
             spatial_footprint_list.append(footprint)
@@ -130,13 +135,13 @@ class RoicatDataAdapter(Data_roicat):
                    **kwargs)
 
 
-def extract_masknmf_spatial_footprints(dr: masknmf.DemixingResults):
+def extract_masknmf_spatial_footprints(dr: DemixingResults):
     """
     Given a masknmf demixingresults object, extracts the spatial footprints in a format needed for ROICaT cross-session matching
     """
     a = dr.ac_array.a.cpu().t().coalesce()  # Shape (num_neurons, num_pixels)
     row, col = a.indices()
-    vals = a.values()
+    vals = a.values().clone()
 
     row_sum = torch.zeros(a.shape[0], device=a.device)
     row_sum.scatter_reduce_(0, row, vals, reduce="sum")
@@ -153,7 +158,7 @@ def extract_masknmf_spatial_footprints(dr: masknmf.DemixingResults):
     return curr_csr_scipy
 
 
-def extract_masknmf_mean_img(dr: masknmf.DemixingResults):
+def extract_masknmf_mean_img(dr: DemixingResults):
     return dr.pmd_array.mean_img.cpu().numpy()
 
 
@@ -208,23 +213,310 @@ class RoicatTracker:
         return self._params
 
     def run_tracking(self, multisession_data: RoicatDataAdapter | Data_roicat):
-        multisession_data.check_completeness()['tracking']
+        if not multisession_data.check_completeness()['tracking']:
+            raise ValueError("input data does not have all necessary properties to run the tracking code")
         tracked_outputs = pipeline_tracking(self.params, custom_data=multisession_data)
 
         return RoicatTrackingResults(tracked_outputs)
 
 
 class RoicatTrackingResults:
+    """
+    Wrapper for the Roicat tracking results
 
-    def __init__(self, results: dict):
-        self._results = results
+    The raw ROICaT outputs are always made directly available (``results``, ``run_data``,
+    ``params``). Everything is derived from this and is provided for downstream access.
+
+    Conventions to note:
+      - Spatial footprints are exposed as ``(num_pixels, num_rois)`` sparse
+        arrays, one per session.
+      - Cluster ids are the integers ``[0, ..., num_clusters - 1]``. ROICaT
+        squeezes labels to a contiguous range, so no remapping is needed.
+        ``-1`` denotes an ROI that was not assigned to any cluster.
+      - Neuron indices are always *session-local*.
+    """
+
+    def __init__(self, results: tuple[dict, dict, dict]):
+        self._results = results[0]
+        self._run_data = results[1]
+        self._params = results[2]
+
+        self._labels_by_session = [
+            np.asarray(l, dtype=np.int64)
+            for l in self._results["clusters"]["labels_bySession"]
+        ]
+        self._n_roi_per_session = np.array(
+            [len(l) for l in self.labels_by_session], dtype=np.int64
+        )
+
+        if len(self._labels_by_session) == 0:
+            raise ValueError("Tracking results contain no sessions.")
+
+        all_labels = np.concatenate(self._labels_by_session)
+        if all_labels.size > 0 and all_labels.max() >= 0:
+            self._num_clusters = int(all_labels.max()) + 1
+        else:
+            self._num_clusters = 0
+
+        # counts[c, s] = number of ROIs from session s assigned to cluster c
+        self._counts = np.zeros(
+            (self._num_clusters, len(self._labels_by_session)), dtype=np.int32
+        )
+        for s, lab in enumerate(self._labels_by_session):
+            valid = lab[lab >= 0]
+            np.add.at(self._counts, (valid, s), 1)
+
+        self._validate()
+
+        # Lazily built caches
+        self._aligned_rois = None
+        self._raw_rois = None
+
+    def _validate(self) -> None:
+        rois_raw = self._results["ROIs"]["ROIs_raw"]
+        if len(rois_raw) != self.num_sessions:
+            raise ValueError(
+                f"Got {len(rois_raw)} sessions of footprints but "
+                f"{self.num_sessions} sessions of labels."
+            )
+        for s, (fp, n) in enumerate(zip(rois_raw, self._n_roi_per_session)):
+            if fp.shape[0] != n:
+                raise ValueError(
+                    f"Session {s}: {fp.shape[0]} footprints but {n} labels."
+                )
+
+        if self._num_clusters and self._counts.max() > 1:
+            bad = np.argwhere(self._counts > 1)
+            warnings.warn(
+                f"{len(bad)} (cluster, session) pairs contain more than one ROI "
+                f"from the same session; e.g. cluster {bad[0][0]} in session "
+                f"{bad[0][1]}. This usually indicates a merge/split in the "
+                "upstream segmentation.",
+                stacklevel=2,
+            )
+
+    ### Raw outputs from ROICaT
 
     @property
     def results(self) -> dict:
-        """
-        The ROICaT tracking outputs, exactly in the format generated by the ROICaT pipeline
-        """
+        """The ROICaT tracking outputs, exactly as generated by the pipeline."""
         return self._results
+
+    @property
+    def run_data(self) -> dict:
+        """
+        The ``__dict__`` of every object used in the ROICaT pipeline.
+
+        This is raw internal state and is not stable across ROICaT versions;
+        prefer the derived properties on this class where they exist.
+        """
+        return self._run_data
+
+    @property
+    def params(self) -> dict:
+        """Parameters actually used by the pipeline (user params merged with defaults)."""
+        return self._params
+
+    @property
+    def num_sessions(self) -> int:
+        return len(self._labels_by_session)
+
+    @property
+    def num_clusters(self) -> int:
+        """Cluster ids are the integers ``[0, ..., num_clusters - 1]``."""
+        return self._num_clusters
+
+    @property
+    def num_roi_per_session(self) -> np.ndarray:
+        """Shape ``(num_sessions,)``; number of ROIs in each session."""
+        return self._n_roi_per_session
+
+    @property
+    def num_roi_total(self) -> int:
+        return int(self._n_roi_per_session.sum())
+
+    @property
+    def frame_height(self) -> int:
+        return int(self._results["ROIs"]["frame_height"])
+
+    @property
+    def frame_width(self) -> int:
+        return int(self._results["ROIs"]["frame_width"])
+
+    @property
+    def frame_shape(self) -> tuple[int, int]:
+        return (self.frame_height, self.frame_width)
+
+    ## Membership utils
+    @property
+    def labels_by_session(self) -> list[np.ndarray]:
+        """
+        A list of arrays, one per session. The k-th array has length equal to
+        the number of ROIs in session k. Each value is the cluster id that ROI
+        belongs to, or -1 if it belongs to no cluster.
+        """
+        return self._labels_by_session
+
+    @property
+    def counts_per_label(self) -> np.ndarray:
+        """
+        Shape ``(num_clusters, num_sessions)``. ``counts_per_label[c, s]`` is
+        the number of ROIs from session s assigned to cluster c.
+        """
+        return self._counts
+
+    @property
+    def presence(self) -> np.ndarray:
+        """
+        Boolean array of shape ``(num_clusters, num_sessions)``.
+        ``presence[c, s]`` is True if cluster c appears in session s.
+        """
+        return self._counts > 0
+
+    @property
+    def num_sessions_per_cluster(self) -> np.ndarray:
+        """Shape ``(num_clusters,)``; in how many sessions each cluster appears."""
+        return self.presence.sum(axis=1)
+
+    def find_cluster(self, session: int, neuron: int) -> int:
+        """Cluster id for a given ROI, or -1 if it was not clustered."""
+        return int(self._labels_by_session[session][neuron])
+
+    def find_members(self, cluster_id: int) -> dict[int, np.ndarray]:
+        """Cluster id -> {session index: array of session-local neuron indices}."""
+        return {
+            s: np.flatnonzero(lab == cluster_id)
+            for s, lab in enumerate(self._labels_by_session)
+        }
+
+    def unclustered(self) -> dict[int, np.ndarray]:
+        """{session index: array of session-local indices of unclustered ROIs}."""
+        return {
+            s: np.flatnonzero(lab < 0)
+            for s, lab in enumerate(self._labels_by_session)
+        }
+
+    ### For selecting clusters
+
+    def select(self, predicate: Callable[[int], bool]) -> np.ndarray:
+        """
+        Cluster ids for which ``predicate(cluster_id)`` is True.
+
+        The predicate is evaluated once per cluster. For vectorizable criteria
+        it is usually faster to index ``presence`` or ``cluster_silhouette``
+        directly and call ``np.flatnonzero`` yourself.
+        """
+        return np.array(
+            [c for c in range(self.num_clusters) if predicate(c)], dtype=np.int64
+        )
+
+    def select_by_min_sessions(self, min_sessions: int) -> np.ndarray:
+        """Cluster ids appearing in at least ``min_sessions`` sessions."""
+        return np.flatnonzero(self.num_sessions_per_cluster >= min_sessions)
+
+    def select_by_sessions(
+        self,
+        required: Optional[Sequence[int]] = None,
+        forbidden: Optional[Sequence[int]] = None,
+    ) -> np.ndarray:
+        """
+        Cluster ids present in every session in ``required`` and absent from
+        every session in ``forbidden``.
+
+        To accept clusters spanning all sessions except session 2::
+
+            keep = res.select_by_sessions(
+                required=[s for s in range(res.num_sessions) if s != 2]
+            )
+        """
+        mask = np.ones(self.num_clusters, dtype=bool)
+        if required is not None and len(required):
+            mask &= self.presence[:, list(required)].all(axis=1)
+        if forbidden is not None and len(forbidden):
+            mask &= ~self.presence[:, list(forbidden)].any(axis=1)
+        return np.flatnonzero(mask)
+
+    @staticmethod
+    def _to_pixels_by_rois(footprints) -> list[scipy.sparse.spmatrix]:
+        """ROICaT stores (num_rois, num_pixels); transpose to (num_pixels, num_rois)."""
+        return [scipy.sparse.csc_matrix(fp.T) for fp in footprints]
+
+    @property
+    def raw_rois(self) -> list[scipy.sparse.spmatrix]:
+        """
+        Unaligned spatial footprints as passed into the tracker: a list of
+        ``(num_pixels, num_rois)`` sparse arrays, one per session. Pixels are
+        flattened in C order relative to ``frame_shape``.
+        """
+        if self._raw_rois is None:
+            self._raw_rois = self._to_pixels_by_rois(self._results["ROIs"]["ROIs_raw"])
+        return self._raw_rois
+
+    @property
+    def aligned_rois(self) -> list[scipy.sparse.spmatrix]:
+        """
+        Spatial footprints after cross-session FOV registration, as a list of
+        ``(num_pixels, num_rois)`` sparse arrays, one per session.
+        """
+        if self._aligned_rois is None:
+            self._aligned_rois = self._to_pixels_by_rois(
+                self._results["ROIs"]["ROIs_aligned"]
+            )
+        return self._aligned_rois
+
+    def cluster_footprints(
+        self, cluster_id: int, aligned: bool = True
+    ) -> dict[int, np.ndarray]:
+        """
+        Dense images of every ROI in a cluster.
+
+        Returns {session index: array of shape (num_rois_in_session, height, width)},
+        omitting sessions in which the cluster does not appear.
+        """
+        rois = self.aligned_rois if aligned else self.raw_rois
+        height, width = self.frame_shape
+        out = {}
+        for s, idx in self.members_of(cluster_id).items():
+            if len(idx) == 0:
+                continue
+            block = np.asarray(rois[s][:, idx].todense()).T
+            out[s] = block.reshape(len(idx), height, width)
+        return out
+
+    @property
+    def aligned_fov_images(self) -> Optional[list[np.ndarray]]:
+        """
+        Session FOV images under the final alignment. Thi s is the transform applied to the spatial footprints
+        before embedding and matching. Nonrigid
+        if nonrigid registration ran (it composes on top of the geometric fit),
+        otherwise geometric. None if aligner state is unavailable.
+        """
+        aligner = self._run_data.get("aligner", {})
+        ims = aligner.get("ims_registered_nonrigid")
+        if ims is None:
+            ims = aligner.get("ims_registered_geo")
+        return ims
+
+    @property
+    def alignment_was_nonrigid(self) -> bool:
+        """Whether the final alignment included a nonrigid stage, useful as check"""
+        return self._run_data.get("aligner", {}).get("ims_registered_nonrigid") is not None
+
+    def roi_projection(self, session: int, aligned: bool = True) -> np.ndarray:
+        """Max-intensity projection of all ROIs in a session, shape ``frame_shape``."""
+        rois = self.aligned_rois if aligned else self.raw_rois
+        return np.asarray(rois[session].max(axis=1).todense()).reshape(self.frame_shape)
+
+    def __repr__(self) -> str:
+        n_clustered = int(sum((l >= 0).sum() for l in self._labels_by_session))
+        frac = n_clustered / self.num_roi_total if self.num_roi_total else 0.0
+        return (
+            f"{type(self).__name__}("
+            f"num_sessions={self.num_sessions}, "
+            f"num_clusters={self.num_clusters}, "
+            f"num_roi_total={self.num_roi_total}, "
+            f"frac_clustered={frac:.2f})"
+        )
 
 
 
