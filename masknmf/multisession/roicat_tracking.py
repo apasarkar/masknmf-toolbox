@@ -22,9 +22,11 @@ class RoicatDataAdapter(Data_roicat):
     def __init__(self,
                  mean_img_list: List[np.ndarray],
                  spatial_fp_list: List[scipy.sparse.coo_matrix],
+                 session_files: tuple[str | tuple[str, ...]],
                  um_per_pixel: float = 1.2,
                  roi_image_dims: tuple[int, int] = (36, 36),
-                 highpass_sigma: Optional[int] = 3):
+                 highpass_sigma: Optional[int] = 3,
+                 ):
         """
         Notes: um_per_pixel is by default set to 1.2 since this is what is used for IBL 2p mesoscope recordings
         Generic interface for doing multi-session tracking with any analysis pipeline
@@ -32,6 +34,7 @@ class RoicatDataAdapter(Data_roicat):
             mean_img_list (List[np.ndarray]): List of mean images from each imaging session. Each image should have same dimensions.
             spatial_fp_list (List[np.ndarray]): List of spatial footprint arrays, one for each session. Each individual array has shape (num_rois, num_pixels).
                 Each spatial footprint is flattened into a row of this array in "C" order.
+            session_files (tuple[str] | tuple[tuple[str, ...]]): A tuple whose length is equal to the number of sessions. Each element contains filepath data for one session.
             um_per_pixel (float): Describes the resolution of the imaging
             roi_image_dims (tuple[int, int]): Each ROI is spatially cropped for purposes of feature extraction in the ROICat pipeline. This specifies the crop dimensions.
             highpass_sigma (int): We highpass filter the mean image to define an "enhanced" mean image (this is what s2p does) for use in the tracking pipeline.
@@ -45,6 +48,20 @@ class RoicatDataAdapter(Data_roicat):
         self.set_fov_imgs_from_mean_imgs()
         self.set_spatialFootprints(spatial_fp_list, self.um_per_pixel)
         self.transform_spatialFootprints_to_ROIImages(out_height_width=roi_image_dims)
+        if session_files is not None:
+            if len(self._mean_img_list) != len(session_files):
+                raise ValueError(f"You provided {len(session_files)} file paths, but there seem to be {len(self._mean_img_list)} sessions. Need to provide one file path "
+                                 "(or tuple of file paths) per session. ")
+
+        self._session_files = session_files
+
+    @property
+    def session_files(self) -> tuple[str | tuple[str, ...]]:
+        """
+        Serves as useful metadata to assess where the demixing results files come from. Allows users to match session id to the actual file from which it came
+        This does not get updated if the file gets moved to another location after object instantiation.
+        """
+        return self._session_files
 
     def set_fov_imgs_from_mean_imgs(self):
         fov_list = self._filter_and_normalize_mean_img()
@@ -102,9 +119,16 @@ class RoicatDataAdapter(Data_roicat):
     def from_masknmf(cls,
                      demixing_result_files: list[str | Path],
                      **kwargs):
+        """
+        Constructs the ROICaT data adapter using a list of masknmf demixing result hdf5 files
+        Args:
+            demixing_result_files (list[str | Path]): A list of file paths, one per session, point to masknmf demixing result .hdf5 files.
+        """
         spatial_footprint_list = []
         mean_img_list = []
+        files_list = []
         for fname in demixing_result_files:
+            files_list.append(os.path.abspath(fname))
             dmr = DemixingResults.from_hdf5(fname)
             footprint = extract_masknmf_spatial_footprints(dmr)
             mean_img = extract_masknmf_mean_img(dmr)
@@ -113,6 +137,7 @@ class RoicatDataAdapter(Data_roicat):
 
         return cls(mean_img_list,
                    spatial_footprint_list,
+                   tuple(files_list),
                    **kwargs)
 
     @classmethod
@@ -122,9 +147,13 @@ class RoicatDataAdapter(Data_roicat):
                       **kwargs):
         spatial_footprint_list = []
         mean_img_list = []
+        files_list = []
         for ops_file, stat_file in zip(ops_list, stat_list):
-            ops = np.load(os.path.abspath(ops_file), allow_pickle=True).item()
-            stat = np.load(os.path.abspath(stat_file), allow_pickle=True)
+            ops_abspath = os.path.abspath(ops_file)
+            stat_abspath = os.path.abspath(stat_file)
+            files_list.append((ops_abspath, stat_abspath))
+            ops = np.load(ops_abspath, allow_pickle=True).item()
+            stat = np.load(stat_abspath, allow_pickle=True)
             footprint = extract_suite2p_spatial_footprints(ops, stat)
             mean_img = extract_suite2p_mean_img(ops)
             spatial_footprint_list.append(footprint)
@@ -132,6 +161,7 @@ class RoicatDataAdapter(Data_roicat):
 
         return cls(mean_img_list,
                    spatial_footprint_list,
+                   tuple(files_list),
                    **kwargs)
 
 
@@ -217,7 +247,8 @@ class RoicatTracker:
             raise ValueError("input data does not have all necessary properties to run the tracking code")
         tracked_outputs = pipeline_tracking(self.params, custom_data=multisession_data)
 
-        return RoicatTrackingResults(tracked_outputs)
+        return RoicatTrackingResults(tracked_outputs,
+                                     multisession_data.session_files)
 
 
 class RoicatTrackingResults:
@@ -236,7 +267,9 @@ class RoicatTrackingResults:
       - Neuron indices are always *session-local*.
     """
 
-    def __init__(self, results: tuple[dict, dict, dict]):
+    def __init__(self,
+                 results: tuple[dict, dict, dict],
+                 session_files: tuple[str]):
         self._results = results[0]
         self._run_data = results[1]
         self._params = results[2]
@@ -245,6 +278,10 @@ class RoicatTrackingResults:
             np.asarray(l, dtype=np.int64)
             for l in self._results["clusters"]["labels_bySession"]
         ]
+        if len(session_files) != self.num_sessions:
+            raise ValueError(f"The number of demixing result files needs to match the number of sessions")
+        self._session_files = session_files
+
         self._n_roi_per_session = np.array(
             [len(l) for l in self.labels_by_session], dtype=np.int64
         )
@@ -316,6 +353,18 @@ class RoicatTrackingResults:
     def params(self) -> dict:
         """Parameters actually used by the pipeline (user params merged with defaults)."""
         return self._params
+
+    @property
+    def session_files(self) -> tuple[str]:
+        """A list of .hdf5 file paths, one for each session, that contain serialized masknmf.DemixingResults objects"""
+        return self._session_files
+
+    @session_files.setter
+    def session_files(self, new_files: tuple[str]):
+        if len(new_files) == self.num_sessions:
+            self._session_files = new_files
+        else:
+            raise ValueError(f"The new set of files has length {len(new_files)} but the number of sessions is {self.num_sessions}")
 
     @property
     def num_sessions(self) -> int:
