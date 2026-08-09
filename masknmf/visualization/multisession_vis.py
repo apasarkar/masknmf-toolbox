@@ -13,23 +13,287 @@ from functools import partial
 from fastplotlib.widgets.nd_widget._index import ReferenceIndex
 
 
-class MultisessionDemixingVis:
-    """
-    This is a general viewer for analyzing cross-session tracking data
-    """
-    def __init__(
-            self,
-            demixing_results: list[masknmf.DemixingResults],
-            labels_per_session: list[list],
-            device='cpu'
-    ):
-        self._device = device
-        self._demixing_results = demixing_results
-        for elt in self._demixing_results:
-            elt.to(device)
-        self._labels_per_session = labels_per_session
+class MultiSessionDemixingVis:
 
+    def __init__(self,
+                 tracking_results: masknmf.multisession.RoicatTrackingResults,
+                 session_ids: np.ndarray | list | None = None,
+                 clusters: np.ndarray | Callable | None = None,
+                 session_names: list[str] | None = None,
+                 reference_ranges: dict | None = None,
+                 reference_range_timeaxes: list[str] | None = None,
+                 session_frame_timings: list[np.ndarray] | None = None,
+                 device='cuda'):
+
+        """
+        Visualization class to view tracking results for
+        1. You have run a tracking algorithm and have a tracking_results object. This gives you a clusters x sessions matrix, C.
+            C[i, j] gives the local index of the neuron in session "j" that belongs to cluster "i" (or -1 if no neuron exists).
+        2. (Optional) You have specified the clusters (i.e. rows of the clustering matrix) you care about.
+        3. (Optional) You have a specific subset of tracked sessions you care about
+
+        This visualizer will show the tracked sessions and the relevant clusters
+
+        For advanced users:
+        - If you provide reference_ranges to synchronize these visualizations with other visualization code, it is assumed that the i-th session has a time axis name provided in reference_range_timeaxes
+
+
+        """
+
+        self._device = device
+        self._tracking_results = tracking_results
+
+        ## Validate and set session ids
+        if session_ids is None:
+            session_ids = np.arange(self.tracking_results.num_sessions).astype('int')
+        self._validate_session_ids(session_ids)
+        self._session_ids = np.array(session_ids)
+
+        ## Validate and set session names
+        if session_names is None:
+            session_names = [f'Session_{i}' for i in self.session_ids]
+        if len(session_names) != self.num_sessions_displayed:
+            raise ValueError(
+                f"You provided {len(session_names)} session names there are {self.num_sessions_displayed} sessions being visualized")
+
+        self._session_names = session_names
+
+        ## Determine the cluster ids to visualize
+        if isinstance(clusters, Callable):
+            cluster_ids = []
+            for k in self.tracking_results.num_clusters:
+                if clusters(k):
+                    cluster_ids.append(k)
+            self._cluster_ids = np.array(cluster_ids).astype('int')
+        elif isinstance(clusters, np.ndarray):
+            self._cluster_ids = clusters.astype('int')
+        else:
+            self._cluster_ids = np.arange(self.tracking_results.num_clusters).astype('int')
+
+        ## Remove all duplicate cluster ids
+        self._cluster_ids = np.unique(self._cluster_ids)
+
+        ##Now that you know the cluster ids (rows) and session ids (columns), you can just display this subset of rows/columns of the clustering matrix
+        self._clustering_mat = self.tracking_results.presence[np.ix_(self.cluster_ids, self.session_ids)]  ##Shape
+
+        ## Load all the relevant demixing results into RAM
+        self._demixing_results = []
+        for curr_id in self.session_ids:
+            fpath = self.tracking_results.session_files[curr_id]
+            curr_dmr = masknmf.DemixingResults.from_hdf5(fpath)
+            self._demixing_results.append(curr_dmr)
+
+        ##Make the reference ranges for the time axes
+        """
+        Below code standardizes all input and makes public properties for reference_ranges, reference_range_timeaxes, session_frame_timings
+        """
+        if reference_ranges is not None:
+            """
+            What to validate here: 
+            - If reference_range_timeaxes provided, check that they have same length as number of sessions
+            - If reference_range_timings provided, check that they have same length for each dmr object
+            """
+            if reference_range_timeaxes is not None:
+                if len(reference_range_timeaxes) != self.num_sessions_displayed:
+                    raise ValueError(
+                        f"Provide exactly one reference range name for each of the {self.num_sessions_displayed} session(s) being visualized, in order. You provided {len(reference_range_timeaxes)}")
+                for elt in reference_range_timeaxes:
+                    if elt not in self.num_sessions_displayed:
+                        raise ValueError(f"reference_range_timeaxes key {elt} is not present in reference_ranges")
+            else:
+                raise ValueError(
+                    "If you provide your own reference_ranges, you need to specify time axis names for each session in reference_range_timeaxes")
+
+            if session_frame_timings is not None:
+                ## Check that each frame timing array shape matches the number of frames
+                if len(session_frame_timings) != self.num_sessions_displayed:
+                    raise ValueError(
+                        f"Provide exactly one frame timing array for each of the {self.num_sessions_displayed} session(s) being visualized. You provided {len(session_frame_timings)}.")
+                for index, elt in session_frame_timings:
+                    if elt.shape[0] != self.demixing_results[index].shape[0]:
+                        raise ValueError(
+                            f"session_frame_timings for {self.session_ids[index]} has shape {elt.shape[0]}, but the video for that session has {self.demixing_results[index].shape[0]} frames.")
+
+            else:
+                raise ValueError(
+                    "If you provide your own reference_ranges, you need to provide frame timings for each session in session_frame_timings")
+
+        else:
+            reference_ranges = dict()
+            reference_range_timeaxes = [self._session_timeaxis_name(self.session_ids[k]) for k in
+                                        range(self.num_sessions_displayed)]
+            for index, elt in enumerate(reference_range_timeaxes):
+                reference_ranges.update({elt: (0, self.demixing_results[index].shape[0], 1)})
+            session_frame_timings = [None for elt in reference_range_timeaxes]
+
+        self._reference_ranges = reference_ranges
+        self._session_frame_timings = session_frame_timings
+        self._reference_range_timeaxes = reference_range_timeaxes
+
+        trace_subplot_names = self.session_names
+
+        coloring = np.random.uniform(low=30, high=255, size=self.cluster_ids.shape[0] * 3).reshape(
+            self.cluster_ids.shape[0], 3).astype('float32')
+        coloring /= np.amax(coloring, axis=1, keepdims=True)
+        self._coloring = coloring.astype('float32')
+
+        self._ac_arrays = []
+        self._colorful_ac_arrays = []
+        self._nd_image_graphics = []
+
+        ## Set up the arrays that we want to visualize
+        for index, sess_id in enumerate(self.session_ids):
+            dr = self.demixing_results[index]
+            dr.to(self.device)
+            curr_c = dr.ac_array.c
+            curr_a = masknmf.demixing.demixing_utils.scipy_sparse_to_torch(self.tracking_results.aligned_rois[sess_id])
+
+            curr_ac_array = masknmf.ACArray.from_tensors(dr.ac_array.shape[1:],
+                                                         curr_a.to(self.device),
+                                                         curr_c.to(self.device))
+
+            curr_colorful_ac_array = masknmf.ColorfulACArray.from_tensors(dr.ac_array.shape[1:],
+                                                                          curr_a.to(self.device),
+                                                                          curr_c.to(self.device))
+
+            self._ac_arrays.append(curr_ac_array)
+            self._colorful_ac_arrays.append(curr_colorful_ac_array)
+
+        # Apply a consistent coloring to all arrays so matched neurons across sessions have same color
+        self._apply_consistent_coloring()
+
+        self._nd_image_graphics = []
+        ## Now let's construct the NDGraphic just for the image
+        self._ndw_videos = fpl.NDWidget(self.reference_ranges,
+                                        shape=(1, self.num_sessions_displayed),
+                                        names=[*self.session_names],
+                                        controller_ids=[tuple(self.session_names)],
+                                        size=(1600, 800))
+
+        for k in range(self.num_sessions_displayed):
+            curr_data = self.colorful_ac_arrays[k]
+            dims = (self.reference_range_timeaxes[k], "m", "n", "c")
+            spatial_dims = ("m", "n", "c")
+            curr_graphic = self._ndw_videos[self.session_names[k]].add_nd_image(curr_data,
+                                                                                dims,
+                                                                                spatial_dims,
+                                                                                rgb_dim="c",
+                                                                                slider_dim_transforms=
+                                                                                self.session_frame_timings[k],
+                                                                                name=self.session_names[k])
+            self._nd_image_graphics.append(curr_graphic)
+
+    def _validate_session_ids(self, session_ids: np.ndarray):
+        for k in range(len(session_ids)):
+            if not 0 <= session_ids[k] < self.tracking_results.num_sessions:
+                raise ValueError(
+                    f"Your tracking results contain {self.tracking_results.num_sessions}, all session ids must be a nonnegative integer less than this value")
+        return True
+
+    def _session_timeaxis_name(self, session_id: int):
+        """
+        standardized way to make a time axis for each individual
+        """
+        return f"time sess {session_id}"
+
+    @property
+    def reference_index(self):
+        return self.ndw_vid.indices
+
+    @property
+    def coloring(self) -> np.ndarray:
+        """
+        This is the coloring scheme used to color in neural components that are matched across sessions
+        The coloring is a (num_clusters, 3) np.ndarray
+        """
+        return self._coloring
+
+    @coloring.setter
+    def coloring(self, new_coloring: np.ndarray):
+        if not self._coloring.shape == new_coloring.shape:
+            raise ValueError(
+                f"The new coloring must be same shape as old coloring. New coloring had shape {new_coloring.shape}, old coloring had shape {self._coloring.shape}")
+        self._coloring = new_coloring
+
+    @property
+    def ac_arrays(self) -> list[masknmf.ACArray]:
+        return self._ac_arrays
+
+    @property
+    def colorful_ac_arrays(self) -> list[masknmf.ColorfulACArray]:
+        return self._colorful_ac_arrays
+
+    def _apply_consistent_coloring(self):
+        ## Load the AC Array data now, using a common coloring scheme etc.
+        cluster_id_to_index = np.zeros((len(self.cluster_ids),)).astype('int')
+        cluster_id_to_index[self.cluster_ids] = np.arange(len(self.cluster_ids)).astype('int')
+        for index, sess_id in enumerate(self.session_ids):
+            ## Let's define a mask for both arrays
+            curr_ac_array = self.ac_arrays[index]
+            curr_colorful_ac_array = self.colorful_ac_arrays[index]
+            curr_labels = tracking_results.labels_by_session[sess_id]
+            mask = np.isin(curr_labels, self.cluster_ids)
+            curr_ac_array.mask = torch.from_numpy(mask)
+            curr_colorful_ac_array.mask = torch.from_numpy(mask)
+
+            ## Now define the coloring scheme
+            curr_coloring = np.zeros((int(curr_ac_array.a.shape[1]), 3)).astype('float32')
+            clusters_present = curr_labels[mask]
+            cluster_indices = cluster_id_to_index[clusters_present]
+            curr_coloring[mask, :] = self.coloring[cluster_indices, :]
+            curr_colorful_ac_array.colors = torch.from_numpy(curr_coloring).float()
+
+    @property
+    def ndw_videos(self):
+        return self._ndw_videos
+
+    @property
+    def reference_ranges(self):
+        return self._reference_ranges
+
+    @property
+    def reference_range_timeaxes(self):
+        return self._reference_range_timeaxes
+
+    @property
+    def session_frame_timings(self):
+        return self._session_frame_timings
+
+    @property
+    def session_names(self) -> list[str]:
+        return self._session_names
+
+    @property
+    def demixing_results(self) -> list[masknmf.DemixingResults]:
+        return self._demixing_results
+
+    @property
+    def clustering_mat(self) -> np.ndarray:
+        """
+        Returns a binary membership matrix of dimensions (len(self.cluster_ids), num_sessions_displayed)
+        This will be displayed so the user can click on rows (clusters) and see the corresponding neural signals across sessions
+        """
+        return self._clustering_mat
+
+    @property
+    def session_ids(self) -> np.ndarray:
+        return self._session_ids
+
+    @property
+    def num_sessions_displayed(self) -> int:
+        return len(self.session_ids)
+
+    @property
+    def tracking_results(self) -> masknmf.multisession.RoicatTrackingResults:
+        return self._tracking_results
 
     @property
     def device(self):
         return self._device
+
+    @property
+    def cluster_ids(self) -> np.ndarray:
+        """
+        These are the cluster ids of the tracking results that are being displayed
+        """
+        return self._cluster_ids
