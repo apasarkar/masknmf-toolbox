@@ -147,7 +147,8 @@ class MultiSessionDemixingVis:
             dr = self.demixing_results[index]
             dr.to(self.device)
             curr_c = dr.ac_array.c
-            curr_a = masknmf.demixing.demixing_utils.scipy_sparse_to_torch(self.tracking_results.aligned_rois[sess_id])
+            curr_a = masknmf.demixing.demixing_utils.scipy_sparse_to_torch(
+                self.tracking_results.aligned_rois[sess_id]).coalesce()
 
             curr_ac_array = masknmf.ACArray.from_tensors(dr.ac_array.shape[1:],
                                                          curr_a.to(self.device),
@@ -191,6 +192,65 @@ class MultiSessionDemixingVis:
                                                                                ("height", "width"),
                                                                                ("height", "width"),
                                                                                name='trace_raster')
+
+        self._selection_vector = fpl.SelectionVector()
+        self._cluster_map_selector = fpl.ImageHighlightSelector(lut="tab10",
+                                                                lut_wrap="repeat",
+                                                                selection_options={"rows": [i for i in range(
+                                                                    self.clustering_mat.shape[0])]},
+                                                                options_color="w",
+                                                                options_alpha=0.1,
+                                                                alpha=0.95,
+                                                                )
+        self._cluster_map_selector.add_graphic(self._ndw_raster_graphic.graphic)
+        self._cluster_map_selector.selection = None
+        self._selection_vector.add_selector(
+            self._cluster_map_selector)  # The global and local indices for this selector are identical
+        self._ndw_raster_graphic.graphic.add_event_handler(partial(self.raster_selection), "double_click")
+
+        ## Now let's add the individual contour selectors for each session
+        self._image_highlight_selectors = []
+        for index, sess_id in enumerate(self.session_ids):
+            curr_selector = fpl.ImageHighlightSelector(lut="tab10",
+                                                       lut_wrap="repeat",
+                                                       selection_options={"pixels": self.ac_arrays[index].contours},
+                                                       options_color="w",
+                                                       options_alpha=0.0,
+                                                       alpha=0.95)
+            curr_selector.add_graphic(self._nd_image_graphics[index].graphic)
+            curr_selector.selection = None
+            ## Provide a dictionary specifying global indices --> local indices for each labeling
+            curr_map = self._construct_global_to_local_map(sess_id)
+            self._selection_vector.add_selector((curr_selector, curr_map))
+            self._image_highlight_selectors.append(curr_selector)
+
+        # Turn off tooltip
+        for subplot in self.ndw_videos.figure:
+            subplot.tooltip.enabled = False
+
+    def raster_selection(self, ev):
+        col, row = ev.pick_info['index']
+
+        ## Select the right neuron
+        print(int(row))
+        self._cluster_map_selector.selection = int(row)
+
+        for index, selector in enumerate(self._image_highlight_selectors):
+            ## Access the ID of the neuron belonging to this session
+            neuron_id = selector.selection
+            if neuron_id is not None:
+                curr_ac_contour = self.ac_arrays[index].contours[neuron_id]
+                lb, ub = contours_to_bbox(self.demixing_results[index].shape[1:], curr_ac_contour)
+                curr_subplot = self.ndw_videos.figure[index]
+                for graphic in curr_subplot.graphics:
+                    zoom_to_bbox(curr_subplot, graphic, lb, ub)
+
+    def _construct_global_to_local_map(self, sess_id: int) -> dict:
+        ## Make an inverse map:
+        inverse_map = {int(value): int(index) for index, value in enumerate(self.cluster_ids)}
+        return {inverse_map[value]: int(index) for index, value in
+                enumerate(self.tracking_results.labels_by_session[sess_id]) if
+                int(value) >= 0 and int(value) in self.cluster_ids}
 
     def _validate_session_ids(self, session_ids: np.ndarray):
         for k in range(len(session_ids)):
@@ -305,11 +365,11 @@ class MultiSessionDemixingVis:
 
     ## Below are properties exposing the widgets + the show function
     @property
-    def ndw_videos(self):
+    def ndw_videos(self) -> fpl.NDWidget:
         return self._ndw_videos
 
     @property
-    def ndw_cluster_map(self):
+    def ndw_cluster_map(self) -> fpl.NDWidget:
         return self._ndw_cluster_map
 
     def show(self):
@@ -319,3 +379,20 @@ class MultiSessionDemixingVis:
             return HBox([self.ndw_videos.show(), self.ndw_cluster_map.show(maintain_aspect=False)])
         else:
             return self.ndw_videos.show(), self.ndw_cluster_map.show(maintain_aspect=False)
+
+
+def contours_to_bbox(fov_shape, contour, extra_space=10):
+    min_y, min_x = np.amin(contour, axis=0)
+    max_y, max_x = np.amax(contour, axis=0)
+
+    bound_y = (max(0, int(min_y) - extra_space), min(int(fov_shape[0]), int(max_y) + extra_space))
+    bound_x = (max(0, int(min_x) - extra_space), min(int(fov_shape[1]), int(max_x) + extra_space))
+
+    return (bound_x[0], bound_y[0], 1), (bound_x[1], bound_y[1], 1)
+
+
+def zoom_to_bbox(subplot, graphic, lower_bound, upper_bound):
+    world_coord_lower = graphic.map_model_to_world(lower_bound)
+    world_coord_upper = graphic.map_model_to_world(upper_bound)
+    subplot.x_range = (float(world_coord_lower[0]), float(world_coord_upper[0]))
+    subplot.y_range = (float(world_coord_lower[1]), float(world_coord_upper[1]))
