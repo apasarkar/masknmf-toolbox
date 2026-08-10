@@ -170,7 +170,7 @@ class MultiSessionDemixingVis:
                                         shape=(1, self.num_sessions_displayed),
                                         names=[*self.session_names],
                                         controller_ids=[tuple(self.session_names)],
-                                        size=(1600, 800))
+                                        size=(500, 300))
 
         for k in range(self.num_sessions_displayed):
             curr_data = self.colorful_ac_arrays[k]
@@ -186,7 +186,8 @@ class MultiSessionDemixingVis:
             self._nd_image_graphics.append(curr_graphic)
 
         self._ndw_cluster_map = fpl.NDWidget(names=['raster'],
-                                             shape=(1, 1))
+                                             shape=(1, 1),
+                                             size=(200, 300))
 
         self._ndw_raster_graphic = self.ndw_cluster_map['raster'].add_nd_image(self.clustering_mat,
                                                                                ("height", "width"),
@@ -235,15 +236,47 @@ class MultiSessionDemixingVis:
         print(int(row))
         self._cluster_map_selector.selection = int(row)
 
+        min_lb, max_ub = None, None
         for index, selector in enumerate(self._image_highlight_selectors):
             ## Access the ID of the neuron belonging to this session
-            neuron_id = selector.selection
+            neuron_id = selector.selection[0]
             if neuron_id is not None:
                 curr_ac_contour = self.ac_arrays[index].contours[neuron_id]
                 lb, ub = contours_to_bbox(self.demixing_results[index].shape[1:], curr_ac_contour)
-                curr_subplot = self.ndw_videos.figure[index]
-                for graphic in curr_subplot.graphics:
-                    zoom_to_bbox(curr_subplot, graphic, lb, ub)
+                if min_lb is None:
+                    min_lb = list(lb)
+                else:
+                    if min_lb[0] > lb[0]:
+                        min_lb[0] = lb[0]
+                    if min_lb[1] > lb[1]:
+                        min_lb[1] = lb[1]
+                    min_lb[2] = 1
+
+                if max_ub is None:
+                    max_ub = list(ub)
+                else:
+                    if max_ub[0] < ub[0]:
+                        max_ub[0] = ub[0]
+                    if max_ub[1] < ub[1]:
+                        max_ub[1] = ub[1]
+                    max_ub[2] = 1
+
+                # curr_subplot = self.ndw_videos.figure[index]
+                # for graphic in curr_subplot.graphics:
+                #     zoom_to_bbox(curr_subplot, graphic, lb, ub)
+        # These are now the spatial bounds to apply uniformly across all FOV
+        lb_apply = tuple(min_lb)
+        ub_apply = tuple(max_ub)
+
+        for index, selector in enumerate(self._image_highlight_selectors):
+            ## Access the ID of the neuron belonging to this session
+            neuron_id = selector.selection[0]
+            ## Apply below crop regardless of whether or not neuron exists
+            # curr_ac_contour = self.ac_arrays[index].contours[neuron_id]
+
+            curr_subplot = self.ndw_videos.figure[index]
+            for graphic in curr_subplot.graphics:
+                zoom_to_bbox(curr_subplot, graphic, lb_apply, ub_apply)
 
     def _construct_global_to_local_map(self, sess_id: int) -> dict:
         ## Make an inverse map:
