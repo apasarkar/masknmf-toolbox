@@ -74,7 +74,8 @@ class MultiSessionDemixingVis:
         self._cluster_ids = np.unique(self._cluster_ids)
 
         ##Now that you know the cluster ids (rows) and session ids (columns), you can just display this subset of rows/columns of the clustering matrix
-        self._clustering_mat = self.tracking_results.presence[np.ix_(self.cluster_ids, self.session_ids)]  ##Shape
+        self._clustering_mat = self.tracking_results.presence[np.ix_(self.cluster_ids, self.session_ids)].astype(
+            np.float32)  ##Cast needed for visualization
 
         ## Load all the relevant demixing results into RAM
         self._demixing_results = []
@@ -183,6 +184,14 @@ class MultiSessionDemixingVis:
                                                                                 name=self.session_names[k])
             self._nd_image_graphics.append(curr_graphic)
 
+        self._ndw_cluster_map = fpl.NDWidget(names=['raster'],
+                                             shape=(1, 1))
+
+        self._ndw_raster_graphic = self.ndw_cluster_map['raster'].add_nd_image(self.clustering_mat,
+                                                                               ("height", "width"),
+                                                                               ("height", "width"),
+                                                                               name='trace_raster')
+
     def _validate_session_ids(self, session_ids: np.ndarray):
         for k in range(len(session_ids)):
             if not 0 <= session_ids[k] < self.tracking_results.num_sessions:
@@ -244,10 +253,6 @@ class MultiSessionDemixingVis:
             curr_colorful_ac_array.colors = torch.from_numpy(curr_coloring).float()
 
     @property
-    def ndw_videos(self):
-        return self._ndw_videos
-
-    @property
     def reference_ranges(self):
         return self._reference_ranges
 
@@ -297,3 +302,20 @@ class MultiSessionDemixingVis:
         These are the cluster ids of the tracking results that are being displayed
         """
         return self._cluster_ids
+
+    ## Below are properties exposing the widgets + the show function
+    @property
+    def ndw_videos(self):
+        return self._ndw_videos
+
+    @property
+    def ndw_cluster_map(self):
+        return self._ndw_cluster_map
+
+    def show(self):
+
+        if self.ndw_videos.figure.canvas.__class__.__name__ == "AnywidgetRenderCanvas":
+            from ipywidgets import HBox
+            return HBox([self.ndw_videos.show(), self.ndw_cluster_map.show(maintain_aspect=False)])
+        else:
+            return self.ndw_videos.show(), self.ndw_cluster_map.show(maintain_aspect=False)
