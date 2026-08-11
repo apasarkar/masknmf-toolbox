@@ -360,7 +360,7 @@ class RoicatTrackingResults:
         return self._session_files
 
     @session_files.setter
-    def session_files(self, new_files: tuple[str]):
+    def session_files(self, new_files: tuple[str | tuple[str, ...]]):
         if len(new_files) == self.num_sessions:
             self._session_files = new_files
         else:

@@ -172,6 +172,24 @@ class MultiSessionDemixingVis:
                                         controller_ids=[tuple(self.session_names)],
                                         size=(500, 300))
 
+        self._mip_session_names = ["MIP " + elt for elt in self.session_names]
+        self._ndw_mip = fpl.NDWidget(shape=(1, self.num_sessions_displayed),
+                                     names=[*self.mip_session_names],
+                                     controller_ids=[tuple(self.mip_session_names)],
+                                     size=(500, 300))
+
+        self._nd_mip_graphics = []
+        for k in range(self.num_sessions_displayed):
+            curr_data = self.colorful_ac_arrays[k].compute_mip()
+            dims = ("m", "n", "c")
+            spatial_dims = ("m", "n", "c")
+            curr_graphic = self._ndw_mip[self.mip_session_names[k]].add_nd_image(curr_data,
+                                                                                 dims,
+                                                                                 spatial_dims,
+                                                                                 rgb_dim="c",
+                                                                                 name=self.mip_session_names)
+            self._nd_mip_graphics.append(curr_graphic)
+
         for k in range(self.num_sessions_displayed):
             curr_data = self.colorful_ac_arrays[k]
             dims = (self.reference_range_timeaxes[k], "m", "n", "c")
@@ -184,6 +202,12 @@ class MultiSessionDemixingVis:
                                                                                 self.session_frame_timings[k],
                                                                                 name=self.session_names[k])
             self._nd_image_graphics.append(curr_graphic)
+
+        common_camera = self.ndw_videos.figure[0].camera
+        for subplot in self.ndw_mip.figure:
+            subplot.camera = common_camera
+        for subplot in self.ndw_videos.figure:  ##
+            subplot.camera = common_camera
 
         self._ndw_cluster_map = fpl.NDWidget(names=['raster'],
                                              shape=(1, 1),
@@ -219,6 +243,7 @@ class MultiSessionDemixingVis:
                                                        options_alpha=0.0,
                                                        alpha=0.95)
             curr_selector.add_graphic(self._nd_image_graphics[index].graphic)
+            curr_selector.add_graphic(self._nd_mip_graphics[index].graphic)
             curr_selector.selection = None
             ## Provide a dictionary specifying global indices --> local indices for each labeling
             curr_map = self._construct_global_to_local_map(sess_id)
@@ -261,9 +286,6 @@ class MultiSessionDemixingVis:
                         max_ub[1] = ub[1]
                     max_ub[2] = 1
 
-                # curr_subplot = self.ndw_videos.figure[index]
-                # for graphic in curr_subplot.graphics:
-                #     zoom_to_bbox(curr_subplot, graphic, lb, ub)
         # These are now the spatial bounds to apply uniformly across all FOV
         lb_apply = tuple(min_lb)
         ub_apply = tuple(max_ub)
@@ -362,6 +384,10 @@ class MultiSessionDemixingVis:
         return self._session_names
 
     @property
+    def mip_session_names(self) -> list[str]:
+        return self._mip_session_names
+
+    @property
     def demixing_results(self) -> list[masknmf.DemixingResults]:
         return self._demixing_results
 
@@ -405,13 +431,18 @@ class MultiSessionDemixingVis:
     def ndw_cluster_map(self) -> fpl.NDWidget:
         return self._ndw_cluster_map
 
+    @property
+    def ndw_mip(self) -> fpl.NDWidget:
+        return self._ndw_mip
+
     def show(self):
 
         if self.ndw_videos.figure.canvas.__class__.__name__ == "AnywidgetRenderCanvas":
-            from ipywidgets import HBox
-            return HBox([self.ndw_videos.show(), self.ndw_cluster_map.show(maintain_aspect=False)])
+            from ipywidgets import HBox, VBox
+            return HBox(
+                [VBox([self.ndw_videos.show(), self.ndw_mip.show()]), self.ndw_cluster_map.show(maintain_aspect=False)])
         else:
-            return self.ndw_videos.show(), self.ndw_cluster_map.show(maintain_aspect=False)
+            return self.ndw_videos.show(), self.ndw_mip.show(), self.ndw_cluster_map.show(maintain_aspect=False)
 
 
 def contours_to_bbox(fov_shape, contour, extra_space=10):
@@ -429,3 +460,4 @@ def zoom_to_bbox(subplot, graphic, lower_bound, upper_bound):
     world_coord_upper = graphic.map_model_to_world(upper_bound)
     subplot.x_range = (float(world_coord_lower[0]), float(world_coord_upper[0]))
     subplot.y_range = (float(world_coord_lower[1]), float(world_coord_upper[1]))
+
