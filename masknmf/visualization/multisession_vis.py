@@ -21,7 +21,7 @@ class MultiSessionDemixingVis:
                  clusters: np.ndarray | Callable | None = None,
                  session_names: list[str] | None = None,
                  reference_ranges: dict | None = None,
-                 reference_range_timeaxes: list[str] | None = None,
+                 reference_range_timeaxis: str | None = None,
                  session_frame_timings: list[np.ndarray] | None = None,
                  device='cuda'):
 
@@ -34,8 +34,13 @@ class MultiSessionDemixingVis:
 
         This visualizer will show the tracked sessions and the relevant clusters
 
-        For advanced users:
-        - If you provide reference_ranges to synchronize these visualizations with other visualization code, it is assumed that the i-th session has a time axis name provided in reference_range_timeaxes
+        reference_ranges and synchronization:
+        In this viewer, time reference space specifies units of time relative to the start of each session. So t = 1 refers to 1 unit after the start of a session.
+        With this convention, all temporal data from all sessions can be synchronized along a single time axis
+
+        If a reference range is provided, the user needs to specify reference_range_timeaxis as the key in the reference range dictionary that corresponds to the time axis.
+
+
 
 
         """
@@ -86,24 +91,16 @@ class MultiSessionDemixingVis:
 
         ##Make the reference ranges for the time axes
         """
-        Below code standardizes all input and makes public properties for reference_ranges, reference_range_timeaxes, session_frame_timings
+        Below code standardizes all input and makes public properties for reference_ranges, reference_range_timeaxis, session_frame_timings
         """
         if reference_ranges is not None:
-            """
-            What to validate here: 
-            - If reference_range_timeaxes provided, check that they have same length as number of sessions
-            - If reference_range_timings provided, check that they have same length for each dmr object
-            """
-            if reference_range_timeaxes is not None:
-                if len(reference_range_timeaxes) != self.num_sessions_displayed:
+            if reference_range_timeaxis is not None:
+                if reference_range_timeaxis not in reference_ranges:
                     raise ValueError(
-                        f"Provide exactly one reference range name for each of the {self.num_sessions_displayed} session(s) being visualized, in order. You provided {len(reference_range_timeaxes)}")
-                for elt in reference_range_timeaxes:
-                    if elt not in self.num_sessions_displayed:
-                        raise ValueError(f"reference_range_timeaxes key {elt} is not present in reference_ranges")
+                        f"reference_range_timeaxis key {reference_range_timeaxis} must be a key in reference_ranges")
             else:
                 raise ValueError(
-                    "If you provide your own reference_ranges, you need to specify time axis names for each session in reference_range_timeaxes")
+                    "If you provide your own reference_ranges, you need to specify which key in reference range represents the time axis in ``reference_range_timeaxis``")
 
             if session_frame_timings is not None:
                 ## Check that each frame timing array shape matches the number of frames
@@ -121,15 +118,22 @@ class MultiSessionDemixingVis:
 
         else:
             reference_ranges = dict()
-            reference_range_timeaxes = [self._session_timeaxis_name(self.session_ids[k]) for k in
-                                        range(self.num_sessions_displayed)]
-            for index, elt in enumerate(reference_range_timeaxes):
-                reference_ranges.update({elt: (0, self.demixing_results[index].shape[0], 1)})
-            session_frame_timings = [None for elt in reference_range_timeaxes]
+            reference_range_timeaxis = "time" if reference_range_timeaxis is None else reference_range_timeaxis
+            if session_frame_timings is not None:
+                ## Check that each frame timing array shape matches the number of frames
+                if len(session_frame_timings) != self.num_sessions_displayed:
+                    raise ValueError(
+                        f"Provide exactly one frame timing array for each of the {self.num_sessions_displayed} session(s) being visualized. You provided {len(session_frame_timings)}.")
+                for index, elt in session_frame_timings:
+                    if elt.shape[0] != self.demixing_results[index].shape[0]:
+                        raise ValueError(
+                            f"session_frame_timings for {self.session_ids[index]} has shape {elt.shape[0]}, but the video for that session has {self.demixing_results[index].shape[0]} frames.")
+            else:
+                session_frame_timings = [None for elt in range(self.num_sessions_displayed)]
 
         self._reference_ranges = reference_ranges
         self._session_frame_timings = session_frame_timings
-        self._reference_range_timeaxes = reference_range_timeaxes
+        self._reference_range_timeaxis = reference_range_timeaxis
 
         trace_subplot_names = self.session_names
 
@@ -192,7 +196,7 @@ class MultiSessionDemixingVis:
 
         for k in range(self.num_sessions_displayed):
             curr_data = self.colorful_ac_arrays[k]
-            dims = (self.reference_range_timeaxes[k], "m", "n", "c")
+            dims = (self.reference_range_timeaxis, "m", "n", "c")
             spatial_dims = ("m", "n", "c")
             curr_graphic = self._ndw_videos[self.session_names[k]].add_nd_image(curr_data,
                                                                                 dims,
@@ -372,8 +376,8 @@ class MultiSessionDemixingVis:
         return self._reference_ranges
 
     @property
-    def reference_range_timeaxes(self):
-        return self._reference_range_timeaxes
+    def reference_range_timeaxis(self) -> str:
+        return self._reference_range_timeaxis
 
     @property
     def session_frame_timings(self):
@@ -460,4 +464,3 @@ def zoom_to_bbox(subplot, graphic, lower_bound, upper_bound):
     world_coord_upper = graphic.map_model_to_world(upper_bound)
     subplot.x_range = (float(world_coord_lower[0]), float(world_coord_upper[0]))
     subplot.y_range = (float(world_coord_lower[1]), float(world_coord_upper[1]))
-
