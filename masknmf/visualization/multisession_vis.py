@@ -252,15 +252,51 @@ class MultiSessionDemixingVis:
             self._selection_vector.add_selector((curr_selector, curr_map))
             self._image_highlight_selectors.append(curr_selector)
 
+        ## Add double click events to all the ndimage graphics:
+        for index, _ in enumerate(self.session_ids):
+            print(index)
+            curr_nd_image_graphic = self._nd_image_graphics[index].graphic
+            curr_nd_image_graphic.add_event_handler(partial(self.neuron_selection, index), "double_click")
+            curr_nd_mip_graphic = self._nd_mip_graphics[index].graphic
+            curr_nd_mip_graphic.add_event_handler(partial(self.neuron_selection, index), "double_click")
+
         # Turn off tooltip
         for subplot in self.ndw_videos.figure:
             subplot.tooltip.enabled = False
+        for subplot in self.ndw_mip.figure:
+            subplot.tooltip.enabled = False
+
+    def neuron_selection(self,
+                         display_sess_index: int,
+                         ev):
+        col, row = ev.pick_info['index']  ##Pixel coordinates
+        curr_ac = self.ac_arrays[display_sess_index]
+
+        height, width = curr_ac.shape[1:]
+        pixel_ind = int(row * width + col)  ## Row major vectorized coordinate for selected pixel
+
+        a_row, a_col = curr_ac.a.indices()
+        a_val = curr_ac.a.values()
+        valid_columns = torch.as_tensor(
+            self.tracking_results.labels_by_session[self.session_ids[display_sess_index]][a_col.cpu().numpy()] > 0,
+            device=self.device, dtype=torch.bool)
+        conditions = (a_row == pixel_ind) & (
+                    a_val > 0) & valid_columns  ## Last condition ensures we don't select cells that never got tracked
+        a_col = torch.unique(a_col[conditions])  ## So this tells us which components if any contain this pixel
+        if a_col.numel() == 0:
+            return  ## In this case the user clicked on an empty pixel
+        else:
+            valid_centers = curr_ac.centers[a_col]
+            ind_tensor = torch.tensor([row, col], dtype=valid_centers.dtype, device=valid_centers.device)
+            distances = torch.linalg.norm(valid_centers - ind_tensor[None, :], dim=1)
+            max_val = int(torch.argmin(distances))
+
+        self._image_highlight_selectors[display_sess_index].selection = int(a_col[max_val])
 
     def raster_selection(self, ev):
         col, row = ev.pick_info['index']
 
         ## Select the right neuron
-        print(int(row))
         self._cluster_map_selector.selection = int(row)
 
         min_lb, max_ub = None, None
