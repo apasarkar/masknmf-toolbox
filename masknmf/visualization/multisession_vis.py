@@ -182,7 +182,7 @@ class MultiSessionDemixingVis:
 
         self._nd_mip_graphics = []
         for k in range(self.num_sessions_displayed):
-            curr_data = self.colorful_ac_arrays[k].compute_mip()
+            curr_data = self.colorful_ac_arrays[k].compute_mip().cpu().numpy()
             dims = ("m", "n", "c")
             spatial_dims = ("m", "n", "c")
             curr_graphic = self._ndw_mip[self.mip_session_names[k]].add_nd_image(curr_data,
@@ -254,7 +254,6 @@ class MultiSessionDemixingVis:
 
         ## Add double click events to all the ndimage graphics:
         for index, _ in enumerate(self.session_ids):
-            print(index)
             curr_nd_image_graphic = self._nd_image_graphics[index].graphic
             curr_nd_image_graphic.add_event_handler(partial(self.neuron_selection, index), "double_click")
             curr_nd_mip_graphic = self._nd_mip_graphics[index].graphic
@@ -363,10 +362,6 @@ class MultiSessionDemixingVis:
         return f"time sess {session_id}"
 
     @property
-    def reference_index(self):
-        return self.ndw_vid.indices
-
-    @property
     def coloring(self) -> np.ndarray:
         """
         This is the coloring scheme used to color in neural components that are matched across sessions
@@ -412,6 +407,10 @@ class MultiSessionDemixingVis:
     @property
     def reference_ranges(self):
         return self._reference_ranges
+
+    @property
+    def reference_index(self):
+        return self.ndw_videos.indices
 
     @property
     def reference_range_timeaxis(self) -> str:
