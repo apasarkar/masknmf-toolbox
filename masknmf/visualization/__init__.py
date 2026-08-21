@@ -17,6 +17,7 @@ from masknmf.visualization.plots import (
 
 from masknmf.visualization.motion_vis import MotionCorrectionVis
 from masknmf.visualization.demixing_vis import SingleSessionDemixingVis, visualize_superpixels_peaks
+from masknmf.visualization.multisession_vis import MultiSessionDemixingVis
 
 __all__ = [
     # "PMDWidget",
@@ -26,4 +27,5 @@ __all__ = [
     # "make_demixing_video",
     "MotionCorrectionVis",
     "SingleSessionDemixingVis",
+    "MultiSessionDemixingVis"
 ]

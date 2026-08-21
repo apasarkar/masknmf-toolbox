@@ -1,6 +1,5 @@
 from typing import *
 import numpy as np
-from fastplotlib.widgets import ImageWidget
 import fastplotlib as fpl
 from imgui_bundle import imgui
 from fastplotlib import ui
@@ -12,12 +11,13 @@ from masknmf.utils import display
 from functools import partial
 import h5py
 from fastplotlib.widgets.nd_widget._index import ReferenceIndex
+from masknmf.multisession import RoicatTrackingResults
 
 
 class MultiSessionDemixingVis:
 
     def __init__(self,
-                 tracking_results: masknmf.multisession.RoicatTrackingResults,
+                 tracking_results: RoicatTrackingResults,
                  session_ids: np.ndarray | list | None = None,
                  clusters: np.ndarray | Callable | None = None,
                  session_names: list[str] | None = None,
@@ -456,7 +456,7 @@ class MultiSessionDemixingVis:
         return len(self.session_ids)
 
     @property
-    def tracking_results(self) -> masknmf.multisession.RoicatTrackingResults:
+    def tracking_results(self) -> RoicatTrackingResults:
         return self._tracking_results
 
     @property
