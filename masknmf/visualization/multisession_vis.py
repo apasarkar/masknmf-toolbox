@@ -24,6 +24,7 @@ class MultiSessionDemixingVis:
                  reference_ranges: dict | None = None,
                  reference_range_timeaxis: str | None = None,
                  session_frame_timings: list[np.ndarray] | None = None,
+                 figure_shape: tuple[int, int] | None = None,
                  device='cuda'):
 
         """
@@ -40,10 +41,6 @@ class MultiSessionDemixingVis:
         With this convention, all temporal data from all sessions can be synchronized along a single time axis
 
         If a reference range is provided, the user needs to specify reference_range_timeaxis as the key in the reference range dictionary that corresponds to the time axis.
-
-
-
-
         """
 
         self._device = device
@@ -63,6 +60,15 @@ class MultiSessionDemixingVis:
                 f"You provided {len(session_names)} session names there are {self.num_sessions_displayed} sessions being visualized")
 
         self._session_names = session_names
+
+        ## Set the figure shape
+        if figure_shape is None:
+            self._figure_shape = (1, self.num_sessions_displayed)
+        else:
+            if (figure_shape[0] * figure_shape[1]) < self.num_sessions_displayed:
+                raise ValueError(
+                    f"The figure shape is {figure_shape[0]} x {figure_shape[1]} which is too small to display {self.num_sessions_displayed} sessions")
+            self._figure_shape = figure_shape
 
         ## Determine the cluster ids to visualize
         if isinstance(clusters, Callable):
@@ -94,7 +100,6 @@ class MultiSessionDemixingVis:
                 c = torch.from_numpy(f["DemixingResults/c"][:])
                 curr_shape = tuple([int(i) for i in f["DemixingResults/shape"][:]])
 
-            # dr = masknmf.DemixingResults.from_hdf5(fpath)
             curr_c = c
             curr_a = masknmf.demixing.demixing_utils.scipy_sparse_to_torch(
                 self.tracking_results.aligned_rois[sess_id]).coalesce()
@@ -135,7 +140,7 @@ class MultiSessionDemixingVis:
 
             else:
                 raise ValueError(
-                    "If you provide your own reference_ranges, you need to provide frame timings for each session in session_frame_timings")
+                    "If you provide your own reference_ranges, you need to provide frame timings for each session via the session_frame_timings parameter")
 
         else:
             reference_ranges = dict()
@@ -169,13 +174,15 @@ class MultiSessionDemixingVis:
         self._nd_image_graphics = []
         ## Now let's construct the NDGraphic just for the image
         self._ndw_videos = fpl.NDWidget(self.reference_ranges,
-                                        shape=(1, self.num_sessions_displayed),
+                                        shape=self.figure_shape,  ## SHAPE UPDATE
                                         names=[*self.session_names],
                                         controller_ids=[tuple(self.session_names)],
                                         size=(500, 300))
 
         self._mip_session_names = ["MIP " + elt for elt in self.session_names]
-        self._ndw_mip = fpl.NDWidget(shape=(1, self.num_sessions_displayed),
+
+        ### UPDATE SHAPE HERE
+        self._ndw_mip = fpl.NDWidget(shape=self.figure_shape,
                                      names=[*self.mip_session_names],
                                      controller_ids=[tuple(self.mip_session_names)],
                                      size=(500, 300))
@@ -425,6 +432,10 @@ class MultiSessionDemixingVis:
         return self._session_names
 
     @property
+    def figure_shape(self) -> tuple[int, int]:
+        return self._figure_shape
+
+    @property
     def mip_session_names(self) -> list[str]:
         return self._mip_session_names
 
@@ -497,3 +508,4 @@ def zoom_to_bbox(subplot, graphic, lower_bound, upper_bound):
     world_coord_upper = graphic.map_model_to_world(upper_bound)
     subplot.x_range = (float(world_coord_lower[0]), float(world_coord_upper[0]))
     subplot.y_range = (float(world_coord_lower[1]), float(world_coord_upper[1]))
+
