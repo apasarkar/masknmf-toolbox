@@ -9,6 +9,10 @@ import scipy.sparse
 from roicat.data_importing import Data_roicat
 from roicat.pipelines import pipeline_tracking
 from roicat.util import get_default_parameters
+from roicat import helpers
+from roicat.util import RichFile_ROICaT
+import json
+import datetime
 
 import warnings
 from typing import Callable, Optional, Sequence
@@ -242,14 +246,24 @@ class RoicatTracker:
     def params(self) -> dict:
         return self._params
 
-    def run_tracking(self, multisession_data: RoicatDataAdapter | Data_roicat):
+    def run_tracking(self,
+                     multisession_data: RoicatDataAdapter | Data_roicat):
         if not multisession_data.check_completeness()['tracking']:
             raise ValueError("input data does not have all necessary properties to run the tracking code")
         tracked_outputs = pipeline_tracking(self.params, custom_data=multisession_data)
 
-        return RoicatTrackingResults(tracked_outputs,
-                                     multisession_data.session_files)
+        return RoicatTrackingResults(results=tracked_outputs[0],
+                                     run_data=tracked_outputs[1],
+                                     session_files=multisession_data.session_files,
+                                     params=tracked_outputs[2])
 
+
+
+_STEM_RESULTS = '.tracking.results_all.'
+_STEM_RUN_DATA = '.tracking.run_data.'
+_EXT_WRITE = 'richfile.zip'
+_SUFFIX_PARAMS = '.tracking.params.yaml'
+_SUFFIX_SESSIONS = '.tracking.masknmf_sessions.json'
 
 class RoicatTrackingResults:
     """
@@ -268,19 +282,28 @@ class RoicatTrackingResults:
     """
 
     def __init__(self,
-                 results: tuple[dict, dict, dict],
-                 session_files: tuple[str]):
-        self._results = results[0]
-        self._run_data = results[1]
-        self._params = results[2]
+                 results: dict,
+                 run_data: dict,
+                 session_files: tuple[str],
+                 params: dict | None = None,
+                 ):
+        if results is None:
+            raise ValueError("results is required; RoicatTrackingResults cannot be constructed without it.")
+        if run_data is None:
+            raise ValueError("run_data is required; RoicatTrackingResults cannot be constructed without it.")
+        if session_files is None:
+            raise ValueError("session_files is required; RoicatTrackingResults cannot be constructed without it.")
+
+        self._results = results
+        self._run_data = run_data
+        self._params = params
 
         self._labels_by_session = [
             np.asarray(l, dtype=np.int64)
             for l in self._results["clusters"]["labels_bySession"]
         ]
-        if len(session_files) != self.num_sessions:
-            raise ValueError(f"The number of demixing result files needs to match the number of sessions")
-        self._session_files = session_files
+
+        self.session_files = session_files
 
         self._n_roi_per_session = np.array(
             [len(l) for l in self.labels_by_session], dtype=np.int64
@@ -359,12 +382,20 @@ class RoicatTrackingResults:
         """A list of .hdf5 file paths, one for each session, that contain serialized masknmf.DemixingResults objects"""
         return self._session_files
 
+    @staticmethod
+    def _abspath_entry(entry: str | tuple[str, ...] | list[str]) -> str | tuple[str, ...]:
+        if isinstance(entry, (tuple, list)):
+            return tuple(os.path.abspath(x) for x in entry)
+        return os.path.abspath(entry)
+
     @session_files.setter
-    def session_files(self, new_files: tuple[str | tuple[str, ...]]):
-        if len(new_files) == self.num_sessions:
-            self._session_files = new_files
-        else:
-            raise ValueError(f"The new set of files has length {len(new_files)} but the number of sessions is {self.num_sessions}")
+    def session_files(self, new_files: tuple[str | tuple[str, ...], ...]):
+        if len(new_files) != self.num_sessions:
+            raise ValueError(
+                f"The new set of files has length {len(new_files)} but the number of "
+                f"sessions is {self.num_sessions}"
+            )
+        self._session_files = tuple(self._abspath_entry(f) for f in new_files)
 
     @property
     def num_sessions(self) -> int:
@@ -525,7 +556,7 @@ class RoicatTrackingResults:
         rois = self.aligned_rois if aligned else self.raw_rois
         height, width = self.frame_shape
         out = {}
-        for s, idx in self.members_of(cluster_id).items():
+        for s, idx in self.find_members(cluster_id).items():
             if len(idx) == 0:
                 continue
             block = np.asarray(rois[s][:, idx].todense()).T
@@ -567,6 +598,73 @@ class RoicatTrackingResults:
             f"frac_clustered={frac:.2f})"
         )
 
+    ## Serialization code
+
+    def to_roicat_dir(self,
+                      dir_save: str | Path,
+                      prefix_name_save=None):
+
+        dir_save = Path(dir_save).resolve()
+        dir_save.mkdir(parents=True, exist_ok=True)
+        name = prefix_name_save or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        RichFile_ROICaT(
+            path=str(dir_save / f'{name}{_STEM_RESULTS}{_EXT_WRITE}'), backend='zip'
+        ).save(obj=self._results, overwrite=True)
+        RichFile_ROICaT(
+            path=str(dir_save / f'{name}{_STEM_RUN_DATA}{_EXT_WRITE}'), backend='zip'
+        ).save(obj=self.run_data, overwrite=True)
+
+
+        if self._params is not None:
+            ## This guarantees everything we write out is supported natively by pyyaml
+            helpers.yaml_save(
+                obj=json.loads(json.dumps(self._params, default=str)),
+                filepath=str(dir_save / f'{name}{_SUFFIX_PARAMS}'),
+            )
+
+        (dir_save / f'{name}{_SUFFIX_SESSIONS}').write_text(
+            json.dumps(self._session_files, indent=4),
+            encoding='utf-8',
+        )
+
+        return dir_save
+
+    @classmethod
+    def from_roicat_dir(cls,
+                        dir_load: str | Path,
+                        prefix_name_save: str | None =None,
+                        session_files=None):
+
+        dir_load = Path(dir_load)
+        pat = f'{prefix_name_save or "*"}{_STEM_RESULTS}*'
+        hits = sorted(dir_load.glob(pat))
+        if len(hits) != 1:
+            raise ValueError(
+                f"Expected exactly one results_all in {dir_load}, found {len(hits)}."
+                + (" Pass prefix_name_save to disambiguate." if hits else "")
+            )
+        p_results = hits[0]
+        name, ext = p_results.name.split(_STEM_RESULTS, 1) #maxsplit = 1 address case where prefix has identical to STEM
+
+        p_run = dir_load / f'{name}{_STEM_RUN_DATA}{ext}'
+        p_params = dir_load / f'{name}{_SUFFIX_PARAMS}'
+        p_sessions = dir_load / f'{name}{_SUFFIX_SESSIONS}'
+
+        if not p_run.exists():
+            raise FileNotFoundError(f"run_data file {p_run} does not exist")
+
+        params = helpers.yaml_load(str(p_params)) if p_params.exists() else None
+
+        if session_files is None and p_sessions.exists():
+            session_files = tuple(json.loads(p_sessions.read_text(encoding='utf-8')))
+
+        return cls(
+            results=RichFile_ROICaT(path=str(p_results), backend='auto').load(),
+            run_data=RichFile_ROICaT(path=str(p_run), backend='auto').load(),
+            session_files=session_files,
+            params=params,
+        )
 
 
 

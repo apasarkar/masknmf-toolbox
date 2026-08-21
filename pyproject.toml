@@ -48,7 +48,10 @@ docs = [
 
 multisession = [
     "roicat[tracking_latest] >= 1.7.7", #First release that has this extras structure
+    "onnx2torch"
 ]
+
+
 
 dev = [
     "pytest>=8.4.0",
