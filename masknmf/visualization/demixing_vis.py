@@ -1,6 +1,5 @@
 from typing import *
 import numpy as np
-from fastplotlib.widgets import ImageWidget
 import fastplotlib as fpl
 from imgui_bundle import imgui
 from fastplotlib import ui

@@ -1,11 +1,11 @@
-from masknmf.visualization.interactive_guis import (
-    signal_space_demixing,
-    stack_comparison_interface,
-    get_correlation_widget,
-    make_demixing_video,
-    PMDWidget,
-    quantile_segregated_signal_gui
-)
+# from masknmf.visualization.interactive_guis import (
+#     signal_space_demixing,
+#     stack_comparison_interface,
+#     get_correlation_widget,
+#     make_demixing_video,
+#     PMDWidget,
+#     quantile_segregated_signal_gui
+# )
 from masknmf.visualization.plots import (
     construct_index,
     plot_ith_roi,
@@ -17,13 +17,15 @@ from masknmf.visualization.plots import (
 
 from masknmf.visualization.motion_vis import MotionCorrectionVis
 from masknmf.visualization.demixing_vis import SingleSessionDemixingVis, visualize_superpixels_peaks
+from masknmf.visualization.multisession_vis import MultiSessionDemixingVis
 
 __all__ = [
-    "PMDWidget",
+    # "PMDWidget",
     "visualize_superpixels_peaks",
     "plot_ith_roi",
     "construct_index",
-    "make_demixing_video",
+    # "make_demixing_video",
     "MotionCorrectionVis",
     "SingleSessionDemixingVis",
+    "MultiSessionDemixingVis"
 ]
