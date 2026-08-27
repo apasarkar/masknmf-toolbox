@@ -22,7 +22,7 @@ class CurationVis:
         frame_timings: Optional[np.ndarray] = None,
         ref_range: Optional[dict] = None,
         iscell: Optional[np.ndarray] = None,
-        save_path: Optional[str] = None,
+        save_path: str = "iscell.npy",
         click_radius: int = 10,
         device: str = "cuda",
     ):
@@ -30,6 +30,7 @@ class CurationVis:
         self._demixing_results.to(device)
         self._device = device
         self._save_path = save_path
+        self._save_error: Optional[str] = None
 
         num_neurons = self._demixing_results.a.shape[1]
         if iscell is None:
@@ -199,8 +200,11 @@ class CurationVis:
         self._apply_masks()
         current_index = dict(self._ndw.indices)["time"]
         self._ndw.indices.set_dim_index("time", current_index)
-        if self._save_path is not None:
+        try:
             self.save()
+            self._save_error = None
+        except OSError as e:
+            self._save_error = str(e)
 
     def _set_selection(self, neuron_ids: list[int]):
         self._selected = list(neuron_ids)
@@ -236,14 +240,13 @@ class CurationVis:
         imgui.text(f"rejected: {int((~self._iscell).sum())}")
         if imgui.button("flip selected") and self._selected:
             self.flip(self._selected)
-        if imgui.button("save") and self._save_path is not None:
-            self.save()
+        imgui.text_wrapped(f"autosave: {self._save_path}")
+        if self._save_error is not None:
+            imgui.text_wrapped(f"save failed: {self._save_error}")
 
     def save(self, path: Optional[str] = None):
         """Write a suite2p-style (num_neurons, 2) iscell.npy: column 0 is the label, column 1 a probability"""
         path = path if path is not None else self._save_path
-        if path is None:
-            raise ValueError("No save path provided")
         np.save(path, np.stack([self._iscell, self._iscell], axis=1).astype(np.float32))
 
     @property
@@ -287,8 +290,9 @@ def main(argv=None):
     save_path = args.save_path or str(Path(args.path).with_name("iscell.npy"))
 
     iscell = None
-    if args.iscell is not None:
-        iscell = np.load(args.iscell)
+    iscell_path = args.iscell if args.iscell is not None else save_path
+    if Path(iscell_path).exists():
+        iscell = np.load(iscell_path)
         if iscell.ndim == 2:  # suite2p-style (num_neurons, 2)
             iscell = iscell[:, 0]
 
