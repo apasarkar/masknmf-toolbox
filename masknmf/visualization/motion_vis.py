@@ -9,6 +9,7 @@ from collections import OrderedDict
 import masknmf.arrays
 from masknmf.arrays.array_interfaces import ArrayLike
 from masknmf.utils import display
+from masknmf.visualization.imgui import resolve_time_reference
 
 
 class MotionCorrectionVis:
@@ -23,23 +24,9 @@ class MotionCorrectionVis:
 
         self._shifts = self.registration_array.shifts
 
-        if frame_timings is not None:
-            if ref_range is None:
-                ref_range = {
-                    "time": (
-                        0,
-                        np.amax(frame_timings),
-                        np.amin(frame_timings[1:] - frame_timings[:-1]),
-                    )
-                }
-        else:
-            if ref_range is not None:
-                raise ValueError(
-                    "If you provide a reference range, you need to provide the imaging frame timings (per frame) within that range"
-                )
-            else:
-                ref_range = {"time": (0, registration_array.shape[0], 1)}
-                frame_timings = np.arange(registration_array.shape[0])
+        ref_range, frame_timings = resolve_time_reference(
+            registration_array.shape[0], frame_timings, ref_range
+        )
 
         if self.shifts.ndim == 4:  # This is piecewise rigid registration
             rigid_shifts = False

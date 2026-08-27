@@ -6,6 +6,7 @@
 #     PMDWidget,
 #     quantile_segregated_signal_gui
 # )
+from masknmf.visualization import imgui
 from masknmf.visualization.plots import (
     construct_index,
     plot_ith_roi,
