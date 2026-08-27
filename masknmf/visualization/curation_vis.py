@@ -83,20 +83,23 @@ class CurationVis:
         # the standard right-click menu can reset the camera (autoscale/center)
         self._ndw.figure.remove_imgui_right_click()
 
+        movie_dims = ("time", "m", "n", "c")
         spatial_dims = ("m", "n", "c")
         slider_transforms = {"time": frame_timings}
         self._accepted_graphic = self._ndw["accepted"].add_nd_image(
-            self._accepted_array.compute_mip().cpu().numpy(),
-            spatial_dims,
+            self._accepted_array,
+            movie_dims,
             spatial_dims,
             rgb_dim="c",
+            slider_dim_transforms=slider_transforms.copy(),
             name="accepted",
         )
         self._rejected_graphic = self._ndw["rejected"].add_nd_image(
-            self._rejected_array.compute_mip().cpu().numpy(),
-            spatial_dims,
+            self._rejected_array,
+            movie_dims,
             spatial_dims,
             rgb_dim="c",
+            slider_dim_transforms=slider_transforms.copy(),
             name="rejected",
         )
         self._trace_graphic = self._ndw["traces"].add_nd_timeseries(
@@ -170,6 +173,7 @@ class CurationVis:
             return
         if ev.button == 2:
             ids = list(self._selected) if neuron in self._selected else [neuron]
+            self._set_selection(ids)
             self.flip(ids)
             return
         same_side = self._selected and bool(self._iscell[self._selected[0]]) == accepted
@@ -189,15 +193,15 @@ class CurationVis:
         neuron = self._neuron_at(ev.pick_info["index"], accepted)
         if neuron is None:
             return
+        self._set_selection([neuron])
         self.flip([neuron])
 
     def flip(self, neuron_ids: Sequence[int]):
         """Move the given neurons to the other side (accepted <-> rejected)"""
         self._iscell[list(neuron_ids)] = ~self._iscell[list(neuron_ids)]
         self._apply_masks()
-        self._accepted_graphic.data = self._accepted_array.compute_mip().cpu().numpy()
-        self._rejected_graphic.data = self._rejected_array.compute_mip().cpu().numpy()
-        self._set_selection([])
+        current_index = dict(self._ndw.indices)["time"]
+        self._ndw.indices.set_dim_index("time", current_index)
         if self._save_path is not None:
             try:
                 self.save()
