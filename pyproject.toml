@@ -64,6 +64,9 @@ dev = [
 
 
 
+[project.scripts]
+curation = "masknmf.visualization.curation_vis:main"
+
 [project.urls]
 Homepage = "https://github.com/apasarkar/masknmf-toolbox"
 Repository = "https://github.com/apasarkar/masknmf-toolbox"
