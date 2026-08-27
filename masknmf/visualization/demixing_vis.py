@@ -10,6 +10,7 @@ import masknmf.arrays
 from masknmf.utils import display
 from functools import partial
 from fastplotlib.widgets.nd_widget._index import ReferenceIndex
+from masknmf.visualization.imgui import resolve_time_reference, is_notebook_canvas
 
 class SingleSessionDemixingVis:
     """
@@ -34,26 +35,9 @@ class SingleSessionDemixingVis:
 
         self._demixing_results.to(self.device)
 
-        if frame_timings is not None:
-            if ref_range is None:
-                ref_range = {
-                    "time": (
-                        0,
-                        np.amax(frame_timings),
-                        np.amin(frame_timings[1:] - frame_timings[:-1]),
-                    )
-                }
-        else:
-            if ref_range is not None:
-                raise ValueError(
-                    "If you provide a reference range, you need to provide the imaging frame timings (per frame) within that range"
-                )
-            else:
-                ref_range = {"time": (0, self.demixing_results.shape[0], 1)}
-                frame_timings = np.arange(self.demixing_results.shape[0])
-
-
-
+        ref_range, frame_timings = resolve_time_reference(
+            self.demixing_results.shape[0], frame_timings, ref_range
+        )
 
         self._video_panels = ("compressed+denoised",
                         "signals",
@@ -404,7 +388,7 @@ class SingleSessionDemixingVis:
     def show(self):
 
         # parse based on canvas type
-        if self.fov_widget.figure.canvas.__class__.__name__ == "JupyterRenderCanvas":
+        if is_notebook_canvas(self.fov_widget.figure):
             from ipywidgets import VBox
             return VBox([self.fov_widget.show(), self.trace_widget.show(), self.local_signal_widget.show()])
         else:
