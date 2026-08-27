@@ -255,6 +255,9 @@ class CurationVis:
         if imgui.button("flip selected") and self._selected:
             self.flip(self._selected)
         imgui.same_line(0, 30)
+        if imgui.button("accept all") and not self._iscell.all():
+            self.flip(np.where(~self._iscell)[0])
+        imgui.same_line(0, 30)
         imgui.text(f"autosave: {self._save_path if self._save_path else 'off'}")
         if self._save_error is not None:
             imgui.same_line(0, 30)
