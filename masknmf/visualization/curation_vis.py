@@ -137,6 +137,9 @@ class CurationVis:
         for name in self._panels[:2]:
             self._ndw.figure[name].tooltip.enabled = False
 
+        self._ndw.figure["traces"].camera.maintain_aspect = False
+        self._refresh_traces()
+
         self._ndw.figure.add_imgui_window(
             self._draw_panel, location="right", size=170, title="Curation"
         )
@@ -216,27 +219,33 @@ class CurationVis:
 
     def _refresh_traces(self):
         num_frames = self._demixing_results.shape[0]
+        subplot = self._ndw.figure["traces"]
         if not self._selected:
             self._trace_graphic.data = fpl.utils.heatmap_to_positions(
                 np.zeros((1, num_frames), dtype=np.float32), self._frame_timings
             )
-            self._ndw.figure["traces"].title = "0 selected"
-            return
+            y_range = (0.0, 1.0)
+            subplot.title = "0 selected"
+        else:
+            traces = self._demixing_results.c[:, self._selected].T.cpu().numpy()
+            traces = traces - np.amin(traces, axis=1, keepdims=True)
+            scale = np.amax(traces, axis=1, keepdims=True)
+            scale[scale == 0] = 1
+            traces = traces / scale + np.arange(len(self._selected))[:, None]
+            self._trace_graphic.data = fpl.utils.heatmap_to_positions(
+                traces, self._frame_timings
+            )
+            self._trace_graphic.graphic.colors = (
+                self._accepted_array.colors[self._selected].cpu().numpy()
+            )
+            y_range = (-0.2, len(self._selected) + 0.2)
+            subplot.title = f"{len(self._selected)} selected"
 
-        traces = self._demixing_results.c[:, self._selected].T.cpu().numpy()
-        traces = traces - np.amin(traces, axis=1, keepdims=True)
-        scale = np.amax(traces, axis=1, keepdims=True)
-        scale[scale == 0] = 1
-        traces = traces / scale + np.arange(len(self._selected))[:, None]
-
-        self._trace_graphic.data = fpl.utils.heatmap_to_positions(
-            traces, self._frame_timings
-        )
-        self._trace_graphic.graphic.colors = (
-            self._accepted_array.colors[self._selected].cpu().numpy()
-        )
-        self._ndw.figure["traces"].y_range = (-0.2, len(self._selected) + 0.2)
-        self._ndw.figure["traces"].title = f"{len(self._selected)} selected"
+        # setting NDTimeseries data rescales the camera; fit to the data span after
+        subplot.camera.maintain_aspect = False
+        subplot.camera.zoom = 1.0
+        subplot.x_range = (float(self._frame_timings[0]), float(self._frame_timings[-1]))
+        subplot.y_range = y_range
 
     def _draw_panel(self):
         imgui.text(f"accepted: {int(self._iscell.sum())}")
@@ -269,7 +278,10 @@ class CurationVis:
         return self._ndw
 
     def show(self):
-        return self._ndw.show()
+        canvas = self._ndw.show()
+        # show() autoscales all subplots; re-fit the traces to the exact data span
+        self._refresh_traces()
+        return canvas
 
 
 def main(argv=None):
