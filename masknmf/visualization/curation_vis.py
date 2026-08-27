@@ -163,10 +163,15 @@ class CurationVis:
         return abs(ev.x - x) > 4 or abs(ev.y - y) > 4
 
     def _select_click(self, accepted: bool, ev):
-        if ev.button != 1 or self._is_drag(ev):
+        if ev.button not in (1, 2) or self._is_drag(ev):
             return
         neuron = self._neuron_at(ev.pick_info["index"], accepted)
         if neuron is None:
+            return
+        if ev.button == 2:
+            ids = list(self._selected) if neuron in self._selected else [neuron]
+            self._set_selection(ids)
+            self.flip(ids)
             return
         same_side = self._selected and bool(self._iscell[self._selected[0]]) == accepted
         if "Shift" in ev.modifiers and same_side:
