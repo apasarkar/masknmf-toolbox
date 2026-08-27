@@ -2,6 +2,7 @@ from typing import *
 import numpy as np
 import fastplotlib as fpl
 from imgui_bundle import imgui
+import h5py
 import torch
 from functools import partial
 import masknmf
@@ -22,10 +23,11 @@ class CurationVis:
         frame_timings: Optional[np.ndarray] = None,
         ref_range: Optional[dict] = None,
         iscell: Optional[np.ndarray] = None,
-        save_path: str = "iscell.npy",
+        save_path: Optional[str] = None,
         click_radius: int = 10,
         device: str = "cuda",
     ):
+        """save_path: the results hdf5 file; iscell is written into it on every flip"""
         self._demixing_results = demixing_results
         self._demixing_results.to(device)
         self._device = device
@@ -196,11 +198,12 @@ class CurationVis:
         self._accepted_graphic.data = self._accepted_array.compute_mip().cpu().numpy()
         self._rejected_graphic.data = self._rejected_array.compute_mip().cpu().numpy()
         self._set_selection([])
-        try:
-            self.save()
-            self._save_error = None
-        except OSError as e:
-            self._save_error = str(e)
+        if self._save_path is not None:
+            try:
+                self.save()
+                self._save_error = None
+            except OSError as e:
+                self._save_error = str(e)
 
     def _set_selection(self, neuron_ids: list[int]):
         self._selected = list(neuron_ids)
@@ -236,14 +239,18 @@ class CurationVis:
         imgui.text(f"rejected: {int((~self._iscell).sum())}")
         if imgui.button("flip selected") and self._selected:
             self.flip(self._selected)
-        imgui.text_wrapped(f"autosave: {self._save_path}")
+        imgui.text_wrapped(f"autosave: {self._save_path if self._save_path else 'off'}")
         if self._save_error is not None:
             imgui.text_wrapped(f"save failed: {self._save_error}")
 
     def save(self, path: Optional[str] = None):
-        """Write a suite2p-style (num_neurons, 2) iscell.npy: column 0 is the label, column 1 a probability"""
+        """Write iscell into the results hdf5 as DemixingResults/iscell"""
         path = path if path is not None else self._save_path
-        np.save(path, np.stack([self._iscell, self._iscell], axis=1).astype(np.float32))
+        with h5py.File(path, "a") as f:
+            group = f.require_group("DemixingResults")
+            if "iscell" in group:
+                del group["iscell"]
+            group.create_dataset("iscell", data=self._iscell)
 
     @property
     def iscell(self) -> np.ndarray:
@@ -263,19 +270,15 @@ class CurationVis:
 
 def main(argv=None):
     import argparse
-    from pathlib import Path
 
     parser = argparse.ArgumentParser(
         description="Accept/reject curation GUI for demixing results"
     )
-    parser.add_argument("path", help="hdf5 file containing DemixingResults")
     parser.add_argument(
-        "--iscell", default=None, help="existing iscell.npy to start from"
+        "path", help="hdf5 file containing DemixingResults; iscell is saved into it"
     )
     parser.add_argument(
-        "--save-path",
-        default=None,
-        help="where to write iscell.npy (default: iscell.npy next to the results file)",
+        "--iscell", default=None, help="import labels from an external iscell.npy"
     )
     parser.add_argument(
         "--device", default=None, help="torch device (default: cuda if available)"
@@ -283,19 +286,21 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    save_path = args.save_path or str(Path(args.path).with_name("iscell.npy"))
 
-    iscell = None
-    iscell_path = args.iscell if args.iscell is not None else save_path
-    if Path(iscell_path).exists():
-        iscell = np.load(iscell_path)
+    if args.iscell is not None:
+        iscell = np.load(args.iscell)
         if iscell.ndim == 2:  # suite2p-style (num_neurons, 2)
             iscell = iscell[:, 0]
+    else:
+        with h5py.File(args.path, "r") as f:
+            iscell = (
+                f["DemixingResults/iscell"][()]
+                if "DemixingResults/iscell" in f
+                else None
+            )
 
     results = masknmf.DemixingResults.from_hdf5(args.path)
-    vis = CurationVis(
-        results, iscell=iscell, save_path=save_path, device=device
-    )
+    vis = CurationVis(results, iscell=iscell, save_path=args.path, device=device)
     vis.show()
     fpl.loop.run()
 
