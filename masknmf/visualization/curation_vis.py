@@ -11,7 +11,6 @@ from masknmf.visualization.imgui import (
     resolve_time_reference,
 )
 
-
 class CurationVis:
     """
     Curation widget to accept/reject signals.
@@ -32,7 +31,7 @@ class CurationVis:
         self._demixing_results.to(device)
         self._device = device
         self._save_path = save_path
-        self._save_error: Optional[str] = None
+        self._error: Optional[str] = None
 
         num_neurons = self._demixing_results.a.shape[1]
         if iscell is None:
@@ -102,6 +101,17 @@ class CurationVis:
             slider_dim_transforms=slider_transforms.copy(),
             name="rejected",
         )
+        # the initially-empty side renders an all-zero frame, so its auto contrast
+        # limits collapse to (0, 0) and later flips show up saturated/binary;
+        # share the union of both panels' limits instead
+        graphics = (self._accepted_graphic.graphic, self._rejected_graphic.graphic)
+        vmin = min(g.vmin for g in graphics)
+        vmax = max(g.vmax for g in graphics)
+        if vmax <= vmin:
+            vmax = vmin + 1
+        for g in graphics:
+            g.vmin, g.vmax = vmin, vmax
+
         self._trace_graphic = self._ndw["traces"].add_nd_timeseries(
             None,
             ("l", "time", "d"),
@@ -205,12 +215,16 @@ class CurationVis:
         self._apply_masks()
         current_index = dict(self._ndw.indices)["time"]
         self._ndw.indices.set_dim_index("time", current_index)
-        if self._save_path is not None:
-            try:
-                self.save()
-                self._save_error = None
-            except OSError as e:
-                self._save_error = str(e)
+        self._autosave()
+
+    def _autosave(self):
+        if self._save_path is None:
+            return
+        try:
+            self.save()
+            self._error = None
+        except OSError as e:
+            self._error = f"save failed: {e}"
 
     def _set_selection(self, neuron_ids: list[int]):
         self._selected = list(neuron_ids)
@@ -259,9 +273,9 @@ class CurationVis:
             self.flip(np.where(~self._iscell)[0])
         imgui.same_line(0, 30)
         imgui.text(f"autosave: {self._save_path if self._save_path else 'off'}")
-        if self._save_error is not None:
+        if self._error is not None:
             imgui.same_line(0, 30)
-            imgui.text(f"save failed: {self._save_error}")
+            imgui.text(self._error)
 
     def save(self, path: Optional[str] = None):
         """Write iscell into the results hdf5 as DemixingResults/iscell"""
@@ -290,6 +304,31 @@ class CurationVis:
         self._refresh_traces()
         return canvas
 
+    @classmethod
+    def from_hdf5(
+        cls,
+        path,
+        iscell: Optional[np.ndarray] = None,
+        device: Optional[str] = None,
+        **kwargs,
+    ) -> "CurationVis":
+        """Build a CurationVis from a results hdf5, restoring saved iscell;
+        flips autosave back into the same file. An explicit iscell argument
+        overrides what the file holds."""
+        path = str(path)
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        with h5py.File(path, "r") as f:
+            group = f["DemixingResults"]
+            saved_iscell = group["iscell"][()] if "iscell" in group else None
+        results = masknmf.DemixingResults.from_hdf5(path)
+        return cls(
+            results,
+            iscell=iscell if iscell is not None else saved_iscell,
+            save_path=path,
+            device=device,
+            **kwargs,
+        )
+
 
 def main(argv=None):
     import argparse
@@ -308,22 +347,13 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-
+    iscell = None
     if args.iscell is not None:
         iscell = np.load(args.iscell)
         if iscell.ndim == 2:  # suite2p-style (num_neurons, 2)
             iscell = iscell[:, 0]
-    else:
-        with h5py.File(args.path, "r") as f:
-            iscell = (
-                f["DemixingResults/iscell"][()]
-                if "DemixingResults/iscell" in f
-                else None
-            )
 
-    results = masknmf.DemixingResults.from_hdf5(args.path)
-    vis = CurationVis(results, iscell=iscell, save_path=args.path, device=device)
+    vis = CurationVis.from_hdf5(args.path, iscell=iscell, device=args.device)
     vis.show()
     fpl.loop.run()
 
