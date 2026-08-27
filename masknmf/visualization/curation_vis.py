@@ -141,7 +141,7 @@ class CurationVis:
         self._refresh_traces()
 
         self._ndw.figure.add_imgui_window(
-            self._draw_panel, location="right", size=170, title="Curation"
+            self._draw_panel, location="top", size=70, title="Curation"
         )
 
     def _apply_masks(self):
@@ -249,12 +249,16 @@ class CurationVis:
 
     def _draw_panel(self):
         imgui.text(f"accepted: {int(self._iscell.sum())}")
+        imgui.same_line(0, 30)
         imgui.text(f"rejected: {int((~self._iscell).sum())}")
+        imgui.same_line(0, 30)
         if imgui.button("flip selected") and self._selected:
             self.flip(self._selected)
-        imgui.text_wrapped(f"autosave: {self._save_path if self._save_path else 'off'}")
+        imgui.same_line(0, 30)
+        imgui.text(f"autosave: {self._save_path if self._save_path else 'off'}")
         if self._save_error is not None:
-            imgui.text_wrapped(f"save failed: {self._save_error}")
+            imgui.same_line(0, 30)
+            imgui.text(f"save failed: {self._save_error}")
 
     def save(self, path: Optional[str] = None):
         """Write iscell into the results hdf5 as DemixingResults/iscell"""
