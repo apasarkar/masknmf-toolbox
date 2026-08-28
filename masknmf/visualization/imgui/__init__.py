@@ -34,6 +34,7 @@ from masknmf.visualization.imgui.panels import (
 )
 from masknmf.visualization.imgui.store import LabelStore
 from masknmf.visualization.imgui.loader import AsyncLoad
+from masknmf.visualization.imgui.summary import SummaryImageViewer
 
 __all__ = [
     "AsyncLoad",
@@ -48,6 +49,7 @@ __all__ = [
     "OverlayPair",
     "RoiOrder",
     "StrokeDrawer",
+    "SummaryImageViewer",
     "UNLABELED",
     "component_at_pixel",
     "context_crop",
