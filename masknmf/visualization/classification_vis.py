@@ -5,11 +5,6 @@ import numpy as np
 import fastplotlib as fpl
 from imgui_bundle import imgui
 
-try:
-    from imgui_data_loader import ButtonSpec, FileDialog, FileDialogConfig, FileType, PickKind
-except ImportError:
-    FileDialog = None
-
 _LABEL_COLORS = (
     (0.12, 0.47, 0.71), (1.00, 0.50, 0.05), (0.17, 0.63, 0.17),
     (0.84, 0.15, 0.16), (0.58, 0.40, 0.74), (0.55, 0.34, 0.29),
@@ -62,19 +57,6 @@ class ClassificationVis:
                     class_labels = saved_labels
 
         self._label_names = tuple(label_names)
-
-        if FileDialog is not None:
-            self._label_dialog = FileDialog(FileDialogConfig(close_on_select=False))
-            self._label_open_spec = ButtonSpec(
-                "load labels",
-                PickKind.OPEN_FILE,
-                filetypes=[
-                    FileType("Label sets", "*.json *.txt *.npz *.h5 *.hdf5"),
-                    FileType("All Files", "*"),
-                ],
-            )
-        else:
-            self._label_dialog = None
 
         self._show_bg = True
         self._show_mask = True
@@ -369,31 +351,6 @@ class ClassificationVis:
             self._label_names = (*self._label_names, name)
             self._autosave()
 
-    def load_label_names(self, path: str):
-        """
-        Merge a label-name set from a file: .json (list of names), .npz (a previous
-        save), .h5/.hdf5 (DemixingResults/label_names), or plain text
-        (comma/newline separated)
-        """
-        path = str(path)
-        if path.endswith(".json"):
-            import json
-
-            with open(path) as f:
-                names = json.load(f)
-        elif path.endswith(".npz"):
-            names = [str(n) for n in np.load(path)["label_names"]]
-        elif path.endswith((".h5", ".hdf5")):
-            import h5py
-
-            with h5py.File(path, "r") as f:
-                names = [n.decode() for n in f["DemixingResults/label_names"][()]]
-        else:
-            with open(path) as f:
-                names = [t.strip() for t in f.read().replace(",", "\n").splitlines()]
-        for name in names:
-            self.add_label(str(name).strip())
-
     def save(self, path: Optional[str] = None):
         """
         Persist labels: into each session's hdf5 (DemixingResults/class_labels +
@@ -534,67 +491,37 @@ class ClassificationVis:
         if self._save_path is None and self._save_files is None:
             imgui.text_disabled("autosave off — labels are kept in memory only")
             return
-        imgui.text_disabled("(?)")
+        imgui.text_disabled("Accessing masks in output file")
         if imgui.is_item_hovered():
             imgui.begin_tooltip()
-            imgui.push_text_wrap_pos(620)
             if self._save_files is not None:
-                imgui.text(
-                    "Everything stays in the demixing results hdf5 — no extra files. "
-                    "The demixing data itself is never modified; only these datasets "
-                    "are written, per session file: DemixingResults/class_labels "
-                    "(on every change), label_names, and roi_masks (once per launch)."
-                )
-                imgui.separator()
-                imgui.text("Access the results in Python:")
                 imgui.text_colored(
                     imgui.ImVec4(0.55, 0.75, 1.0, 1.0),
-                    "\n"
                     "import h5py\n"
                     "\n"
-                    f'with h5py.File(r"{self._save_files[0]}", "r") as f:\n'
+                    'with h5py.File(r"path/to/demixing_results.hdf5", "r") as f:\n'
                     '    g = f["DemixingResults"]\n'
                     '    names  = [n.decode() for n in g["label_names"][()]]\n'
                     '    labels = g["class_labels"][()]  # (num_rois,) int64; -1 = unlabeled\n'
                     '    masks  = g["roi_masks"][()]     # (num_rois, Y, X) float32\n'
                     "\n"
-                    "# continue a ROICaT classification pipeline:\n"
-                    "# read class_labels from each session file, then\n"
-                    "roicat_input.set_class_labels(labels=[labels_session0, ...])\n",
+                    "# ROICaT: one label vector per session file\n"
+                    "roicat_input.set_class_labels(labels=[labels_session0, ...])",
                 )
             else:
-                imgui.text(
-                    "The source data file is never modified. Labels are written to "
-                    "the .npz file on every change."
-                )
-                imgui.separator()
-                imgui.text("Access the results in Python:")
                 imgui.text_colored(
                     imgui.ImVec4(0.55, 0.75, 1.0, 1.0),
-                    "\n"
                     "import numpy as np\n"
                     "\n"
-                    f'data = np.load(r"{self._save_path}")\n'
+                    'data = np.load(r"path/to/labels.npz")\n'
                     'names  = data["label_names"]   # class names; row index = label value\n'
-                    'labels = data["class_labels"]  # (num_rois,) int64; -1 = unlabeled\n',
+                    'labels = data["class_labels"]  # (num_rois,) int64; -1 = unlabeled',
                 )
-            imgui.separator()
-            imgui.text(
-                "Shortcuts: left/right or space = step, 1-9 = assign label, "
-                "0 = clear label, m = toggle mask overlay."
-            )
-            imgui.pop_text_wrap_pos()
             imgui.end_tooltip()
-        imgui.same_line(0, 5)
-        if self._save_files is not None:
-            target = (
-                "the source hdf5"
-                if len(self._save_files) == 1
-                else f"each of the {len(self._save_files)} source hdf5 files"
-            )
-            imgui.text(f"labels & masks saved into {target}; demixing data untouched")
-        else:
-            imgui.text(f"labels -> {self._save_path}")
+        imgui.same_line(0, 20)
+        imgui.text_disabled("Autosaved")
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Labels saved automatically")
 
     def _draw_panel(self):
         self._poll_load()
@@ -622,45 +549,39 @@ class ClassificationVis:
             imgui.same_line(0, 30)
             imgui.text(self._error)
 
-        bg_name = "FOV background" if self._fov_images is not None else "MIP background"
-        changed_bg, self._show_bg = imgui.checkbox(bg_name, self._show_bg)
+        imgui.text("bg")
+        imgui.same_line(0, 8)
+        sources = self._bg_source_names if self._bg_sources is not None else ["MIP"]
+        options = [*sources, "None"]
+        current = (
+            self._bg_source_idx if self._bg_sources is not None else 0
+        ) if self._show_bg else len(options) - 1
+        imgui.set_next_item_width(150)
+        changed_src, idx = imgui.combo("##bg-source", current, options)
+        if changed_src:
+            self._show_bg = idx < len(options) - 1
+            if self._show_bg and self._bg_sources is not None and idx != self._bg_source_idx:
+                self._bg_source_idx = idx
+                self._fov_images = self._bg_sources[options[idx]]
+                self._show_current()
+            self._apply_overlay()
         imgui.same_line(0, 20)
         imgui.set_next_item_width(150)
         changed_bga, self._bg_alpha = imgui.slider_float(
             "bg opacity", self._bg_alpha, 0.0, 1.0
         )
-        if self._bg_sources is not None and len(self._bg_source_names) > 1:
-            imgui.same_line(0, 20)
-            imgui.set_next_item_width(150)
-            changed_src, idx = imgui.combo(
-                "##bg-source", self._bg_source_idx, self._bg_source_names
-            )
-            if changed_src:
-                self._bg_source_idx = idx
-                self._fov_images = self._bg_sources[self._bg_source_names[idx]]
-                self._show_current()
         imgui.same_line(0, 30)
-        changed_mask, self._show_mask = imgui.checkbox("m:mask", self._show_mask)
+        changed_mask, self._show_mask = imgui.checkbox("mask", self._show_mask)
+        imgui.same_line(0, 4)
+        imgui.text_disabled("(m)")
         imgui.same_line(0, 20)
         imgui.set_next_item_width(150)
         changed_fga, self._roi_alpha = imgui.slider_float(
             "roi opacity", self._roi_alpha, 0.0, 1.0
         )
-        if changed_bg or changed_bga or changed_mask or changed_fga:
+        if changed_bga or changed_mask or changed_fga:
             self._apply_overlay()
 
-        if self._label_dialog is not None:
-            if imgui.button("load labels"):
-                self._label_dialog.pick(self._label_open_spec)
-            self._label_dialog.poll()
-            result = self._label_dialog.take_result()
-            if result:
-                try:
-                    self.load_label_names(result.path)
-                    self._error = None
-                except (OSError, KeyError, ValueError) as e:
-                    self._error = f"label load failed: {e}"
-            imgui.same_line(0, 10)
         imgui.set_next_item_width(120)
         entered, self._new_label = imgui.input_text_with_hint(
             "##new-label",
@@ -676,15 +597,27 @@ class ClassificationVis:
         for i, name in enumerate(self._label_names):
             imgui.same_line(0, 10)
             count = int((self._class_labels == i).sum())
-            key_hint = f"{i + 1}:" if i < len(_LABEL_KEYS) else ""
             imgui.push_style_color(imgui.Col_.button, imgui.ImVec4(*self._label_color(i), 0.5))
-            if imgui.button(f"{key_hint}{name} ({count})"):
+            if imgui.button(f"{name} ({count})##label{i}"):
                 self.label_current(i)
             imgui.pop_style_color()
+            if i < len(_LABEL_KEYS):
+                imgui.same_line(0, 4)
+                imgui.text_disabled(f"({i + 1})")
         if self._label_names:
             imgui.same_line(0, 10)
-            if imgui.button("0:unlabel"):
+            if imgui.button("unlabel"):
                 self.label_current(-1)
+            imgui.same_line(0, 4)
+            imgui.text_disabled("(0)")
+            imgui.same_line(0, 10)
+            imgui.push_style_color(imgui.Col_.button, imgui.ImVec4(0.75, 0.15, 0.15, 0.8))
+            imgui.push_style_color(
+                imgui.Col_.button_hovered, imgui.ImVec4(0.90, 0.20, 0.20, 1.0)
+            )
+            if imgui.button("unlabel all"):
+                self.label(range(len(self._class_labels)), -1)
+            imgui.pop_style_color(2)
 
     def _draw_table(self):
         names = ("all", "unlabeled", *self._label_names)
