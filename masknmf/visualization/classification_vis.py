@@ -5,6 +5,7 @@ import numpy as np
 import fastplotlib as fpl
 from imgui_bundle import imgui
 
+from masknmf.visualization.imgui.movie_player import MoviePlayer
 from masknmf.visualization.summary_widget import SummaryImageViewer
 
 _LABEL_COLORS = (
@@ -65,6 +66,12 @@ class ClassificationVis:
         self._bg_alpha = 0.5
         self._roi_alpha = 1.0
         self._advance_on_label = True
+        self._keybinds_open = False
+        self._dmrs: Optional[list] = None
+        self._peak_frames: Optional[np.ndarray] = None
+        self._movie_player = MoviePlayer()
+        self._bg_movie = False
+        self._movie_range: Optional[tuple] = None
 
         self._figure = fpl.Figure(size=(1200, 900))
         self._summary = SummaryImageViewer(self._figure)
@@ -73,7 +80,7 @@ class ClassificationVis:
         self.set_roi_images(roi_images, class_labels)
 
         self._figure.add_imgui_window(
-            self._draw_panel, location="top", size=120, title="Classification"
+            self._draw_panel, location="top", size=150, title="Classification"
         )
         self._figure.add_imgui_window(
             self._draw_table, location="right", size=360, title="ROIs"
@@ -235,40 +242,50 @@ class ClassificationVis:
                 )
 
                 bg_sources: dict[str, list] = {}
-                snr, skew = [], []
+                snr, skew, peak_frames = [], [], []
                 saved_labels: list = []
                 saved_names = None
-                mean_imgs, footprints = [], []
+                mean_imgs, footprints, dmrs = [], [], []
 
                 def add_bg(name, img):
                     bg_sources.setdefault(name, []).append(np.asarray(img, dtype=np.float32))
 
                 for fname in files:
                     dmr = DemixingResults.from_hdf5(fname)
+                    dmrs.append(dmr)
                     footprints.append(extract_masknmf_spatial_footprints(dmr))
                     mean_img = extract_masknmf_mean_img(dmr)
                     mean_imgs.append(mean_img)
 
-                    if dmr.global_residual_correlation_image is not None:
-                        add_bg(
-                            "resid corr img (global)",
-                            dmr.global_residual_correlation_image.cpu().numpy(),
-                        )
-                    std_imgs = dmr.standard_correlation_images
-                    if std_imgs is not None:
-                        n = std_imgs.shape[0]
+                    def reduce_stack(stack):
+                        n = stack.shape[0]
                         running_max = None
                         running_sum = None
                         for start in range(0, n, 32):
-                            batch = std_imgs.getitem_tensor(slice(start, min(start + 32, n)))
+                            batch = stack.getitem_tensor(slice(start, min(start + 32, n)))
                             bmax = batch.amax(dim=0)
                             bsum = batch.sum(dim=0)
                             running_max = (
                                 bmax if running_max is None else torch.maximum(running_max, bmax)
                             )
                             running_sum = bsum if running_sum is None else running_sum + bsum
-                        add_bg("corr img (max proj)", running_max.cpu().numpy())
-                        add_bg("corr img (mean)", (running_sum / n).cpu().numpy())
+                        return running_max.cpu().numpy(), (running_sum / n).cpu().numpy()
+
+                    # first source added is the default background
+                    resid_imgs = dmr.residual_correlation_images
+                    if resid_imgs is not None:
+                        rmax, _ = reduce_stack(resid_imgs)
+                        add_bg("resid corr img (max proj)", rmax)
+                    std_imgs = dmr.standard_correlation_images
+                    if std_imgs is not None:
+                        smax, smean = reduce_stack(std_imgs)
+                        add_bg("corr img (max proj)", smax)
+                        add_bg("corr img (mean)", smean)
+                    if dmr.global_residual_correlation_image is not None:
+                        add_bg(
+                            "resid corr img (global)",
+                            dmr.global_residual_correlation_image.cpu().numpy(),
+                        )
 
                     with h5py.File(fname, "r") as f:
                         g = f["DemixingResults"]
@@ -284,6 +301,7 @@ class ClassificationVis:
                     mean = c.mean(axis=0)
                     std = c.std(axis=0)
                     skew.append(((c - mean) ** 3).mean(axis=0) / np.where(std == 0, 1, std) ** 3)
+                    peak_frames.append(c.argmax(axis=0))
 
                 adapter = RoicatDataAdapter(
                     mean_imgs,
@@ -308,6 +326,8 @@ class ClassificationVis:
                         else None
                     ),
                     "saved_names": saved_names,
+                    "dmrs": dmrs,
+                    "peak_frames": np.concatenate(peak_frames).astype(np.int64),
                 }
             except Exception as e:
                 self._load_error = f"load failed: {type(e).__name__}: {e}"
@@ -341,6 +361,8 @@ class ClassificationVis:
                 roi_stats=result["stats"],
             )
             self._roicat_input = adapter
+            self._dmrs = result["dmrs"]
+            self._peak_frames = result["peak_frames"]
             self._loading = None
             try:
                 self._save_masks_to_hdf5()
@@ -390,6 +412,22 @@ class ClassificationVis:
         if name and name not in self._label_names:
             self._label_names = (*self._label_names, name)
             self._autosave()
+
+    def remove_label(self, index: int):
+        """Delete a class: its ROIs become unlabeled, higher labels shift down"""
+        if not 0 <= index < len(self._label_names):
+            return
+        self._class_labels[self._class_labels == index] = -1
+        self._class_labels[self._class_labels > index] -= 1
+        self._label_names = tuple(
+            n for i, n in enumerate(self._label_names) if i != index
+        )
+        if self._filter_label == index:
+            self._filter_label = -2
+        elif self._filter_label > index:
+            self._filter_label -= 1
+        self._autosave()
+        self._rebuild_order()
 
     def save(self, path: Optional[str] = None):
         """
@@ -488,6 +526,18 @@ class ClassificationVis:
             crop[y0 - top : y1 - top, x0 - left : x1 - left] = fov[y0:y1, x0:x1]
         return crop
 
+    def _update_movie_bg(self):
+        roi = self.current
+        if roi is None or self._movie_player.movie is None:
+            return
+        top, left = self._crop_origin(roi)
+        crop = self._movie_player.frame((top, left, *self._roi_images.shape[1:]))
+        if self._movie_range is None:
+            # fixed at the ROI's peak frame so playback doesn't flicker
+            self._movie_range = (float(crop.min()), float(crop.max()) or 1.0)
+        self._bg.data = crop
+        self._bg.vmin, self._bg.vmax = self._movie_range
+
     def _show_current(self):
         roi = self.current
         rgba = np.zeros((*self._roi_images.shape[1:], 4), dtype=np.float32)
@@ -500,10 +550,18 @@ class ClassificationVis:
             name = self._label_names[label] if label >= 0 else "unlabeled"
             title = f"ROI {roi}  [{name}]  ({self._pos + 1}/{len(self._order)})"
             if self._fov_images is not None:
-                crop = self._context_crop(roi)
-                self._bg.data = crop
-                self._bg.vmin = float(crop.min())
-                self._bg.vmax = float(crop.max()) or 1.0
+                if self._bg_movie and self._dmrs is not None:
+                    sess = int(self._session_of[roi])
+                    self._movie_player.set_movie(self._dmrs[sess].ac_array)
+                    if self._peak_frames is not None:
+                        self._movie_player.jump_to(int(self._peak_frames[roi]))
+                    self._movie_range = None
+                    self._update_movie_bg()
+                else:
+                    crop = self._context_crop(roi)
+                    self._bg.data = crop
+                    self._bg.vmin = float(crop.min())
+                    self._bg.vmax = float(crop.max()) or 1.0
                 top, left = self._crop_origin(roi)
                 self._summary.set_highlight((top, left, *self._roi_images.shape[1:]))
                 if self._summary.is_open and self._bg_sources is not None:
@@ -511,6 +569,10 @@ class ClassificationVis:
                     self._summary.set_images(
                         {name: imgs[sess] for name, imgs in self._bg_sources.items()}
                     )
+                    if self._dmrs is not None:
+                        self._summary.set_movies(
+                            {"demixed movie": self._dmrs[sess].ac_array}
+                        )
         if roi is None:
             self._summary.set_highlight(None)
         self._fg.data = rgba
@@ -523,13 +585,33 @@ class ClassificationVis:
         self._fg.visible = self._show_mask
         self._fg.alpha = self._roi_alpha
 
-    def _handle_keys(self):
-        if imgui.get_io().want_text_input:
+    def _step_group(self, direction: int):
+        """Cycle to the first ROI in view of the next/previous label class"""
+        if self.current is None:
             return
+        labels = self._class_labels[self._order]
+        values = np.unique(labels)
+        if len(values) < 2:
+            return
+        current = int(self._class_labels[self.current])
+        i = int(np.flatnonzero(values == current)[0])
+        target = values[(i + direction) % len(values)]
+        self._pos = int(np.flatnonzero(labels == target)[0])
+        self._show_current()
+
+    def _handle_keys(self):
+        io = imgui.get_io()
+        if io.want_text_input:
+            return
+        stride = 10 if io.key_shift else 1
+        if imgui.is_key_pressed(imgui.Key.up_arrow):
+            self.step(-stride)
+        if imgui.is_key_pressed(imgui.Key.down_arrow):
+            self.step(stride)
         if imgui.is_key_pressed(imgui.Key.left_arrow):
-            self.step(-1)
+            self._step_group(-1)
         if imgui.is_key_pressed(imgui.Key.right_arrow):
-            self.step(1)
+            self._step_group(1)
         if imgui.is_key_pressed(imgui.Key.b, False):
             self._show_bg = not self._show_bg
             self._apply_overlay()
@@ -556,6 +638,13 @@ class ClassificationVis:
             images = {"mask MIP": self._mip}
             selected = "mask MIP"
         self._summary.set_images(images, selected=selected)
+        if self._dmrs is not None and self._session_of is not None and self.current is not None:
+            sess = int(self._session_of[self.current])
+            self._summary.set_movies({"demixed movie": self._dmrs[sess].ac_array})
+            if self._peak_frames is not None:
+                self._summary.player.jump_to(int(self._peak_frames[self.current]))
+        else:
+            self._summary.set_movies({})
         if self._fov_images is not None and self.current is not None:
             top, left = self._crop_origin(self.current)
             self._summary.set_highlight((top, left, *self._roi_images.shape[1:]))
@@ -624,6 +713,9 @@ class ClassificationVis:
             self._open_full_fov()
         imgui.same_line(0, 30)
         self._draw_save_note()
+        imgui.same_line(max(imgui.get_window_width() - 90, 0))
+        if imgui.button("keybinds"):
+            self._keybinds_open = True
         if self._error is not None:
             imgui.same_line(0, 30)
             imgui.text(self._error)
@@ -633,12 +725,19 @@ class ClassificationVis:
             self._apply_overlay()
         imgui.same_line(0, 6)
         sources = self._bg_source_names if self._bg_sources is not None else ["mask MIP"]
-        current = self._bg_source_idx if self._bg_sources is not None else 0
+        options = [*sources] + (["demixed movie"] if self._dmrs is not None else [])
+        current = (
+            len(sources)
+            if self._bg_movie
+            else (self._bg_source_idx if self._bg_sources is not None else 0)
+        )
         imgui.set_next_item_width(180)
-        changed_src, idx = imgui.combo("##bg-source", current, sources)
-        if changed_src and self._bg_sources is not None and idx != self._bg_source_idx:
-            self._bg_source_idx = idx
-            self._fov_images = self._bg_sources[sources[idx]]
+        changed_src, idx = imgui.combo("##bg-source", current, options)
+        if changed_src:
+            self._bg_movie = idx >= len(sources)
+            if not self._bg_movie and self._bg_sources is not None:
+                self._bg_source_idx = idx
+                self._fov_images = self._bg_sources[sources[idx]]
             self._show_current()
         imgui.same_line(0, 6)
         imgui.text("bg image")
@@ -660,6 +759,9 @@ class ClassificationVis:
         )
         if changed_bga or changed_mask or changed_fga:
             self._apply_overlay()
+        if self._bg_movie:
+            if self._movie_player.draw():
+                self._update_movie_bg()
 
         imgui.set_next_item_width(120)
         entered, self._new_label = imgui.input_text_with_hint(
@@ -672,6 +774,24 @@ class ClassificationVis:
         if (imgui.button("add") or entered) and self._new_label.strip():
             self.add_label(self._new_label.strip())
             self._new_label = ""
+        imgui.same_line(0, 5)
+        if imgui.button("del"):
+            imgui.open_popup("##del-labels")
+        if imgui.begin_popup("##del-labels"):
+            if not self._label_names:
+                imgui.text_disabled("no labels")
+            remove = None
+            for i, name in enumerate(self._label_names):
+                if imgui.small_button(f"x##del{i}"):
+                    remove = i
+                imgui.same_line(0, 8)
+                count = int((self._class_labels == i).sum())
+                imgui.text_colored(
+                    imgui.ImVec4(*self._label_color(i), 1.0), f"{name} ({count})"
+                )
+            if remove is not None:
+                self.remove_label(remove)
+            imgui.end_popup()
 
         for i, name in enumerate(self._label_names):
             imgui.same_line(0, 10)
@@ -699,6 +819,48 @@ class ClassificationVis:
             imgui.pop_style_color(2)
 
         self._summary.draw()
+        self._draw_keybinds_popup()
+
+    _KEYBINDS = (
+        ("up / down", "previous / next ROI"),
+        ("shift + up / down", "jump 10 ROIs"),
+        ("left / right", "previous / next label group"),
+        ("1-9", "assign label"),
+        ("0", "clear label"),
+        ("m", "toggle mask overlay"),
+        ("b", "toggle background"),
+    )
+
+    def _draw_keybinds_popup(self):
+        if not self._keybinds_open:
+            return
+        em = imgui.get_font_size()
+        imgui.set_next_window_pos(
+            imgui.get_main_viewport().get_center(),
+            imgui.Cond_.appearing,
+            pivot=imgui.ImVec2(0.5, 0.5),
+        )
+        opened, self._keybinds_open = imgui.begin(
+            "Keybinds###keybinds",
+            self._keybinds_open,
+            flags=imgui.WindowFlags_.no_saved_settings
+            | imgui.WindowFlags_.always_auto_resize,
+        )
+        if opened:
+            flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.borders_inner_h
+            if imgui.begin_table("##keybinds-table", 2, flags):
+                imgui.table_setup_column(
+                    "key", imgui.TableColumnFlags_.width_fixed, 10 * em
+                )
+                imgui.table_setup_column("action")
+                for key, action in self._KEYBINDS:
+                    imgui.table_next_row()
+                    imgui.table_next_column()
+                    imgui.text_colored(imgui.ImVec4(1.0, 0.85, 0.4, 1.0), key)
+                    imgui.table_next_column()
+                    imgui.text(action)
+                imgui.end_table()
+        imgui.end()
 
     def _draw_table(self):
         names = ("all", "unlabeled", *self._label_names)
