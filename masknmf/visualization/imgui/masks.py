@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import cv2
 import numpy as np
 
@@ -23,13 +25,16 @@ class LabelImage:
         self.counts = [
             int((self.labels == i + 1).sum()) for i in range(int(self.labels.max()))
         ]
+        self.last_error: str | None = None
 
     def __len__(self) -> int:
         return len(self.counts)
 
     def add(self, stroke) -> int:
-        """Fill a closed stroke; returns the new index, or -1 if rejected."""
+        """Fill a closed stroke; returns the new index, or -1 with .last_error set."""
+        self.last_error = None
         if len(stroke) < 3:
+            self.last_error = "stroke too short"
             return -1
         points = np.round(np.asarray(stroke, np.float32)).astype(np.int32)
         points[:, 0] = points[:, 0].clip(0, self.nx - 1)
@@ -39,6 +44,7 @@ class LabelImage:
         cv2.fillPoly(filled, [points], 1)
         rows, cols = np.nonzero(filled.astype(bool) & (self.labels == 0))
         if rows.size < MIN_ROI_PIXELS:
+            self.last_error = f"under {MIN_ROI_PIXELS} free px, not added"
             return -1
 
         self.counts.append(int(rows.size))
