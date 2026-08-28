@@ -131,6 +131,7 @@ class SummaryImageViewer:
         self._pan_y = 0.0
         self._needs_fit = True
         self._show_pixel_values = False
+        self._highlight: Optional[tuple] = None  # (y0, x0, h, w) in image coords
         self._gpu: dict = {}
         self._manual_lo: dict = {}
         self._manual_hi: dict = {}
@@ -153,6 +154,14 @@ class SummaryImageViewer:
     def open(self):
         self._popup_open = True
         self._reset_view()
+
+    @property
+    def is_open(self) -> bool:
+        return self._popup_open
+
+    def set_highlight(self, rect: Optional[tuple]):
+        """Outline a region of the image: (y0, x0, height, width), or None"""
+        self._highlight = rect
 
     def _backend(self):
         try:
@@ -370,6 +379,12 @@ class SummaryImageViewer:
         draw_list = imgui.get_window_draw_list()
         draw_list.push_clip_rect(canvas_pos, clip_max, True)
         draw_list.add_image(gpu.ref, img_min, img_max)
+        if self._highlight is not None:
+            y0, x0, hh, ww = self._highlight
+            p0 = imgui.ImVec2(img_min.x + x0 * self._zoom, img_min.y + y0 * self._zoom)
+            p1 = imgui.ImVec2(p0.x + ww * self._zoom, p0.y + hh * self._zoom)
+            box = imgui.color_convert_float4_to_u32(imgui.ImVec4(1.0, 0.9, 0.2, 0.9))
+            draw_list.add_rect(p0, p1, box, 0.0, 2.0)
         if self._show_pixel_values:
             self._draw_pixel_values(draw_list, arr, canvas_pos, canvas_size, gpu)
         draw_list.pop_clip_rect()

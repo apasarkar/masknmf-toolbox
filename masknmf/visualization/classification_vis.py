@@ -141,11 +141,15 @@ class ClassificationVis:
                 )
             sizes = self._session_sizes if self._session_sizes is not None else (num_rois,)
             self._session_of = np.repeat(np.arange(len(sizes)), sizes)
-            self._bg_sources = {"mean img (enhanced)": self._fov_images}
-            for name, imgs_ in (bg_sources or {}).items():
-                self._bg_sources[name] = [np.asarray(i, dtype=np.float32) for i in imgs_]
+            self._bg_sources = {
+                name: [np.asarray(i, dtype=np.float32) for i in imgs_]
+                for name, imgs_ in (bg_sources or {}).items()
+            }
+            if not self._bg_sources:
+                self._bg_sources = {"mean img (enhanced)": self._fov_images}
             self._bg_source_names = list(self._bg_sources)
             self._bg_source_idx = 0
+            self._fov_images = self._bg_sources[self._bg_source_names[0]]
         else:
             self._fov_images = None
             self._centroids = None
@@ -245,8 +249,6 @@ class ClassificationVis:
                     mean_img = extract_masknmf_mean_img(dmr)
                     mean_imgs.append(mean_img)
 
-                    add_bg("mean img (raw)", mean_img)
-                    add_bg("var img", dmr.var_img.cpu().numpy())
                     if dmr.global_residual_correlation_image is not None:
                         add_bg(
                             "resid corr img (global)",
@@ -468,14 +470,17 @@ class ClassificationVis:
     def _label_color(self, label_index: int) -> tuple:
         return _LABEL_COLORS[label_index % len(_LABEL_COLORS)]
 
+    def _crop_origin(self, roi: int) -> tuple[int, int]:
+        """FOV coordinate of the ROI crop's top-left corner (roicat's convention)"""
+        h, w = self._roi_images.shape[1:]
+        cy, cx = self._centroids[roi]
+        return int(cy) - int(np.ceil(h / 2)), int(cx) - int(np.ceil(w / 2))
+
     def _context_crop(self, roi: int) -> np.ndarray:
         """FOV image cropped around the ROI, aligned with roicat's centered ROI images"""
         fov = self._fov_images[self._session_of[roi]]
         h, w = self._roi_images.shape[1:]
-        # roicat places out pixel (0, 0) at FOV coordinate centroid - ceil(size / 2)
-        cy, cx = self._centroids[roi]
-        top = int(cy) - int(np.ceil(h / 2))
-        left = int(cx) - int(np.ceil(w / 2))
+        top, left = self._crop_origin(roi)
         crop = np.zeros((h, w), dtype=np.float32)
         y0, y1 = max(top, 0), min(top + h, fov.shape[0])
         x0, x1 = max(left, 0), min(left + w, fov.shape[1])
@@ -499,6 +504,15 @@ class ClassificationVis:
                 self._bg.data = crop
                 self._bg.vmin = float(crop.min())
                 self._bg.vmax = float(crop.max()) or 1.0
+                top, left = self._crop_origin(roi)
+                self._summary.set_highlight((top, left, *self._roi_images.shape[1:]))
+                if self._summary.is_open and self._bg_sources is not None:
+                    sess = int(self._session_of[roi])
+                    self._summary.set_images(
+                        {name: imgs[sess] for name, imgs in self._bg_sources.items()}
+                    )
+        if roi is None:
+            self._summary.set_highlight(None)
         self._fg.data = rgba
         self._figure[0, 0].title = title
         self._scroll_to_current = True
@@ -516,7 +530,7 @@ class ClassificationVis:
             self.step(-1)
         if imgui.is_key_pressed(imgui.Key.right_arrow):
             self.step(1)
-        if imgui.is_key_pressed(imgui.Key.space, False):
+        if imgui.is_key_pressed(imgui.Key.b, False):
             self._show_bg = not self._show_bg
             self._apply_overlay()
         if imgui.is_key_pressed(imgui.Key._0, False):
@@ -542,6 +556,11 @@ class ClassificationVis:
             images = {"mask MIP": self._mip}
             selected = "mask MIP"
         self._summary.set_images(images, selected=selected)
+        if self._fov_images is not None and self.current is not None:
+            top, left = self._crop_origin(self.current)
+            self._summary.set_highlight((top, left, *self._roi_images.shape[1:]))
+        else:
+            self._summary.set_highlight(None)
         self._summary.open()
 
     def _draw_save_note(self):
@@ -624,9 +643,9 @@ class ClassificationVis:
         imgui.same_line(0, 6)
         imgui.text("bg image")
         imgui.same_line(0, 4)
-        imgui.text_disabled("(space)")
+        imgui.text_disabled("(b)")
         imgui.same_line(0, 20)
-        imgui.set_next_item_width(150)
+        imgui.set_next_item_width(75)
         changed_bga, self._bg_alpha = imgui.slider_float(
             "bg opacity", self._bg_alpha, 0.0, 1.0
         )
@@ -635,7 +654,7 @@ class ClassificationVis:
         imgui.same_line(0, 4)
         imgui.text_disabled("(m)")
         imgui.same_line(0, 20)
-        imgui.set_next_item_width(150)
+        imgui.set_next_item_width(75)
         changed_fga, self._roi_alpha = imgui.slider_float(
             "roi opacity", self._roi_alpha, 0.0, 1.0
         )
