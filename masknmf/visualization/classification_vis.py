@@ -463,6 +463,9 @@ class ClassificationVis:
                 g = f.require_group("DemixingResults")
                 self._write_dataset(g, "class_labels", labels.astype(np.int64))
                 self._write_dataset(g, "label_names", names)
+                self._write_dataset(
+                    g, "labels_complete", np.bool_((labels >= 0).all())
+                )
 
     def _save_masks_to_hdf5(self):
         if self._save_files is None:
@@ -585,6 +588,16 @@ class ClassificationVis:
         self._fg.visible = self._show_mask
         self._fg.alpha = self._roi_alpha
 
+    def goto_next_unlabeled(self):
+        """Jump to the next unlabeled ROI in the current view (wraps around)"""
+        labels = self._class_labels[self._order]
+        hits = np.flatnonzero(labels < 0)
+        if not len(hits):
+            return
+        after = hits[hits > self._pos]
+        self._pos = int(after[0] if len(after) else hits[0])
+        self._show_current()
+
     def _step_group(self, direction: int):
         """Cycle to the first ROI in view of the next/previous label class"""
         if self.current is None:
@@ -615,6 +628,8 @@ class ClassificationVis:
         if imgui.is_key_pressed(imgui.Key.b, False):
             self._show_bg = not self._show_bg
             self._apply_overlay()
+        if imgui.is_key_pressed(imgui.Key.u, False):
+            self.goto_next_unlabeled()
         if imgui.is_key_pressed(imgui.Key._0, False):
             self.label_current(-1)
         if imgui.is_key_pressed(imgui.Key.m, False):
@@ -763,6 +778,8 @@ class ClassificationVis:
             if self._movie_player.draw():
                 self._update_movie_bg()
 
+        self._draw_progress()
+        imgui.same_line(0, 24)
         imgui.set_next_item_width(120)
         entered, self._new_label = imgui.input_text_with_hint(
             "##new-label",
@@ -821,12 +838,39 @@ class ClassificationVis:
         self._summary.draw()
         self._draw_keybinds_popup()
 
+    def _draw_progress(self):
+        """Per-session labeling progress; training requires every ROI labeled"""
+        done_color = imgui.ImVec4(0.35, 0.9, 0.35, 1.0)
+        todo_color = imgui.ImVec4(1.0, 0.75, 0.25, 1.0)
+        labeled = self._class_labels >= 0
+        done, total = int(labeled.sum()), len(labeled)
+        imgui.text_colored(
+            done_color if done == total else todo_color, f"labeled {done}/{total}"
+        )
+        if self._session_sizes is not None and len(self._session_sizes) > 1:
+            start = 0
+            for k, n in enumerate(self._session_sizes):
+                session_done = int(labeled[start : start + n].sum())
+                imgui.same_line(0, 10)
+                imgui.text_colored(
+                    done_color if session_done == n else todo_color,
+                    f"s{k}: {session_done}/{n}",
+                )
+                start += n
+        if done < total:
+            imgui.same_line(0, 12)
+            if imgui.button("next unlabeled"):
+                self.goto_next_unlabeled()
+            imgui.same_line(0, 4)
+            imgui.text_disabled("(u)")
+
     _KEYBINDS = (
         ("up / down", "previous / next ROI"),
         ("shift + up / down", "jump 10 ROIs"),
         ("left / right", "previous / next label group"),
         ("1-9", "assign label"),
         ("0", "clear label"),
+        ("u", "jump to next unlabeled ROI"),
         ("m", "toggle mask overlay"),
         ("b", "toggle background"),
     )
@@ -987,6 +1031,11 @@ class ClassificationVis:
 
     def show(self):
         return self._figure.show()
+
+    def _ipython_display_(self):
+        from IPython.display import display
+
+        display(self.show())
 
 
 def main(argv=None):

@@ -67,6 +67,29 @@ class RoicatDataAdapter(Data_roicat):
         """
         return self._session_files
 
+    def set_class_labels(self, labels=None, path_labels=None, n_classes=None) -> None:
+        """
+        Same as Data_roicat.set_class_labels, but requires complete labels: every
+        ROI in every session must be labeled. Negative entries (masknmf's -1 =
+        unlabeled sentinel) are rejected — partially labeled sessions bias the
+        classifier toward the easy examples people label first.
+        """
+        if labels is not None:
+            missing = {}
+            for k, session_labels in enumerate(labels):
+                arr = np.asarray(session_labels)
+                if np.issubdtype(arr.dtype, np.number) and (arr < 0).any():
+                    missing[k] = int((arr < 0).sum())
+            if missing:
+                detail = ", ".join(f"session {k}: {n}" for k, n in missing.items())
+                raise ValueError(
+                    "class labels are incomplete — every ROI in every session must "
+                    f"be labeled before training (unlabeled counts: {detail})"
+                )
+        return super().set_class_labels(
+            labels=labels, path_labels=path_labels, n_classes=n_classes
+        )
+
     def set_fov_imgs_from_mean_imgs(self):
         fov_list = self._filter_and_normalize_mean_img()
         return self.set_FOV_images(fov_list)
