@@ -5,6 +5,8 @@ import numpy as np
 import fastplotlib as fpl
 from imgui_bundle import imgui
 
+from masknmf.visualization.summary_widget import SummaryImageViewer
+
 _LABEL_COLORS = (
     (0.12, 0.47, 0.71), (1.00, 0.50, 0.05), (0.17, 0.63, 0.17),
     (0.84, 0.15, 0.16), (0.58, 0.40, 0.74), (0.55, 0.34, 0.29),
@@ -65,6 +67,7 @@ class ClassificationVis:
         self._advance_on_label = True
 
         self._figure = fpl.Figure(size=(1200, 900))
+        self._summary = SummaryImageViewer(self._figure)
         self._bg = None
         self._fg = None
         self.set_roi_images(roi_images, class_labels)
@@ -138,7 +141,7 @@ class ClassificationVis:
                 )
             sizes = self._session_sizes if self._session_sizes is not None else (num_rois,)
             self._session_of = np.repeat(np.arange(len(sizes)), sizes)
-            self._bg_sources = {"enhanced mean": self._fov_images}
+            self._bg_sources = {"mean img (enhanced)": self._fov_images}
             for name, imgs_ in (bg_sources or {}).items():
                 self._bg_sources[name] = [np.asarray(i, dtype=np.float32) for i in imgs_]
             self._bg_source_names = list(self._bg_sources)
@@ -219,38 +222,73 @@ class ClassificationVis:
         def work():
             try:
                 import h5py
-                from masknmf.multisession import RoicatDataAdapter
+                import torch
+                from masknmf.demixing.demixing_results import DemixingResults
+                from masknmf.multisession.roicat_tracking import (
+                    RoicatDataAdapter,
+                    extract_masknmf_mean_img,
+                    extract_masknmf_spatial_footprints,
+                )
 
-                adapter = RoicatDataAdapter.from_masknmf(files, **adapter_kwargs)
-
-                extra_imgs = {
-                    "mean": "DemixingResults/mean_img",
-                    "variance": "DemixingResults/var_img",
-                    "resid corr": "DemixingResults/global_residual_correlation_image",
-                }
                 bg_sources: dict[str, list] = {}
                 snr, skew = [], []
                 saved_labels: list = []
                 saved_names = None
+                mean_imgs, footprints = [], []
+
+                def add_bg(name, img):
+                    bg_sources.setdefault(name, []).append(np.asarray(img, dtype=np.float32))
+
                 for fname in files:
+                    dmr = DemixingResults.from_hdf5(fname)
+                    footprints.append(extract_masknmf_spatial_footprints(dmr))
+                    mean_img = extract_masknmf_mean_img(dmr)
+                    mean_imgs.append(mean_img)
+
+                    add_bg("mean img (raw)", mean_img)
+                    add_bg("var img", dmr.var_img.cpu().numpy())
+                    if dmr.global_residual_correlation_image is not None:
+                        add_bg(
+                            "resid corr img (global)",
+                            dmr.global_residual_correlation_image.cpu().numpy(),
+                        )
+                    std_imgs = dmr.standard_correlation_images
+                    if std_imgs is not None:
+                        n = std_imgs.shape[0]
+                        running_max = None
+                        running_sum = None
+                        for start in range(0, n, 32):
+                            batch = std_imgs.getitem_tensor(slice(start, min(start + 32, n)))
+                            bmax = batch.amax(dim=0)
+                            bsum = batch.sum(dim=0)
+                            running_max = (
+                                bmax if running_max is None else torch.maximum(running_max, bmax)
+                            )
+                            running_sum = bsum if running_sum is None else running_sum + bsum
+                        add_bg("corr img (max proj)", running_max.cpu().numpy())
+                        add_bg("corr img (mean)", (running_sum / n).cpu().numpy())
+
                     with h5py.File(fname, "r") as f:
-                        for label, key in extra_imgs.items():
-                            if key in f:
-                                bg_sources.setdefault(label, []).append(
-                                    f[key][()].astype(np.float32)
-                                )
                         g = f["DemixingResults"]
                         if "class_labels" in g:
                             saved_labels.append(g["class_labels"][()])
                         if saved_names is None and "label_names" in g:
                             saved_names = [n.decode() for n in g["label_names"][()]]
-                        c = f["DemixingResults/c"][()]  # (num_frames, num_rois)
+
+                    c = dmr.c.cpu().numpy()  # (num_frames, num_rois)
                     med = np.median(c, axis=0)
                     mad = np.median(np.abs(c - med), axis=0) * 1.4826
                     snr.append((c.max(axis=0) - med) / np.where(mad == 0, 1, mad))
                     mean = c.mean(axis=0)
                     std = c.std(axis=0)
                     skew.append(((c - mean) ** 3).mean(axis=0) / np.where(std == 0, 1, std) ** 3)
+
+                adapter = RoicatDataAdapter(
+                    mean_imgs,
+                    footprints,
+                    tuple(os.path.abspath(f) for f in files),
+                    **adapter_kwargs,
+                )
 
                 self._load_result = {
                     "adapter": adapter,
@@ -476,8 +514,11 @@ class ClassificationVis:
             return
         if imgui.is_key_pressed(imgui.Key.left_arrow):
             self.step(-1)
-        if imgui.is_key_pressed(imgui.Key.right_arrow) or imgui.is_key_pressed(imgui.Key.space):
+        if imgui.is_key_pressed(imgui.Key.right_arrow):
             self.step(1)
+        if imgui.is_key_pressed(imgui.Key.space, False):
+            self._show_bg = not self._show_bg
+            self._apply_overlay()
         if imgui.is_key_pressed(imgui.Key._0, False):
             self.label_current(-1)
         if imgui.is_key_pressed(imgui.Key.m, False):
@@ -487,11 +528,29 @@ class ClassificationVis:
             if imgui.is_key_pressed(key, False):
                 self.label_current(i)
 
+    def _open_full_fov(self):
+        if self._bg_sources is not None:
+            roi = self.current
+            sess = (
+                int(self._session_of[roi])
+                if roi is not None and self._session_of is not None
+                else 0
+            )
+            images = {name: imgs[sess] for name, imgs in self._bg_sources.items()}
+            selected = self._bg_source_names[self._bg_source_idx]
+        else:
+            images = {"mask MIP": self._mip}
+            selected = "mask MIP"
+        self._summary.set_images(images, selected=selected)
+        self._summary.open()
+
     def _draw_save_note(self):
         if self._save_path is None and self._save_files is None:
             imgui.text_disabled("autosave off — labels are kept in memory only")
             return
-        imgui.text_disabled("Accessing masks in output file")
+        imgui.text("Accessing masks in output file")
+        imgui.same_line(0, 4)
+        imgui.text_disabled("(?)")
         if imgui.is_item_hovered():
             imgui.begin_tooltip()
             if self._save_files is not None:
@@ -542,29 +601,30 @@ class ClassificationVis:
             self._pos = pos
             self._show_current()
         imgui.same_line(0, 30)
-        _, self._advance_on_label = imgui.checkbox("advance on label", self._advance_on_label)
+        if imgui.button("Open full FOV"):
+            self._open_full_fov()
         imgui.same_line(0, 30)
         self._draw_save_note()
         if self._error is not None:
             imgui.same_line(0, 30)
             imgui.text(self._error)
 
-        imgui.text("bg")
-        imgui.same_line(0, 8)
-        sources = self._bg_source_names if self._bg_sources is not None else ["MIP"]
-        options = [*sources, "None"]
-        current = (
-            self._bg_source_idx if self._bg_sources is not None else 0
-        ) if self._show_bg else len(options) - 1
-        imgui.set_next_item_width(150)
-        changed_src, idx = imgui.combo("##bg-source", current, options)
-        if changed_src:
-            self._show_bg = idx < len(options) - 1
-            if self._show_bg and self._bg_sources is not None and idx != self._bg_source_idx:
-                self._bg_source_idx = idx
-                self._fov_images = self._bg_sources[options[idx]]
-                self._show_current()
+        changed_bg, self._show_bg = imgui.checkbox("##bg-on", self._show_bg)
+        if changed_bg:
             self._apply_overlay()
+        imgui.same_line(0, 6)
+        sources = self._bg_source_names if self._bg_sources is not None else ["mask MIP"]
+        current = self._bg_source_idx if self._bg_sources is not None else 0
+        imgui.set_next_item_width(180)
+        changed_src, idx = imgui.combo("##bg-source", current, sources)
+        if changed_src and self._bg_sources is not None and idx != self._bg_source_idx:
+            self._bg_source_idx = idx
+            self._fov_images = self._bg_sources[sources[idx]]
+            self._show_current()
+        imgui.same_line(0, 6)
+        imgui.text("bg image")
+        imgui.same_line(0, 4)
+        imgui.text_disabled("(space)")
         imgui.same_line(0, 20)
         imgui.set_next_item_width(150)
         changed_bga, self._bg_alpha = imgui.slider_float(
@@ -618,6 +678,8 @@ class ClassificationVis:
             if imgui.button("unlabel all"):
                 self.label(range(len(self._class_labels)), -1)
             imgui.pop_style_color(2)
+
+        self._summary.draw()
 
     def _draw_table(self):
         names = ("all", "unlabeled", *self._label_names)
