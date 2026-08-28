@@ -11,6 +11,8 @@ import wgpu
 from cmap import Colormap
 from imgui_bundle import imgui
 
+from masknmf.visualization.imgui.movie_player import MoviePlayer
+
 _CMAPS = ("gray", "viridis", "magma", "inferno", "turbo")
 _CONTRAST_MODES = ("full", "auto", "manual")
 _CONTRAST_AUTO = 1
@@ -88,14 +90,27 @@ class _GpuImage:
         self._view = self._texture.create_view()
         self.ref = self.backend.register_texture(self._view)
 
-    def reupload_if_changed(self, cmap: str, lo: float, hi: float):
-        if cmap == self.cmap and lo == self.lo and hi == self.hi:
+    def ensure(self, arr: np.ndarray, cmap: str, lo: float, hi: float):
+        if arr is self.arr and cmap == self.cmap and lo == self.lo and hi == self.hi:
             return
-        self.destroy()
+        same_shape = arr.shape[:2] == (self.h, self.w)
+        self.arr = arr
         self.cmap = cmap
         self.lo = lo
         self.hi = hi
-        self._upload()
+        if same_shape and self._texture is not None:
+            # rewrite pixels in place (movie frames, contrast changes)
+            self.rgba = _to_rgba(arr, cmap, lo, hi)
+            self.backend._device.queue.write_texture(
+                {"texture": self._texture, "mip_level": 0, "origin": (0, 0, 0)},
+                self.rgba.tobytes(),
+                {"offset": 0, "bytes_per_row": self.w * 4, "rows_per_image": self.h},
+                (self.w, self.h, 1),
+            )
+        else:
+            self.destroy()
+            self.h, self.w = arr.shape[:2]
+            self._upload()
 
     def destroy(self):
         if self.ref is not None:
@@ -122,6 +137,11 @@ class SummaryImageViewer:
     def __init__(self, figure, images: Optional[dict] = None):
         self._figure = figure
         self._images: dict = images or {}
+        self._movies: dict = {}
+        self._movie_frame: Optional[np.ndarray] = None
+        self._movie_key: Optional[str] = None
+        self._movie_range: dict = {}
+        self.player = MoviePlayer()
         self._selected = 0
         self._popup_open = False
         self._cmap_idx = 0
@@ -145,11 +165,18 @@ class SummaryImageViewer:
                 del self._gpu[key]
                 self._hist_cache.pop(key, None)
         self._images = dict(images)
-        keys = list(self._images)
+        keys = list(self._images) + list(self._movies)
         if selected in keys:
             self._selected = keys.index(selected)
         elif self._selected >= len(keys):
             self._selected = 0
+
+    def set_movies(self, movies: dict):
+        """Lazy (T, H, W) arrays offered in the selector after the static images"""
+        self._movies = dict(movies)
+        self._movie_frame = None
+        self._movie_key = None
+        self._movie_range.clear()
 
     def open(self):
         self._popup_open = True
@@ -177,6 +204,11 @@ class SummaryImageViewer:
 
     def _get_range(self, key: str, arr: np.ndarray) -> tuple[float, float]:
         if self._contrast_mode == _CONTRAST_AUTO:
+            if key in self._movies:
+                # fixed per movie so playback doesn't flicker
+                if key not in self._movie_range:
+                    self._movie_range[key] = _auto_range(arr)
+                return self._movie_range[key]
             return _auto_range(arr)
         if self._contrast_mode == _CONTRAST_MANUAL:
             lo = self._manual_lo.get(key)
@@ -197,13 +229,11 @@ class SummaryImageViewer:
         cmap = _CMAPS[self._cmap_idx]
         lo, hi = self._get_range(key, arr)
         gpu = self._gpu.get(key)
-        if gpu is None or gpu.arr is not arr:
-            if gpu is not None:
-                gpu.destroy()
+        if gpu is None:
             gpu = _GpuImage(backend, arr, cmap, lo, hi)
             self._gpu[key] = gpu
         else:
-            gpu.reupload_if_changed(cmap, lo, hi)
+            gpu.ensure(arr, cmap, lo, hi)
         return gpu
 
     def _get_histogram(self, key: str, arr: np.ndarray) -> np.ndarray:
@@ -304,9 +334,9 @@ class SummaryImageViewer:
                 )
 
     def draw(self):
-        if not self._popup_open or not self._images:
+        if not self._popup_open or not (self._images or self._movies):
             return
-        keys = list(self._images)
+        keys = list(self._images) + list(self._movies)
         if self._selected >= len(keys):
             self._selected = 0
 
@@ -329,7 +359,15 @@ class SummaryImageViewer:
             return
 
         key = self._draw_toolbar(keys)
-        arr = self._images[key]
+        if key in self._movies:
+            self.player.set_movie(self._movies[key])
+            frame_changed = self.player.draw(slider_width=260.0)
+            if frame_changed or self._movie_frame is None or key != self._movie_key:
+                self._movie_frame = self.player.frame()
+                self._movie_key = key
+            arr = self._movie_frame
+        else:
+            arr = self._images[key]
         self._draw_contrast_panel(key, arr)
 
         gpu = self._ensure_gpu(key, arr)
