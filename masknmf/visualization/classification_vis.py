@@ -5,18 +5,16 @@ import numpy as np
 import fastplotlib as fpl
 from imgui_bundle import imgui
 
-from masknmf.visualization.imgui.movie_player import MoviePlayer
-from masknmf.visualization.summary_widget import SummaryImageViewer
-
-_LABEL_COLORS = (
-    (0.12, 0.47, 0.71), (1.00, 0.50, 0.05), (0.17, 0.63, 0.17),
-    (0.84, 0.15, 0.16), (0.58, 0.40, 0.74), (0.55, 0.34, 0.29),
-    (0.89, 0.47, 0.76), (0.50, 0.50, 0.50), (0.74, 0.74, 0.13),
-    (0.09, 0.75, 0.81),
-)
-_LABEL_KEYS = (
-    imgui.Key._1, imgui.Key._2, imgui.Key._3, imgui.Key._4, imgui.Key._5,
-    imgui.Key._6, imgui.Key._7, imgui.Key._8, imgui.Key._9,
+from masknmf.visualization.imgui import (
+    LABEL_COLORS as _LABEL_COLORS,
+    LABEL_KEYS as _LABEL_KEYS,
+    MoviePlayer,
+    SummaryImageViewer,
+    context_crop,
+    crop_origin,
+    draw_keybinds_popup,
+    draw_progress,
+    footprint_rgba,
 )
 _COLUMNS = ("id", "label", "area", "peak", "snr", "skew")
 
@@ -512,22 +510,14 @@ class ClassificationVis:
         return _LABEL_COLORS[label_index % len(_LABEL_COLORS)]
 
     def _crop_origin(self, roi: int) -> tuple[int, int]:
-        """FOV coordinate of the ROI crop's top-left corner (roicat's convention)"""
-        h, w = self._roi_images.shape[1:]
-        cy, cx = self._centroids[roi]
-        return int(cy) - int(np.ceil(h / 2)), int(cx) - int(np.ceil(w / 2))
+        return crop_origin(self._centroids[roi], self._roi_images.shape[1:])
 
     def _context_crop(self, roi: int) -> np.ndarray:
-        """FOV image cropped around the ROI, aligned with roicat's centered ROI images"""
-        fov = self._fov_images[self._session_of[roi]]
-        h, w = self._roi_images.shape[1:]
-        top, left = self._crop_origin(roi)
-        crop = np.zeros((h, w), dtype=np.float32)
-        y0, y1 = max(top, 0), min(top + h, fov.shape[0])
-        x0, x1 = max(left, 0), min(left + w, fov.shape[1])
-        if y1 > y0 and x1 > x0:
-            crop[y0 - top : y1 - top, x0 - left : x1 - left] = fov[y0:y1, x0:x1]
-        return crop
+        return context_crop(
+            self._fov_images[self._session_of[roi]],
+            self._centroids[roi],
+            self._roi_images.shape[1:],
+        )
 
     def _update_movie_bg(self):
         roi = self.current
@@ -548,8 +538,7 @@ class ClassificationVis:
         if roi is not None:
             label = int(self._class_labels[roi])
             color = self._label_color(label) if label >= 0 else (1.0, 1.0, 1.0)
-            rgba[..., :3] = color
-            rgba[..., 3] = self._roi_images[roi] / (self._peak[roi] or 1.0)
+            rgba = footprint_rgba(self._roi_images[roi], color, self._peak[roi])
             name = self._label_names[label] if label >= 0 else "unlabeled"
             title = f"ROI {roi}  [{name}]  ({self._pos + 1}/{len(self._order)})"
             if self._fov_images is not None:
@@ -839,30 +828,8 @@ class ClassificationVis:
         self._draw_keybinds_popup()
 
     def _draw_progress(self):
-        """Per-session labeling progress; training requires every ROI labeled"""
-        done_color = imgui.ImVec4(0.35, 0.9, 0.35, 1.0)
-        todo_color = imgui.ImVec4(1.0, 0.75, 0.25, 1.0)
-        labeled = self._class_labels >= 0
-        done, total = int(labeled.sum()), len(labeled)
-        imgui.text_colored(
-            done_color if done == total else todo_color, f"labeled {done}/{total}"
-        )
-        if self._session_sizes is not None and len(self._session_sizes) > 1:
-            start = 0
-            for k, n in enumerate(self._session_sizes):
-                session_done = int(labeled[start : start + n].sum())
-                imgui.same_line(0, 10)
-                imgui.text_colored(
-                    done_color if session_done == n else todo_color,
-                    f"s{k}: {session_done}/{n}",
-                )
-                start += n
-        if done < total:
-            imgui.same_line(0, 12)
-            if imgui.button("next unlabeled"):
-                self.goto_next_unlabeled()
-            imgui.same_line(0, 4)
-            imgui.text_disabled("(u)")
+        if draw_progress(self._class_labels, self._session_sizes):
+            self.goto_next_unlabeled()
 
     _KEYBINDS = (
         ("up / down", "previous / next ROI"),
@@ -876,35 +843,7 @@ class ClassificationVis:
     )
 
     def _draw_keybinds_popup(self):
-        if not self._keybinds_open:
-            return
-        em = imgui.get_font_size()
-        imgui.set_next_window_pos(
-            imgui.get_main_viewport().get_center(),
-            imgui.Cond_.appearing,
-            pivot=imgui.ImVec2(0.5, 0.5),
-        )
-        opened, self._keybinds_open = imgui.begin(
-            "Keybinds###keybinds",
-            self._keybinds_open,
-            flags=imgui.WindowFlags_.no_saved_settings
-            | imgui.WindowFlags_.always_auto_resize,
-        )
-        if opened:
-            flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.borders_inner_h
-            if imgui.begin_table("##keybinds-table", 2, flags):
-                imgui.table_setup_column(
-                    "key", imgui.TableColumnFlags_.width_fixed, 10 * em
-                )
-                imgui.table_setup_column("action")
-                for key, action in self._KEYBINDS:
-                    imgui.table_next_row()
-                    imgui.table_next_column()
-                    imgui.text_colored(imgui.ImVec4(1.0, 0.85, 0.4, 1.0), key)
-                    imgui.table_next_column()
-                    imgui.text(action)
-                imgui.end_table()
-        imgui.end()
+        self._keybinds_open = draw_keybinds_popup(self._KEYBINDS, self._keybinds_open)
 
     def _draw_table(self):
         names = ("all", "unlabeled", *self._label_names)
