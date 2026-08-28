@@ -2,7 +2,9 @@
 
 Target: `masknmf.visualization.imgui`. Consumers: masknmf `ClassificationVis`, mbo_utilities `ManualRoiWidget` (`mbo <path> --widget manualroi`). Dependency direction is `mbo_utilities -> masknmf`.
 
-Status: `have` = already in the package (curation-viz) · `extract` = pull out of an existing GUI · `merge` = one widget from two divergent copies.
+Status: `have` = pre-existing · `done` = extracted and in use by both consumers.
+
+Not extracted: the background-source combo in `classification_vis` stays inline, being bound to per-session FOV and movie state that only that GUI has.
 
 | Widget | Module | Status | Inputs | Outputs | fastplotlib / array surface | Intended use |
 |---|---|---|---|---|---|---|
@@ -13,19 +15,19 @@ Status: `have` = already in the package (curation-viz) · `extract` = pull out o
 | `resolve_time_reference` | `layout` | have | `num_frames`, `frame_timings`, `ref_range`, `axis` | `(ref_range, frame_timings)` | NDWidget `ref_range` dict | uniform time axis across viewers |
 | `is_notebook_canvas` | `layout` | have | `figure` | `bool` | `figure.canvas.__class__.__name__` | `show()` dispatch (HBox vs window) |
 | `MoviePlayer` | `movie_player` | have | lazy `(T, H, W)`, `fps` | `frame(region)` 2D; `draw() -> changed` | reads `ACArray`/`LazyArray`; feeds `ImageGraphic.data` | transport bar over a lazy movie |
-| `LabelSet` | `labels` | extract | `names: tuple[str]`, `class_labels` (n,) int64 | `add/remove/assign`, `-1` = unlabeled | none (pure data) | class registry, tab10 colors, `1`-`9`/`0` hotkeys |
-| `RoiOrder` | `table` | extract | per-ROI columns dict, filter label, area range, sort col/dir | `order` (k,) int idx | none | filter + stable sort model behind the table |
-| `RoiTable` | `table` | extract | `RoiOrder`, `LabelSet`, column formatters, `current` | clicked row -> new current | `imgui.ListClipper`, `table_get_sort_specs` | scrollable sortable ROI list, scroll-to-current |
-| `OverlayCompositor` | `overlay` | merge | bg 2D, label image `uint16` or mask `(H,W)`, per-label colors, `alpha`, `selected` | `rgba (H, W, 4)` | `ImageGraphic.data/.vmin/.vmax/.alpha/.visible`, `alpha_mode="blend"`, `offset` | bg + mask blend, selected ROI rim |
-| `LabelImageMasks` | `masks` | extract | closed stroke `[(x, y)]`, `labels uint16` | updated `labels`, per-ROI px `counts` | `cv2.fillPoly`, `cv2.morphologyEx(MORPH_GRADIENT)` | stroke -> non-overlapping mask, add/delete/renumber |
-| `StrokeDrawer` | `draw` | extract | `subplot`, armed flag | closed stroke, click-pick `(row, col)` | `subplot.renderer.add_event_handler("pointer_down/move/up")`, `map_screen_to_world`, `LineGraphic.data/.visible`, `subplot.controller.controls["mouse1"]` pop/restore, `world_object.material.pick_write = False` | freehand outline; suppress pan while armed |
-| `CropView` | `crop` | extract | `fov` 2D, `centroid` (y, x), `(h, w)` | crop `(h, w)`, origin `(top, left)` | none | zero-padded context crop, roicat-centred convention |
-| `BackgroundSelector` | `panels` | extract | `{name: [img per session]}`, `{name: movie}` | active 2D image or movie | `ImageGraphic.data/.vmin/.vmax` | swap FOV background / demixed movie |
-| `ProgressRow` | `panels` | extract | `class_labels`, `session_sizes` | draws; "next unlabeled" click | none | `labeled n/total`, per-session split |
-| `KeybindsPopup` | `panels` | extract | `tuple[(key, action)]` | draws | `imgui.begin` + 2-col table | help overlay |
-| `LabelStore` | `store` | extract | npz path and/or hdf5 file list, `session_sizes` | writes `class_labels`, `label_names`, `roi_masks`, `labels_complete` | none | autosave on every label change |
-| `AsyncLoad` | `loader` | extract | callable, poll per frame | result \| error, status text | none | non-blocking build (ROICaT) behind a live GUI |
-| `SummaryImageViewer` | `summary` | merge | `{name: 2D}`, `{name: (T,H,W)}`, `figure`; optional metadata scan, ROI contours | popup; `set_highlight((y0,x0,h,w))`; PNG export | `figure.imgui_renderer.backend.register_texture/unregister_texture`, `wgpu` texture + `queue.write_texture`, `imgui.draw_list.add_image` | full-FOV browse: pan/zoom/cmap/contrast/histogram/pixel values |
+| `LabelSet` | `labels` | done | `names: tuple[str]`, `class_labels` (n,) int64 | `add/remove/assign`, `-1` = unlabeled | none (pure data) | class registry, tab10 colors, `1`-`9`/`0` hotkeys |
+| `RoiOrder` | `table` | done | per-ROI columns dict, filter label, area range, sort col/dir | `order` (k,) int idx | none | filter + stable sort model behind the table |
+| `draw_roi_table` / `draw_filter_row` | `table` | done | `RoiOrder`, `LabelSet`, column formatters, `current` | clicked row -> new current | `imgui.ListClipper`, `table_get_sort_specs` | scrollable sortable ROI list, scroll-to-current |
+| `label_image_rgba` / `footprint_rgba` / `OverlayPair` | `overlay` | done | bg 2D, label image `uint16` or mask `(H,W)`, per-label colors, `alpha`, `selected` | `rgba (H, W, 4)` | `ImageGraphic.data/.vmin/.vmax/.alpha/.visible`, `alpha_mode="blend"`, `offset` | bg + mask blend, selected ROI rim |
+| `LabelImage` | `masks` | done | closed stroke `[(x, y)]`, `labels uint16` | updated `labels`, per-ROI px `counts` | `cv2.fillPoly`, `cv2.morphologyEx(MORPH_GRADIENT)` | stroke -> non-overlapping mask, add/delete/renumber |
+| `StrokeDrawer` | `draw` | done | `subplot`, armed flag | closed stroke, click-pick `(row, col)` | `subplot.renderer.add_event_handler("pointer_down/move/up")`, `map_screen_to_world`, `LineGraphic.data/.visible`, `subplot.controller.controls["mouse1"]` pop/restore, `world_object.material.pick_write = False` | freehand outline; suppress pan while armed |
+| `crop_origin` / `context_crop` | `crop` | done | `fov` 2D, `centroid` (y, x), `(h, w)` | crop `(h, w)`, origin `(top, left)` | none | zero-padded context crop, roicat-centred convention |
+| `draw_label_buttons` / `draw_label_editor` | `panels` | done | `LabelSet` | clicked label index; add/remove | none | assign and manage classes |
+| `draw_progress` | `panels` | done | `class_labels`, `session_sizes` | draws; "next unlabeled" click | none | `labeled n/total`, per-session split |
+| `draw_keybinds_popup` | `panels` | done | `tuple[(key, action)]` | draws | `imgui.begin` + 2-col table | help overlay |
+| `LabelStore` | `store` | done | npz path and/or hdf5 file list, `session_sizes` | writes `class_labels`, `label_names`, `roi_masks`, `labels_complete` | none | autosave on every label change |
+| `AsyncLoad` | `loader` | done | callable, poll per frame | result \| error, status text | none | non-blocking build (ROICaT) behind a live GUI |
+| `SummaryImageViewer` | `summary` | done | `{name: 2D}`, `{name: (T,H,W)}`, `figure`; optional metadata scan, ROI contours | popup; `set_highlight((y0,x0,h,w))`; PNG export | `figure.imgui_renderer.backend.register_texture/unregister_texture`, `wgpu` texture + `queue.write_texture`, `imgui.draw_list.add_image` | full-FOV browse: pan/zoom/cmap/contrast/histogram/pixel values |
 
 ## `SummaryImageViewer` merge
 
