@@ -199,6 +199,7 @@ def train_total_variance_denoiser(
         batch_size: int = 1,
         devices: int = 1,
         padding: int = 100,
+        num_workers: int | None = None,
 ):
     """Train a total variance prediction network"""
     model = TotalVarianceTemporalDenoiser(
@@ -207,8 +208,18 @@ def train_total_variance_denoiser(
     )
     padded_timeseries = torch.nn.functional.pad(time_series, (padding, padding), mode = 'reflect')
     dataset = MultivariateTimeSeriesDataset(padded_timeseries, input_size=input_size, overlap=overlap)
+    if num_workers is None:
+        # windows spawns each worker as a fresh interpreter that re-imports the
+        # whole stack and can take its own cuda context; the dataset is a slice
+        # of an in-memory tensor, so workers buy nothing here
+        num_workers = 0 if sys.platform == "win32" else 6
     train_loader = DataLoader(
-        dataset, batch_size=batch_size, shuffle=True, num_workers=6, pin_memory=True
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
     )
 
     logger = TensorBoardLogger("lightning_logs", name="total_variance")
