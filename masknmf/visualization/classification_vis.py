@@ -48,6 +48,7 @@ class ClassificationVis:
         self._load_error: Optional[str] = None
         self._roicat_input = None
         self._session_sizes: Optional[tuple[int, ...]] = None
+        self._save_files: Optional[list[str]] = None  # hdf5 mode: labels live in-file
 
         if self._save_path is not None and os.path.exists(self._save_path):
             saved = np.load(self._save_path)
@@ -107,8 +108,9 @@ class ClassificationVis:
 
         The GUI opens immediately on an empty placeholder while ROICaT builds the
         centered ROI images (RoicatDataAdapter.from_masknmf) in a background thread,
-        then swaps in the real data. Labels are kept per session so they can be fed
-        back with roicat_input.set_class_labels(labels=vis.class_labels_by_session).
+        then swaps in the real data. Labels, label names, and ROI masks are stored
+        inside each session's hdf5 (DemixingResults/class_labels, label_names,
+        roi_masks) — no extra files. Pass save_path for an additional npz copy.
         """
         placeholder = np.zeros((1, *roi_image_dims), dtype=np.float32)
         vis = cls(placeholder, label_names=label_names, save_path=save_path)
@@ -227,6 +229,7 @@ class ClassificationVis:
     def load_masknmf(self, demixing_result_files: Sequence[str], **adapter_kwargs):
         """Build a RoicatDataAdapter from demixing .hdf5 files in a background thread"""
         files = [str(f) for f in demixing_result_files]
+        self._save_files = files
         self._loading = f"ROICaT: building ROI images from {len(files)} session(s)..."
         self._load_result = None
         self._load_error = None
@@ -245,6 +248,8 @@ class ClassificationVis:
                 }
                 bg_sources: dict[str, list] = {}
                 snr, skew = [], []
+                saved_labels: list = []
+                saved_names = None
                 for fname in files:
                     with h5py.File(fname, "r") as f:
                         for label, key in extra_imgs.items():
@@ -252,6 +257,11 @@ class ClassificationVis:
                                 bg_sources.setdefault(label, []).append(
                                     f[key][()].astype(np.float32)
                                 )
+                        g = f["DemixingResults"]
+                        if "class_labels" in g:
+                            saved_labels.append(g["class_labels"][()])
+                        if saved_names is None and "label_names" in g:
+                            saved_names = [n.decode() for n in g["label_names"][()]]
                         c = f["DemixingResults/c"][()]  # (num_frames, num_rois)
                     med = np.median(c, axis=0)
                     mad = np.median(np.abs(c - med), axis=0) * 1.4826
@@ -270,6 +280,12 @@ class ClassificationVis:
                         "snr": np.concatenate(snr).astype(np.float32),
                         "skew": np.concatenate(skew).astype(np.float32),
                     },
+                    "saved_labels": (
+                        np.concatenate(saved_labels)
+                        if len(saved_labels) == len(files)
+                        else None
+                    ),
+                    "saved_names": saved_names,
                 }
             except Exception as e:
                 self._load_error = f"load failed: {type(e).__name__}: {e}"
@@ -288,11 +304,11 @@ class ClassificationVis:
             self._load_result = None
             imgs = np.concatenate([np.asarray(s) for s in adapter.ROI_images], axis=0)
             sizes = [len(s) for s in adapter.ROI_images]
-            labels = None
-            if self._save_path is not None and os.path.exists(self._save_path):
-                saved_labels = np.load(self._save_path)["class_labels"]
-                if saved_labels.shape[0] == imgs.shape[0]:
-                    labels = saved_labels
+            labels = result["saved_labels"]
+            if labels is not None and labels.shape[0] != imgs.shape[0]:
+                labels = None
+            if not self._label_names and result["saved_names"]:
+                self._label_names = tuple(result["saved_names"])
             self.set_roi_images(
                 imgs,
                 labels,
@@ -304,11 +320,10 @@ class ClassificationVis:
             )
             self._roicat_input = adapter
             self._loading = None
-            if self._masks_path is not None:
-                try:
-                    np.save(self._masks_path, self._roi_images)
-                except OSError as e:
-                    self._error = f"mask save failed: {e}"
+            try:
+                self._save_masks_to_hdf5()
+            except OSError as e:
+                self._error = f"mask save failed: {e}"
 
     @property
     def current(self) -> Optional[int]:
@@ -380,16 +395,55 @@ class ClassificationVis:
             self.add_label(str(name).strip())
 
     def save(self, path: Optional[str] = None):
-        """Write label names and per-ROI labels to an npz file"""
+        """
+        Persist labels: into each session's hdf5 (DemixingResults/class_labels +
+        label_names) when launched from demixing results, and/or to an npz at path
+        """
+        if path is None and self._save_files is not None:
+            self._save_labels_to_hdf5()
         path = path if path is not None else self._save_path
+        if path is None:
+            return
         data = dict(label_names=np.array(self._label_names), class_labels=self._class_labels)
         if self._session_sizes is not None:
             data["session_sizes"] = np.array(self._session_sizes)
         np.savez(path, **data)
 
+    @staticmethod
+    def _write_dataset(group, key: str, data: np.ndarray):
+        # overwrite in place when possible so the hdf5 doesn't grow with each write
+        if key in group and group[key].shape == data.shape and group[key].dtype == data.dtype:
+            group[key][...] = data
+        else:
+            if key in group:
+                del group[key]
+            group.create_dataset(key, data=data)
+
+    def _save_labels_to_hdf5(self):
+        import h5py
+
+        names = np.array([n.encode() for n in self._label_names])
+        for fname, labels in zip(self._save_files, self.class_labels_by_session):
+            with h5py.File(fname, "r+") as f:
+                g = f.require_group("DemixingResults")
+                self._write_dataset(g, "class_labels", labels.astype(np.int64))
+                self._write_dataset(g, "label_names", names)
+
+    def _save_masks_to_hdf5(self):
+        if self._save_files is None:
+            return
+        import h5py
+
+        start = 0
+        for fname, n in zip(self._save_files, self._session_sizes or (len(self._roi_images),)):
+            with h5py.File(fname, "r+") as f:
+                g = f.require_group("DemixingResults")
+                self._write_dataset(g, "roi_masks", self._roi_images[start : start + n])
+            start += n
+
     def _autosave(self):
         # don't clobber a previous session's labels with placeholder state mid-load
-        if self._save_path is None or self._loading is not None:
+        if (self._save_path is None and self._save_files is None) or self._loading is not None:
             return
         try:
             self.save()
@@ -477,35 +531,53 @@ class ClassificationVis:
                 self.label_current(i)
 
     def _draw_save_note(self):
-        if self._save_path is None:
+        if self._save_path is None and self._save_files is None:
             imgui.text_disabled("autosave off — labels are kept in memory only")
             return
         imgui.text_disabled("(?)")
         if imgui.is_item_hovered():
             imgui.begin_tooltip()
-            imgui.push_text_wrap_pos(560)
-            imgui.text(
-                "The source data file is opened read-only and is never modified by "
-                "this tool. Labels are written to the .npz file on every change; the "
-                "ROI mask stack is written once per launch."
-            )
-            imgui.separator()
-            imgui.text("Access the results in Python:")
-            imgui.text_colored(
-                imgui.ImVec4(0.55, 0.75, 1.0, 1.0),
-                "\n"
-                "import numpy as np\n"
-                "\n"
-                f'data = np.load(r"{self._save_path}")\n'
-                'names  = data["label_names"]   # class names; row index = label value\n'
-                'labels = data["class_labels"]  # (num_rois,) int64; -1 = unlabeled\n'
-                f'masks  = np.load(r"{self._masks_path}")  # (num_rois, Y, X)\n'
-                "\n"
-                "# continue a ROICaT classification pipeline\n"
-                'sizes = data["session_sizes"]  # ROIs per session\n'
-                "per_session = np.split(labels, np.cumsum(sizes)[:-1])\n"
-                "roicat_input.set_class_labels(labels=per_session)\n",
-            )
+            imgui.push_text_wrap_pos(620)
+            if self._save_files is not None:
+                imgui.text(
+                    "Everything stays in the demixing results hdf5 — no extra files. "
+                    "The demixing data itself is never modified; only these datasets "
+                    "are written, per session file: DemixingResults/class_labels "
+                    "(on every change), label_names, and roi_masks (once per launch)."
+                )
+                imgui.separator()
+                imgui.text("Access the results in Python:")
+                imgui.text_colored(
+                    imgui.ImVec4(0.55, 0.75, 1.0, 1.0),
+                    "\n"
+                    "import h5py\n"
+                    "\n"
+                    f'with h5py.File(r"{self._save_files[0]}", "r") as f:\n'
+                    '    g = f["DemixingResults"]\n'
+                    '    names  = [n.decode() for n in g["label_names"][()]]\n'
+                    '    labels = g["class_labels"][()]  # (num_rois,) int64; -1 = unlabeled\n'
+                    '    masks  = g["roi_masks"][()]     # (num_rois, Y, X) float32\n'
+                    "\n"
+                    "# continue a ROICaT classification pipeline:\n"
+                    "# read class_labels from each session file, then\n"
+                    "roicat_input.set_class_labels(labels=[labels_session0, ...])\n",
+                )
+            else:
+                imgui.text(
+                    "The source data file is never modified. Labels are written to "
+                    "the .npz file on every change."
+                )
+                imgui.separator()
+                imgui.text("Access the results in Python:")
+                imgui.text_colored(
+                    imgui.ImVec4(0.55, 0.75, 1.0, 1.0),
+                    "\n"
+                    "import numpy as np\n"
+                    "\n"
+                    f'data = np.load(r"{self._save_path}")\n'
+                    'names  = data["label_names"]   # class names; row index = label value\n'
+                    'labels = data["class_labels"]  # (num_rois,) int64; -1 = unlabeled\n',
+                )
             imgui.separator()
             imgui.text(
                 "Shortcuts: left/right or space = step, 1-9 = assign label, "
@@ -514,7 +586,15 @@ class ClassificationVis:
             imgui.pop_text_wrap_pos()
             imgui.end_tooltip()
         imgui.same_line(0, 5)
-        imgui.text(f"source data unchanged; labels & masks -> {self._save_path}")
+        if self._save_files is not None:
+            target = (
+                "the source hdf5"
+                if len(self._save_files) == 1
+                else f"each of the {len(self._save_files)} source hdf5 files"
+            )
+            imgui.text(f"labels & masks saved into {target}; demixing data untouched")
+        else:
+            imgui.text(f"labels -> {self._save_path}")
 
     def _draw_panel(self):
         self._poll_load()
@@ -698,14 +778,6 @@ class ClassificationVis:
         return self._class_labels
 
     @property
-    def _masks_path(self) -> Optional[str]:
-        """Sidecar .npy next to the labels npz holding the ROI mask stack"""
-        if self._save_path is None:
-            return None
-        base = self._save_path[:-4] if self._save_path.endswith(".npz") else self._save_path
-        return f"{base}.masks.npy"
-
-    @property
     def class_labels_by_session(self) -> list[np.ndarray]:
         """
         Labels split per session — the shape RoicatDataAdapter.set_class_labels
@@ -759,19 +831,20 @@ def main(argv=None):
     parser.add_argument(
         "--save",
         default=None,
-        help="labels npz path (default: <first path>.labels.npz)",
+        help="optional labels npz path; hdf5 inputs store labels in-file by default "
+        "(npy default: <path>.labels.npz)",
     )
     args = parser.parse_args(argv)
 
     label_names = args.labels.split(",") if args.labels else ()
-    save_path = args.save if args.save else f"{args.paths[0]}.labels.npz"
     if args.paths[0].endswith((".h5", ".hdf5")):
         vis = ClassificationVis.from_masknmf(
-            args.paths, label_names=label_names, save_path=save_path
+            args.paths, label_names=label_names, save_path=args.save
         )
     else:
         if len(args.paths) != 1:
             parser.error("expected exactly one .npy file")
+        save_path = args.save if args.save else f"{args.paths[0]}.labels.npz"
         vis = ClassificationVis(np.load(args.paths[0]), label_names=label_names, save_path=save_path)
     vis.show()
     fpl.loop.run()
