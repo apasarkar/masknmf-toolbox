@@ -19,7 +19,6 @@ from masknmf.visualization.plots import (
 from masknmf.visualization.motion_vis import MotionCorrectionVis
 from masknmf.visualization.demixing_vis import SingleSessionDemixingVis, visualize_superpixels_peaks
 from masknmf.visualization.multisession_vis import MultiSessionDemixingVis
-from masknmf.visualization.curation_vis import CurationVis
 from masknmf.visualization.classification_vis import ClassificationVis
 
 __all__ = [
@@ -31,6 +30,5 @@ __all__ = [
     "MotionCorrectionVis",
     "SingleSessionDemixingVis",
     "MultiSessionDemixingVis",
-    "CurationVis",
     "ClassificationVis"
 ]
