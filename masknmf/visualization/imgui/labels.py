@@ -17,6 +17,10 @@ LABEL_KEYS = (
 
 UNLABELED = -1
 
+# returned by draw_label_buttons for its "unlabel all" button; not a label
+# index, so callers must branch on it before assigning
+UNLABEL_ALL = -2
+
 
 class LabelSet:
     """Class names plus a per-item label vector; -1 is unlabeled."""
@@ -61,6 +65,10 @@ class LabelSet:
 
     def assign(self, items, index: int):
         self._labels[list(items)] = index
+
+    def clear(self):
+        """Unlabel every item."""
+        self._labels[:] = UNLABELED
 
     def add(self, name: str) -> bool:
         if not name or name in self._names:

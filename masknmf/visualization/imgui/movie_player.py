@@ -7,8 +7,23 @@ from imgui_bundle import imgui
 class MoviePlayer:
     """
     Imgui transport bar (play/pause, frame slider, fps) over a lazy (T, H, W)
-    array such as ACArray. draw() renders the controls and returns True when
-    the displayed frame changed; frame() fetches the current frame lazily.
+    array such as ACArray or PMDArray. Any object with .shape and [t] /
+    [t, rows, cols] indexing works, and only the frame on screen is read.
+
+    Unlike CheckboxWindow this is not an ImguiWindow: it owns no window and no
+    graphic, so draw() goes inline in a panel the host already has, whether
+    that is an EdgeWindow.update(), the callback handed to
+    figure.add_imgui_window(), or a bare imgui.begin()/end() block. It never
+    touches the figure itself. draw() returns True on the frames where t
+    moved; on those, pull frame() and assign it to your ImageGraphic.data.
+    Set vmin/vmax once when the movie changes rather than per frame, or the
+    contrast chases each frame's range and playback flickers.
+
+    set_movie() swaps the source and clamps the playhead into the new range;
+    jump_to() seeks, e.g. to an ROI's peak frame. Pass region=(top, left, h, w)
+    to frame() to read only a crop, zero-padded where it runs past the FOV.
+    Playback advances off the wall clock inside draw(), so it only runs while
+    the figure is rendering and fps is independent of the render rate.
     """
 
     def __init__(self, movie=None, fps: float = 30.0):

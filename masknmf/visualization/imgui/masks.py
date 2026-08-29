@@ -6,7 +6,15 @@ import numpy as np
 # a stroke enclosing fewer unclaimed pixels than this is a misclick
 MIN_ROI_PIXELS = 9
 
-_RIM = np.ones((5, 5), np.uint8)
+# half-width in px of a mask outline. 1 draws a one-pixel line, which is what
+# a dense field of small ROIs needs; raise it for a heavier boundary.
+OUTLINE_WIDTH = 1
+
+
+def rim_kernel(width: int = OUTLINE_WIDTH) -> np.ndarray:
+    """Square structuring element for an outline ``width`` px thick."""
+    n = max(int(width), 1) * 2 + 1
+    return np.ones((n, n), np.uint8)
 
 
 class LabelImage:
@@ -80,7 +88,8 @@ class LabelImage:
             out[i][self.labels == i + 1] = 1.0
         return out
 
-    def edges(self) -> np.ndarray:
+    def edges(self, width: int = OUTLINE_WIDTH) -> np.ndarray:
         """Boundary pixels; the label-image gradient keeps seams between touching ROIs."""
         painted = self.labels > 0
-        return painted & (cv2.morphologyEx(self.labels, cv2.MORPH_GRADIENT, _RIM) > 0)
+        kernel = rim_kernel(width)
+        return painted & (cv2.morphologyEx(self.labels, cv2.MORPH_GRADIENT, kernel) > 0)

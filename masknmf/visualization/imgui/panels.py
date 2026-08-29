@@ -3,6 +3,8 @@ from typing import Optional, Sequence
 import numpy as np
 from imgui_bundle import imgui
 
+from masknmf.visualization.imgui.labels import UNLABEL_ALL, UNLABELED
+
 DONE_COLOR = imgui.ImVec4(0.35, 0.9, 0.35, 1.0)
 TODO_COLOR = imgui.ImVec4(1.0, 0.75, 0.25, 1.0)
 HINT_COLOR = imgui.ImVec4(1.0, 0.85, 0.4, 1.0)
@@ -59,7 +61,12 @@ def draw_keybinds_popup(bindings: Sequence[tuple], is_open: bool, title: str = "
 
 
 def draw_label_buttons(label_set, id_suffix: str = "") -> Optional[int]:
-    """One coloured button per class plus unlabel. Returns a clicked label index, -1, or None."""
+    """
+    One coloured button per class, plus unlabel and unlabel all.
+
+    Returns the clicked label index, ``UNLABELED`` (-1) to clear the current
+    item, ``UNLABEL_ALL`` (-2) to clear every item, or None.
+    """
     picked = None
     for i, name in enumerate(label_set.names):
         imgui.same_line(0, 10)
@@ -73,9 +80,17 @@ def draw_label_buttons(label_set, id_suffix: str = "") -> Optional[int]:
     if label_set.names:
         imgui.same_line(0, 10)
         if imgui.button(f"unlabel##{id_suffix}"):
-            picked = -1
+            picked = UNLABELED
         imgui.same_line(0, 4)
         imgui.text_disabled("(0)")
+        imgui.same_line(0, 10)
+        imgui.push_style_color(imgui.Col_.button, imgui.ImVec4(0.75, 0.15, 0.15, 0.8))
+        imgui.push_style_color(
+            imgui.Col_.button_hovered, imgui.ImVec4(0.90, 0.20, 0.20, 1.0)
+        )
+        if imgui.button(f"unlabel all##{id_suffix}"):
+            picked = UNLABEL_ALL
+        imgui.pop_style_color(2)
     return picked
 
 

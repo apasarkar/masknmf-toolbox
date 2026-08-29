@@ -4,10 +4,9 @@ import cv2
 import numpy as np
 
 from masknmf.visualization.imgui.labels import LABEL_COLORS
+from masknmf.visualization.imgui.masks import OUTLINE_WIDTH, rim_kernel
 
 SELECTED_ALPHA = 0.9
-
-_RIM = np.ones((5, 5), np.uint8)
 
 
 def footprint_rgba(footprint: np.ndarray, color, peak: Optional[float] = None) -> np.ndarray:
@@ -26,6 +25,7 @@ def label_image_rgba(
     show_masks: bool = True,
     show_outlines: bool = True,
     edges: Optional[np.ndarray] = None,
+    outline_width: int = OUTLINE_WIDTH,
 ) -> np.ndarray:
     """
     uint16 label image as uint8 RGBA.
@@ -34,6 +34,7 @@ def label_image_rgba(
     boundaries and the fill only tints. The selected ROI gets a white rim.
     """
     ny, nx = labels.shape
+    kernel = rim_kernel(outline_width)
     rgba = np.zeros((ny, nx, 4), np.uint8)
     lut = (np.asarray(colors, dtype=np.float32) * 255).astype(np.uint8)
     painted = labels > 0
@@ -45,12 +46,12 @@ def label_image_rgba(
         rgba[chosen, 3] = int(255 * SELECTED_ALPHA)
     if show_outlines:
         if edges is None:
-            edges = painted & (cv2.morphologyEx(labels, cv2.MORPH_GRADIENT, _RIM) > 0)
+            edges = painted & (cv2.morphologyEx(labels, cv2.MORPH_GRADIENT, kernel) > 0)
         rgba[edges, :3] = lut[(labels[edges] - 1) % len(lut)]
         rgba[edges, 3] = 255
     if chosen.any():
         solid = chosen.astype(np.uint8)
-        rgba[(solid - cv2.erode(solid, _RIM)).astype(bool)] = 255
+        rgba[(solid - cv2.erode(solid, kernel)).astype(bool)] = 255
     return rgba
 
 
