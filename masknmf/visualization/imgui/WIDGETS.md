@@ -1,112 +1,49 @@
 # Shared imgui/fastplotlib widgets
 
-Target: `masknmf.visualization.imgui`. Consumers: masknmf `ClassificationVis`, mbo_utilities `ManualRoiWidget` (`mbo <path> --widget manualroi`). Dependency direction is `mbo_utilities -> masknmf`.
+Everything here is importable from `masknmf.visualization.imgui`. Consumers: masknmf `ClassificationVis`, mbo_utilities `ManualRoiWidget` (`mbo <path> --widget manualroi`). Dependency direction is `mbo_utilities -> masknmf`.
 
-Status: `have` = pre-existing · `done` = extracted and in use by both consumers · `one host` = extracted but only one consumer wires it today.
+`draw_*` helpers are called inside an imgui frame and return what the user did. Classes hold state; construct once, call their draw/refresh methods per frame.
 
-| Widget | Module | Status | Inputs | Outputs | fastplotlib / array surface | Intended use |
-|---|---|---|---|---|---|---|
-| `CheckboxWindow` | `widgets` | have | `label: str`, `value: bool` | `.value` | `fpl.ui.ImguiWindow`; `figure.add_imgui_window(win, location=, size=)` | one-off toggle panel |
-| `component_at_pixel` | `picking` | have | sparse `a` (px, comp), `centers` (comp, 2), `fov_shape`, `pick_index` (col, row), `mask`, `radius` | comp index \| `None` | `graphic.pick_info["index"]`; torch sparse `.indices()/.values()` | click -> ROI id, nearest center wins |
-| `contours_to_bbox` | `picking` | have | `fov_shape`, `contour` (N, 2), `extra_space` | `(lower, upper)` xyz | numpy only | ROI -> zoom box |
-| `zoom_to_bbox` | `picking` | have | `subplot`, `graphic`, `lower`, `upper` | none (mutates) | `graphic.map_model_to_world`; `subplot.x_range/.y_range` | frame one ROI |
-| `resolve_time_reference` | `layout` | have | `num_frames`, `frame_timings`, `ref_range`, `axis` | `(ref_range, frame_timings)` | NDWidget `ref_range` dict | uniform time axis across viewers |
-| `is_notebook_canvas` | `layout` | have | `figure` | `bool` | `figure.canvas.__class__.__name__` | `show()` dispatch (HBox vs window) |
-| `MoviePlayer` | `movie_player` | done | lazy `(T, H, W)`, `fps` | `frame(region)` 2D; `draw() -> changed` | reads `ACArray`/`LazyArray`/any `[t]`-indexable; feeds `ImageGraphic.data` | transport bar over a lazy movie |
-| `LabelSet` | `labels` | done | `names: tuple[str]`, `class_labels` (n,) int64 | `add/remove/assign/clear/resize`, `-1` = unlabeled | none (pure data) | class registry, tab10 colors, `1`-`9`/`0` hotkeys |
-| `RoiOrder` | `table` | done | per-ROI columns dict, filter label, range column, sort col/dir | `order` (k,) int idx; `step`/`goto`/`next_unlabeled`/`step_group` | none | filter + stable sort model behind the table |
-| `draw_roi_table` / `draw_filter_row` | `table` | done | `RoiOrder`, `LabelSet`, column formatters, `current` | clicked row -> new current | `imgui.ListClipper`, `table_get_sort_specs` | scrollable sortable ROI list, scroll-to-current |
-| `label_image_rgba` / `footprint_rgba` / `OverlayPair` | `overlay` | done | bg 2D, label image `uint16` or mask `(H,W)`, per-label colors, `alpha`, `selected`, `outline_width` | `rgba (H, W, 4)` | `ImageGraphic.data/.vmin/.vmax/.alpha/.visible`, `alpha_mode="blend"`, `offset` | bg + mask blend, selected ROI rim |
-| `OUTLINE_WIDTH` / `rim_kernel` | `masks` | done | half-width in px (default `1`) | `(2w+1, 2w+1)` uint8 kernel | `cv2.morphologyEx(MORPH_GRADIENT)`, `cv2.erode` | one knob for mask boundary and selected-rim thickness |
-| `LabelImage` | `masks` | done | closed stroke `[(x, y)]`, `labels uint16` | updated `labels`, per-ROI px `counts`, `areas()`, `edges(width)`, `footprints()` | `cv2.fillPoly`, `cv2.morphologyEx(MORPH_GRADIENT)` | stroke -> non-overlapping mask, add/delete/renumber |
-| `StrokeDrawer` | `draw` | done | `subplot`, armed flag | closed stroke, click-pick `(row, col)` | `subplot.renderer.add_event_handler("pointer_down/move/up")`, `map_screen_to_world`, `LineGraphic.data/.visible`, `subplot.controller.controls["mouse1"]` pop/restore, `world_object.material.pick_write = False` | freehand outline; suppress pan while armed |
-| `crop_origin` / `context_crop` | `crop` | one host | `fov` 2D, `centroid` (y, x), `(h, w)` | crop `(h, w)`, origin `(top, left)` | none | zero-padded context crop, roicat-centred convention |
-| `draw_label_buttons` / `draw_label_editor` | `panels` | one host | `LabelSet` | clicked label index, `UNLABELED` (-1), `UNLABEL_ALL` (-2); add/remove | none | assign and manage classes |
-| `draw_progress` | `panels` | done | `class_labels`, `session_sizes` | draws; "next unlabeled" click | none | `labeled n/total`, per-session split |
-| `draw_keybinds_popup` | `panels` | done | `tuple[(key, action)]` | draws | `imgui.begin` + 2-col table | help overlay |
-| `LabelStore` | `store` | done | npz path and/or hdf5 file list, `session_sizes` | writes `class_labels`, `label_names`, `roi_masks`, `labels_complete` | none | autosave on every label change |
-| `AsyncLoad` | `loader` | done | callable, poll per frame | result \| error, status text | none | non-blocking build behind a live GUI (ROICaT; projection reduces) |
-| `SummaryImageViewer` | `summary` | done | `{name: 2D}`, `{name: (T,H,W)}`, `figure`; hooks `roi_provider`, `on_export`, `extra_toolbar` | popup; `set_highlight((y0,x0,h,w))` | `figure.imgui_renderer.backend.register_texture/unregister_texture`, `wgpu` texture + `queue.write_texture`, `imgui.draw_list.add_image` | full-FOV browse: pan/zoom/cmap/contrast/histogram/pixel values/ROI contours/export |
-
-## Outline thickness
-
-`OUTLINE_WIDTH` in `masks.py` is the half-width, in pixels, of both the mask boundary and the selected-ROI rim; `rim_kernel(w)` turns it into the `(2w+1, 2w+1)` structuring element that `MORPH_GRADIENT` and `erode` take. It is `1` — a one-pixel line each side of a boundary, which is what a dense field of small ROIs needs.
-
-Three places take it, widest to narrowest scope:
-
-| Change | Effect |
-|---|---|
-| `masks.OUTLINE_WIDTH` | the default everywhere, both GUIs |
-| `label_image_rgba(..., outline_width=w)` / `LabelImage.edges(w)` | one call |
-| `ManualRoiWidget.outline_width` | one mbo_utilities widget; passed to both of the above on every `refresh_overlay()` |
-
-It was `2` (a hard-coded 5x5 `_RIM`), which drew a 4px band across a boundary between touching ROIs.
-
-## Consumer wiring
-
-| | `ClassificationVis` (masknmf) | `--widget manualroi` (mbo_utilities) |
+| Widget | Use case | How to use |
 |---|---|---|
-| Figure | owns `fpl.Figure(size=(1200,900))` | `iw.figure` (`MboNDViewer`), shared with `PreviewDataWidget` |
-| Controls | `add_imgui_window(location="top", size=150)` | `add_imgui_window(location="top", size=115)` |
-| Table | `add_imgui_window(location="right", size=360)` | `add_imgui_window(location="left", size=300)` |
-| Why not right | — | `PreviewDataWidget` owns `right`, the NDWidget sliders own `bottom` |
-| ROI source | `(n, Y, X)` footprint stack (ROICaT) | `uint16` label image drawn by hand |
-| Adds ROIs | no (fixed set) | yes, `StrokeDrawer` + `LabelImage` |
-| Table columns | `id, label, area, peak, snr, skew` | `id, label, area` |
-| Background graphic | its own; FOV context crop, mask MIP, or demixed movie | the viewer's own `ImageGraphic` |
-| Background sources | per-session FOV images + demixed movie | live movie + `mean` / `max` / `std` over the plane on screen |
-| Full FOV images | per-session FOV images, demixed movie | current frame + the three projections, and the `(T, Y, X)` plane as a movie |
-| Full FOV highlight | the ROI's crop box | the selected ROI's bounding box |
-| Full FOV hooks | none | `roi_provider` (ROI contours), `on_export` (tiff beside the data) |
-| Persistence | hdf5 `DemixingResults/*` + npz | `manual_masks.npy` + `LabelStore` npz |
+| `LabelSet` | Class names plus a per-item label vector, `-1` unlabeled. The label model behind every panel here. | `s = LabelSet(n, ("cell", "junk"))`, `s.assign([i], 0)`, `s.add/remove/clear/resize`, `s.color(i)`, `s.count(i)`, `s.name_of(i)`; `i = s.hotkey_pressed()` maps `1`-`9` to an index and `0` to `UNLABELED`. |
+| `RoiOrder` | Filter + stable sort over per-ROI columns; owns the cursor into the visible order. | `o = RoiOrder({"area": areas}, s.labels, n)`, `o.set_range_column("area")`, then `o.rebuild()` after any change. Move with `o.step(±1)`, `o.goto(i)`, `o.next_unlabeled()`, `o.step_group(±1)`; read `o.current` / `o.order` / `o.pos`. Column order must match `draw_roi_table`'s `column_names[2:]`. |
+| `draw_roi_table` | Scrollable sortable ROI list, clipped to the visible rows, scrolls to the current item. | `scroll = draw_roi_table(o, s, ("id", "label", "area"), {"area": fmt}, scroll, table_id="rois", on_select=cb)` — pass the returned flag back next frame. `column_names[0]` is the id, `"label"` draws in its class colour, the rest come from `formatters`. |
+| `draw_filter_row` | The class filter combo + range slider + "n/n in view" that sits above the table. | `draw_filter_row(o, s, "_roi")` — rebuilds `o` itself, returns True if the view changed. |
+| `draw_label_buttons` | One coloured button per class, plus unlabel and unlabel all. | `picked = draw_label_buttons(s, "_roi")`; branch on `UNLABEL_ALL` (-2) before treating it as an index, `UNLABELED` (-1) clears the current item, `None` means no click. |
+| `draw_label_editor` | Add and remove classes (text field, `add`, `del` popup). | `text, changed = draw_label_editor(s, text, "_roi")` — keep `text` in your own state; `changed` means rebuild the order and redraw the overlay. |
+| `draw_progress` | `labeled n/total` with an optional per-session split and a "next unlabeled" button. | `if draw_progress(s.labels, session_sizes): o.next_unlabeled()`. |
+| `draw_keybinds_popup` | Key reference overlay. | `open = draw_keybinds_popup((("a", "arm drawing"), ...), open, "ROI keys")` — call unconditionally, it no-ops while closed. |
+| `LabelImage` | ROIs as one `uint16` label image, so they can never overlap: pixels already claimed are dropped from a new stroke. | `m = LabelImage((ny, nx))`, `i = m.add(stroke)` (-1 and `m.last_error` on reject), `m.delete(i)` renumbers, `m.at(row, col)` picks, `m.areas()` / `m.counts` feed the table, `m.edges(w)` feeds the overlay, `m.footprints()` gives `(n, ny, nx)`. |
+| `label_image_rgba` | A label image as a blended RGBA overlay: tinted fills, coloured boundaries, a white rim on the selected ROI. | `graphic.data = label_image_rgba(m.labels, colors=per_roi_rgb, alpha=0.45, selected=i, edges=m.edges(w), outline_width=w)`. Put it on an `add_image(..., alpha_mode="blend", offset=(0, 0, 1))`. |
+| `footprint_rgba` | One weighted footprint as a flat colour whose alpha is the normalised weight. | `graphic.data = footprint_rgba(footprints[i], color, peak=peaks[i])`. |
+| `OUTLINE_WIDTH` / `rim_kernel` | One knob for how thick mask boundaries and the selected rim are. Default `1` = a one-pixel line each side. | Global: set `masks.OUTLINE_WIDTH`. Per call: `label_image_rgba(..., outline_width=w)` and `LabelImage.edges(w)`. `rim_kernel(w)` is the `(2w+1, 2w+1)` element behind both. |
+| `OverlayPair` | A background image plus an RGBA overlay on one subplot, with visibility and alpha for each. | `p = OverlayPair(subplot, (ny, nx))`, `p.set_background(img)`, `p.set_overlay(rgba)`, set `p.show_bg/.show_fg/.bg_alpha/.fg_alpha` then `p.apply()`; `p.exclude_from_picking()` keeps tooltips reading the image beneath, `p.remove()` tears down. |
+| `StrokeDrawer` | Freehand outline on a subplot; lifts the left-drag pan binding while armed so the stroke isn't a pan. | `d = StrokeDrawer(subplot, on_stroke, on_click)`, `d.arm(True)` to start. `on_stroke(points)` fires on release with a closed `[(x, y)]` stroke; `on_click(row, col)` fires on a click while disarmed. `d.line` is the live stroke graphic. |
+| `MoviePlayer` | Transport bar (play/pause, frame slider, fps) over any lazy `(T, H, W)` array. | `p = MoviePlayer(movie)`, then per frame `if p.draw(): img = p.frame()`. `p.frame((top, left, h, w))` crops lazily and zero-pads off the edge; `p.set_movie` / `p.jump_to` drive it. |
+| `SummaryImageViewer` | Full-FOV popup over a set of images and lazy movies: pan/zoom, cmap, contrast modes, histogram, pixel values, ROI contours, export. | `v = SummaryImageViewer(figure, roi_provider=contours_fn, on_export=save_fn)`, then `v.set_movies({...})`, `v.set_images({name: img2d}, selected=name)`, `v.set_highlight((y0, x0, h, w))`, `v.open()`. Call `v.draw()` every imgui frame and `v.cleanup()` on teardown to free its GPU textures. |
+| `LabelStore` | Autosave labels to an npz and/or into per-session hdf5, so they travel with the data. | `store = LabelStore(npz_path=..., hdf5_files=[...], session_sizes=(...))`, `store.save(s.names, s.labels, masks)` on every label change; `store.load(n)` restores, `store.error` reports a failed write. hdf5 writes land in `DemixingResults/{class_labels,label_names,labels_complete,roi_masks}`. |
+| `AsyncLoad` | Run something slow on a thread while the GUI stays live — a ROICaT build, a projection reduce. | `load.start(fn, "computing...")`, then per frame `result = load.poll()` (non-None once). `load.busy` / `load.status` drive the loading text, `load.error` the failure. |
+| `crop_origin` / `context_crop` | A fixed-size crop centred on a centroid, roicat's convention, zero-padded off the edge. | `top, left = crop_origin(centroid, (h, w))`; `crop = context_crop(fov, centroid, (h, w))`. |
+| `component_at_pixel` | Turn a fastplotlib pick into a component index; nearest centre wins ties. | `i = component_at_pixel(a, centers, fov_shape, graphic.pick_info["index"], mask=..., radius=...)` — `a` is a coalesced sparse `(pixels, components)` torch tensor, `pick_index` is `(col, row)`. |
+| `contours_to_bbox` / `zoom_to_bbox` | Frame one ROI in a subplot. | `lower, upper = contours_to_bbox(fov_shape, contour, extra_space=10)`, then `zoom_to_bbox(subplot, graphic, lower, upper)`. |
+| `resolve_time_reference` | One time axis across the NDWidget viewers, from frame timings or plain frame indices. | `ref_range, frame_timings = resolve_time_reference(n, frame_timings, ref_range, axis="time")`. A `ref_range` without `frame_timings` raises. |
+| `is_notebook_canvas` | Branch `show()` between an ipywidgets canvas and a native window. | `if is_notebook_canvas(figure): return HBox([...])`. |
+| `CheckboxWindow` | A one-off toggle in its own imgui panel. | `w = CheckboxWindow("show contours")`, `figure.add_imgui_window(w, location="top", size=40)`, read `w.value`. |
 
-## Top-panel parity
+## Hosting the panels
 
-Both hosts draw one control row set in the same order. `-` means the control does not apply to that host.
+Both consumers put every ROI control in one edge window and the table in another:
 
-| Control | `ClassificationVis` | `manualroi` |
-|---|---|---|
-| Add ROI / Undo / Clear / Save | - (fixed ROI set) | yes |
-| prev / next / position slider | yes | yes |
-| Open full FOV | yes | yes |
-| save note tooltip | hdf5 + npz snippet | npy + npz snippet |
-| keybinds (right-aligned) | yes | yes |
-| loading / status text | `_loading` | `AsyncLoad.status`, else the ROI status |
-| bg checkbox + source combo + `(b)` | yes | yes |
-| bg opacity | yes | yes |
-| mask checkbox + `(m)` + opacity | yes | yes |
-| outlines checkbox + `(o)` | - (footprints have no label image) | yes |
-| inline `MoviePlayer` transport | when bg is the demixed movie | - (the NDWidget's own `t` slider is the transport) |
-| `draw_progress` + next unlabeled `(u)` | yes | yes |
-| new label / add / del | inline copy | `draw_label_editor` |
-| per-class buttons, unlabel `(0)`, unlabel all | inline copy | `draw_label_buttons` |
+```python
+figure.add_imgui_window(draw_controls, location="top", size=150, title="Classification")
+figure.add_imgui_window(draw_table, location="right", size=360, title="ROIs")
+```
 
-Keybinds are the same set in both, plus `a` / `esc` / `ctrl+z` for drawing in `manualroi`.
+`ClassificationVis` owns its figure and takes `top` + `right`. `ManualRoiWidget` shares the viewer's figure, where `PreviewDataWidget` already owns `right` and the NDWidget sliders own `bottom`, so it takes `top` + `left` (115 / 300) and reclaims them with `figure.remove_imgui_window(location)` when toggled off.
 
-## Remaining extraction candidates
+## Not yet shared
 
-- **`ClassificationVis` -> `LabelSet` / `draw_label_editor` / `draw_label_buttons`.** The biggest duplication left: `ClassificationVis` keeps `_label_names` + `_class_labels` as bare fields and inlines its own copies of all three panel widgets (~60 lines that `panels.py` already covers). Adopting `LabelSet` would delete them and put both GUIs on one label implementation. `UNLABEL_ALL` was added to `draw_label_buttons` so the shared version is already feature-complete against the inline one.
-- **`ClassificationVis` -> `RoiOrder`.** `_rebuild_order` / `_order` / `_pos` / `step` / `goto` / `goto_next_unlabeled` / `_step_group` / `_draw_table` are a hand-rolled copy of `RoiOrder` + `draw_roi_table` + `draw_filter_row`, differing only in the column set.
-- **Background source combo.** Both hosts now have one, but over genuinely different source sets (per-session FOV images and a demixed movie vs. a live viewer graphic and projections of it). A `BackgroundSources` model holding `{name: image}` + an optional movie, with a `draw()` that returns the selection, would cover both.
-- **Projection reduce.** `mbo_utilities.gui.manual_roi.compute_projections` (evenly spaced sample -> mean/max/std) is generic and belongs beside `AsyncLoad`.
-- **`PlaneMovie`.** `mbo_utilities.gui.manual_roi.PlaneMovie` pins the non-`(T, Y, X)` dims of an n-d array to give `MoviePlayer` and the reducer a lazy 3D view. Only mbo needs it today because only mbo hosts an n-d viewer, but it is pure index bookkeeping with no mbo dependencies.
-- **`roi.py`** — `PMDWidget`'s rectangle-ROI machinery in `interactive_guis.py` (`add_rectangle` / `resize_rect` / `end_resize`, the per-graphic selector `OrderedDict`, `rect_selector_kwargs`): a self-contained "draw one rect, mirror it across synced subplots, fire a callback on release" widget.
-- **`selection.py`** — the `ImageHighlightSelector` wiring repeated in curation / multisession / demixing (`lut="tab10"`, `lut_wrap="repeat"`, contour pixel options, white options color): a `make_contour_selector(contours, **overrides)` factory, plus the `SelectionVector` + global/local index-map pattern from multisession.
-- **`layout.grid_extents`** — curation and demixing build fractional extents dicts by hand; a rows/cols -> extents helper would remove both.
-- **`layout` camera linking** — multisession shares one camera across the video and MIP figures; motion_vis links trace subplots on x only (`add_camera(..., include_state={"x", "width"})`). Two patterns: `share_camera(figures)` and `link_x(subplots)`.
-- **traces** — normalize/offset trace stacks fed to `fpl.utils.heatmap_to_positions` (`CurationVis._refresh_traces`, the trace panels in `SingleSessionDemixingVis._click_update`). Data-side siblings (`extract_per_trace_roi_averages` in demixing_vis, `get_roi_avg` in plots.py) belong in `masknmf.demixing` rather than here.
+`ClassificationVis` still keeps `_label_names` / `_class_labels` as bare fields and hand-rolls its own copies of `LabelSet`, `RoiOrder`, `draw_roi_table`, `draw_filter_row`, `draw_label_editor` and `draw_label_buttons`. Moving it onto the shared versions is the one change that would put both GUIs on one implementation. `mbo_utilities/gui/widgets/summary_image.py` likewise duplicates `SummaryImageViewer` for the Preview tab.
 
-## `SummaryImageViewer` vs mbo's own summary widget
-
-mbo_utilities still has a second, unrelated summary widget at `gui/widgets/summary_image.py` (809 L) in the Preview tab, which duplicates most of this one. `ManualRoiWidget` uses the shared `SummaryImageViewer`, so the merge below is now only about retiring that Preview-tab widget.
-
-| Aspect | mbo `gui/widgets/summary_image.py` | `imgui/summary.py` | Unified |
-|---|---|---|---|
-| Base | `Widget` ABC (`is_supported`, `draw`, `cleanup`) | plain class, takes `figure` | plain core + optional `Widget` adapter |
-| Image source | auto-scan array metadata (ops.npy) | explicit `{name: 2D}` dict | dict core; metadata scan = optional provider |
-| Movies | none | `MoviePlayer`, per-movie fixed range | core |
-| Highlight | none | `set_highlight` rect | core |
-| ROI overlay | suite2p `stat.npy` contours | `roi_provider` hook | core hook; suite2p contours become one provider |
-| Export | PNG via `portable_file_dialogs` | `on_export` hook | core hook |
-| cmap | syncs with fpl graphic | fixed 5-cmap list | core list + optional sync hook |
-| Shared | `_GpuImage`, `_to_rgba`, `_data_range`, `_auto_range`, `_format_value`, pan/zoom, contrast modes, histogram, pixel-value overlay | identical | core |
+Candidates from the older viewers (`interactive_guis`, `multisession_vis`, `demixing_vis`, `motion_vis`): `PMDWidget`'s rectangle-ROI machinery; the repeated `ImageHighlightSelector` contour-selector wiring; a rows/cols -> fractional extents helper; `share_camera(figures)` / `link_x(subplots)`; and the normalize/offset trace stacks fed to `heatmap_to_positions`. From mbo: `compute_projections` (sampled mean/max/std reduce) and `PlaneMovie` (pins the non-`(T, Y, X)` dims of an n-d array to give `MoviePlayer` a lazy 3D view) are both generic.
