@@ -1,10 +1,14 @@
 from typing import Optional, Sequence
 
-import cv2
 import numpy as np
 
 from masknmf.visualization.imgui.labels import LABEL_COLORS
-from masknmf.visualization.imgui.masks import OUTLINE_WIDTH, rim_kernel
+from masknmf.visualization.imgui.masks import (
+    OUTLINE_PLACEMENT,
+    OUTLINE_WIDTH,
+    outline_labels,
+    selected_rim,
+)
 
 SELECTED_ALPHA = 0.9
 
@@ -26,15 +30,18 @@ def label_image_rgba(
     show_outlines: bool = True,
     edges: Optional[np.ndarray] = None,
     outline_width: int = OUTLINE_WIDTH,
+    outline_alpha: float = 1.0,
+    outline_placement: str = OUTLINE_PLACEMENT,
 ) -> np.ndarray:
     """
     uint16 label image as uint8 RGBA.
 
     A blended fill washes out over a bright cell, so outlines carry the mask
-    boundaries and the fill only tints. The selected ROI gets a white rim.
+    boundaries and the fill only tints. ``alpha`` is the fill, ``outline_alpha``
+    the boundary. The selected ROI gets a white rim, which ``show_outlines``
+    clears along with every other line.
     """
     ny, nx = labels.shape
-    kernel = rim_kernel(outline_width)
     rgba = np.zeros((ny, nx, 4), np.uint8)
     lut = (np.asarray(colors, dtype=np.float32) * 255).astype(np.uint8)
     painted = labels > 0
@@ -46,12 +53,15 @@ def label_image_rgba(
         rgba[chosen, 3] = int(255 * SELECTED_ALPHA)
     if show_outlines:
         if edges is None:
-            edges = painted & (cv2.morphologyEx(labels, cv2.MORPH_GRADIENT, kernel) > 0)
-        rgba[edges, :3] = lut[(labels[edges] - 1) % len(lut)]
-        rgba[edges, 3] = 255
-    if chosen.any():
-        solid = chosen.astype(np.uint8)
-        rgba[(solid - cv2.erode(solid, kernel)).astype(bool)] = 255
+            edges = outline_labels(labels, outline_width, outline_placement)
+        edges = np.asarray(edges)
+        if edges.dtype == bool:
+            edges = np.where(edges, labels, 0)
+        drawn = edges > 0
+        rgba[drawn, :3] = lut[(edges[drawn] - 1) % len(lut)]
+        rgba[drawn, 3] = int(255 * outline_alpha)
+        if chosen.any():
+            rgba[selected_rim(chosen, outline_width, outline_placement)] = 255
     return rgba
 
 

@@ -16,6 +16,7 @@ from masknmf.visualization.imgui.labels import (
 from masknmf.visualization.imgui.table import (
     FILTER_ALL,
     RoiOrder,
+    RowAction,
     draw_filter_row,
     draw_roi_table,
 )
@@ -27,9 +28,13 @@ from masknmf.visualization.imgui.overlay import (
 )
 from masknmf.visualization.imgui.masks import (
     MIN_ROI_PIXELS,
+    OUTLINE_PLACEMENT,
+    OUTLINE_PLACEMENTS,
     OUTLINE_WIDTH,
     LabelImage,
+    outline_labels,
     rim_kernel,
+    selected_rim,
 )
 from masknmf.visualization.imgui.draw import StrokeDrawer
 from masknmf.visualization.imgui.crop import context_crop, crop_origin
@@ -54,9 +59,12 @@ __all__ = [
     "LabelStore",
     "MIN_ROI_PIXELS",
     "MoviePlayer",
+    "OUTLINE_PLACEMENT",
+    "OUTLINE_PLACEMENTS",
     "OUTLINE_WIDTH",
     "OverlayPair",
     "RoiOrder",
+    "RowAction",
     "SELECTED_ALPHA",
     "UNLABEL_ALL",
     "StrokeDrawer",
@@ -75,7 +83,9 @@ __all__ = [
     "footprint_rgba",
     "is_notebook_canvas",
     "label_image_rgba",
+    "outline_labels",
     "resolve_time_reference",
     "rim_kernel",
+    "selected_rim",
     "zoom_to_bbox",
 ]

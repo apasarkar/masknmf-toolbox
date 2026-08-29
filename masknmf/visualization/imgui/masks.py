@@ -10,11 +10,73 @@ MIN_ROI_PIXELS = 9
 # a dense field of small ROIs needs; raise it for a heavier boundary.
 OUTLINE_WIDTH = 1
 
+# which side of the boundary an outline sits on; "outer" spends the line on
+# background, so a few-pixel ROI keeps every pixel it has
+OUTLINE_PLACEMENTS = ("outer", "center", "inner")
+OUTLINE_PLACEMENT = "outer"
+
 
 def rim_kernel(width: int = OUTLINE_WIDTH) -> np.ndarray:
     """Square structuring element for an outline ``width`` px thick."""
     n = max(int(width), 1) * 2 + 1
     return np.ones((n, n), np.uint8)
+
+
+def outline_labels(
+    labels: np.ndarray,
+    width: int = OUTLINE_WIDTH,
+    placement: str = OUTLINE_PLACEMENT,
+) -> np.ndarray:
+    """
+    Outline of a uint16 label image, as a uint16 label image.
+
+    Parameters
+    ----------
+    labels : np.ndarray
+        Label image, 0 background. Shape (ny, nx).
+    width : int
+        Outline half-width in px.
+    placement : str
+        ``"outer"`` rings the background outside each mask, ``"inner"`` takes
+        the mask's own edge pixels, ``"center"`` straddles the boundary.
+
+    Returns
+    -------
+    np.ndarray
+        Outline labels, 0 where there is no line. Shape (ny, nx).
+    """
+    labels = np.asarray(labels, np.uint16)
+    kernel = rim_kernel(width)
+    painted = labels > 0
+    eroded = cv2.erode(labels, kernel)
+    inner = painted & (labels != eroded)
+    out = np.zeros_like(labels)
+    if placement != "outer":
+        out[inner] = labels[inner]
+    if placement != "inner":
+        grown = cv2.dilate(labels, kernel)
+        ring = (grown > 0) & ~painted
+        out[ring] = grown[ring]
+    if placement == "outer":
+        # touching masks share no background, so an outer line needs an inner seam
+        seam = inner & (eroded > 0)
+        out[seam] = labels[seam]
+    return out
+
+
+def selected_rim(
+    chosen: np.ndarray,
+    width: int = OUTLINE_WIDTH,
+    placement: str = OUTLINE_PLACEMENT,
+) -> np.ndarray:
+    """Bool rim around one mask, on the side given by ``placement``."""
+    kernel = rim_kernel(width)
+    solid = np.asarray(chosen, np.uint8)
+    if placement == "outer":
+        return cv2.dilate(solid, kernel).astype(bool) & ~chosen
+    if placement == "inner":
+        return (solid - cv2.erode(solid, kernel)).astype(bool)
+    return (cv2.dilate(solid, kernel) - cv2.erode(solid, kernel)).astype(bool)
 
 
 class LabelImage:
@@ -88,8 +150,8 @@ class LabelImage:
             out[i][self.labels == i + 1] = 1.0
         return out
 
-    def edges(self, width: int = OUTLINE_WIDTH) -> np.ndarray:
-        """Boundary pixels; the label-image gradient keeps seams between touching ROIs."""
-        painted = self.labels > 0
-        kernel = rim_kernel(width)
-        return painted & (cv2.morphologyEx(self.labels, cv2.MORPH_GRADIENT, kernel) > 0)
+    def edges(
+        self, width: int = OUTLINE_WIDTH, placement: str = OUTLINE_PLACEMENT
+    ) -> np.ndarray:
+        """Outline as a uint16 label image; see :func:`outline_labels`."""
+        return outline_labels(self.labels, width, placement)

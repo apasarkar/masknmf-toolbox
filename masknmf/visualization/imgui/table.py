@@ -1,4 +1,4 @@
-from typing import Callable, Optional, Sequence
+from typing import Callable, NamedTuple, Optional, Sequence
 
 import numpy as np
 from imgui_bundle import imgui
@@ -6,6 +6,29 @@ from imgui_bundle import imgui
 from masknmf.visualization.imgui.labels import UNLABELED
 
 FILTER_ALL = -2
+
+
+class RowAction(NamedTuple):
+    """
+    One icon button in the table's trailing actions column.
+
+    Parameters
+    ----------
+    icon : str
+        Glyph drawn on the button; the name belongs in ``tooltip``.
+    tooltip : str
+        Hover text.
+    on_click : Callable[[int], None]
+        Called with the ROI index on press.
+    disabled : Callable[[int], Optional[str]], optional
+        Why the action cannot run for that ROI; greys the button and replaces
+        the tooltip. ``None`` means available.
+    """
+
+    icon: str
+    tooltip: str
+    on_click: Callable[[int], None]
+    disabled: Optional[Callable[[int], Optional[str]]] = None
 
 
 class RoiOrder:
@@ -44,8 +67,9 @@ class RoiOrder:
             mask &= self.labels == self.filter_label
         idx = np.flatnonzero(mask)
         if self.sort_column:
+            # keys has no entry for column 0, the id, which is the natural order
             keys = [self.labels, *self.columns.values()]
-            idx = idx[np.argsort(keys[self.sort_column][idx], kind="stable")]
+            idx = idx[np.argsort(keys[self.sort_column - 1][idx], kind="stable")]
         if not self.ascending:
             idx = idx[::-1]
         self.order = idx
@@ -96,11 +120,13 @@ def draw_roi_table(
     scroll_to_current: bool,
     table_id: str = "rois",
     on_select: Optional[Callable[[int], None]] = None,
+    actions: Sequence[RowAction] = (),
 ) -> bool:
     """
     Sortable, clipped ROI table. Returns the new scroll_to_current flag.
 
     column_names[0] is the id column; "label" is drawn in its class colour.
+    `actions` adds a trailing, unsortable column of icon buttons per row.
     """
     flags = (
         imgui.TableFlags_.sortable
@@ -109,12 +135,19 @@ def draw_roi_table(
         | imgui.TableFlags_.scroll_y
     )
     avail = imgui.get_content_region_avail()
-    if not imgui.begin_table(table_id, len(column_names), flags, imgui.ImVec2(0, avail.y)):
+    n_columns = len(column_names) + bool(actions)
+    if not imgui.begin_table(table_id, n_columns, flags, imgui.ImVec2(0, avail.y)):
         return scroll_to_current
     imgui.table_setup_scroll_freeze(0, 1)
     imgui.table_setup_column(column_names[0], imgui.TableColumnFlags_.default_sort)
     for name in column_names[1:]:
         imgui.table_setup_column(name)
+    if actions:
+        imgui.table_setup_column(
+            "##actions",
+            imgui.TableColumnFlags_.no_sort | imgui.TableColumnFlags_.width_fixed,
+            len(actions) * imgui.get_font_size() * 2.0,
+        )
     imgui.table_headers_row()
 
     specs = imgui.table_get_sort_specs()
@@ -158,8 +191,27 @@ def draw_roi_table(
                         imgui.text("-")
                 else:
                     imgui.text(formatters[name](item))
+            if actions:
+                imgui.table_next_column()
+                _draw_row_actions(actions, item, row)
     imgui.end_table()
     return scroll_to_current
+
+
+def _draw_row_actions(actions: Sequence[RowAction], item: int, row: int):
+    """Icon buttons for one row; `row` only keeps the imgui ids unique."""
+    for k, action in enumerate(actions):
+        if k:
+            imgui.same_line(0, 2)
+        reason = action.disabled(item) if action.disabled is not None else None
+        if reason is not None:
+            imgui.begin_disabled()
+        if imgui.small_button(f"{action.icon}##act{k}_{row}"):
+            action.on_click(item)
+        if reason is not None:
+            imgui.end_disabled()
+        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+            imgui.set_tooltip(reason or action.tooltip)
 
 
 def draw_filter_row(order: RoiOrder, label_set, id_suffix: str = "") -> bool:
