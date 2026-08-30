@@ -118,6 +118,10 @@ class RoicatClassifier:
                 "Training did not occur because at least one of the following required "
                 "attributes are missing: data_adapter, labels"
             )
+        if len(self.valid_classes) < 2:
+            raise ValueError(
+                f"training needs at least 2 classes, labels only contain {sorted(self.valid_classes)}"
+            )
         adapter = self.data_adapter
         adapter.set_class_labels(labels=self.labels)
 

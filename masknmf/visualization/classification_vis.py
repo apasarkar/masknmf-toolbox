@@ -19,7 +19,7 @@ _LABEL_KEYS = (
     imgui.Key._1, imgui.Key._2, imgui.Key._3, imgui.Key._4, imgui.Key._5,
     imgui.Key._6, imgui.Key._7, imgui.Key._8, imgui.Key._9,
 )
-_COLUMNS = ("id", "label", "area", "peak", "snr", "skew")
+_COLUMNS = ("id", "label", "pred", "area", "peak", "snr", "skew")
 
 
 class ClassificationVis:
@@ -254,6 +254,8 @@ class ClassificationVis:
         flat = roi_images.reshape(num_rois, -1)
         self._peak = flat.max(axis=1)
         self._area = np.count_nonzero(flat, axis=1).astype(np.int64)
+        self._pred = np.full(num_rois, -1, dtype=np.int64)  # classifier prediction per ROI
+        self._probs = np.full(num_rois, np.nan, dtype=np.float32)  # its confidence
 
         self._mip = roi_images.max(axis=0)
 
@@ -437,8 +439,8 @@ class ClassificationVis:
             self._pos = int(hits[0])
             self._show_current()
 
-    def label(self, roi_ids: Sequence[int], label_index: int):
-        """Assign a class label to the given ROIs; -1 clears"""
+    def label(self, roi_ids: Sequence[int], label_index: int | Sequence[int]):
+        """Assign a class label (or one per ROI) to the given ROIs; -1 clears"""
         self._class_labels[list(roi_ids)] = label_index
         self._autosave()
         if self._filter_label != -2:
@@ -465,8 +467,9 @@ class ClassificationVis:
         """Delete a class: its ROIs become unlabeled, higher labels shift down"""
         if not 0 <= index < len(self._label_names):
             return
-        self._class_labels[self._class_labels == index] = -1
-        self._class_labels[self._class_labels > index] -= 1
+        for arr in (self._class_labels, self._pred):
+            arr[arr == index] = -1
+            arr[arr > index] -= 1
         self._label_names = tuple(
             n for i, n in enumerate(self._label_names) if i != index
         )
@@ -559,7 +562,7 @@ class ClassificationVis:
             mask &= self._class_labels == self._filter_label
         idx = np.flatnonzero(mask)
         if self._sort_column:
-            keys = (self._class_labels, self._area, self._peak, self._snr, self._skew)
+            keys = (self._class_labels, self._probs, self._area, self._peak, self._snr, self._skew)
             idx = idx[np.argsort(keys[self._sort_column - 1][idx], kind="stable")]
         if not self._sort_ascending:
             idx = idx[::-1]
@@ -741,7 +744,7 @@ class ClassificationVis:
 
     @property
     def classifier_path(self) -> str:
-        """Where train() saves the classifier package"""
+        """Where train() saves the classifier package and classify() loads it from"""
         return self._classifier_path
 
     @classifier_path.setter
@@ -755,6 +758,13 @@ class ClassificationVis:
     def _default_classifier_path(self) -> str:
         base = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
         return os.path.join(base, "classifier")
+
+    def _adapter_missing(self) -> Optional[str]:
+        if self._roicat_input is not None:
+            return None
+        if self._loading is not None:
+            return "ROI images are still loading"
+        return "no ROICaT data (load demixing .hdf5 files or use from_classifier)"
 
     @property
     def _clf_busy(self) -> bool:
@@ -783,11 +793,11 @@ class ClassificationVis:
         """
         if self._clf_busy:
             return
-        if self.classifier is None:
-            self._error = "nothing to train on: ROI images are still loading"
-            return
         if not self.labels_complete:
             self._error = "label every ROI before training"
+            return
+        if self._adapter_missing():
+            self._error = f"cannot train: {self._adapter_missing()}"
             return
         if classifier_path:
             self._classifier_path = str(classifier_path)
@@ -800,9 +810,59 @@ class ClassificationVis:
         def work():
             clf.labels = names
             clf.train(num_workers=0)
-            return clf.save(path)
+            return "trained", clf.save(path)
 
         self._run_clf("training: ROInet embedding + logistic regression...", work)
+
+    def classify(self, classifier=None):
+        """
+        Predict a label for every ROI in a background thread using the classifier
+        trained here, a RoicatClassifier, or a .roicat_classifier path (default:
+        classifier_path). Predictions fill the pred column; ROIs that are still
+        unlabeled take the prediction, existing labels are kept.
+        """
+        if self._clf_busy:
+            return
+        if self._adapter_missing():
+            self._error = f"cannot classify: {self._adapter_missing()}"
+            return
+        path = None
+        if classifier is None:
+            if self._classifier is not None and self._classifier.classifier is not None:
+                classifier = self._classifier
+            else:
+                path = self._classifier_path
+        elif isinstance(classifier, (str, os.PathLike)):
+            path = str(classifier)
+        if path is not None and not os.path.isfile(path):
+            self._error = f"classifier file not found: {path or '(set classifier path)'}"
+            return
+        adapter = self._roicat_input
+
+        def work():
+            from masknmf.classification import RoicatClassifier
+
+            clf = RoicatClassifier.from_file(path) if path is not None else classifier
+            _, names, probs = clf.classify(adapter)
+            return "classified", names, probs
+
+        self._run_clf("classifying...", work)
+
+    def _apply_predictions(self, names_by_session, probs_by_session) -> int:
+        """Store predictions, label the unlabeled ROIs with them; returns how many were labeled"""
+        flat = [str(n) for s in names_by_session for n in s]
+        if len(flat) != len(self._class_labels):
+            raise ValueError(f"got {len(flat)} predictions for {len(self._class_labels)} ROIs")
+        for n in dict.fromkeys(flat):
+            if n not in self._label_names:
+                self._label_names = (*self._label_names, n)
+        index = {n: i for i, n in enumerate(self._label_names)}
+        self._pred = np.array([index[n] for n in flat], dtype=np.int64)
+        self._probs = np.concatenate([p.max(axis=1) for p in probs_by_session]).astype(np.float32)
+        fill = np.flatnonzero(self._class_labels < 0)
+        self.label(fill, self._pred[fill])
+        self._rebuild_order()
+        return len(fill)
 
     def _poll_classifier(self):
         if self._clf_status is None:
@@ -814,8 +874,19 @@ class ClassificationVis:
             result, self._clf_result = self._clf_result, None
             self._clf_status = None
             self._error = None
-            self._classifier_path = result
-            self._clf_done = f"saved classifier to {result}"
+            if result[0] == "trained":
+                self._classifier_path = result[1]
+                self._clf_done = f"saved classifier to {result[1]}"
+            else:
+                try:
+                    n = self._apply_predictions(result[1], result[2])
+                except ValueError as e:
+                    self._error = f"classify failed: {e}"
+                    return
+                self._clf_done = (
+                    f"predicted {len(self._pred)} ROIs, {n} unlabeled ones took the prediction "
+                    "(existing labels kept, see the pred column)"
+                )
 
     def _draw_classifier_row(self):
         imgui.set_next_item_width(320)
@@ -824,7 +895,7 @@ class ClassificationVis:
         )
         if imgui.is_item_hovered():
             imgui.set_tooltip(
-                "train saves the classifier here\n"
+                "train saves the classifier here, classify loads it from here\n"
                 "(default: <first session dir>/classifier.roicat_classifier)"
             )
         imgui.same_line(0, 6)
@@ -839,6 +910,26 @@ class ClassificationVis:
                 "train a ROICaT classifier on the labeled ROIs and save it"
                 if can_train or busy
                 else "label every ROI first (training needs complete labels)"
+            )
+        imgui.same_line(0, 6)
+        has_trained = self._classifier is not None and self._classifier.classifier is not None
+        can_classify = (
+            self._roicat_input is not None
+            and not busy
+            and (has_trained or bool(self._classifier_path))
+        )
+        imgui.begin_disabled(not can_classify)
+        if imgui.button("classify"):
+            self.classify()
+        imgui.end_disabled()
+        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+            imgui.set_tooltip(
+                "predict every ROI: unlabeled ROIs take the prediction, existing labels are kept\n"
+                + (
+                    "uses the classifier trained in this session"
+                    if has_trained
+                    else "loads the classifier at the path"
+                )
             )
         imgui.same_line(0, 16)
         if self._clf_status is not None:
@@ -1125,7 +1216,12 @@ class ClassificationVis:
         imgui.table_setup_scroll_freeze(0, 1)
         imgui.table_setup_column(_COLUMNS[0], imgui.TableColumnFlags_.default_sort)
         for name in _COLUMNS[1:]:
-            imgui.table_setup_column(name)
+            if name == "pred":
+                imgui.table_setup_column(
+                    name, imgui.TableColumnFlags_.width_fixed, 7.5 * imgui.get_font_size()
+                )
+            else:
+                imgui.table_setup_column(name)
         imgui.table_headers_row()
 
         specs = imgui.table_get_sort_specs()
@@ -1166,6 +1262,14 @@ class ClassificationVis:
                     )
                 else:
                     imgui.text("-")
+                imgui.table_next_column()
+                pred = int(self._pred[roi])
+                if pred >= 0:
+                    disagree = label >= 0 and pred != label
+                    imgui.text_colored(
+                        imgui.ImVec4(1.0, 0.4, 0.4, 1.0) if disagree else imgui.ImVec4(0.75, 0.75, 0.75, 1.0),
+                        f"{self._label_names[pred]} {self._probs[roi]:.2f}",
+                    )
                 imgui.table_next_column()
                 imgui.text(f"{self._area[roi]}")
                 imgui.table_next_column()
@@ -1246,7 +1350,7 @@ def main(argv=None):
     parser.add_argument(
         "--classifier",
         default=None,
-        help="classifier .roicat_classifier path the train button saves to",
+        help="classifier .roicat_classifier path: train saves here, classify loads from here",
     )
     args = parser.parse_args(argv)
 
