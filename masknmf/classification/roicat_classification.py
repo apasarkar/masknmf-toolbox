@@ -1,5 +1,6 @@
 import os
 import tempfile
+from collections import Counter
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -83,13 +84,16 @@ class RoicatClassifier:
         return self.data_adapter is not None and self.labels is not None
 
     @property
-    def valid_classes(self) -> set | None:
+    def class_counts(self) -> dict | None:
+        """Labeled ROI count per class across all sessions"""
         if self.labels is None:
             return None
-        classes = set()
-        for session_labels in self.labels:
-            classes.update(session_labels)
-        return classes
+        return dict(Counter(l for session_labels in self.labels for l in session_labels))
+
+    @property
+    def valid_classes(self) -> set | None:
+        counts = self.class_counts
+        return None if counts is None else set(counts)
 
     @property
     def classifier(self) -> ClassifierPackage | None:
@@ -118,9 +122,14 @@ class RoicatClassifier:
                 "Training did not occur because at least one of the following required "
                 "attributes are missing: data_adapter, labels"
             )
-        if len(self.valid_classes) < 2:
+        counts = self.class_counts
+        if len(counts) < 2:
+            raise ValueError(f"training needs at least 2 classes, labels only contain {sorted(counts)}")
+        rare = {c: n for c, n in counts.items() if n < 2}
+        if rare:
             raise ValueError(
-                f"training needs at least 2 classes, labels only contain {sorted(self.valid_classes)}"
+                "training needs at least 2 labeled ROIs per class for the stratified "
+                f"train/test split, too few: {rare}"
             )
         adapter = self.data_adapter
         adapter.set_class_labels(labels=self.labels)
