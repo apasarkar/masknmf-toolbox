@@ -12,6 +12,7 @@ from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, close_button
 from masknmf.demixing.labels import (
     CLASSIFIER_SUFFIX,
+    SIDECAR_SUFFIX,
     read_labels,
     record_classifier,
     write_labels,
@@ -53,7 +54,10 @@ def _hdf5_paths(paths: Sequence[str]) -> list[str]:
     for p in map(str, paths):
         if os.path.isdir(p):
             found = glob.glob(os.path.join(p, "*.h*5")) + glob.glob(os.path.join(p, "*", "*.h*5"))
-            files += sorted(f for f in found if f.endswith((".h5", ".hdf5")) and _is_demixing_file(f))
+            files += sorted(
+                f for f in found
+                if f.endswith((".h5", ".hdf5")) and not f.endswith(SIDECAR_SUFFIX) and _is_demixing_file(f)
+            )
         else:
             files.append(p)
     return files
