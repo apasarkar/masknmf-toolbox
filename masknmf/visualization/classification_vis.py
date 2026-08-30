@@ -1,5 +1,6 @@
 from typing import *
 import os
+import textwrap
 import threading
 import time
 import numpy as np
@@ -8,6 +9,7 @@ from imgui_bundle import imgui
 
 from masknmf.visualization.imgui.movie_player import MoviePlayer
 from masknmf.visualization.summary_widget import SummaryImageViewer
+from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, close_button
 
 _LABEL_COLORS = (
     (0.12, 0.47, 0.71), (1.00, 0.50, 0.05), (0.17, 0.63, 0.17),
@@ -68,7 +70,10 @@ class ClassificationVis:
                 if saved_labels.shape[0] == np.asarray(roi_images).shape[0]:
                     class_labels = saved_labels
 
-        self._label_names = tuple(label_names)
+        self._label_colors: list[tuple] = []
+        self._set_label_names(label_names)
+        self._help_open = False
+        self._slider_w = 0.0
 
         self._show_bg = True
         self._show_mask = True
@@ -89,7 +94,7 @@ class ClassificationVis:
         self.set_roi_images(roi_images, class_labels)
 
         self._figure.add_imgui_window(
-            self._draw_panel, location="top", size=185, title="Classification"
+            self._draw_panel, location="top", size=215, title="Classification"
         )
         self._figure.add_imgui_window(
             self._draw_table, location="right", size=360, title="ROIs"
@@ -246,9 +251,8 @@ class ClassificationVis:
         # doesn't have; extend it so every label index stays displayable
         max_label = int(class_labels.max(initial=-1))
         if max_label >= len(self._label_names):
-            self._label_names = (
-                *self._label_names,
-                *(f"class{i}" for i in range(len(self._label_names), max_label + 1)),
+            self._set_label_names(
+                (*self._label_names, *(f"class{i}" for i in range(len(self._label_names), max_label + 1)))
             )
 
         flat = roi_images.reshape(num_rois, -1)
@@ -400,7 +404,7 @@ class ClassificationVis:
             if labels is not None and labels.shape[0] != imgs.shape[0]:
                 labels = None
             if not self._label_names and result["saved_names"]:
-                self._label_names = tuple(result["saved_names"])
+                self._set_label_names(result["saved_names"])
             self.set_roi_images(
                 imgs,
                 labels,
@@ -460,7 +464,7 @@ class ClassificationVis:
     def add_label(self, name: str):
         """Add a new class name to the label set"""
         if name and name not in self._label_names:
-            self._label_names = (*self._label_names, name)
+            self._set_label_names((*self._label_names, name))
             self._autosave()
 
     def remove_label(self, index: int):
@@ -470,8 +474,9 @@ class ClassificationVis:
         for arr in (self._class_labels, self._pred):
             arr[arr == index] = -1
             arr[arr > index] -= 1
-        self._label_names = tuple(
-            n for i, n in enumerate(self._label_names) if i != index
+        self._set_label_names(
+            [n for i, n in enumerate(self._label_names) if i != index],
+            [c for i, c in enumerate(self._label_colors) if i != index],
         )
         if self._filter_label == index:
             self._filter_label = -2
@@ -574,7 +579,21 @@ class ClassificationVis:
             self._pos = int(min(self._pos, max(len(self._order) - 1, 0)))
         self._show_current()
 
+    def _set_label_names(self, names: Sequence[str], colors: Optional[Sequence[tuple]] = None):
+        """Replace the label set, keeping (or extending from the palette) one color per label."""
+        names = tuple(names)
+        colors = list(colors if colors is not None else self._label_colors)[: len(names)]
+        colors += [_LABEL_COLORS[i % len(_LABEL_COLORS)] for i in range(len(colors), len(names))]
+        self._label_names, self._label_colors = names, colors
+
+    def set_label_color(self, index: int, color: tuple):
+        """Set a label's (r, g, b) display color."""
+        self._label_colors[index] = tuple(float(c) for c in color[:3])
+        self._show_current()
+
     def _label_color(self, label_index: int) -> tuple:
+        if 0 <= label_index < len(self._label_colors):
+            return self._label_colors[label_index]
         return _LABEL_COLORS[label_index % len(_LABEL_COLORS)]
 
     def _crop_origin(self, roi: int) -> tuple[int, int]:
@@ -855,7 +874,7 @@ class ClassificationVis:
             raise ValueError(f"got {len(flat)} predictions for {len(self._class_labels)} ROIs")
         for n in dict.fromkeys(flat):
             if n not in self._label_names:
-                self._label_names = (*self._label_names, n)
+                self._set_label_names((*self._label_names, n))
         index = {n: i for i, n in enumerate(self._label_names)}
         self._pred = np.array([index[n] for n in flat], dtype=np.int64)
         self._probs = np.concatenate([p.max(axis=1) for p in probs_by_session]).astype(np.float32)
@@ -888,256 +907,312 @@ class ClassificationVis:
                     "(existing labels kept, see the pred column)"
                 )
 
-    def _draw_classifier_row(self):
-        imgui.set_next_item_width(320)
-        _, self._classifier_path = imgui.input_text_with_hint(
-            "##clf-path", "classifier path (.roicat_classifier)", self._classifier_path
-        )
-        if imgui.is_item_hovered():
-            imgui.set_tooltip(
-                "train saves the classifier here, classify loads it from here\n"
-                "(default: <first session dir>/classifier.roicat_classifier)"
-            )
-        imgui.same_line(0, 6)
-        busy = self._clf_busy
-        can_train = self.labels_complete and self.classifier is not None and not busy
-        imgui.begin_disabled(not can_train)
-        if imgui.button("train"):
-            self.train()
-        imgui.end_disabled()
-        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-            imgui.set_tooltip(
-                "train a ROICaT classifier on the labeled ROIs and save it"
-                if can_train or busy
-                else "label every ROI first (training needs complete labels)"
-            )
-        imgui.same_line(0, 6)
-        has_trained = self._classifier is not None and self._classifier.classifier is not None
-        can_classify = (
-            self._roicat_input is not None
-            and not busy
-            and (has_trained or bool(self._classifier_path))
-        )
-        imgui.begin_disabled(not can_classify)
-        if imgui.button("classify"):
-            self.classify()
-        imgui.end_disabled()
-        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-            imgui.set_tooltip(
-                "predict every ROI: unlabeled ROIs take the prediction, existing labels are kept\n"
-                + (
-                    "uses the classifier trained in this session"
-                    if has_trained
-                    else "loads the classifier at the path"
-                )
-            )
-        imgui.same_line(0, 16)
-        if self._clf_status is not None:
-            imgui.text_colored(
-                imgui.ImVec4(1.0, 0.8, 0.2, 1.0),
-                f"{self._clf_status} {time.perf_counter() - self._clf_started:.0f}s",
-            )
-        elif self._clf_done is not None:
-            imgui.text_disabled(self._clf_done)
-
-    def _draw_save_note(self):
-        if self._save_path is None and self._save_files is None:
-            imgui.text_disabled("autosave off — labels are kept in memory only")
-            return
-        imgui.text("Accessing masks in output file")
-        imgui.same_line(0, 4)
-        imgui.text_disabled("(?)")
-        if imgui.is_item_hovered():
-            imgui.begin_tooltip()
-            if self._save_files is not None:
-                imgui.text_colored(
-                    imgui.ImVec4(0.55, 0.75, 1.0, 1.0),
-                    "import h5py\n"
-                    "\n"
-                    'with h5py.File(r"path/to/demixing_results.hdf5", "r") as f:\n'
-                    '    g = f["DemixingResults"]\n'
-                    '    names  = [n.decode() for n in g["label_names"][()]]\n'
-                    '    labels = g["class_labels"][()]  # (num_rois,) int64; -1 = unlabeled\n'
-                    '    masks  = g["roi_masks"][()]     # (num_rois, Y, X) float32\n'
-                    "\n"
-                    "# ROICaT: one label vector per session file\n"
-                    "roicat_input.set_class_labels(labels=[labels_session0, ...])",
-                )
-            else:
-                imgui.text_colored(
-                    imgui.ImVec4(0.55, 0.75, 1.0, 1.0),
-                    "import numpy as np\n"
-                    "\n"
-                    'data = np.load(r"path/to/labels.npz")\n'
-                    'names  = data["label_names"]   # class names; row index = label value\n'
-                    'labels = data["class_labels"]  # (num_rois,) int64; -1 = unlabeled',
-                )
-            imgui.end_tooltip()
-        imgui.same_line(0, 20)
-        imgui.text_disabled("Autosaved")
-        if imgui.is_item_hovered():
-            imgui.set_tooltip("Labels saved automatically")
-
     def _draw_panel(self):
         self._poll_load()
         self._poll_classifier()
         self._handle_keys()
+        self._slider_w = em(9)
+        h = imgui.get_content_region_avail().y - em(1.8)
+        self._draw_nav_card(h)
+        imgui.same_line(0, em(0.6))
+        self._draw_view_card(h)
+        imgui.same_line(0, em(0.6))
+        self._draw_labels_card(h)
+        imgui.same_line(0, em(0.6))
+        self._draw_classifier_card(h)
+        self._draw_help_buttons()
+        self._draw_status()
+        self._summary.draw()
+        self._draw_help_popup()
+        self._draw_keybinds_popup()
 
-        if self._loading is not None:
-            imgui.text_colored(imgui.ImVec4(1.0, 0.8, 0.2, 1.0), self._loading)
+    def _draw_nav_card(self, h: float):
+        with card("##nav", "NAVIGATE", h):
+            if imgui.button("prev"):
+                self.step(-1)
+            imgui.same_line(0, em(0.4))
+            if imgui.button("next"):
+                self.step(1)
+            imgui.same_line(0, em(0.4))
+            imgui.text_disabled("(up / down)")
+            n = len(self._order)
+            imgui.set_next_item_width(self._slider_w)
+            changed, pos = imgui.slider_int(
+                "##pos", self._pos, 0, max(n - 1, 0), f"{self._pos + 1 if n else 0} / {n}"
+            )
+            if changed and n:
+                self._pos = pos
+                self._show_current()
+            if imgui.button("Open full FOV", imgui.ImVec2(self._slider_w, 0)):
+                self._open_full_fov()
 
-        if imgui.button("prev"):
-            self.step(-1)
-        imgui.same_line(0, 5)
-        if imgui.button("next"):
-            self.step(1)
-        imgui.same_line(0, 10)
-        imgui.set_next_item_width(200)
-        changed, pos = imgui.slider_int("##pos", self._pos, 0, max(len(self._order) - 1, 0))
-        if changed and len(self._order):
-            self._pos = pos
-            self._show_current()
-        imgui.same_line(0, 30)
-        if imgui.button("Open full FOV"):
-            self._open_full_fov()
-        imgui.same_line(0, 30)
-        self._draw_save_note()
-        imgui.same_line(max(imgui.get_window_width() - 90, 0))
-        if imgui.button("keybinds"):
-            self._keybinds_open = True
-        if self._error is not None:
-            imgui.same_line(0, 30)
-            imgui.text(self._error)
-
-        changed_bg, self._show_bg = imgui.checkbox("##bg-on", self._show_bg)
-        if changed_bg:
-            self._apply_overlay()
-        imgui.same_line(0, 6)
+    def _draw_view_card(self, h: float):
         sources = self._bg_source_names if self._bg_sources is not None else ["mask MIP"]
         options = [*sources] + (["demixed movie"] if self._dmrs is not None else [])
-        current = (
-            len(sources)
-            if self._bg_movie
-            else (self._bg_source_idx if self._bg_sources is not None else 0)
-        )
-        imgui.set_next_item_width(180)
-        changed_src, idx = imgui.combo("##bg-source", current, options)
-        if changed_src:
-            self._bg_movie = idx >= len(sources)
-            if not self._bg_movie and self._bg_sources is not None:
-                self._bg_source_idx = idx
-                self._fov_images = self._bg_sources[sources[idx]]
-            self._show_current()
-        imgui.same_line(0, 6)
-        imgui.text("bg image")
-        imgui.same_line(0, 4)
-        imgui.text_disabled("(b)")
-        imgui.same_line(0, 20)
-        imgui.set_next_item_width(75)
-        changed_bga, self._bg_alpha = imgui.slider_float(
-            "bg opacity", self._bg_alpha, 0.0, 1.0
-        )
-        imgui.same_line(0, 30)
-        changed_mask, self._show_mask = imgui.checkbox("mask", self._show_mask)
-        imgui.same_line(0, 4)
-        imgui.text_disabled("(m)")
-        imgui.same_line(0, 20)
-        imgui.set_next_item_width(75)
-        changed_fga, self._roi_alpha = imgui.slider_float(
-            "roi opacity", self._roi_alpha, 0.0, 1.0
-        )
-        if changed_bga or changed_mask or changed_fga:
-            self._apply_overlay()
-        if self._bg_movie:
-            if self._movie_player.draw():
+        combo_x = em(4.5)
+        slider_x = combo_x + em(10.6)
+        with card("##view", "VIEW", h):
+            changed_bg, self._show_bg = imgui.checkbox("bg##bg-on", self._show_bg)
+            imgui.same_line(combo_x)
+            current = (
+                len(sources)
+                if self._bg_movie
+                else (self._bg_source_idx if self._bg_sources is not None else 0)
+            )
+            imgui.set_next_item_width(em(10))
+            changed_src, idx = imgui.combo("##bg-source", current, options)
+            if changed_src:
+                self._bg_movie = idx >= len(sources)
+                if not self._bg_movie and self._bg_sources is not None:
+                    self._bg_source_idx = idx
+                    self._fov_images = self._bg_sources[sources[idx]]
+                self._show_current()
+            imgui.same_line(slider_x)
+            imgui.set_next_item_width(self._slider_w)
+            changed_bga, self._bg_alpha = imgui.slider_float(
+                "##bg-alpha", self._bg_alpha, 0.0, 1.0, "opacity %.2f"
+            )
+            imgui.same_line(0, em(0.4))
+            imgui.text_disabled("(b)")
+
+            changed_mask, self._show_mask = imgui.checkbox("mask##mask-on", self._show_mask)
+            imgui.same_line(slider_x)
+            imgui.set_next_item_width(self._slider_w)
+            changed_fga, self._roi_alpha = imgui.slider_float(
+                "##roi-alpha", self._roi_alpha, 0.0, 1.0, "opacity %.2f"
+            )
+            imgui.same_line(0, em(0.4))
+            imgui.text_disabled("(m)")
+            if changed_bg or changed_bga or changed_mask or changed_fga:
+                self._apply_overlay()
+            if self._bg_movie and self._movie_player.draw(slider_width=self._slider_w):
                 self._update_movie_bg()
 
-        self._draw_progress()
-        imgui.same_line(0, 24)
-        imgui.set_next_item_width(120)
-        entered, self._new_label = imgui.input_text_with_hint(
-            "##new-label",
-            "new label",
-            self._new_label,
-            imgui.InputTextFlags_.enter_returns_true,
-        )
-        imgui.same_line(0, 5)
-        if (imgui.button("add") or entered) and self._new_label.strip():
-            self.add_label(self._new_label.strip())
-            self._new_label = ""
-        imgui.same_line(0, 5)
-        if imgui.button("del"):
-            imgui.open_popup("##del-labels")
-        if imgui.begin_popup("##del-labels"):
-            if not self._label_names:
-                imgui.text_disabled("no labels")
-            remove = None
-            for i, name in enumerate(self._label_names):
-                if imgui.small_button(f"x##del{i}"):
-                    remove = i
-                imgui.same_line(0, 8)
-                count = int((self._class_labels == i).sum())
-                imgui.text_colored(
-                    imgui.ImVec4(*self._label_color(i), 1.0), f"{name} ({count})"
-                )
-            if remove is not None:
-                self.remove_label(remove)
-            imgui.end_popup()
-
-        for i, name in enumerate(self._label_names):
-            imgui.same_line(0, 10)
-            count = int((self._class_labels == i).sum())
-            imgui.push_style_color(imgui.Col_.button, imgui.ImVec4(*self._label_color(i), 0.5))
-            if imgui.button(f"{name} ({count})##label{i}"):
-                self.label_current(i)
-            imgui.pop_style_color()
-            if i < len(_LABEL_KEYS):
-                imgui.same_line(0, 4)
-                imgui.text_disabled(f"({i + 1})")
-        if self._label_names:
-            imgui.same_line(0, 10)
+    def _draw_labels_card(self, h: float):
+        with card("##labels", "LABELS", h):
+            self._draw_progress()
+            self._draw_label_list(rows=3.5)
+            imgui.set_next_item_width(em(6))
+            entered, self._new_label = imgui.input_text_with_hint(
+                "##new-label", "new label", self._new_label, imgui.InputTextFlags_.enter_returns_true
+            )
+            imgui.same_line(0, em(0.4))
+            if (imgui.button("add") or entered) and self._new_label.strip():
+                self.add_label(self._new_label.strip())
+                self._new_label = ""
+            imgui.same_line(0, em(0.8))
             if imgui.button("unlabel"):
                 self.label_current(-1)
-            imgui.same_line(0, 4)
-            imgui.text_disabled("(0)")
-            imgui.same_line(0, 10)
-            imgui.push_style_color(imgui.Col_.button, imgui.ImVec4(0.75, 0.15, 0.15, 0.8))
-            imgui.push_style_color(
-                imgui.Col_.button_hovered, imgui.ImVec4(0.90, 0.20, 0.20, 1.0)
-            )
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("clear the current ROI's label (0)")
+            imgui.same_line(0, em(0.6))
+            imgui.push_style_color(imgui.Col_.button, to_vec4(THEME.danger))
+            imgui.push_style_color(imgui.Col_.button_hovered, to_vec4(THEME.danger_hover))
             if imgui.button("unlabel all"):
                 self.label(range(len(self._class_labels)), -1)
             imgui.pop_style_color(2)
 
-        self._draw_classifier_row()
-        self._summary.draw()
-        self._draw_keybinds_popup()
+    def _draw_label_list(self, rows: float):
+        """One row per label: color swatch, name (count), key; click to label the current ROI."""
+        current = self.current
+        current_label = int(self._class_labels[current]) if current is not None else -1
+        flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.scroll_y
+        if not imgui.begin_table("##label-list", 4, flags, imgui.ImVec2(em(22), em(rows * 1.55))):
+            return
+        imgui.table_setup_column("##swatch", imgui.TableColumnFlags_.width_fixed, em(1.3))
+        imgui.table_setup_column("##name", imgui.TableColumnFlags_.width_stretch)
+        imgui.table_setup_column("##key", imgui.TableColumnFlags_.width_fixed, em(2.2))
+        imgui.table_setup_column("##del", imgui.TableColumnFlags_.width_fixed, em(1.6))
+        remove = None
+        for i, name in enumerate(self._label_names):
+            imgui.push_id(i)
+            imgui.table_next_row()
+            imgui.table_next_column()
+            if imgui.color_button(
+                "##swatch",
+                to_vec4(self._label_color(i)),
+                imgui.ColorEditFlags_.no_tooltip,
+                imgui.ImVec2(em(1.1), em(1.1)),
+            ):
+                self.label_current(i)
+            imgui.table_next_column()
+            count = int((self._class_labels == i).sum())
+            clicked, _ = imgui.selectable(f"{name}  ({count})", i == current_label)
+            if clicked:
+                self.label_current(i)
+            imgui.table_next_column()
+            if i < len(_LABEL_KEYS):
+                imgui.text_disabled(f"({i + 1})")
+            imgui.table_next_column()
+            if imgui.small_button("x"):
+                remove = i
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(f"delete '{name}': its ROIs become unlabeled")
+            imgui.pop_id()
+        if not self._label_names:
+            imgui.table_next_row()
+            imgui.table_next_column()
+            imgui.table_next_column()
+            imgui.text_disabled("no labels yet: add one below")
+        imgui.end_table()
+        if remove is not None:
+            self.remove_label(remove)
+
+    def _draw_classifier_card(self, h: float):
+        w = em(6)
+        with card("##clf", "CLASSIFIER", h):
+            imgui.text("path")
+            imgui.same_line(0, em(0.4))
+            imgui.set_next_item_width(w * 2 + em(0.6))
+            _, self._classifier_path = imgui.input_text_with_hint(
+                "##clf-path", "classifier.roicat_classifier", self._classifier_path
+            )
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "train saves the classifier here, classify loads it from here\n"
+                    "(default: <first session dir>/classifier.roicat_classifier)"
+                )
+            busy = self._clf_busy
+            can_train = self.labels_complete and self.classifier is not None and not busy
+            imgui.begin_disabled(not can_train)
+            if imgui.button("train", imgui.ImVec2(w, 0)):
+                self.train()
+            imgui.end_disabled()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                imgui.set_tooltip(
+                    "train a ROICaT classifier on the labeled ROIs and save it"
+                    if can_train or busy
+                    else "label every ROI first (training needs complete labels)"
+                )
+            imgui.same_line(0, em(0.6))
+            has_trained = self._classifier is not None and self._classifier.classifier is not None
+            can_classify = (
+                self._roicat_input is not None
+                and not busy
+                and (has_trained or bool(self._classifier_path))
+            )
+            imgui.begin_disabled(not can_classify)
+            if imgui.button("classify", imgui.ImVec2(w, 0)):
+                self.classify()
+            imgui.end_disabled()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                imgui.set_tooltip(
+                    "predict every ROI: unlabeled ROIs take the prediction, existing labels are kept\n"
+                    + (
+                        "uses the classifier trained in this session"
+                        if has_trained
+                        else "loads the classifier at the path"
+                    )
+                )
+
+    def _draw_help_buttons(self):
+        w = em(6)
+        right = imgui.get_window_width() - w - em(1.0)
+        after_cards = imgui.get_item_rect_max().x - imgui.get_window_pos().x + em(0.6)
+        imgui.same_line(max(after_cards, right))
+        imgui.begin_group()
+        if imgui.button("help", imgui.ImVec2(w, 0)):
+            self._help_open = True
+        if imgui.button("keybinds", imgui.ImVec2(w, 0)):
+            self._keybinds_open = True
+        imgui.end_group()
+
+    def _autosave_note(self) -> str:
+        if self._save_files is not None:
+            return "labels autosave into each session's hdf5 (DemixingResults/class_labels)"
+        if self._save_path is not None:
+            return f"labels autosave to {self._save_path}"
+        return "autosave off: labels are kept in memory only"
+
+    def _draw_status(self):
+        if self._loading is not None:
+            color, text = THEME.warn, self._loading
+        elif self._error is not None:
+            color, text = THEME.err, self._error
+        elif self._clf_status is not None:
+            color = THEME.warn
+            text = f"{self._clf_status} {time.perf_counter() - self._clf_started:.0f}s"
+        elif self._clf_done is not None:
+            color, text = THEME.text_dim, self._clf_done
+        else:
+            color, text = THEME.text_dim, self._autosave_note()
+        imgui.text_colored(to_vec4(color), text)
 
     def _draw_progress(self):
-        """Per-session labeling progress; training requires every ROI labeled"""
-        done_color = imgui.ImVec4(0.35, 0.9, 0.35, 1.0)
-        todo_color = imgui.ImVec4(1.0, 0.75, 0.25, 1.0)
         labeled = self._class_labels >= 0
         done, total = int(labeled.sum()), len(labeled)
         imgui.text_colored(
-            done_color if done == total else todo_color, f"labeled {done}/{total}"
+            to_vec4(THEME.ok if done == total else THEME.warn), f"labeled {done}/{total}"
         )
         if self._session_sizes is not None and len(self._session_sizes) > 1:
             start = 0
             for k, n in enumerate(self._session_sizes):
                 session_done = int(labeled[start : start + n].sum())
-                imgui.same_line(0, 10)
+                imgui.same_line(0, em(0.6))
                 imgui.text_colored(
-                    done_color if session_done == n else todo_color,
+                    to_vec4(THEME.ok if session_done == n else THEME.warn),
                     f"s{k}: {session_done}/{n}",
                 )
                 start += n
         if done < total:
-            imgui.same_line(0, 12)
+            imgui.same_line(0, em(0.8))
             if imgui.button("next unlabeled"):
                 self.goto_next_unlabeled()
-            imgui.same_line(0, 4)
+            imgui.same_line(0, em(0.3))
             imgui.text_disabled("(u)")
+
+    _HELP_STEPS = (
+        "Label each mask: click a label in the list or press its number key (0 clears). "
+        "Up/down moves through the ROIs, u jumps to the next unlabeled one.",
+        "Use VIEW to overlay the mask on a background image or the demixed movie; "
+        "Open full FOV shows where the ROI sits in the field of view.",
+        "When every ROI is labeled, click train: a ROICaT classifier is fit on the "
+        "labels and saved to the classifier path.",
+        "On a new session, click classify: unlabeled ROIs take the prediction and the "
+        "pred column shows its confidence (red where it disagrees with your label). "
+        "Fix what is wrong, then train again to improve the classifier.",
+        "Labels are saved automatically as you go.",
+    )
+    _HELP_HDF5 = (
+        "import h5py\n"
+        "\n"
+        'with h5py.File(r"path/to/demixing_results.hdf5", "r") as f:\n'
+        '    g = f["DemixingResults"]\n'
+        '    names  = [n.decode() for n in g["label_names"][()]]\n'
+        '    labels = g["class_labels"][()]  # (num_rois,) int64; -1 = unlabeled\n'
+        '    masks  = g["roi_masks"][()]     # (num_rois, Y, X) float32\n'
+        "\n"
+        "from masknmf.classification import RoicatClassifier\n"
+        'clf = RoicatClassifier.from_file(r"path/to/classifier.roicat_classifier")\n'
+        "ids, names, probs = clf.classify(roicat_adapter)  # one list per session"
+    )
+    _HELP_NPZ = (
+        "import numpy as np\n"
+        "\n"
+        'data = np.load(r"path/to/labels.npz")\n'
+        'names  = data["label_names"]   # class names; row index = label value\n'
+        'labels = data["class_labels"]  # (num_rois,) int64; -1 = unlabeled'
+    )
+
+    def _draw_help_popup(self):
+        if not self._help_open:
+            return
+        opened, self._help_open = popup("Help", self._help_open)
+        if opened:
+            section("Workflow")
+            for i, step in enumerate(self._HELP_STEPS, 1):
+                imgui.text_colored(to_vec4(THEME.accent), f"{i}.")
+                imgui.same_line(em(2.6))
+                imgui.text(textwrap.fill(step, 80))
+                imgui.dummy(imgui.ImVec2(0, em(0.15)))
+            section("Output files")
+            imgui.text_colored(to_vec4(THEME.text_dim), self._autosave_note())
+            imgui.text_colored(
+                to_vec4(THEME.code), self._HELP_NPZ if self._save_files is None else self._HELP_HDF5
+            )
+            if close_button():
+                self._help_open = False
+        imgui.end()
 
     _KEYBINDS = (
         ("up / down", "previous / next ROI"),
@@ -1153,32 +1228,21 @@ class ClassificationVis:
     def _draw_keybinds_popup(self):
         if not self._keybinds_open:
             return
-        em = imgui.get_font_size()
-        imgui.set_next_window_pos(
-            imgui.get_main_viewport().get_center(),
-            imgui.Cond_.appearing,
-            pivot=imgui.ImVec2(0.5, 0.5),
-        )
-        opened, self._keybinds_open = imgui.begin(
-            "Keybinds###keybinds",
-            self._keybinds_open,
-            flags=imgui.WindowFlags_.no_saved_settings
-            | imgui.WindowFlags_.always_auto_resize,
-        )
+        opened, self._keybinds_open = popup("Keybinds", self._keybinds_open)
         if opened:
             flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.borders_inner_h
             if imgui.begin_table("##keybinds-table", 2, flags):
-                imgui.table_setup_column(
-                    "key", imgui.TableColumnFlags_.width_fixed, 10 * em
-                )
+                imgui.table_setup_column("key", imgui.TableColumnFlags_.width_fixed, em(10))
                 imgui.table_setup_column("action")
                 for key, action in self._KEYBINDS:
                     imgui.table_next_row()
                     imgui.table_next_column()
-                    imgui.text_colored(imgui.ImVec4(1.0, 0.85, 0.4, 1.0), key)
+                    imgui.text_colored(to_vec4(THEME.warn), key)
                     imgui.table_next_column()
                     imgui.text(action)
                 imgui.end_table()
+            if close_button():
+                self._keybinds_open = False
         imgui.end()
 
     def _draw_table(self):
