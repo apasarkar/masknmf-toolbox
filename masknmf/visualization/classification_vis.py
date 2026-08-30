@@ -163,9 +163,9 @@ class ClassificationVis:
 
         The GUI opens immediately on an empty placeholder while ROICaT builds the
         centered ROI images (RoicatDataAdapter.from_masknmf) in a background thread,
-        then swaps in the real data. Labels, label names, and ROI masks are stored
-        inside each session's hdf5 (DemixingResults/class_labels, label_names,
-        roi_masks) — no extra files. Pass save_path for an additional npz copy.
+        then swaps in the real data. Labels, label names, and ROI masks are stored in
+        a sidecar next to each session (``<results>.labels.hdf5``); the results file
+        itself is never modified. Pass save_path for an additional npz copy.
         """
         placeholder = np.zeros((1, *roi_image_dims), dtype=np.float32)
         vis = cls(placeholder, label_names=label_names, save_path=save_path)
@@ -544,8 +544,8 @@ class ClassificationVis:
 
     def save(self, path: Optional[str] = None):
         """
-        Persist labels: into each session's hdf5 (DemixingResults/class_labels +
-        label_names) when launched from demixing results, and/or to an npz at path
+        Persist labels: to each session's ``.labels.hdf5`` sidecar when launched from
+        demixing results, and/or to an npz at path
         """
         if path is None and self._save_files is not None:
             self._save_labels_to_hdf5()
@@ -1313,7 +1313,7 @@ class ClassificationVis:
         if self._placeholder:
             return "open a demixing_results.hdf5 (open file) or a folder of sessions (open folder)"
         if self._save_files is not None:
-            return "labels autosave into each session's hdf5 (DemixingResults/class_labels)"
+            return "labels autosave to <results>.labels.hdf5 next to each session file"
         if self._save_path is not None:
             return f"labels autosave to {self._save_path}"
         return "autosave off: labels are kept in memory only"
@@ -1400,17 +1400,16 @@ class ClassificationVis:
         "Labels are saved automatically as you go.",
     )
     _HELP_HDF5 = (
-        "import h5py\n"
+        "from masknmf.demixing.labels import read_labels\n"
         "\n"
-        'with h5py.File(r"path/to/demixing_results.hdf5", "r") as f:\n'
-        '    g = f["DemixingResults"]\n'
-        '    names  = [n.decode() for n in g["label_names"][()]]\n'
-        '    labels = g["class_labels"][()]  # (num_rois,) int64; -1 = unlabeled\n'
-        '    masks  = g["roi_masks"][()]     # (num_rois, Y, X) float32\n'
+        "# reads demixing_results.labels.hdf5 next to the results file\n"
+        'labels, names = read_labels(r"path/to/demixing_results.hdf5")\n'
+        "# labels: (num_rois,) int64, -1 = unlabeled; the sidecar also holds\n"
+        "# roi_masks, class_predictions, class_probabilities, classifier_path\n"
         "\n"
         "from masknmf.classification import RoicatClassifier\n"
         'clf = RoicatClassifier.from_disk(r"path/to/classifier.roicat_classifier")\n'
-        'clf.classify([r"other/demixing_results.hdf5"], write=True)  # labels the file'
+        'clf.classify([r"other/demixing_results.hdf5"], write=True)  # writes its sidecar'
     )
     _HELP_NPZ = (
         "import numpy as np\n"

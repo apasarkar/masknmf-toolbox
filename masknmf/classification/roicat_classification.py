@@ -65,8 +65,8 @@ class RoicatClassifier:
     def from_masknmf(cls, demixing_result_files: Sequence[str | Path], **adapter_kwargs) -> "RoicatClassifier":
         """
         Build the training data from demixing .hdf5 files (one per session). Labels
-        stored in the files by the labeling GUI are used when every session is
-        completely labeled; otherwise set ``labels`` before ``train``.
+        the labeling GUI stored next to them (``<results>.labels.hdf5``) are used when
+        every session is completely labeled; otherwise set ``labels`` before ``train``.
         """
         files = [str(f) for f in demixing_result_files]
         adapter = RoicatDataAdapter.from_masknmf(files, **adapter_kwargs)
@@ -281,8 +281,8 @@ class RoicatClassifier:
             ROI images to classify; paths are loaded into a RoicatDataAdapter.
         write : bool
             With paths: store ``class_predictions`` / ``class_probabilities`` /
-            ``classified_with`` in each file and give still-unlabeled ROIs the
-            predicted label (existing labels are kept).
+            ``classified_with`` in each session's ``.labels.hdf5`` sidecar and give
+            still-unlabeled ROIs the predicted label (existing labels are kept).
 
         Returns
         -------

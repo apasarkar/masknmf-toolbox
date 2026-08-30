@@ -106,8 +106,6 @@ class DemixingResults(Serializer):
         "residual_roi_averages",
         "multiunit_basis_term1",
         "multiunit_basis_term2",
-        "class_labels",
-        "label_names",
     }
 
     """
@@ -152,8 +150,6 @@ class DemixingResults(Serializer):
             residual_roi_averages: Optional[torch.Tensor] = None,
             multiunit_basis_term1: torch.Tensor | None = None,
             multiunit_basis_term2: torch.Tensor | None = None,
-            class_labels: Optional[np.ndarray] = None,
-            label_names: Optional[Sequence[str]] = None,
             device="cpu",
             **kwargs
     ):
@@ -190,18 +186,10 @@ class DemixingResults(Serializer):
             bkgd_corr_img_mean (Optional[torch.Tensor]): The mean image used to compute the correlation between the signal and the background.
             bkgd_corr_img_normalizer (Optional[torch.Tensor]): The mean image used to compute the correlation between the signal and the background.
             global_resid_correlation_image (torch.Tensor): The global correlation image of the residual. Shape (FOV dim 1, FOV dim 2).
-            class_labels (Optional[np.ndarray]): Shape (num_neurons,). Per-ROI class index into label_names, -1 = unlabeled
-            label_names (Optional[Sequence[str]]): Class names, written by the classification GUI / RoicatClassifier
             device (str): 'cpu' or 'cuda'. used to manage where the tensors reside
         """
         self._device = device
         self._shape = tuple(shape)
-        self.class_labels = None if class_labels is None else np.asarray(class_labels, dtype=np.int64)
-        self.label_names = (
-            None
-            if label_names is None
-            else [n.decode() if isinstance(n, bytes) else str(n) for n in label_names]
-        )
         self._flyweight = TensorFlyWeight()
         self.flyweight.u = u.to(self._device).float().coalesce()
         self.flyweight.v = v.to(self._device).float()
@@ -377,14 +365,6 @@ class DemixingResults(Serializer):
     def multiunit_basis_term2(self) -> None | torch.Tensor:
         return self.flyweight.multiunit_basis_term2
 
-
-    def roi_indices(self, label: str | int) -> np.ndarray:
-        """Indices of the ROIs whose class label is ``label`` (a label_names entry or its index)."""
-        if self.class_labels is None:
-            raise ValueError("these results carry no class labels; label them with ClassificationVis first")
-        if isinstance(label, str):
-            label = self.label_names.index(label)
-        return np.flatnonzero(self.class_labels == label)
 
     @property
     def shape(self):
