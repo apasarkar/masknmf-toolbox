@@ -23,6 +23,8 @@ _LABEL_KEYS = (
     imgui.Key._6, imgui.Key._7, imgui.Key._8, imgui.Key._9,
 )
 _COLUMNS = ("id", "label", "pred", "area", "peak", "snr", "skew")
+_MIN_PER_CLASS = 2  # labeled ROIs a class needs before training
+_CLF_FILTERS = ["ROICaT classifier", f"*{CLASSIFIER_SUFFIX}", "All files", "*"]
 
 
 class ClassificationVis:
@@ -75,6 +77,7 @@ class ClassificationVis:
         self._set_label_names(label_names)
         self._help_open = False
         self._file_dialog = None
+        self._clf_source: Optional[tuple[str, str]] = None  # ('trained' | 'file', path)
         self._slider_w = 0.0
 
         self._show_bg = True
@@ -96,7 +99,7 @@ class ClassificationVis:
         self.set_roi_images(roi_images, class_labels)
 
         self._figure.add_imgui_window(
-            self._draw_panel, location="top", size=215, title="Classification"
+            self._draw_panel, location="top", size=228, title="Classification"
         )
         self._figure.add_imgui_window(
             self._draw_table, location="right", size=360, title="ROIs"
@@ -171,6 +174,8 @@ class ClassificationVis:
         )
         vis._roicat_input = adapter
         vis._classifier = classifier
+        if classifier.classifier is not None:
+            vis._clf_source = ("trained", "")
         try:
             vis._save_masks_to_hdf5()
         except OSError as e:
@@ -841,9 +846,9 @@ class ClassificationVis:
             self._error = "label every ROI before training"
             return
         counts = np.bincount(self._class_labels, minlength=len(self._label_names))
-        rare = [n for n, c in zip(self._label_names, counts) if c == 1]
+        rare = [n for n, c in zip(self._label_names, counts) if 0 < c < _MIN_PER_CLASS]
         if rare:
-            self._error = f"training needs at least 2 ROIs per class, only 1 labeled: {', '.join(rare)}"
+            self._error = f"training needs at least {_MIN_PER_CLASS} ROIs per class, too few: {', '.join(rare)}"
             return
         if self._adapter_missing():
             self._error = f"cannot train: {self._adapter_missing()}"
@@ -865,10 +870,16 @@ class ClassificationVis:
 
     def classify(self, classifier=None):
         """
-        Predict a label for every ROI in a background thread using the classifier
-        trained here, a RoicatClassifier, or a .roicat_classifier path (default:
-        classifier_path). Predictions fill the pred column; ROIs that are still
-        unlabeled take the prediction, existing labels are kept.
+        Predict a label for every ROI in a background thread.
+
+        Parameters
+        ----------
+        classifier : RoicatClassifier, str or None
+            None uses the selected source (the classifier trained here or the file
+            picked with Select classifier); a path loads that file.
+
+        Predictions fill the pred column; ROIs still unlabeled take the prediction,
+        existing labels are kept.
         """
         if self._clf_busy:
             return
@@ -877,14 +888,18 @@ class ClassificationVis:
             return
         path = None
         if classifier is None:
-            if self._classifier is not None and self._classifier.classifier is not None:
+            if self._clf_source is None:
+                self._error = "no classifier: train one or use Select classifier"
+                return
+            kind, source = self._clf_source
+            if kind == "trained":
                 classifier = self._classifier
             else:
-                path = self._classifier_path
+                path = source
         elif isinstance(classifier, (str, os.PathLike)):
             path = str(classifier)
         if path is not None and not os.path.isfile(path):
-            self._error = f"classifier file not found: {path or '(set classifier path)'}"
+            self._error = f"classifier file not found: {path}"
             return
         adapter = self._roicat_input
 
@@ -925,6 +940,7 @@ class ClassificationVis:
             self._error = None
             if result[0] == "trained":
                 self._classifier_path = result[1]
+                self._clf_source = ("trained", result[1])
                 self._clf_done = f"saved classifier to {result[1]}"
             else:
                 try:
@@ -1039,14 +1055,15 @@ class ClassificationVis:
             imgui.pop_style_color(2)
 
     def _draw_label_list(self, rows: float):
-        """One row per label: color swatch, name (count), key; click to label the current ROI."""
+        """One row per label: swatch, name (count), too-few warning, key; click to label the current ROI."""
         current = self.current
         current_label = int(self._class_labels[current]) if current is not None else -1
         flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.scroll_y
-        if not imgui.begin_table("##label-list", 4, flags, imgui.ImVec2(em(22), em(rows * 1.55))):
+        if not imgui.begin_table("##label-list", 5, flags, imgui.ImVec2(em(22), em(rows * 1.55))):
             return
         imgui.table_setup_column("##swatch", imgui.TableColumnFlags_.width_fixed, em(1.3))
         imgui.table_setup_column("##name", imgui.TableColumnFlags_.width_stretch)
+        imgui.table_setup_column("##warn", imgui.TableColumnFlags_.width_fixed, em(1.4))
         imgui.table_setup_column("##key", imgui.TableColumnFlags_.width_fixed, em(2.2))
         imgui.table_setup_column("##del", imgui.TableColumnFlags_.width_fixed, em(1.6))
         remove = None
@@ -1067,6 +1084,13 @@ class ClassificationVis:
             if clicked:
                 self.label_current(i)
             imgui.table_next_column()
+            if count < _MIN_PER_CLASS:
+                imgui.text_colored(to_vec4(THEME.warn), fa.ICON_FA_TRIANGLE_EXCLAMATION)
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(
+                        f"need at least {_MIN_PER_CLASS} ROIs labeled '{name}' to train (have {count})"
+                    )
+            imgui.table_next_column()
             if i < len(_LABEL_KEYS):
                 imgui.text_disabled(f"({i + 1})")
             imgui.table_next_column()
@@ -1084,56 +1108,78 @@ class ClassificationVis:
         if remove is not None:
             self.remove_label(remove)
 
-    def browse(self):
-        """Open a native file picker for the classifier path; the choice lands on a later frame."""
-        if self._file_dialog is not None:
+    def select_classifier(self, path: str):
+        """Use a saved .roicat_classifier file for classify."""
+        path = str(path)
+        if not os.path.isfile(path):
+            self._error = f"classifier file not found: {path}"
             return
-        start = os.path.dirname(self._classifier_path or self._default_classifier_path())
-        self._file_dialog = pfd.open_file(
-            "Choose a ROICaT classifier",
-            start,
-            ["ROICaT classifier", f"*{CLASSIFIER_SUFFIX}", "All files", "*"],
-        )
+        self._clf_source = ("file", path)
+        self._clf_done = None
+
+    def browse(self):
+        """Native picker for a saved classifier to classify with; applied when the dialog returns."""
+        if self._file_dialog is None:
+            start = os.path.dirname(self._classifier_path or self._default_classifier_path())
+            self._file_dialog = ("open", pfd.open_file("Select a ROICaT classifier", start, _CLF_FILTERS))
+
+    def browse_save(self):
+        """Native picker for where train saves the classifier."""
+        if self._file_dialog is None:
+            start = self._classifier_path or self._default_classifier_path() + CLASSIFIER_SUFFIX
+            self._file_dialog = ("save", pfd.save_file("Save classifier as", start, _CLF_FILTERS))
 
     def _poll_file_dialog(self):
-        if self._file_dialog is None or not self._file_dialog.ready(0):
+        if self._file_dialog is None or not self._file_dialog[1].ready(0):
             return
-        picked = self._file_dialog.result()
+        kind, dialog = self._file_dialog
         self._file_dialog = None
-        if picked:
-            self._classifier_path = picked[0]
-            self._clf_done = None
+        result = dialog.result()
+        if not result:
+            return
+        if kind == "open":
+            self.select_classifier(result[0])
+        else:
+            self._classifier_path = result
 
     def _classifier_hint(self) -> str:
         missing = self._adapter_missing()
         if missing:
             return missing
-        name = os.path.basename(self._classifier_path)
-        if self._classifier is not None and self._classifier.classifier is not None:
-            return "using the classifier trained this session" + (f", saved as {name}" if name else "")
-        if not name:
-            default = os.path.basename(self._default_classifier_path()) + CLASSIFIER_SUFFIX
-            return f"no path set: train saves {default} next to the session file"
-        if os.path.isfile(self._classifier_path):
-            return f"classify loads {name}; train overwrites it"
-        return f"{name} does not exist yet: train creates it, classify has nothing to load"
+        if self._clf_source is None:
+            return "no classifier selected: train one or select a saved file"
+        kind, path = self._clf_source
+        name = os.path.basename(path)
+        if kind == "trained":
+            return "classify uses the classifier trained this session" + (f" ({name})" if name else "")
+        return f"classify uses {name}" + ("" if os.path.isfile(path) else " (file missing)")
 
     def _draw_classifier_card(self, h: float):
-        w = em(6)
+        w = em(6.5)
+        row_w = w * 2 + em(0.6)
         with card("##clf", "CLASSIFIER", h):
             self._poll_file_dialog()
-            imgui.text("path")
+            imgui.text("save to")
             imgui.same_line(0, em(0.4))
-            imgui.set_next_item_width(w * 2 - em(0.6))
+            imgui.set_next_item_width(row_w - em(6.4))
             _, self._classifier_path = imgui.input_text_with_hint(
                 "##clf-path", "classifier.roicat_classifier", self._classifier_path
             )
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "where train saves the classifier\n"
+                    "(default: <first session dir>/classifier.roicat_classifier)"
+                )
             imgui.same_line(0, em(0.4))
-            if imgui.button(f"{fa.ICON_FA_FOLDER_OPEN}##browse"):
+            if imgui.button(f"{fa.ICON_FA_FLOPPY_DISK}##save-as"):
+                self.browse_save()
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("choose where train saves the classifier")
+            if imgui.button(f"{fa.ICON_FA_FOLDER_OPEN}  Select classifier", imgui.ImVec2(row_w, 0)):
                 self.browse()
             if imgui.is_item_hovered():
-                imgui.set_tooltip("browse for a .roicat_classifier file")
-            imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + w * 2 + em(3.4))
+                imgui.set_tooltip("pick a saved .roicat_classifier to classify with")
+            imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + row_w)
             imgui.text_disabled(self._classifier_hint())
             imgui.pop_text_wrap_pos()
 
@@ -1145,16 +1191,17 @@ class ClassificationVis:
             imgui.end_disabled()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
                 imgui.set_tooltip(
-                    "train a ROICaT classifier on the labeled ROIs and save it to the path"
+                    "train a ROICaT classifier on the labeled ROIs and save it to the path above"
                     if can_train or busy
                     else "label every ROI first (training needs complete labels)"
                 )
             imgui.same_line(0, em(0.6))
-            has_trained = self._classifier is not None and self._classifier.classifier is not None
+            source = self._clf_source
             can_classify = (
                 self._roicat_input is not None
                 and not busy
-                and (has_trained or os.path.isfile(self._classifier_path))
+                and source is not None
+                and (source[0] == "trained" or os.path.isfile(source[1]))
             )
             imgui.begin_disabled(not can_classify)
             if imgui.button("classify", imgui.ImVec2(w, 0)):
@@ -1162,12 +1209,8 @@ class ClassificationVis:
             imgui.end_disabled()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
                 imgui.set_tooltip(
-                    "predict every ROI: unlabeled ROIs take the prediction, existing labels are kept\n"
-                    + (
-                        "uses the classifier trained in this session"
-                        if has_trained
-                        else "loads the classifier at the path"
-                    )
+                    "predict every ROI with the selected classifier: unlabeled ROIs take the "
+                    "prediction, existing labels are kept"
                 )
 
     def _autosave_note(self) -> str:
@@ -1177,45 +1220,41 @@ class ClassificationVis:
             return f"labels autosave to {self._save_path}"
         return "autosave off: labels are kept in memory only"
 
-    def _draw_status(self):
-        """Status text on the left, help / keybinds buttons on the right."""
+    def _status_message(self) -> tuple[tuple, str]:
         if self._loading is not None:
-            color, text = THEME.warn, self._loading
-        elif self._error is not None:
-            color, text = THEME.err, self._error
-        elif self._clf_status is not None:
-            color = THEME.warn
-            text = f"{self._clf_status} {time.perf_counter() - self._clf_started:.0f}s"
-        elif self._clf_done is not None:
-            color, text = THEME.text_dim, self._clf_done
-        else:
-            color, text = THEME.text_dim, self._autosave_note()
+            return THEME.warn, self._loading
+        if self._error is not None:
+            return THEME.err, self._error
+        if self._clf_status is not None:
+            return THEME.warn, f"{self._clf_status} {time.perf_counter() - self._clf_started:.0f}s"
+        if self._clf_done is not None:
+            return THEME.text_dim, self._clf_done
+        return THEME.text_dim, self._autosave_note()
 
-        pad = imgui.get_style().frame_padding.x * 2
-        buttons_w = (
-            sum(imgui.calc_text_size(s).x for s in ("help", "(h)", "keybinds", "(k)"))
-            + pad * 2
-            + em(0.4) * 3
-        )
-        avail = imgui.get_content_region_avail().x
-        imgui.begin_child(
-            "##status",
-            imgui.ImVec2(max(avail - buttons_w - em(0.8), em(4)), em(1.6)),
-            window_flags=imgui.WindowFlags_.no_scrollbar,
-        )
-        imgui.align_text_to_frame_padding()
-        imgui.text_colored(to_vec4(color), text)
-        imgui.end_child()
-        imgui.same_line(0, em(0.8))
+    def _draw_status(self):
+        """help / keybinds on the left, the current info message right-aligned."""
         if imgui.button("help"):
             self._help_open = not self._help_open
         imgui.same_line(0, em(0.4))
         imgui.text_disabled("(h)")
-        imgui.same_line(0, em(0.4))
+        imgui.same_line(0, em(0.6))
         if imgui.button("keybinds"):
             self._keybinds_open = not self._keybinds_open
         imgui.same_line(0, em(0.4))
         imgui.text_disabled("(k)")
+        imgui.same_line(0, em(1.0))
+
+        color, text = self._status_message()
+        avail = imgui.get_content_region_avail().x
+        imgui.begin_child(
+            "##status", imgui.ImVec2(avail, em(1.6)), window_flags=imgui.WindowFlags_.no_scrollbar
+        )
+        imgui.align_text_to_frame_padding()
+        width = imgui.calc_text_size(text).x
+        if width < avail:
+            imgui.set_cursor_pos_x(avail - width)
+        imgui.text_colored(to_vec4(color), text)
+        imgui.end_child()
 
     def _draw_progress(self):
         labeled = self._class_labels >= 0
@@ -1247,7 +1286,8 @@ class ClassificationVis:
         "Open full FOV shows where the ROI sits in the field of view.",
         "When every ROI is labeled (at least 2 per class), click train: a ROICaT classifier is fit on the "
         "labels and saved to the classifier path.",
-        "On a new session, click classify: unlabeled ROIs take the prediction and the "
+        "On a new session, pick a saved classifier with Select classifier (or train one), "
+        "then click classify: unlabeled ROIs take the prediction and the "
         "pred column shows its confidence (red where it disagrees with your label). "
         "Fix what is wrong, then train again to improve the classifier.",
         "Labels are saved automatically as you go.",
@@ -1496,7 +1536,7 @@ def main(argv=None):
     parser.add_argument(
         "--classifier",
         default=None,
-        help="classifier .roicat_classifier path: train saves here, classify loads from here",
+        help="classifier .roicat_classifier path: train saves here; an existing file is also selected for classify",
     )
     args = parser.parse_args(argv)
 
@@ -1512,6 +1552,8 @@ def main(argv=None):
         vis = ClassificationVis(np.load(args.paths[0]), label_names=label_names, save_path=save_path)
     if args.classifier:
         vis.classifier_path = args.classifier
+        if os.path.isfile(args.classifier):
+            vis.select_classifier(args.classifier)
     vis.show()
     fpl.loop.run()
 
