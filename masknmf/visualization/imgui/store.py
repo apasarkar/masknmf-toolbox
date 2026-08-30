@@ -52,7 +52,8 @@ class LabelStore:
             "class_labels": labels,
         }
 
-    def _split(self, labels: np.ndarray) -> list:
+    def split(self, labels: np.ndarray) -> list:
+        """Labels split per session, the shape RoicatDataAdapter.set_class_labels takes."""
         if self.session_sizes is None:
             return [labels]
         return list(np.split(labels, np.cumsum(self.session_sizes)[:-1]))
@@ -81,7 +82,7 @@ class LabelStore:
 
         names = np.array([n.encode() for n in label_names])
         start = 0
-        for fname, part in zip(self.hdf5_files, self._split(labels)):
+        for fname, part in zip(self.hdf5_files, self.split(labels)):
             with h5py.File(fname, "r+") as f:
                 g = f.require_group(HDF5_GROUP)
                 _write_dataset(g, "class_labels", part.astype(np.int64))

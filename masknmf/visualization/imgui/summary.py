@@ -5,6 +5,7 @@ import wgpu
 from cmap import Colormap
 from imgui_bundle import imgui
 
+from masknmf.visualization.imgui import theme
 from masknmf.visualization.imgui.movie_player import MoviePlayer
 
 CMAPS = ("gray", "viridis", "magma", "inferno", "turbo")
@@ -340,22 +341,19 @@ class SummaryImageViewer:
             + 0.587 * rgba[..., 1].astype(np.float32)
             + 0.114 * rgba[..., 2].astype(np.float32)
         )
-        white = imgui.color_convert_float4_to_u32(imgui.ImVec4(1.0, 1.0, 1.0, 1.0))
-        black = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.0, 0.0, 0.0, 1.0))
         z = self._zoom
         for y in range(y0, y1):
             sy = canvas_pos.y + self._pan_y + y * z + z * 0.5
             for x in range(x0, x1):
                 sx = canvas_pos.x + self._pan_x + x * z + z * 0.5
                 txt = format_value(float(arr[y, x]), arr.dtype)
-                color = black if luma[y, x] > 140 else white
-                draw_list.add_text(imgui.ImVec2(sx - len(txt) * 3.0, sy - 6.5), color, txt)
+                draw_list.add_text(imgui.ImVec2(sx - len(txt) * 3.0, sy - 6.5), theme.text_on(luma[y, x]), txt)
 
     def _draw_rois(self, draw_list, img_min):
         contours = self.roi_provider()
         if not contours:
             return
-        color = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.2, 1.0, 0.4, 0.9))
+        color = theme.u32(theme.CONTOUR)
         z = self._zoom
         for contour in contours:
             pts = np.asarray(contour)
@@ -410,7 +408,7 @@ class SummaryImageViewer:
 
         gpu = self._ensure_gpu(key, arr)
         if gpu is None:
-            imgui.text_colored(imgui.ImVec4(1.0, 0.3, 0.3, 1.0), "GPU backend unavailable")
+            imgui.text_colored(theme.ERROR, "GPU backend unavailable")
             imgui.end()
             return
 
@@ -451,8 +449,7 @@ class SummaryImageViewer:
             y0, x0, hh, ww = self._highlight
             p0 = imgui.ImVec2(img_min.x + x0 * self._zoom, img_min.y + y0 * self._zoom)
             p1 = imgui.ImVec2(p0.x + ww * self._zoom, p0.y + hh * self._zoom)
-            box = imgui.color_convert_float4_to_u32(imgui.ImVec4(1.0, 0.9, 0.2, 0.9))
-            draw_list.add_rect(p0, p1, box, 0.0, 2.0)
+            draw_list.add_rect(p0, p1, theme.u32(theme.HIGHLIGHT), 0.0, 2.0)
         if self._show_rois and self.roi_provider is not None:
             self._draw_rois(draw_list, img_min)
         if self._show_pixel_values:

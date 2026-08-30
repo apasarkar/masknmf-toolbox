@@ -31,6 +31,7 @@ Everything here is importable from `masknmf.visualization.imgui`. Consumers: mas
 | `contours_to_bbox` / `zoom_to_bbox` | Frame one ROI in a subplot. | `lower, upper = contours_to_bbox(fov_shape, contour, extra_space=10)`, then `zoom_to_bbox(subplot, graphic, lower, upper)`. |
 | `resolve_time_reference` | One time axis across the NDWidget viewers, from frame timings or plain frame indices. | `ref_range, frame_timings = resolve_time_reference(n, frame_timings, ref_range, axis="time")`. A `ref_range` without `frame_timings` raises. |
 | `is_notebook_canvas` | Branch `show()` between an ipywidgets canvas and a native window. | `if is_notebook_canvas(figure): return HBox([...])`. |
+| `theme` | Colour tokens (`OK`, `WARN`, `ERROR`, `HINT`, `CODE`, `HIGHLIGHT`, `CONTOUR`, `DANGER`) and push/pop helpers, so every panel reads the same palette. | `theme.label_color(rgb)`, `theme.u32(color)` for draw lists, `with theme.label_button(rgb): ...` / `with theme.danger_button(): ...` around a button. `THEME.md` lists every token and where it is used. |
 | `CheckboxWindow` | A one-off toggle in its own imgui panel. | `w = CheckboxWindow("show contours")`, `figure.add_imgui_window(w, location="top", size=40)`, read `w.value`. |
 
 ## Hosting the panels
@@ -53,6 +54,6 @@ window.size = PANEL_HEIGHT + (TRACE_HEIGHT if expanded else 0)
 
 ## Not yet shared
 
-`ClassificationVis` still keeps `_label_names` / `_class_labels` as bare fields and hand-rolls its own copies of `LabelSet`, `RoiOrder`, `draw_roi_table`, `draw_filter_row`, `draw_label_editor` and `draw_label_buttons`. Moving it onto the shared versions is the one change that would put both GUIs on one implementation. `mbo_utilities/gui/widgets/summary_image.py` likewise duplicates `SummaryImageViewer` for the Preview tab.
+`ClassificationVis` now runs on `LabelSet`, `RoiOrder`, `LabelStore`, `AsyncLoad`, `OverlayPair` and the `draw_*` panels; only its background-source combo stays inline, being bound to per-session FOV and movie state that only that GUI has. `mbo_utilities/gui/widgets/summary_image.py` still duplicates `SummaryImageViewer` for the Preview tab.
 
 Candidates from the older viewers (`interactive_guis`, `multisession_vis`, `demixing_vis`, `motion_vis`): `PMDWidget`'s rectangle-ROI machinery; the repeated `ImageHighlightSelector` contour-selector wiring; a rows/cols -> fractional extents helper; `share_camera(figures)` / `link_x(subplots)`; and the normalize/offset trace stacks fed to `heatmap_to_positions`. From mbo: `compute_projections` (sampled mean/max/std reduce) and `PlaneMovie` (pins the non-`(T, Y, X)` dims of an n-d array to give `MoviePlayer` a lazy 3D view) are both generic.

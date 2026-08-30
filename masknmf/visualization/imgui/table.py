@@ -3,6 +3,7 @@ from typing import Callable, NamedTuple, Optional, Sequence
 import numpy as np
 from imgui_bundle import imgui
 
+from masknmf.visualization.imgui import theme
 from masknmf.visualization.imgui.labels import UNLABELED
 
 FILTER_ALL = -2
@@ -126,7 +127,8 @@ def draw_roi_table(
     Sortable, clipped ROI table. Returns the new scroll_to_current flag.
 
     column_names[0] is the id column; "label" is drawn in its class colour.
-    `actions` adds a trailing, unsortable column of icon buttons per row.
+    `actions` adds a trailing, unsortable column of icon buttons per row. Buttons sit
+    over the row's selectable, so clicking one does not change the selection.
     """
     flags = (
         imgui.TableFlags_.sortable
@@ -167,9 +169,11 @@ def draw_roi_table(
             item = int(order.order[row])
             imgui.table_next_row()
             imgui.table_next_column()
+            sel_flags = imgui.SelectableFlags_.span_all_columns
+            if actions:
+                sel_flags |= imgui.SelectableFlags_.allow_overlap
             clicked, _ = imgui.selectable(
-                f"{item}##row{row}", row == order.pos,
-                imgui.SelectableFlags_.span_all_columns,
+                f"{item}##row{row}", row == order.pos, sel_flags,
             )
             if clicked:
                 order.pos = row
@@ -183,10 +187,7 @@ def draw_roi_table(
                 if name == "label":
                     label = int(label_set.labels[item])
                     if label >= 0:
-                        imgui.text_colored(
-                            imgui.ImVec4(*label_set.color(label), 1.0),
-                            label_set.names[label],
-                        )
+                        imgui.text_colored(theme.label_color(label_set.color(label)), label_set.names[label])
                     else:
                         imgui.text("-")
                 else:

@@ -3,6 +3,8 @@ from typing import *
 import numpy as np
 from imgui_bundle import imgui
 
+from masknmf.visualization.imgui.crop import crop_slices
+
 
 class MoviePlayer:
     """
@@ -65,15 +67,12 @@ class MoviePlayer:
             img = np.asarray(self._movie[self._t])
             return img.reshape(img.shape[-2:])
         top, left, h, w = region
-        fov_h, fov_w = self._movie.shape[1:3]
         out = np.zeros((h, w), dtype=np.float32)
-        y0, y1 = max(top, 0), min(top + h, fov_h)
-        x0, x1 = max(left, 0), min(left + w, fov_w)
-        if y1 > y0 and x1 > x0:
-            img = np.asarray(self._movie[self._t, slice(y0, y1), slice(x0, x1)])
-            out[y0 - top : y1 - top, x0 - left : x1 - left] = img.reshape(
-                y1 - y0, x1 - x0
-            )
+        slices = crop_slices(top, left, (h, w), self._movie.shape[1:3])
+        if slices is not None:
+            dst, (ys, xs) = slices
+            img = np.asarray(self._movie[self._t, ys, xs])
+            out[dst] = img.reshape(ys.stop - ys.start, xs.stop - xs.start)
         return out
 
     def draw(self, slider_width: float = 260.0) -> bool:

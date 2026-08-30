@@ -44,6 +44,6 @@ class AsyncLoad:
         kind, value = result
         self.status = None
         if kind == "error":
-            self.error = str(value)
+            self.error = f"{type(value).__name__}: {value}"
             return None
         return value

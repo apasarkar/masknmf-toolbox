@@ -1,3 +1,4 @@
+from masknmf.visualization.imgui import theme
 from masknmf.visualization.imgui.widgets import CheckboxWindow
 from masknmf.visualization.imgui.picking import (
     component_at_pixel,
@@ -37,7 +38,7 @@ from masknmf.visualization.imgui.masks import (
     selected_rim,
 )
 from masknmf.visualization.imgui.draw import StrokeDrawer
-from masknmf.visualization.imgui.crop import context_crop, crop_origin
+from masknmf.visualization.imgui.crop import context_crop, crop_origin, crop_slices
 from masknmf.visualization.imgui.panels import (
     draw_keybinds_popup,
     draw_label_buttons,
@@ -74,6 +75,7 @@ __all__ = [
     "context_crop",
     "contours_to_bbox",
     "crop_origin",
+    "crop_slices",
     "draw_filter_row",
     "draw_keybinds_popup",
     "draw_label_buttons",
@@ -87,5 +89,6 @@ __all__ = [
     "resolve_time_reference",
     "rim_kernel",
     "selected_rim",
+    "theme",
     "zoom_to_bbox",
 ]
