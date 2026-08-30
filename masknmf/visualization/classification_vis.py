@@ -1629,11 +1629,6 @@ class ClassificationVis:
     def show(self):
         return self._figure.show()
 
-    def _ipython_display_(self):
-        from IPython.display import display
-
-        display(self.show())
-
 
 def main(argv=None):
     import argparse
