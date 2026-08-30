@@ -1,1 +1,1 @@
-from masknmf.classification.roicat_classification import RoicatClassifier, RoicatTrackingResults
+from masknmf.classification.roicat_classification import RoicatClassifier

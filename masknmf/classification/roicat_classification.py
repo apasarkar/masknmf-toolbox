@@ -1,4 +1,5 @@
 from masknmf.demixing.demixing_results import DemixingResults
+import roicat
 import torch
 import os
 import sys
@@ -22,6 +23,7 @@ from typing import Callable, Optional, Sequence
 import numpy as np
 import scipy.sparse
 from masknmf.utils import torch_select_device, display
+import tempfile
 
 class RoicatClassifier:
     """
@@ -93,13 +95,13 @@ class RoicatClassifier:
         """
         Output of this is to generate a ClassifierPackage object that can can be used for classification
         """
-        if not self.is_trainable():
+        if not self.is_trainable:
             raise ValueError("Training did not occur because at least one of the following required attributes are missing: data_adapter, labels")
 
         ## First associate with the data adapter the labels
         self.data_adapter.set_class_labels(labels=self.labels)
 
-        
+
         device = self.device
         dir_temp = tempfile.gettempdir()
 
@@ -139,8 +141,8 @@ class RoicatClassifier:
             classifier=autoclassifier,  ## The fitted Auto_LogisticRegression from above
             embedder=roinet,  ## The ROInet_embedder that produced the latents
             label_names=[str(l) for l in autoclassifier.model_best.classes_],  ## Class names, in classes_ order
-            size_images_in=roicat_input.ROI_images[0].shape[1:],  ## (height, width) of the RAW ROI images
-            um_per_pixel_training=roicat_input.um_per_pixel[0],  ## Recorded as provenance only
+            size_images_in=self.data_adapter.ROI_images[0].shape[1:],  ## (height, width) of the RAW ROI images
+            um_per_pixel_training=self.data_adapter.um_per_pixel[0],  ## Recorded as provenance only
         )
 
     def save(self, outpath: Path | str):
