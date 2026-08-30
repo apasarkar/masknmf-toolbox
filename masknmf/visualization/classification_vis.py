@@ -30,7 +30,7 @@ _LABEL_KEYS = (
     imgui.Key._1, imgui.Key._2, imgui.Key._3, imgui.Key._4, imgui.Key._5,
     imgui.Key._6, imgui.Key._7, imgui.Key._8, imgui.Key._9,
 )
-_COLUMNS = ("id", "label", "pred", "area", "peak", "snr", "skew")
+_COLUMNS = ("id", "label", "pred", "area", "peak", "f", "skew")
 _MIN_PER_CLASS = 2  # labeled ROIs a class needs before training
 _CLF_FILTERS = ["ROICaT classifier", f"*{CLASSIFIER_SUFFIX}", "All files", "*"]
 _HDF5_FILTERS = ["masknmf demixing results", "*.hdf5 *.h5", "All files", "*"]
@@ -247,7 +247,7 @@ class ClassificationVis:
         When given, the background shows the FOV cropped around the current ROI
         (its surrounding context) instead of a static max projection.
         bg_sources: {name: per-session image list} of alternative FOV backgrounds.
-        roi_stats: {"snr": (num_rois,), "skew": (num_rois,)} per-ROI trace stats.
+        roi_stats: {"f": (num_rois,), "skew": (num_rois,)} per-ROI trace stats.
         """
         roi_images = np.asarray(roi_images, dtype=np.float32)
         if roi_images.ndim != 3:
@@ -287,9 +287,9 @@ class ClassificationVis:
             self._bg_source_idx = 0
 
         roi_stats = roi_stats or {}
-        self._snr = np.asarray(roi_stats.get("snr", np.zeros(num_rois)), dtype=np.float32)
+        self._f = np.asarray(roi_stats.get("f", np.zeros(num_rois)), dtype=np.float32)
         self._skew = np.asarray(roi_stats.get("skew", np.zeros(num_rois)), dtype=np.float32)
-        if self._snr.shape[0] != num_rois or self._skew.shape[0] != num_rois:
+        if self._f.shape[0] != num_rois or self._skew.shape[0] != num_rois:
             raise ValueError("roi_stats arrays must have one entry per ROI")
 
         if class_labels is None:
@@ -361,6 +361,7 @@ class ClassificationVis:
             try:
                 import torch
                 from masknmf.demixing.demixing_results import DemixingResults
+                from masknmf.demixing.demixing_utils import brightness_order
                 from masknmf.multisession.roicat_tracking import (
                     RoicatDataAdapter,
                     extract_masknmf_mean_img,
@@ -368,7 +369,7 @@ class ClassificationVis:
                 )
 
                 bg_sources: dict[str, list] = {}
-                snr, skew, peak_frames = [], [], []
+                f, skew, peak_frames = [], [], []
                 mean_imgs, footprints, dmrs = [], [], []
 
                 def add_bg(name, img):
@@ -411,10 +412,8 @@ class ClassificationVis:
                             dmr.global_residual_correlation_image.cpu().numpy(),
                         )
 
+                    f.append(brightness_order(dmr.a, dmr.c)[1].cpu().numpy())
                     c = dmr.c.cpu().numpy()  # (num_frames, num_rois)
-                    med = np.median(c, axis=0)
-                    mad = np.median(np.abs(c - med), axis=0) * 1.4826
-                    snr.append((c.max(axis=0) - med) / np.where(mad == 0, 1, mad))
                     mean = c.mean(axis=0)
                     std = c.std(axis=0)
                     skew.append(((c - mean) ** 3).mean(axis=0) / np.where(std == 0, 1, std) ** 3)
@@ -435,7 +434,7 @@ class ClassificationVis:
                         k: v for k, v in bg_sources.items() if len(v) == len(files)
                     },
                     "stats": {
-                        "snr": np.concatenate(snr).astype(np.float32),
+                        "f": np.concatenate(f).astype(np.float32),
                         "skew": np.concatenate(skew).astype(np.float32),
                     },
                     "saved_labels": saved_labels,
@@ -639,7 +638,7 @@ class ClassificationVis:
             mask &= self._class_labels == self._filter_label
         idx = np.flatnonzero(mask)
         if self._sort_column:
-            keys = (self._class_labels, self._probs, self._area, self._peak, self._snr, self._skew)
+            keys = (self._class_labels, self._probs, self._area, self._peak, self._f, self._skew)
             idx = idx[np.argsort(keys[self._sort_column - 1][idx], kind="stable")]
         if not self._sort_ascending:
             idx = idx[::-1]
@@ -1571,7 +1570,7 @@ class ClassificationVis:
                 imgui.table_next_column()
                 imgui.text(f"{self._peak[roi]:.3g}")
                 imgui.table_next_column()
-                imgui.text(f"{self._snr[roi]:.1f}")
+                imgui.text(f"{self._f[roi]:.3g}")
                 imgui.table_next_column()
                 imgui.text(f"{self._skew[roi]:.2f}")
         imgui.end_table()
