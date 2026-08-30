@@ -25,6 +25,31 @@ _LABEL_KEYS = (
 _COLUMNS = ("id", "label", "pred", "area", "peak", "snr", "skew")
 _MIN_PER_CLASS = 2  # labeled ROIs a class needs before training
 _CLF_FILTERS = ["ROICaT classifier", f"*{CLASSIFIER_SUFFIX}", "All files", "*"]
+_HDF5_FILTERS = ["masknmf demixing results", "*.hdf5 *.h5", "All files", "*"]
+
+
+def _is_demixing_file(path: str) -> bool:
+    import h5py
+
+    try:
+        with h5py.File(path, "r") as f:
+            return "DemixingResults" in f
+    except OSError:
+        return False
+
+
+def _hdf5_paths(paths: Sequence[str]) -> list[str]:
+    """Expand folders to the demixing result .hdf5 files in them or their subfolders"""
+    import glob
+
+    files = []
+    for p in map(str, paths):
+        if os.path.isdir(p):
+            found = glob.glob(os.path.join(p, "*.h*5")) + glob.glob(os.path.join(p, "*", "*.h*5"))
+            files += sorted(f for f in found if f.endswith((".h5", ".hdf5")) and _is_demixing_file(f))
+        else:
+            files.append(p)
+    return files
 
 
 class ClassificationVis:
@@ -77,7 +102,9 @@ class ClassificationVis:
         self._set_label_names(label_names)
         self._help_open = False
         self._file_dialog = None
+        self._placeholder = False
         self._clf_source: Optional[tuple[str, str]] = None  # ('trained' | 'file', path)
+        self._classified_with = ""
         self._slider_w = 0.0
 
         self._show_bg = True
@@ -92,7 +119,10 @@ class ClassificationVis:
         self._bg_movie = False
         self._movie_range: Optional[tuple] = None
 
-        self._figure = fpl.Figure(size=(1200, 900))
+        self._figure = fpl.Figure(
+            size=(1200, 900),
+            canvas_kwargs={"title": "Classification Widget", "max_fps": 60.0, "vsync": True},
+        )
         self._summary = SummaryImageViewer(self._figure)
         self._bg = None
         self._fg = None
@@ -104,6 +134,13 @@ class ClassificationVis:
         self._figure.add_imgui_window(
             self._draw_table, location="right", size=360, title="ROIs"
         )
+
+    @classmethod
+    def empty(cls, label_names: Sequence[str] = (), roi_image_dims: tuple[int, int] = (36, 36)) -> "ClassificationVis":
+        """A GUI with no data: pick sessions with open file / open folder (or open_paths)"""
+        vis = cls(np.zeros((1, *roi_image_dims), dtype=np.float32), label_names=label_names)
+        vis._placeholder = True
+        return vis
 
     @classmethod
     def from_masknmf(
@@ -299,6 +336,11 @@ class ClassificationVis:
     def load_masknmf(self, demixing_result_files: Sequence[str], **adapter_kwargs):
         """Build a RoicatDataAdapter from demixing .hdf5 files in a background thread"""
         files = [str(f) for f in demixing_result_files]
+        if self._clf_source is not None and self._clf_source[0] == "trained":
+            path = self._clf_source[1]
+            self._clf_source = ("file", path) if os.path.isfile(path) else None
+        self._classifier = None
+        self._roicat_input = None
         self._save_files = files
         self._loading = f"ROICaT: building ROI images from {len(files)} session(s)..."
         self._load_result = None
@@ -422,6 +464,7 @@ class ClassificationVis:
                 roi_stats=result["stats"],
             )
             self._roicat_input = adapter
+            self._placeholder = False
             self._dmrs = result["dmrs"]
             self._peak_frames = result["peak_frames"]
             self._loading = None
@@ -536,14 +579,33 @@ class ClassificationVis:
         import h5py
 
         names = np.array([n.encode() for n in self._label_names])
-        for fname, labels in zip(self._save_files, self.class_labels_by_session):
+        cuts = np.cumsum(self._session_sizes)[:-1] if self._session_sizes else []
+        preds = np.split(self._pred, cuts)
+        probs = np.split(self._probs, cuts)
+        for k, (fname, labels) in enumerate(zip(self._save_files, self.class_labels_by_session)):
             with h5py.File(fname, "r+") as f:
                 g = f.require_group("DemixingResults")
                 self._write_dataset(g, "class_labels", labels.astype(np.int64))
                 self._write_dataset(g, "label_names", names)
-                self._write_dataset(
-                    g, "labels_complete", np.bool_((labels >= 0).all())
-                )
+                self._write_dataset(g, "labels_complete", np.bool_((labels >= 0).all()))
+                if (preds[k] >= 0).any():
+                    self._write_dataset(g, "class_predictions", preds[k].astype(np.int64))
+                    self._write_dataset(g, "class_probabilities", probs[k].astype(np.float32))
+                    self._write_dataset(g, "classified_with", np.bytes_(self._classified_with))
+
+    def _record_classifier(self, path: str):
+        """Store the trained classifier's path in each session hdf5, plus a dated history."""
+        if self._save_files is None:
+            return
+        import h5py
+
+        entry = f"{time.strftime('%Y-%m-%d')} {path}".encode()
+        for fname in self._save_files:
+            with h5py.File(fname, "r+") as f:
+                g = f.require_group("DemixingResults")
+                self._write_dataset(g, "classifier_path", np.bytes_(path))
+                history = list(g["classifier_history"][()]) if "classifier_history" in g else []
+                self._write_dataset(g, "classifier_history", np.array([*history, entry], dtype="S"))
 
     def _save_masks_to_hdf5(self):
         if self._save_files is None:
@@ -566,6 +628,31 @@ class ClassificationVis:
             self._error = None
         except OSError as e:
             self._error = f"save failed: {e}"
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        """
+        Block until background work (session loading, train, classify) is done and
+        applied. For scripts and notebooks, where no frame is being drawn.
+
+        Returns
+        -------
+        bool
+            False if ``timeout`` seconds passed first.
+        """
+        deadline = None if timeout is None else time.perf_counter() + timeout
+        while True:
+            self._poll_load()
+            self._poll_classifier()
+            if self._loading is None and self._clf_status is None:
+                return True
+            if deadline is not None and time.perf_counter() > deadline:
+                return False
+            time.sleep(0.1)
+
+    @property
+    def status(self) -> str:
+        """The message shown on the status line (error, progress, or autosave note)."""
+        return self._status_message()[1]
 
     def _rebuild_order(self):
         current = self.current
@@ -902,13 +989,14 @@ class ClassificationVis:
             self._error = f"classifier file not found: {path}"
             return
         adapter = self._roicat_input
+        used = path if path is not None else (self._clf_source[1] if self._clf_source else "")
 
         def work():
             from masknmf.classification import RoicatClassifier
 
             clf = RoicatClassifier.from_file(path) if path is not None else classifier
             _, names, probs = clf.classify(adapter)
-            return "classified", names, probs
+            return "classified", names, probs, used
 
         self._run_clf("classifying...", work)
 
@@ -942,7 +1030,12 @@ class ClassificationVis:
                 self._classifier_path = result[1]
                 self._clf_source = ("trained", result[1])
                 self._clf_done = f"saved classifier to {result[1]}"
+                try:
+                    self._record_classifier(result[1])
+                except OSError as e:
+                    self._error = f"could not record the classifier path: {e}"
             else:
+                self._classified_with = result[3]
                 try:
                     n = self._apply_predictions(result[1], result[2])
                 except ValueError as e:
@@ -1117,6 +1210,31 @@ class ClassificationVis:
         self._clf_source = ("file", path)
         self._clf_done = None
 
+    def open_paths(self, paths: Sequence[str]):
+        """Load demixing_results .hdf5 files and/or folders of them as sessions"""
+        if self._loading is not None:
+            return
+        files = _hdf5_paths(paths)
+        if not files:
+            self._error = "no .hdf5 files found"
+            return
+        self._error = None
+        self.load_masknmf(files)
+
+    def open_file(self):
+        """Native picker for one or more demixing_results .hdf5 files; loaded when the dialog returns."""
+        if self._file_dialog is None:
+            start = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
+            self._file_dialog = (
+                "hdf5", pfd.open_file("Open demixing results", start, _HDF5_FILTERS, pfd.opt.multiselect)
+            )
+
+    def open_folder(self):
+        """Native picker for a folder; every .hdf5 in it is loaded as a session."""
+        if self._file_dialog is None:
+            start = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
+            self._file_dialog = ("folder", pfd.select_folder("Open a folder of demixing results", start))
+
     def browse(self):
         """Native picker for a saved classifier to classify with; applied when the dialog returns."""
         if self._file_dialog is None:
@@ -1139,6 +1257,10 @@ class ClassificationVis:
             return
         if kind == "open":
             self.select_classifier(result[0])
+        elif kind == "hdf5":
+            self.open_paths(result)
+        elif kind == "folder":
+            self.open_paths([result])
         else:
             self._classifier_path = result
 
@@ -1214,6 +1336,8 @@ class ClassificationVis:
                 )
 
     def _autosave_note(self) -> str:
+        if self._placeholder:
+            return "open a demixing_results.hdf5 (open file) or a folder of sessions (open folder)"
         if self._save_files is not None:
             return "labels autosave into each session's hdf5 (DemixingResults/class_labels)"
         if self._save_path is not None:
@@ -1232,7 +1356,15 @@ class ClassificationVis:
         return THEME.text_dim, self._autosave_note()
 
     def _draw_status(self):
-        """help / keybinds on the left, the current info message right-aligned."""
+        """open / help / keybinds on the left, the current info message right-aligned."""
+        imgui.begin_disabled(self._loading is not None)
+        if imgui.button("open file"):
+            self.open_file()
+        imgui.same_line(0, em(0.4))
+        if imgui.button("open folder"):
+            self.open_folder()
+        imgui.end_disabled()
+        imgui.same_line(0, em(1.0))
         if imgui.button("help"):
             self._help_open = not self._help_open
         imgui.same_line(0, em(0.4))
@@ -1280,6 +1412,7 @@ class ClassificationVis:
             imgui.text_disabled("(u)")
 
     _HELP_STEPS = (
+        "Open file picks one or more demixing_results.hdf5 sessions, open folder loads every .hdf5 in a folder.",
         "Label each mask: click a label in the list or press its number key (0 clears). "
         "Up/down moves through the ROIs, u jumps to the next unlabeled one.",
         "Use VIEW to overlay the mask on a background image or the demixed movie; "
@@ -1518,9 +1651,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Label ROI images one ROI at a time")
     parser.add_argument(
         "paths",
-        nargs="+",
-        help=".npy file with a (num_rois, Y, X) array, or one or more masknmf "
-        "demixing_results .hdf5 files (ROI images are built with ROICaT in the background)",
+        nargs="*",
+        help=".npy file with a (num_rois, Y, X) array, or masknmf demixing_results .hdf5 "
+        "files / folders of them (ROI images are built with ROICaT in the background); "
+        "with no paths the window opens empty: use open file / open folder",
     )
     parser.add_argument(
         "--labels",
@@ -1541,10 +1675,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     label_names = args.labels.split(",") if args.labels else ()
-    if args.paths[0].endswith((".h5", ".hdf5")):
-        vis = ClassificationVis.from_masknmf(
-            args.paths, label_names=label_names, save_path=args.save
-        )
+    if not args.paths:
+        vis = ClassificationVis.empty(label_names=label_names)
+    elif args.paths[0].endswith((".h5", ".hdf5")) or os.path.isdir(args.paths[0]):
+        files = _hdf5_paths(args.paths)
+        if not files:
+            parser.error("no .hdf5 files found")
+        vis = ClassificationVis.from_masknmf(files, label_names=label_names, save_path=args.save)
     else:
         if len(args.paths) != 1:
             parser.error("expected exactly one .npy file")
