@@ -5,11 +5,12 @@ import threading
 import time
 import numpy as np
 import fastplotlib as fpl
-from imgui_bundle import imgui
+from imgui_bundle import imgui, icons_fontawesome_6 as fa, portable_file_dialogs as pfd
 
 from masknmf.visualization.imgui.movie_player import MoviePlayer
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, close_button
+from masknmf.classification.roicat_classification import CLASSIFIER_SUFFIX
 
 _LABEL_COLORS = (
     (0.12, 0.47, 0.71), (1.00, 0.50, 0.05), (0.17, 0.63, 0.17),
@@ -73,6 +74,7 @@ class ClassificationVis:
         self._label_colors: list[tuple] = []
         self._set_label_names(label_names)
         self._help_open = False
+        self._file_dialog = None
         self._slider_w = 0.0
 
         self._show_bg = True
@@ -683,6 +685,25 @@ class ClassificationVis:
         self._pos = int(after[0] if len(after) else hits[0])
         self._show_current()
 
+    def _bg_options(self) -> tuple[list, list]:
+        sources = self._bg_source_names if self._bg_sources is not None else ["mask MIP"]
+        return sources, [*sources] + (["demixed movie"] if self._dmrs is not None else [])
+
+    def _set_bg(self, idx: int):
+        sources, options = self._bg_options()
+        idx %= len(options)
+        self._bg_movie = idx >= len(sources)
+        if not self._bg_movie and self._bg_sources is not None:
+            self._bg_source_idx = idx
+            self._fov_images = self._bg_sources[sources[idx]]
+        self._show_current()
+
+    def _step_bg(self, direction: int):
+        """Previous / next background image, the demixed movie last."""
+        sources, _ = self._bg_options()
+        current = len(sources) if self._bg_movie else self._bg_source_idx
+        self._set_bg(current + direction)
+
     def _step_group(self, direction: int):
         """Cycle to the first ROI in view of the next/previous label class"""
         if self.current is None:
@@ -707,9 +728,9 @@ class ClassificationVis:
         if imgui.is_key_pressed(imgui.Key.down_arrow):
             self.step(stride)
         if imgui.is_key_pressed(imgui.Key.left_arrow):
-            self._step_group(-1)
+            (self._step_group if io.key_shift else self._step_bg)(-1)
         if imgui.is_key_pressed(imgui.Key.right_arrow):
-            self._step_group(1)
+            (self._step_group if io.key_shift else self._step_bg)(1)
         if imgui.is_key_pressed(imgui.Key.b, False):
             self._show_bg = not self._show_bg
             self._apply_overlay()
@@ -717,6 +738,10 @@ class ClassificationVis:
             self.goto_next_unlabeled()
         if imgui.is_key_pressed(imgui.Key._0, False):
             self.label_current(-1)
+        if imgui.is_key_pressed(imgui.Key.h, False):
+            self._help_open = not self._help_open
+        if imgui.is_key_pressed(imgui.Key.k, False):
+            self._keybinds_open = not self._keybinds_open
         if imgui.is_key_pressed(imgui.Key.m, False):
             self._show_mask = not self._show_mask
             self._apply_overlay()
@@ -808,12 +833,17 @@ class ClassificationVis:
         """
         Hand the labels to the RoicatClassifier, train it in a background thread
         and save the package to classifier_path (default: <first session dir>/classifier).
-        Every ROI must be labeled first.
+        Every ROI must be labeled first, with at least 2 ROIs per class.
         """
         if self._clf_busy:
             return
         if not self.labels_complete:
             self._error = "label every ROI before training"
+            return
+        counts = np.bincount(self._class_labels, minlength=len(self._label_names))
+        rare = [n for n, c in zip(self._label_names, counts) if c == 1]
+        if rare:
+            self._error = f"training needs at least 2 ROIs per class, only 1 labeled: {', '.join(rare)}"
             return
         if self._adapter_missing():
             self._error = f"cannot train: {self._adapter_missing()}"
@@ -920,7 +950,6 @@ class ClassificationVis:
         self._draw_labels_card(h)
         imgui.same_line(0, em(0.6))
         self._draw_classifier_card(h)
-        self._draw_help_buttons()
         self._draw_status()
         self._summary.draw()
         self._draw_help_popup()
@@ -947,42 +976,39 @@ class ClassificationVis:
                 self._open_full_fov()
 
     def _draw_view_card(self, h: float):
-        sources = self._bg_source_names if self._bg_sources is not None else ["mask MIP"]
-        options = [*sources] + (["demixed movie"] if self._dmrs is not None else [])
-        combo_x = em(4.5)
-        slider_x = combo_x + em(10.6)
+        sources, options = self._bg_options()
+        hint_x = em(4.6)
+        slider_x = hint_x + em(2.4)
         with card("##view", "VIEW", h):
-            changed_bg, self._show_bg = imgui.checkbox("bg##bg-on", self._show_bg)
-            imgui.same_line(combo_x)
             current = (
                 len(sources)
                 if self._bg_movie
                 else (self._bg_source_idx if self._bg_sources is not None else 0)
             )
-            imgui.set_next_item_width(em(10))
+            imgui.set_next_item_width(slider_x + self._slider_w - imgui.get_cursor_pos_x())
             changed_src, idx = imgui.combo("##bg-source", current, options)
             if changed_src:
-                self._bg_movie = idx >= len(sources)
-                if not self._bg_movie and self._bg_sources is not None:
-                    self._bg_source_idx = idx
-                    self._fov_images = self._bg_sources[sources[idx]]
-                self._show_current()
+                self._set_bg(idx)
+            imgui.same_line(0, em(0.4))
+            imgui.text_disabled("(left / right)")
+
+            changed_bg, self._show_bg = imgui.checkbox("bg##bg-on", self._show_bg)
+            imgui.same_line(hint_x)
+            imgui.text_disabled("(b)")
             imgui.same_line(slider_x)
             imgui.set_next_item_width(self._slider_w)
             changed_bga, self._bg_alpha = imgui.slider_float(
                 "##bg-alpha", self._bg_alpha, 0.0, 1.0, "opacity %.2f"
             )
-            imgui.same_line(0, em(0.4))
-            imgui.text_disabled("(b)")
 
             changed_mask, self._show_mask = imgui.checkbox("mask##mask-on", self._show_mask)
+            imgui.same_line(hint_x)
+            imgui.text_disabled("(m)")
             imgui.same_line(slider_x)
             imgui.set_next_item_width(self._slider_w)
             changed_fga, self._roi_alpha = imgui.slider_float(
                 "##roi-alpha", self._roi_alpha, 0.0, 1.0, "opacity %.2f"
             )
-            imgui.same_line(0, em(0.4))
-            imgui.text_disabled("(m)")
             if changed_bg or changed_bga or changed_mask or changed_fga:
                 self._apply_overlay()
             if self._bg_movie and self._movie_player.draw(slider_width=self._slider_w):
@@ -991,7 +1017,7 @@ class ClassificationVis:
     def _draw_labels_card(self, h: float):
         with card("##labels", "LABELS", h):
             self._draw_progress()
-            self._draw_label_list(rows=3.5)
+            self._draw_label_list(rows=3.2)
             imgui.set_next_item_width(em(6))
             entered, self._new_label = imgui.input_text_with_hint(
                 "##new-label", "new label", self._new_label, imgui.InputTextFlags_.enter_returns_true
@@ -1058,20 +1084,59 @@ class ClassificationVis:
         if remove is not None:
             self.remove_label(remove)
 
+    def browse(self):
+        """Open a native file picker for the classifier path; the choice lands on a later frame."""
+        if self._file_dialog is not None:
+            return
+        start = os.path.dirname(self._classifier_path or self._default_classifier_path())
+        self._file_dialog = pfd.open_file(
+            "Choose a ROICaT classifier",
+            start,
+            ["ROICaT classifier", f"*{CLASSIFIER_SUFFIX}", "All files", "*"],
+        )
+
+    def _poll_file_dialog(self):
+        if self._file_dialog is None or not self._file_dialog.ready(0):
+            return
+        picked = self._file_dialog.result()
+        self._file_dialog = None
+        if picked:
+            self._classifier_path = picked[0]
+            self._clf_done = None
+
+    def _classifier_hint(self) -> str:
+        missing = self._adapter_missing()
+        if missing:
+            return missing
+        name = os.path.basename(self._classifier_path)
+        if self._classifier is not None and self._classifier.classifier is not None:
+            return "using the classifier trained this session" + (f", saved as {name}" if name else "")
+        if not name:
+            default = os.path.basename(self._default_classifier_path()) + CLASSIFIER_SUFFIX
+            return f"no path set: train saves {default} next to the session file"
+        if os.path.isfile(self._classifier_path):
+            return f"classify loads {name}; train overwrites it"
+        return f"{name} does not exist yet: train creates it, classify has nothing to load"
+
     def _draw_classifier_card(self, h: float):
         w = em(6)
         with card("##clf", "CLASSIFIER", h):
+            self._poll_file_dialog()
             imgui.text("path")
             imgui.same_line(0, em(0.4))
-            imgui.set_next_item_width(w * 2 + em(0.6))
+            imgui.set_next_item_width(w * 2 - em(0.6))
             _, self._classifier_path = imgui.input_text_with_hint(
                 "##clf-path", "classifier.roicat_classifier", self._classifier_path
             )
+            imgui.same_line(0, em(0.4))
+            if imgui.button(f"{fa.ICON_FA_FOLDER_OPEN}##browse"):
+                self.browse()
             if imgui.is_item_hovered():
-                imgui.set_tooltip(
-                    "train saves the classifier here, classify loads it from here\n"
-                    "(default: <first session dir>/classifier.roicat_classifier)"
-                )
+                imgui.set_tooltip("browse for a .roicat_classifier file")
+            imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + w * 2 + em(3.4))
+            imgui.text_disabled(self._classifier_hint())
+            imgui.pop_text_wrap_pos()
+
             busy = self._clf_busy
             can_train = self.labels_complete and self.classifier is not None and not busy
             imgui.begin_disabled(not can_train)
@@ -1080,7 +1145,7 @@ class ClassificationVis:
             imgui.end_disabled()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
                 imgui.set_tooltip(
-                    "train a ROICaT classifier on the labeled ROIs and save it"
+                    "train a ROICaT classifier on the labeled ROIs and save it to the path"
                     if can_train or busy
                     else "label every ROI first (training needs complete labels)"
                 )
@@ -1089,7 +1154,7 @@ class ClassificationVis:
             can_classify = (
                 self._roicat_input is not None
                 and not busy
-                and (has_trained or bool(self._classifier_path))
+                and (has_trained or os.path.isfile(self._classifier_path))
             )
             imgui.begin_disabled(not can_classify)
             if imgui.button("classify", imgui.ImVec2(w, 0)):
@@ -1105,18 +1170,6 @@ class ClassificationVis:
                     )
                 )
 
-    def _draw_help_buttons(self):
-        w = em(6)
-        right = imgui.get_window_width() - w - em(1.0)
-        after_cards = imgui.get_item_rect_max().x - imgui.get_window_pos().x + em(0.6)
-        imgui.same_line(max(after_cards, right))
-        imgui.begin_group()
-        if imgui.button("help", imgui.ImVec2(w, 0)):
-            self._help_open = True
-        if imgui.button("keybinds", imgui.ImVec2(w, 0)):
-            self._keybinds_open = True
-        imgui.end_group()
-
     def _autosave_note(self) -> str:
         if self._save_files is not None:
             return "labels autosave into each session's hdf5 (DemixingResults/class_labels)"
@@ -1125,6 +1178,7 @@ class ClassificationVis:
         return "autosave off: labels are kept in memory only"
 
     def _draw_status(self):
+        """Status text on the left, help / keybinds buttons on the right."""
         if self._loading is not None:
             color, text = THEME.warn, self._loading
         elif self._error is not None:
@@ -1136,7 +1190,32 @@ class ClassificationVis:
             color, text = THEME.text_dim, self._clf_done
         else:
             color, text = THEME.text_dim, self._autosave_note()
+
+        pad = imgui.get_style().frame_padding.x * 2
+        buttons_w = (
+            sum(imgui.calc_text_size(s).x for s in ("help", "(h)", "keybinds", "(k)"))
+            + pad * 2
+            + em(0.4) * 3
+        )
+        avail = imgui.get_content_region_avail().x
+        imgui.begin_child(
+            "##status",
+            imgui.ImVec2(max(avail - buttons_w - em(0.8), em(4)), em(1.6)),
+            window_flags=imgui.WindowFlags_.no_scrollbar,
+        )
+        imgui.align_text_to_frame_padding()
         imgui.text_colored(to_vec4(color), text)
+        imgui.end_child()
+        imgui.same_line(0, em(0.8))
+        if imgui.button("help"):
+            self._help_open = not self._help_open
+        imgui.same_line(0, em(0.4))
+        imgui.text_disabled("(h)")
+        imgui.same_line(0, em(0.4))
+        if imgui.button("keybinds"):
+            self._keybinds_open = not self._keybinds_open
+        imgui.same_line(0, em(0.4))
+        imgui.text_disabled("(k)")
 
     def _draw_progress(self):
         labeled = self._class_labels >= 0
@@ -1166,7 +1245,7 @@ class ClassificationVis:
         "Up/down moves through the ROIs, u jumps to the next unlabeled one.",
         "Use VIEW to overlay the mask on a background image or the demixed movie; "
         "Open full FOV shows where the ROI sits in the field of view.",
-        "When every ROI is labeled, click train: a ROICaT classifier is fit on the "
+        "When every ROI is labeled (at least 2 per class), click train: a ROICaT classifier is fit on the "
         "labels and saved to the classifier path.",
         "On a new session, click classify: unlabeled ROIs take the prediction and the "
         "pred column shows its confidence (red where it disagrees with your label). "
@@ -1217,12 +1296,15 @@ class ClassificationVis:
     _KEYBINDS = (
         ("up / down", "previous / next ROI"),
         ("shift + up / down", "jump 10 ROIs"),
-        ("left / right", "previous / next label group"),
+        ("left / right", "previous / next background image"),
+        ("shift + left / right", "previous / next label group"),
         ("1-9", "assign label"),
         ("0", "clear label"),
         ("u", "jump to next unlabeled ROI"),
         ("m", "toggle mask overlay"),
         ("b", "toggle background"),
+        ("h", "toggle help"),
+        ("k", "toggle keybinds"),
     )
 
     def _draw_keybinds_popup(self):

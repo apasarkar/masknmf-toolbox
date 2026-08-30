@@ -33,6 +33,7 @@ class Theme:
     danger: Color = (0.75, 0.15, 0.15, 0.8)
     danger_hover: Color = (0.90, 0.20, 0.20, 1.0)
     rounding: float = 6.0
+    card_rounding: float = 0.0
 
 
 THEME = Theme()
@@ -46,7 +47,7 @@ def em(x: float = 1.0) -> float:
 @contextmanager
 def card(name: str, title: str, height: float, width: float = 0.0, theme: Theme = THEME):
     """
-    Bordered, rounded child window with an accent title.
+    Bordered child window with an accent title.
 
     Parameters
     ----------
@@ -59,7 +60,7 @@ def card(name: str, title: str, height: float, width: float = 0.0, theme: Theme 
     if width == 0:
         flags |= imgui.ChildFlags_.auto_resize_x
     imgui.push_style_color(imgui.Col_.border, to_vec4(theme.border))
-    imgui.push_style_var(imgui.StyleVar_.child_rounding, theme.rounding)
+    imgui.push_style_var(imgui.StyleVar_.child_rounding, theme.card_rounding)
     imgui.begin_child(
         name,
         imgui.ImVec2(width, height),
