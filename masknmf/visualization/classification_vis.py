@@ -10,7 +10,14 @@ from imgui_bundle import imgui, icons_fontawesome_6 as fa, portable_file_dialogs
 from masknmf.visualization.imgui.movie_player import MoviePlayer
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, close_button
-from masknmf.classification.roicat_classification import CLASSIFIER_SUFFIX
+from masknmf.demixing.labels import (
+    CLASSIFIER_SUFFIX,
+    read_labels,
+    record_classifier,
+    write_labels,
+    write_masks,
+    write_predictions,
+)
 
 _LABEL_COLORS = (
     (0.12, 0.47, 0.71), (1.00, 0.50, 0.05), (0.17, 0.63, 0.17),
@@ -178,9 +185,9 @@ class ClassificationVis:
         into the adapter's session .hdf5 files when it was built from masknmf results.
         Labels already set on the classifier are shown as the starting point.
         """
-        adapter = classifier.data_adapter
+        adapter = classifier.training_data
         if adapter is None:
-            raise ValueError("classifier has no data_adapter to label")
+            raise ValueError("classifier has no training_data to label")
         imgs = np.concatenate([np.asarray(s) for s in adapter.ROI_images], axis=0)
         sizes = [len(s) for s in adapter.ROI_images]
         files = [
@@ -553,70 +560,33 @@ class ClassificationVis:
     @staticmethod
     def _read_saved_labels(files: Sequence[str]):
         """(concatenated class_labels or None, label_names or None) stored in the session hdf5s"""
-        import h5py
-
         labels, names = [], None
         for fname in files:
-            with h5py.File(fname, "r") as f:
-                g = f.get("DemixingResults")
-                if g is not None and "class_labels" in g:
-                    labels.append(g["class_labels"][()])
-                if names is None and g is not None and "label_names" in g:
-                    names = [n.decode() for n in g["label_names"][()]]
+            stored, stored_names = read_labels(fname)
+            if stored is not None:
+                labels.append(stored)
+            names = names or stored_names
         return (np.concatenate(labels) if len(labels) == len(files) else None), names
 
-    @staticmethod
-    def _write_dataset(group, key: str, data: np.ndarray):
-        # overwrite in place when possible so the hdf5 doesn't grow with each write
-        if key in group and group[key].shape == data.shape and group[key].dtype == data.dtype:
-            group[key][...] = data
-        else:
-            if key in group:
-                del group[key]
-            group.create_dataset(key, data=data)
-
     def _save_labels_to_hdf5(self):
-        import h5py
-
-        names = np.array([n.encode() for n in self._label_names])
         cuts = np.cumsum(self._session_sizes)[:-1] if self._session_sizes else []
         preds = np.split(self._pred, cuts)
         probs = np.split(self._probs, cuts)
         for k, (fname, labels) in enumerate(zip(self._save_files, self.class_labels_by_session)):
-            with h5py.File(fname, "r+") as f:
-                g = f.require_group("DemixingResults")
-                self._write_dataset(g, "class_labels", labels.astype(np.int64))
-                self._write_dataset(g, "label_names", names)
-                self._write_dataset(g, "labels_complete", np.bool_((labels >= 0).all()))
-                if (preds[k] >= 0).any():
-                    self._write_dataset(g, "class_predictions", preds[k].astype(np.int64))
-                    self._write_dataset(g, "class_probabilities", probs[k].astype(np.float32))
-                    self._write_dataset(g, "classified_with", np.bytes_(self._classified_with))
+            write_labels(fname, labels, self._label_names)
+            if (preds[k] >= 0).any():
+                write_predictions(fname, preds[k], probs[k], self._classified_with)
 
     def _record_classifier(self, path: str):
-        """Store the trained classifier's path in each session hdf5, plus a dated history."""
-        if self._save_files is None:
-            return
-        import h5py
-
-        entry = f"{time.strftime('%Y-%m-%d')} {path}".encode()
-        for fname in self._save_files:
-            with h5py.File(fname, "r+") as f:
-                g = f.require_group("DemixingResults")
-                self._write_dataset(g, "classifier_path", np.bytes_(path))
-                history = list(g["classifier_history"][()]) if "classifier_history" in g else []
-                self._write_dataset(g, "classifier_history", np.array([*history, entry], dtype="S"))
+        for fname in self._save_files or ():
+            record_classifier(fname, path)
 
     def _save_masks_to_hdf5(self):
         if self._save_files is None:
             return
-        import h5py
-
         start = 0
         for fname, n in zip(self._save_files, self._session_sizes or (len(self._roi_images),)):
-            with h5py.File(fname, "r+") as f:
-                g = f.require_group("DemixingResults")
-                self._write_dataset(g, "roi_masks", self._roi_images[start : start + n])
+            write_masks(fname, self._roi_images[start : start + n])
             start += n
 
     def _autosave(self):
@@ -628,6 +598,10 @@ class ClassificationVis:
             self._error = None
         except OSError as e:
             self._error = f"save failed: {e}"
+        if self._classifier is not None and self.labels_complete:
+            self._classifier.labels = [
+                [self._label_names[i] for i in s] for s in self.class_labels_by_session
+            ]
 
     def wait(self, timeout: Optional[float] = None) -> bool:
         """
@@ -875,7 +849,7 @@ class ClassificationVis:
         if self._classifier is None and self._roicat_input is not None:
             from masknmf.classification import RoicatClassifier
 
-            self._classifier = RoicatClassifier(data_adapter=self._roicat_input)
+            self._classifier = RoicatClassifier(training_data=self._roicat_input)
         return self._classifier
 
     @property
@@ -900,7 +874,7 @@ class ClassificationVis:
             return None
         if self._loading is not None:
             return "ROI images are still loading"
-        return "no ROICaT data (load demixing .hdf5 files or use from_classifier)"
+        return "no ROICaT data: open a demixing_results.hdf5 (open file / open folder)"
 
     @property
     def _clf_busy(self) -> bool:
@@ -994,7 +968,7 @@ class ClassificationVis:
         def work():
             from masknmf.classification import RoicatClassifier
 
-            clf = RoicatClassifier.from_file(path) if path is not None else classifier
+            clf = RoicatClassifier.from_disk(path) if path is not None else classifier
             _, names, probs = clf.classify(adapter)
             return "classified", names, probs, used
 
@@ -1435,8 +1409,8 @@ class ClassificationVis:
         '    masks  = g["roi_masks"][()]     # (num_rois, Y, X) float32\n'
         "\n"
         "from masknmf.classification import RoicatClassifier\n"
-        'clf = RoicatClassifier.from_file(r"path/to/classifier.roicat_classifier")\n'
-        "ids, names, probs = clf.classify(roicat_adapter)  # one list per session"
+        'clf = RoicatClassifier.from_disk(r"path/to/classifier.roicat_classifier")\n'
+        'clf.classify([r"other/demixing_results.hdf5"], write=True)  # labels the file'
     )
     _HELP_NPZ = (
         "import numpy as np\n"
