@@ -1,6 +1,7 @@
 from typing import *
 import os
 import threading
+import time
 import numpy as np
 import fastplotlib as fpl
 from imgui_bundle import imgui
@@ -47,6 +48,14 @@ class ClassificationVis:
         self._roicat_input = None
         self._session_sizes: Optional[tuple[int, ...]] = None
         self._save_files: Optional[list[str]] = None  # hdf5 mode: labels live in-file
+        self._classifier = None
+        self._classifier_path = ""
+        self._clf_status: Optional[str] = None
+        self._clf_done: Optional[str] = None
+        self._clf_started = 0.0
+        self._clf_thread: Optional[threading.Thread] = None
+        self._clf_result = None
+        self._clf_error: Optional[str] = None
 
         if self._save_path is not None and os.path.exists(self._save_path):
             saved = np.load(self._save_path)
@@ -80,7 +89,7 @@ class ClassificationVis:
         self.set_roi_images(roi_images, class_labels)
 
         self._figure.add_imgui_window(
-            self._draw_panel, location="top", size=150, title="Classification"
+            self._draw_panel, location="top", size=185, title="Classification"
         )
         self._figure.add_imgui_window(
             self._draw_table, location="right", size=360, title="ROIs"
@@ -107,6 +116,58 @@ class ClassificationVis:
         placeholder = np.zeros((1, *roi_image_dims), dtype=np.float32)
         vis = cls(placeholder, label_names=label_names, save_path=save_path)
         vis.load_masknmf(demixing_result_files, roi_image_dims=roi_image_dims, **adapter_kwargs)
+        return vis
+
+    @classmethod
+    def from_classifier(
+        cls,
+        classifier,
+        label_names: Sequence[str] = (),
+        save_path: Optional[str] = None,
+    ) -> "ClassificationVis":
+        """
+        Label the ROIs already held by a RoicatClassifier's data_adapter; the
+        train button hands the labels back to that same classifier. Labels persist
+        into the adapter's session .hdf5 files when it was built from masknmf results.
+        Labels already set on the classifier are shown as the starting point.
+        """
+        adapter = classifier.data_adapter
+        if adapter is None:
+            raise ValueError("classifier has no data_adapter to label")
+        imgs = np.concatenate([np.asarray(s) for s in adapter.ROI_images], axis=0)
+        sizes = [len(s) for s in adapter.ROI_images]
+        files = [
+            str(f)
+            for f in (adapter.session_files or ())
+            if isinstance(f, (str, os.PathLike)) and str(f).endswith((".h5", ".hdf5"))
+        ]
+        if len(files) != len(sizes):
+            files = None
+        saved_labels, saved_names = cls._read_saved_labels(files) if files else (None, None)
+        if not label_names and saved_names:
+            label_names = saved_names
+        if classifier.labels is not None:
+            flat = [str(l) for s in classifier.labels for l in s]
+            label_names = list(dict.fromkeys([*label_names, *flat]))
+            saved_labels = np.array([label_names.index(l) for l in flat], dtype=np.int64)
+        if saved_labels is not None and saved_labels.shape[0] != imgs.shape[0]:
+            saved_labels = None
+
+        vis = cls(np.zeros((1, *imgs.shape[1:]), dtype=np.float32), label_names=label_names, save_path=save_path)
+        vis._save_files = files
+        vis.set_roi_images(
+            imgs,
+            saved_labels,
+            session_sizes=sizes,
+            fov_images=adapter.FOV_images,
+            centroids=adapter.centroids,
+        )
+        vis._roicat_input = adapter
+        vis._classifier = classifier
+        try:
+            vis._save_masks_to_hdf5()
+        except OSError as e:
+            vis._error = f"mask save failed: {e}"
         return vis
 
     def set_roi_images(
@@ -232,7 +293,6 @@ class ClassificationVis:
 
         def work():
             try:
-                import h5py
                 import torch
                 from masknmf.demixing.demixing_results import DemixingResults
                 from masknmf.multisession.roicat_tracking import (
@@ -243,8 +303,6 @@ class ClassificationVis:
 
                 bg_sources: dict[str, list] = {}
                 snr, skew, peak_frames = [], [], []
-                saved_labels: list = []
-                saved_names = None
                 mean_imgs, footprints, dmrs = [], [], []
 
                 def add_bg(name, img):
@@ -287,13 +345,6 @@ class ClassificationVis:
                             dmr.global_residual_correlation_image.cpu().numpy(),
                         )
 
-                    with h5py.File(fname, "r") as f:
-                        g = f["DemixingResults"]
-                        if "class_labels" in g:
-                            saved_labels.append(g["class_labels"][()])
-                        if saved_names is None and "label_names" in g:
-                            saved_names = [n.decode() for n in g["label_names"][()]]
-
                     c = dmr.c.cpu().numpy()  # (num_frames, num_rois)
                     med = np.median(c, axis=0)
                     mad = np.median(np.abs(c - med), axis=0) * 1.4826
@@ -309,6 +360,7 @@ class ClassificationVis:
                     tuple(os.path.abspath(f) for f in files),
                     **adapter_kwargs,
                 )
+                saved_labels, saved_names = self._read_saved_labels(files)
 
                 self._load_result = {
                     "adapter": adapter,
@@ -320,11 +372,7 @@ class ClassificationVis:
                         "snr": np.concatenate(snr).astype(np.float32),
                         "skew": np.concatenate(skew).astype(np.float32),
                     },
-                    "saved_labels": (
-                        np.concatenate(saved_labels)
-                        if len(saved_labels) == len(files)
-                        else None
-                    ),
+                    "saved_labels": saved_labels,
                     "saved_names": saved_names,
                     "dmrs": dmrs,
                     "peak_frames": np.concatenate(peak_frames).astype(np.int64),
@@ -443,6 +491,21 @@ class ClassificationVis:
         if self._session_sizes is not None:
             data["session_sizes"] = np.array(self._session_sizes)
         np.savez(path, **data)
+
+    @staticmethod
+    def _read_saved_labels(files: Sequence[str]):
+        """(concatenated class_labels or None, label_names or None) stored in the session hdf5s"""
+        import h5py
+
+        labels, names = [], None
+        for fname in files:
+            with h5py.File(fname, "r") as f:
+                g = f.get("DemixingResults")
+                if g is not None and "class_labels" in g:
+                    labels.append(g["class_labels"][()])
+                if names is None and g is not None and "label_names" in g:
+                    names = [n.decode() for n in g["label_names"][()]]
+        return (np.concatenate(labels) if len(labels) == len(files) else None), names
 
     @staticmethod
     def _write_dataset(group, key: str, data: np.ndarray):
@@ -667,6 +730,125 @@ class ClassificationVis:
             self._summary.set_highlight(None)
         self._summary.open()
 
+    @property
+    def classifier(self):
+        """RoicatClassifier over the loaded sessions (built lazily once the adapter exists)"""
+        if self._classifier is None and self._roicat_input is not None:
+            from masknmf.classification import RoicatClassifier
+
+            self._classifier = RoicatClassifier(data_adapter=self._roicat_input)
+        return self._classifier
+
+    @property
+    def classifier_path(self) -> str:
+        """Where train() saves the classifier package"""
+        return self._classifier_path
+
+    @classifier_path.setter
+    def classifier_path(self, path: str):
+        self._classifier_path = str(path)
+
+    @property
+    def labels_complete(self) -> bool:
+        return len(self._class_labels) > 0 and bool((self._class_labels >= 0).all())
+
+    def _default_classifier_path(self) -> str:
+        base = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
+        return os.path.join(base, "classifier")
+
+    @property
+    def _clf_busy(self) -> bool:
+        return self._clf_thread is not None and self._clf_thread.is_alive()
+
+    def _run_clf(self, status: str, work: Callable):
+        self._clf_status = status
+        self._clf_started = time.perf_counter()
+        self._clf_result = None
+        self._clf_error = None
+
+        def target():
+            try:
+                self._clf_result = work()
+            except Exception as e:
+                self._clf_error = f"{type(e).__name__}: {e}"
+
+        self._clf_thread = threading.Thread(target=target, daemon=True)
+        self._clf_thread.start()
+
+    def train(self, classifier_path: Optional[str] = None):
+        """
+        Hand the labels to the RoicatClassifier, train it in a background thread
+        and save the package to classifier_path (default: <first session dir>/classifier).
+        Every ROI must be labeled first.
+        """
+        if self._clf_busy:
+            return
+        if self.classifier is None:
+            self._error = "nothing to train on: ROI images are still loading"
+            return
+        if not self.labels_complete:
+            self._error = "label every ROI before training"
+            return
+        if classifier_path:
+            self._classifier_path = str(classifier_path)
+        if not self._classifier_path:
+            self._classifier_path = self._default_classifier_path()
+        path = self._classifier_path
+        names = [[self._label_names[i] for i in s] for s in self.class_labels_by_session]
+        clf = self.classifier
+
+        def work():
+            clf.labels = names
+            clf.train(num_workers=0)
+            return clf.save(path)
+
+        self._run_clf("training: ROInet embedding + logistic regression...", work)
+
+    def _poll_classifier(self):
+        if self._clf_status is None:
+            return
+        if self._clf_error is not None:
+            self._error = f"{self._clf_status.split(':')[0]} failed: {self._clf_error}"
+            self._clf_status = None
+        elif self._clf_result is not None:
+            result, self._clf_result = self._clf_result, None
+            self._clf_status = None
+            self._error = None
+            self._classifier_path = result
+            self._clf_done = f"saved classifier to {result}"
+
+    def _draw_classifier_row(self):
+        imgui.set_next_item_width(320)
+        _, self._classifier_path = imgui.input_text_with_hint(
+            "##clf-path", "classifier path (.roicat_classifier)", self._classifier_path
+        )
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "train saves the classifier here\n"
+                "(default: <first session dir>/classifier.roicat_classifier)"
+            )
+        imgui.same_line(0, 6)
+        busy = self._clf_busy
+        can_train = self.labels_complete and self.classifier is not None and not busy
+        imgui.begin_disabled(not can_train)
+        if imgui.button("train"):
+            self.train()
+        imgui.end_disabled()
+        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+            imgui.set_tooltip(
+                "train a ROICaT classifier on the labeled ROIs and save it"
+                if can_train or busy
+                else "label every ROI first (training needs complete labels)"
+            )
+        imgui.same_line(0, 16)
+        if self._clf_status is not None:
+            imgui.text_colored(
+                imgui.ImVec4(1.0, 0.8, 0.2, 1.0),
+                f"{self._clf_status} {time.perf_counter() - self._clf_started:.0f}s",
+            )
+        elif self._clf_done is not None:
+            imgui.text_disabled(self._clf_done)
+
     def _draw_save_note(self):
         if self._save_path is None and self._save_files is None:
             imgui.text_disabled("autosave off — labels are kept in memory only")
@@ -707,6 +889,7 @@ class ClassificationVis:
 
     def _draw_panel(self):
         self._poll_load()
+        self._poll_classifier()
         self._handle_keys()
 
         if self._loading is not None:
@@ -835,6 +1018,7 @@ class ClassificationVis:
                 self.label(range(len(self._class_labels)), -1)
             imgui.pop_style_color(2)
 
+        self._draw_classifier_row()
         self._summary.draw()
         self._draw_keybinds_popup()
 
@@ -1059,6 +1243,11 @@ def main(argv=None):
         help="optional labels npz path; hdf5 inputs store labels in-file by default "
         "(npy default: <path>.labels.npz)",
     )
+    parser.add_argument(
+        "--classifier",
+        default=None,
+        help="classifier .roicat_classifier path the train button saves to",
+    )
     args = parser.parse_args(argv)
 
     label_names = args.labels.split(",") if args.labels else ()
@@ -1071,6 +1260,8 @@ def main(argv=None):
             parser.error("expected exactly one .npy file")
         save_path = args.save if args.save else f"{args.paths[0]}.labels.npz"
         vis = ClassificationVis(np.load(args.paths[0]), label_names=label_names, save_path=save_path)
+    if args.classifier:
+        vis.classifier_path = args.classifier
     vis.show()
     fpl.loop.run()
 
