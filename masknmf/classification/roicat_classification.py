@@ -1,43 +1,46 @@
-from masknmf.demixing.demixing_results import DemixingResults
-import roicat
-import torch
 import os
-import sys
-from typing import *
+import tempfile
 from pathlib import Path
-import scipy
-import scipy.sparse
-from roicat.classification import ClassifierPackage
-from masknmf.multisession.roicat_tracking import RoicatDataAdapter
-from roicat.data_importing import Data_roicat
-from roicat.pipelines import pipeline_tracking
-from roicat.util import get_default_parameters
-from roicat import helpers
-from roicat.util import RichFile_ROICaT
-import json
-import datetime
-
-import warnings
-from typing import Callable, Optional, Sequence
+from typing import Literal, Optional
 
 import numpy as np
-import scipy.sparse
+import roicat
+from roicat.classification import ClassifierPackage
+
+from masknmf.multisession.roicat_tracking import RoicatDataAdapter
 from masknmf.utils import torch_select_device, display
-import tempfile
+
+CLASSIFIER_SUFFIX = ".roicat_classifier"
+_ROINET_URL = "https://osf.io/c8m3b/download"
+_ROINET_HASH = "357a8d9b630ec79f3e015d0056a4c2d5"
+
+
+def _um_per_pixel_list(adapter: RoicatDataAdapter) -> list[float]:
+    um = adapter.um_per_pixel
+    if isinstance(um, (list, tuple, np.ndarray)):
+        return [float(u) for u in um]
+    return [float(um)] * adapter.n_sessions
+
 
 class RoicatClassifier:
     """
-    Intended use: pass one or more demixing results objects (.hdf5) into a RoicatDataAdapter
+    Train / apply a ROICaT ROI classifier over one or more sessions held in a
+    RoicatDataAdapter (built from demixing result .hdf5 files).
 
+    Workflow: set `labels` (one list per session, one entry per ROI, str or int),
+    call `train()`, `save(path)`; later `from_file(path).classify(adapter)`.
     """
-    def __init__(self,
-                 data_adapter: RoicatDataAdapter | None = None,
-                 labels: list[list] | None = None,
-                 classifier: ClassifierPackage | None = None,
-                 device: Literal["auto", "cpu", "cuda"] = "auto"):
 
+    def __init__(
+        self,
+        data_adapter: RoicatDataAdapter | None = None,
+        labels: list[list] | None = None,
+        classifier: ClassifierPackage | None = None,
+        device: Literal["auto", "cpu", "cuda"] = "auto",
+    ):
         self._device = torch_select_device(device)
         self._data_adapter = data_adapter
+        self._labels = None
         self.labels = labels
         self._classifier = classifier
 
@@ -51,37 +54,42 @@ class RoicatClassifier:
 
     @property
     def labels(self) -> list[list] | None:
-        if self.data_adapter is not None:
-            return self._labels
-        else:
-            warnings.warn("Did not set labels, you have not passed in a data_adapter object so there are no images to label")
+        """One list per session, one label (str or int) per ROI"""
+        return self._labels
 
     @labels.setter
     def labels(self, new_labels: list[list] | None):
-        if new_labels is not None:
-            for k in range(self.data_adapter.n_sessions):
-                num_neurons_sess_k = self.data_adapter.n_roi[k]
-                if not num_neurons_sess_k == len(new_labels[k]):
-                    raise ValueError(f"At session {k} the number of neural signals "
-                                     f"is {num_neurons_sess_k} but the number of labels provided is {len(new_labels[k])}")
-
-        self._labels = new_labels
+        if new_labels is None:
+            self._labels = None
+            return
+        if self.data_adapter is None:
+            raise ValueError("set data_adapter before labels: labels are matched against its ROIs")
+        if len(new_labels) != self.data_adapter.n_sessions:
+            raise ValueError(
+                f"data_adapter has {self.data_adapter.n_sessions} sessions but "
+                f"{len(new_labels)} label lists were provided"
+            )
+        for k, session_labels in enumerate(new_labels):
+            n = self.data_adapter.n_roi[k]
+            if n != len(session_labels):
+                raise ValueError(
+                    f"At session {k} the number of neural signals is {n} but the "
+                    f"number of labels provided is {len(session_labels)}"
+                )
+        self._labels = [list(l) for l in new_labels]
 
     @property
     def is_trainable(self) -> bool:
-        if self.data_adapter is not None and self.labels is not None:
-            return True
-        return False
+        return self.data_adapter is not None and self.labels is not None
 
     @property
     def valid_classes(self) -> set | None:
         if self.labels is None:
             return None
-        else:
-            classes = set()
-            for session_labels in self.labels:
-                classes.update(session_labels)
-            return classes
+        classes = set()
+        for session_labels in self.labels:
+            classes.update(session_labels)
+        return classes
 
     @property
     def classifier(self) -> ClassifierPackage | None:
@@ -91,133 +99,117 @@ class RoicatClassifier:
     def classifier(self, updated_classifier: ClassifierPackage | None):
         self._classifier = updated_classifier
 
-    def train(self):
+    @property
+    def label_names(self) -> list[str] | None:
+        """Class names of the trained/loaded classifier, in prediction-index order"""
+        return None if self.classifier is None else list(self.classifier.label_names)
+
+    def train(self, roinet_dir: Optional[str | Path] = None, num_workers: int = -1) -> ClassifierPackage:
         """
-        Output of this is to generate a ClassifierPackage object that can can be used for classification
+        Embed every ROI image with ROInet, fit a logistic regression on the
+        labels and package the result as a ClassifierPackage (self.classifier).
+
+        Args:
+            roinet_dir: where the pretrained ROInet weights are cached (default: system temp dir)
+            num_workers: dataloader workers for the embedding pass; 0 runs in-process
         """
         if not self.is_trainable:
-            raise ValueError("Training did not occur because at least one of the following required attributes are missing: data_adapter, labels")
-
-        ## First associate with the data adapter the labels
-        self.data_adapter.set_class_labels(labels=self.labels)
-
-
-        device = self.device
-        dir_temp = tempfile.gettempdir()
+            raise ValueError(
+                "Training did not occur because at least one of the following required "
+                "attributes are missing: data_adapter, labels"
+            )
+        adapter = self.data_adapter
+        adapter.set_class_labels(labels=self.labels)
 
         roinet = roicat.ROInet.ROInet_embedder(
-            device=device,  ## Which torch device to use ('cpu', 'cuda', etc.)
-            dir_networkFiles=dir_temp,  ## Directory to download the pretrained network to
-            download_method='check_local_first',
-            ## Check to see if a model has already been downloaded to the location (will skip if hash matches)
-            download_url='https://osf.io/c8m3b/download',  ## URL of the model
-            download_hash='357a8d9b630ec79f3e015d0056a4c2d5',  ## Hash of the model file
-            forward_pass_version='head',  ## How the data is passed through the network
-            verbose=True,  ## Whether to print updates
+            device=self.device,
+            dir_networkFiles=str(roinet_dir or tempfile.gettempdir()),
+            download_method="check_local_first",
+            download_url=_ROINET_URL,
+            download_hash=_ROINET_HASH,
+            forward_pass_version="head",
+            verbose=True,
         )
-
         roinet.generate_dataloader(
-            ROI_images=self.data_adapter.ROI_images,  ## Input images of ROIs
-            um_per_pixel=self.data_adapter.um_per_pixel,  ## Resolution of FOV
-            pref_plot=False,  ## Whether or not to plot the ROI sizes
+            ROI_images=adapter.ROI_images,
+            um_per_pixel=adapter.um_per_pixel,
+            pref_plot=False,
+            numWorkers_dataloader=num_workers,
+            persistentWorkers_dataloader=num_workers != 0,
         )
-
         roinet.generate_latents()
 
-        x = np.array(roinet.latents).astype(np.float32)
-        y = np.concatenate(self.data_adapter.class_labels_index).astype(np.int64)
+        x = np.asarray(roinet.latents, dtype=np.float32)
+        y = np.concatenate(adapter.class_labels_index).astype(np.int64)
+        names = [str(n) for n in adapter.unique_class_labels]
 
         autoclassifier = roicat.classification.classifier.Auto_LogisticRegression(
             X=x,
             y=y,
-            params_LogisticRegression={
-                'C': [1e-13, 1e3],
-            },
+            params_LogisticRegression={"C": [1e-13, 1e3]},
+            label_names=names,
             verbose=True,
         )
         autoclassifier.fit()
 
-        self.classifier = roicat.classification.ClassifierPackage(
-            classifier=autoclassifier,  ## The fitted Auto_LogisticRegression from above
-            embedder=roinet,  ## The ROInet_embedder that produced the latents
-            label_names=[str(l) for l in autoclassifier.model_best.classes_],  ## Class names, in classes_ order
-            size_images_in=self.data_adapter.ROI_images[0].shape[1:],  ## (height, width) of the RAW ROI images
-            um_per_pixel_training=self.data_adapter.um_per_pixel[0],  ## Recorded as provenance only
+        self.classifier = ClassifierPackage(
+            classifier=autoclassifier,
+            embedder=roinet,
+            label_names=[names[int(c)] for c in autoclassifier.model_best.classes_],
+            size_images_in=tuple(adapter.ROI_images[0].shape[1:]),
+            um_per_pixel_training=_um_per_pixel_list(adapter)[0],
         )
+        return self.classifier
 
-    def save(self, outpath: Path | str):
-        paths_save = os.path.abspath(outpath)
-        self.classifier.save(paths_save, overwrite=True)
-        display(f"Saved packet to: {paths_save}")
+    def save(self, outpath: Path | str) -> str:
+        """Write the classifier package; returns the path (suffix .roicat_classifier is appended if missing)"""
+        if self.classifier is None:
+            raise ValueError("nothing to save: call train() or from_file() first")
+        path = os.path.abspath(outpath)
+        self.classifier.save(path, overwrite=True)
+        if not path.endswith(CLASSIFIER_SUFFIX):
+            path += CLASSIFIER_SUFFIX
+        display(f"Saved classifier to: {path}")
+        return path
 
-
-    def classify(self, data_adapter: RoicatDataAdapter) -> list[list] | None:
+    def classify(
+        self, data_adapter: RoicatDataAdapter
+    ) -> tuple[list[np.ndarray], list[list[str]], list[np.ndarray]]:
         """
-        Takes as input a data_adapter, which might contain ROIs from many sessions
-        Generates classifications for all ROIs across all sessions
+        Classify every ROI in every session of data_adapter.
 
-        RoicatDataAdapter takes the ROIs from the individual session FOVs, computes their center of masses
-        Args:
-            data_adapter (RoicatDataAdapter): RoicatDataAdapter containing one or more sessions of data to be classified
-        Returns:
-            - list[list] containing label_ids. One list per session (and this list has length = number of rois for that session)
-            - list[list] containing labels corresponding to the above label_ids
-            - list[list] containing probability estimates for each classification
+        Returns three lists with one entry per session:
+            - label ids, shape (n_roi,), indices into self.label_names
+            - label names, one str per ROI
+            - probabilities, shape (n_roi, n_classes), columns in self.label_names order
         """
-        if self.classifier is not None:
-            ## First verify that the data ROI shape dimensions match what the net expects
-            size_expected = tuple(self.classifier.preprocessing['size_images_in'])
-            if not size_expected == data_adapter.ROI_images[0].shape[1:]:
-                display(f"Classifier expects ROI spatial dimensions {size_expected} "
-                        f"but the data_adapter has ROI spatial dimensions {data_adapter.ROI_images[0].shape[1:]}. "
-                        f"Transforming the shapes to match.")
-                data_adapter.transform_spatialFootprints_to_ROIImages(out_height_width={size_expected})
+        if self.classifier is None:
+            raise ValueError("no classifier: call train() or from_file() first")
+        size_expected = tuple(self.classifier.preprocessing["size_images_in"])
+        size_given = tuple(data_adapter.ROI_images[0].shape[1:])
+        if size_expected != size_given:
+            display(
+                f"Classifier expects ROI spatial dimensions {size_expected} but the "
+                f"data_adapter has {size_given}. Transforming the shapes to match."
+            )
+            data_adapter.transform_spatialFootprints_to_ROIImages(out_height_width=size_expected)
 
-            if isinstance(data_adapter.um_per_pixel, float):
-                um_per_pixel_list = [data_adapter.um_per_pixel for k in range(data_adapter.n_sessions)]
-            elif isinstance(data_adapter.um_per_pixel, list):
-                um_per_pixel_list = data_adapter.um_per_pixel
-            else:
-                raise ValueError("data_adapter um per pixel ")
-
-            predicted_label_ids = [] ## Each value here indexes into self.classifier.
-            predicted_labels = []
-            probabilities = []
-            for images, um in zip(data_adapter.ROI_images, um_per_pixel_list):
-                curr_predicted_label_ids, curr_probabilities = self.classifier.predict(roi_images=images,
-                                                                             um_per_pixel=um)
-                curr_predicted_labels = [self.classifier.label_names[i] for i in curr_predicted_label_ids]
-
-                predicted_label_ids.append(curr_predicted_label_ids)
-                probabilities.append(curr_probabilities)
-                predicted_labels.append(curr_predicted_labels)
-
-            return predicted_label_ids, predicted_labels, predicted_probabilities
-
-        else:
-            return None
-
+        label_ids, labels, probabilities = [], [], []
+        for images, um in zip(data_adapter.ROI_images, _um_per_pixel_list(data_adapter)):
+            ids, probs = self.classifier.predict(
+                roi_images=np.asarray(images), um_per_pixel=um, device=self.device
+            )
+            label_ids.append(ids)
+            probabilities.append(probs)
+            labels.append([self.classifier.label_names[i] for i in ids])
+        return label_ids, labels, probabilities
 
     @classmethod
-    def from_file(cls,
-                  filepath: Path | str):
-        abs_path = os.path.abspath(filepath)
-
+    def from_file(
+        cls, filepath: Path | str, device: Literal["auto", "cpu", "cuda"] = "auto"
+    ) -> "RoicatClassifier":
         """
-        For now the net is constructed and resides on CPU. If GPU is available, it will run on GPU when we call "predict"
-        While this is slightly inefficient, the roicat API does not have a device setter (and classification does
-        not need to be super high throughput in general)
+        Load a saved classifier package. The net is kept on CPU until predict
+        moves it to `device` (the roicat API has no device setter).
         """
-        classifier = roicat.classification.ClassifierPackage.load(abs_path)
-
-        return cls(classifier=classifier)
-
-
-
-
-
-
-
-
-
-
+        return cls(classifier=ClassifierPackage.load(os.path.abspath(filepath)), device=device)
