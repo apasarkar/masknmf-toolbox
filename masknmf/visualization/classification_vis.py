@@ -1086,6 +1086,18 @@ class ClassificationVis:
                 self._set_bg(idx)
             imgui.same_line(0, em(0.4))
             imgui.text_disabled("(left / right)")
+            imgui.same_line(0, em(0.4))
+            imgui.text_disabled("(?)")
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "resid corr img (roi): residual movie's correlation with the current ROI's trace\n"
+                    "corr img (roi): movie's correlation with the current ROI's trace\n"
+                    "corr img (global): each pixel's correlation with its neighbors\n"
+                    "resid corr img (global): neighbor correlations of the residual movie\n"
+                    "mean img (enhanced): processed mean image\n"
+                    "mask MIP: max projection of all ROI masks\n"
+                    "demixed movie: the demixed (a·c) movie"
+                )
 
             changed_bg, self._show_bg = imgui.checkbox("bg##bg-on", self._show_bg)
             imgui.same_line(hint_x)
@@ -1342,7 +1354,7 @@ class ClassificationVis:
         return THEME.text_dim, self._autosave_note()
 
     def _draw_status(self):
-        """open / help / keybinds on the left, the current info message right-aligned."""
+        """open / help / keybinds buttons followed by the current info message."""
         imgui.begin_disabled(self._loading is not None)
         if imgui.button("open file"):
             self.open_file()
@@ -1361,18 +1373,11 @@ class ClassificationVis:
         imgui.same_line(0, em(0.4))
         imgui.text_disabled("(k)")
         imgui.same_line(0, em(1.0))
-
         color, text = self._status_message()
-        avail = imgui.get_content_region_avail().x
-        imgui.begin_child(
-            "##status", imgui.ImVec2(avail, em(1.6)), window_flags=imgui.WindowFlags_.no_scrollbar
-        )
         imgui.align_text_to_frame_padding()
-        width = imgui.calc_text_size(text).x
-        if width < avail:
-            imgui.set_cursor_pos_x(avail - width)
+        imgui.push_font(imgui.get_font(), em(0.85))
         imgui.text_colored(to_vec4(color), text)
-        imgui.end_child()
+        imgui.pop_font()
 
     def _draw_progress(self):
         labeled = self._class_labels >= 0
