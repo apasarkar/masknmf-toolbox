@@ -246,7 +246,8 @@ class ClassificationVis:
         fov_images/centroids: per-session FOV images and (n_roi, 2) y/x centroids.
         When given, the background shows the FOV cropped around the current ROI
         (its surrounding context) instead of a static max projection.
-        bg_sources: {name: per-session image list} of alternative FOV backgrounds.
+        bg_sources: {name: per-session image list} of alternative FOV backgrounds;
+        a (num_rois, Y, X) stack per session shows its current ROI's image.
         roi_stats: {"f": (num_rois,), "skew": (num_rois,)} per-ROI trace stats.
         """
         roi_images = np.asarray(roi_images, dtype=np.float32)
@@ -269,8 +270,12 @@ class ClassificationVis:
                 )
             sizes = self._session_sizes if self._session_sizes is not None else (num_rois,)
             self._session_of = np.repeat(np.arange(len(sizes)), sizes)
+            self._session_starts = np.concatenate(([0], np.cumsum(sizes)[:-1]))
             self._bg_sources = {
-                name: [np.asarray(i, dtype=np.float32) for i in imgs_]
+                name: [
+                    i if getattr(i, "ndim", 2) == 3 else np.asarray(i, dtype=np.float32)
+                    for i in imgs_
+                ]
                 for name, imgs_ in (bg_sources or {}).items()
             }
             if not self._bg_sources:
@@ -282,6 +287,7 @@ class ClassificationVis:
             self._fov_images = None
             self._centroids = None
             self._session_of = None
+            self._session_starts = None
             self._bg_sources = None
             self._bg_source_names = []
             self._bg_source_idx = 0
@@ -362,6 +368,7 @@ class ClassificationVis:
                 import torch
                 from masknmf.demixing.demixing_results import DemixingResults
                 from masknmf.demixing.demixing_utils import brightness_order
+                from masknmf.demixing.signal_demixer import get_local_correlation_structure
                 from masknmf.multisession.roicat_tracking import (
                     RoicatDataAdapter,
                     extract_masknmf_mean_img,
@@ -382,30 +389,24 @@ class ClassificationVis:
                     mean_img = extract_masknmf_mean_img(dmr)
                     mean_imgs.append(mean_img)
 
-                    def reduce_stack(stack):
-                        n = stack.shape[0]
-                        running_max = None
-                        running_sum = None
-                        for start in range(0, n, 32):
-                            batch = stack.getitem_tensor(slice(start, min(start + 32, n)))
-                            bmax = batch.amax(dim=0)
-                            bsum = batch.sum(dim=0)
-                            running_max = (
-                                bmax if running_max is None else torch.maximum(running_max, bmax)
-                            )
-                            running_sum = bsum if running_sum is None else running_sum + bsum
-                        return running_max.cpu().numpy(), (running_sum / n).cpu().numpy()
-
                     # first source added is the default background
                     resid_imgs = dmr.residual_correlation_images
                     if resid_imgs is not None:
-                        rmax, _ = reduce_stack(resid_imgs)
-                        add_bg("resid corr img (max proj)", rmax)
+                        bg_sources.setdefault("resid corr img (roi)", []).append(resid_imgs)
                     std_imgs = dmr.standard_correlation_images
                     if std_imgs is not None:
-                        smax, smean = reduce_stack(std_imgs)
-                        add_bg("corr img (max proj)", smax)
-                        add_bg("corr img (mean)", smean)
+                        bg_sources.setdefault("corr img (roi)", []).append(std_imgs)
+                    add_bg(
+                        "corr img (global)",
+                        get_local_correlation_structure(
+                            dmr.u,
+                            dmr.v,
+                            (dmr.shape[1], dmr.shape[2], dmr.shape[0]),
+                            0,
+                            torch.zeros(dmr.shape[1], dmr.shape[2], device=dmr.v.device),
+                            batch_size=2500,
+                        ),
+                    )
                     if dmr.global_residual_correlation_image is not None:
                         add_bg(
                             "resid corr img (global)",
@@ -673,9 +674,17 @@ class ClassificationVis:
         cy, cx = self._centroids[roi]
         return int(cy) - int(np.ceil(h / 2)), int(cx) - int(np.ceil(w / 2))
 
+    def _bg_image(self, imgs, sess: int, roi: Optional[int]) -> np.ndarray:
+        """A session's background image; a per-ROI stack gives the ROI's own image"""
+        img = imgs[sess]
+        if getattr(img, "ndim", 2) == 3:
+            i = int(roi - self._session_starts[sess]) if roi is not None else 0
+            img = np.asarray(img[i], dtype=np.float32).reshape(img.shape[1:])
+        return img
+
     def _context_crop(self, roi: int) -> np.ndarray:
         """FOV image cropped around the ROI, aligned with roicat's centered ROI images"""
-        fov = self._fov_images[self._session_of[roi]]
+        fov = self._bg_image(self._fov_images, int(self._session_of[roi]), roi)
         h, w = self._roi_images.shape[1:]
         top, left = self._crop_origin(roi)
         crop = np.zeros((h, w), dtype=np.float32)
@@ -726,7 +735,7 @@ class ClassificationVis:
                 if self._summary.is_open and self._bg_sources is not None:
                     sess = int(self._session_of[roi])
                     self._summary.set_images(
-                        {name: imgs[sess] for name, imgs in self._bg_sources.items()}
+                        {name: self._bg_image(imgs, sess, roi) for name, imgs in self._bg_sources.items()}
                     )
                     if self._dmrs is not None:
                         self._summary.set_movies(
@@ -826,7 +835,7 @@ class ClassificationVis:
                 if roi is not None and self._session_of is not None
                 else 0
             )
-            images = {name: imgs[sess] for name, imgs in self._bg_sources.items()}
+            images = {name: self._bg_image(imgs, sess, roi) for name, imgs in self._bg_sources.items()}
             selected = self._bg_source_names[self._bg_source_idx]
         else:
             images = {"mask MIP": self._mip}
