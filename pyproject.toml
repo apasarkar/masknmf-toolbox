@@ -29,7 +29,8 @@ dependencies = [
     "jupyterlab",
     "pytorch-lightning>=2.5.2",
     "tensorboard>=2.20.0",
-    "fastplotlib[imgui,notebook]==0.6.1",
+    "fastplotlib[imgui,notebook] @ git+https://github.com/fastplotlib/fastplotlib@b2132e3d11b9e2bd641e0bbfc0bbee3d413d1d88",  # add_imgui_window / NDWidget are unreleased
+    "imgui-bundle==1.92.801",  # wgpu<=0.32 needs cmd_lists_count (gone in 1.92.900), fastplotlib needs the newer add_polyline
     "simplejpeg",
     "glfw",
     "oasis-deconv"
@@ -48,10 +49,12 @@ docs = [
 
 multisession = [
     "roicat[tracking_latest] >= 1.7.7", #First release that has this extras structure
-    "onnx2torch"
+    "onnx2torch" # This will eventually be removed
 ]
 
-
+classification = [
+    "roicat[classification_latest] >= 1.7.7", #First release that has this extras structure
+]
 
 dev = [
     "pytest>=8.4.0",
@@ -61,6 +64,9 @@ dev = [
 ]
 
 
+
+[project.scripts]
+classification = "masknmf.visualization.classification_vis:main"
 
 [project.urls]
 Homepage = "https://github.com/apasarkar/masknmf-toolbox"

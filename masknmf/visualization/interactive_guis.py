@@ -3,8 +3,6 @@ import numpy as np
 from fastplotlib.widgets.image_widget import ImageWidget
 from ipywidgets import HBox, VBox
 import fastplotlib as fpl
-from imgui_bundle import imgui
-from fastplotlib import ui
 import pygfx
 import torch
 from functools import partial
@@ -17,19 +15,7 @@ from masknmf.compression import PMDArray
 from masknmf.demixing import InitializationResults
 from masknmf.demixing.demixing_arrays import ACArray, ColorfulACArray
 from masknmf.demixing.demixing_utils import brightness_order
-
-class ROIManager(ui.EdgeWindow):
-    def __init__(self, figure, size):
-        super().__init__(
-            figure=figure,
-            size=size,
-            location="right",
-            title="ROI Selector"
-        )
-        self.add_rois_mode = False
-
-    def update(self):
-        _, self.add_rois_mode = imgui.checkbox("Add ROI", self.add_rois_mode)
+from masknmf.visualization.imgui import CheckboxWindow
 
 class PMDWidget:
     def __init__(self,
@@ -118,8 +104,8 @@ class PMDWidget:
         for img in self.image_graphics:
             self.selectors[img] = list()
 
-        self.roi_manager = ROIManager(self.iw.figure, size=100)
-        self.iw.figure.add_gui(self.roi_manager)
+        self.roi_manager = CheckboxWindow("Add ROI")
+        self.iw.figure.add_imgui_window(self.roi_manager, location="right", size=100, title="ROI Selector")
 
         self.RESIZING_NEW_RECT = False
 
@@ -178,7 +164,7 @@ class PMDWidget:
 
     def add_rectangle(self, ev: pygfx.PointerEvent):
 
-        if not self.roi_manager.add_rois_mode:
+        if not self.roi_manager.value:
             return
 
         if ev.button != 1:

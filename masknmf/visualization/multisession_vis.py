@@ -12,6 +12,12 @@ from functools import partial
 import h5py
 from fastplotlib.widgets.nd_widget._index import ReferenceIndex
 from masknmf.multisession import RoicatTrackingResults
+from masknmf.visualization.imgui import (
+    component_at_pixel,
+    contours_to_bbox,
+    zoom_to_bbox,
+    is_notebook_canvas,
+)
 
 
 class MultiSessionDemixingVis:
@@ -275,29 +281,19 @@ class MultiSessionDemixingVis:
     def neuron_selection(self,
                          display_sess_index: int,
                          ev):
-        col, row = ev.pick_info['index']  ##Pixel coordinates
         curr_ac = self.ac_arrays[display_sess_index]
-
-        height, width = curr_ac.shape[1:]
-        pixel_ind = int(row * width + col)  ## Row major vectorized coordinate for selected pixel
-
-        a_row, a_col = curr_ac.a.indices()
-        a_val = curr_ac.a.values()
-        valid_columns = torch.as_tensor(
-            self.tracking_results.labels_by_session[self.session_ids[display_sess_index]][a_col.cpu().numpy()] > 0,
-            device=self.device, dtype=torch.bool)
-        conditions = (a_row == pixel_ind) & (
-                    a_val > 0) & valid_columns  ## Last condition ensures we don't select cells that never got tracked
-        a_col = torch.unique(a_col[conditions])  ## So this tells us which components if any contain this pixel
-        if a_col.numel() == 0:
-            return  ## In this case the user clicked on an empty pixel
-        else:
-            valid_centers = curr_ac.centers[a_col]
-            ind_tensor = torch.tensor([row, col], dtype=valid_centers.dtype, device=valid_centers.device)
-            distances = torch.linalg.norm(valid_centers - ind_tensor[None, :], dim=1)
-            max_val = int(torch.argmin(distances))
-
-        self._image_highlight_selectors[display_sess_index].selection = int(a_col[max_val])
+        ## Mask out cells that never got tracked
+        tracked = torch.as_tensor(
+            self.tracking_results.labels_by_session[self.session_ids[display_sess_index]] > 0,
+            dtype=torch.bool)
+        neuron = component_at_pixel(curr_ac.a,
+                                    curr_ac.centers,
+                                    curr_ac.shape[1:],
+                                    ev.pick_info['index'],
+                                    mask=tracked)
+        if neuron is None:
+            return
+        self._image_highlight_selectors[display_sess_index].selection = neuron
 
     def raster_selection(self, ev):
         col, row = ev.pick_info['index']
@@ -485,27 +481,10 @@ class MultiSessionDemixingVis:
 
     def show(self):
 
-        if self.ndw_videos.figure.canvas.__class__.__name__ == "AnywidgetRenderCanvas":
+        if is_notebook_canvas(self.ndw_videos.figure):
             from ipywidgets import HBox, VBox
             return HBox(
                 [VBox([self.ndw_videos.show(), self.ndw_mip.show()]), self.ndw_cluster_map.show(maintain_aspect=False)])
         else:
             return self.ndw_videos.show(), self.ndw_mip.show(), self.ndw_cluster_map.show(maintain_aspect=False)
-
-
-def contours_to_bbox(fov_shape, contour, extra_space=10):
-    min_y, min_x = np.amin(contour, axis=0)
-    max_y, max_x = np.amax(contour, axis=0)
-
-    bound_y = (max(0, int(min_y) - extra_space), min(int(fov_shape[0]), int(max_y) + extra_space))
-    bound_x = (max(0, int(min_x) - extra_space), min(int(fov_shape[1]), int(max_x) + extra_space))
-
-    return (bound_x[0], bound_y[0], 1), (bound_x[1], bound_y[1], 1)
-
-
-def zoom_to_bbox(subplot, graphic, lower_bound, upper_bound):
-    world_coord_lower = graphic.map_model_to_world(lower_bound)
-    world_coord_upper = graphic.map_model_to_world(upper_bound)
-    subplot.x_range = (float(world_coord_lower[0]), float(world_coord_upper[0]))
-    subplot.y_range = (float(world_coord_lower[1]), float(world_coord_upper[1]))
 
