@@ -385,7 +385,8 @@ class DemixingResults(Serializer):
     def _move_managed_arrays(self, new_device: str):
         for arr_name in self._managed_arrays:
             curr_arr = getattr(self, arr_name)
-            curr_arr.to(self.device)
+            if curr_arr is not None:
+                curr_arr.to(self.device)
 
     @property
     def fov_shape(self) -> Tuple[int, int]:
