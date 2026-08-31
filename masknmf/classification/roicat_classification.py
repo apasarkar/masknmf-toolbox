@@ -23,6 +23,7 @@ from masknmf.utils import torch_select_device, display
 TRAINING_SUFFIX = ".training.json"
 _ROINET_URL = "https://osf.io/c8m3b/download"
 _ROINET_HASH = "357a8d9b630ec79f3e015d0056a4c2d5"
+_UNCLASSIFIED_FLAG = -1
 
 
 def _um_per_pixel_list(adapter: Data_roicat) -> list[float]:
@@ -122,12 +123,19 @@ class RoicatClassifier:
                         f"At session {k} the number of neural signals is {n} but the "
                         f"number of labels provided is {len(session_labels)}"
                     )
-        self._labels = [list(l) for l in new_labels]
+        ## Verify that all labels are valid:
+        tentative_labels = [list(l) for l in new_labels]
+        for elt in tentative_labels:
+            for sub_elt in elt:
+                if sub_elt == _UNCLASSIFIED_FLAG:
+                    raise ValueError(f"Some elements seem to be unclassified with value {_UNCLASSIFIED_FLAG}")
+
+        self._labels = tentative_labels
 
     @property
     def trainable(self) -> bool:
         """Labels are attached to training data; False for a classifier loaded from disk"""
-        return self.training_data is not None and self.labels is not None
+        return (self.training_data is not None) and (self.labels is not None)
 
     @property
     def class_counts(self) -> dict | None:
