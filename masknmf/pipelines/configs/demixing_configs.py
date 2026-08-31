@@ -36,7 +36,7 @@ class NMFConfig:
     denoise: bool = False
     plot_en: bool = False
     reassign_background: bool = True
-    detrender: Optional[SplineDetrenderBase] = None,
+    detrender: Optional[SplineDetrenderBase] = None
 
 @dataclass
 class SinglepassDemixingConfig:
