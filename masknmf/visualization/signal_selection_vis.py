@@ -15,9 +15,6 @@ signals for a seeded re-demix.
 from typing import Optional, Sequence, Tuple
 import os
 import queue
-import shutil
-import socket
-import sys
 import threading
 import warnings
 
@@ -52,9 +49,9 @@ from masknmf.visualization.imgui import (
     draw_roi_table,
     resolve_time_reference,
 )
+from masknmf.visualization.imgui.files import PathPrompt, draw_path_prompt
 from masknmf.visualization.imgui.theme import (
     THEME,
-    popup,
     card,
     danger_button,
     em,
@@ -140,25 +137,6 @@ def _as_numpy(img) -> np.ndarray:
     if hasattr(img, "cpu"):
         return img.cpu().numpy()
     return np.asarray(img)
-
-
-def _native_dialogs_available() -> bool:
-    """
-    Whether a file dialog can actually appear on this machine.
-
-    It opens where the process runs, so a notebook served from a headless box
-    has nowhere to draw one.
-    """
-    if sys.platform in ("win32", "darwin"):
-        return True
-    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        return False
-    return any(
-        shutil.which(name) for name in ("zenity", "matedialog", "qarma", "kdialog")
-    )
-
-
-_NATIVE_DIALOGS = _native_dialogs_available()
 
 
 def _cuda_available() -> bool:
@@ -316,9 +294,12 @@ class SignalSelectionVis:
         self._note = ""
         self._pending_delete: Optional[tuple] = None
         self._file_dialog = None
-        self._export_open = False
-        self._export_path = os.path.join(os.getcwd(), "rois.npz")
-        self._export_status = ""
+        self._export = PathPrompt(
+            "Export ROIs",
+            os.path.join(os.getcwd(), "rois.npz"),
+            action="save",
+            hint="written by this process",
+        )
         self._keybinds_open = False
 
         self._trace_sel: set = set()
@@ -489,11 +470,11 @@ class SignalSelectionVis:
     @property
     def export_path(self) -> str:
         """Where the export popup writes; set it to put the .npz beside the data."""
-        return self._export_path
+        return self._export.path
 
     @export_path.setter
     def export_path(self, path: str):
-        self._export_path = str(path)
+        self._export.path = str(path)
 
     def current_frame(self) -> int:
         index = int(np.searchsorted(self._frame_timings, self.reference_index["time"]))
@@ -1329,7 +1310,7 @@ class SignalSelectionVis:
                     self.clear_rois()
             imgui.same_line(0, em(0.6))
             if imgui.button("export rois"):
-                self._export_open = True
+                self._export.start()
             set_tooltip("write the drawn masks to an .npz for a seeded re-demix")
             imgui.same_line(0, em(0.6))
             if imgui.button("keys"):
@@ -1798,60 +1779,22 @@ class SignalSelectionVis:
         try:
             written = self.export_rois(path)
         except (OSError, ValueError) as error:
-            self._status = self._export_status = f"export failed: {error}"
+            self._status = self._export.status = f"export failed: {error}"
             return False
-        self._export_path = written
-        self._status = self._export_status = f"exported {self.n_rois} roi(s) to {written}"
+        self._export.path = written
+        self._status = self._export.status = f"exported {self.n_rois} roi(s) to {written}"
         return True
 
     def _draw_export_popup(self):
-        """
-        Export by typed path, with a native dialog only as a shortcut.
-
-        The dialog opens wherever the process runs, which is the wrong machine
-        for a notebook on a server, so the path field is always the route that
-        works and the file always lands beside the data, not on the viewer's
-        machine.
-        """
-        if not self._export_open:
-            return
-        opened, self._export_open = popup("Export ROIs", self._export_open)
-        if opened:
-            imgui.text_disabled(f"written by this process, on {socket.gethostname()}")
-            imgui.set_next_item_width(em(28))
-            entered, self._export_path = imgui.input_text(
-                "##export-path", self._export_path, imgui.InputTextFlags_.enter_returns_true
-            )
-            no_rois = self.n_rois == 0
-            if no_rois:
-                imgui.begin_disabled()
-            if imgui.button("save", imgui.ImVec2(em(6), 0)) or entered:
-                self._export_open = not self._save_rois(self._export_path)
-            if no_rois:
-                imgui.end_disabled()
-            set_tooltip("no rois have been drawn" if no_rois else "write the .npz now")
-            imgui.same_line(0, em(0.5))
-            if not _NATIVE_DIALOGS:
-                imgui.begin_disabled()
-            if imgui.button("browse", imgui.ImVec2(em(6), 0)):
-                self._browse_export()
-            if not _NATIVE_DIALOGS:
-                imgui.end_disabled()
-            set_tooltip(
-                "pick a path in a file dialog"
-                if _NATIVE_DIALOGS
-                else "no file dialog on this machine; type the path instead"
-            )
-            imgui.same_line(0, em(0.5))
-            if imgui.button("close", imgui.ImVec2(em(6), 0)):
-                self._export_open = False
-            if self._export_status:
-                imgui.text_disabled(self._export_status)
-        imgui.end()
+        path, browse = draw_path_prompt(self._export)
+        if path is not None and self._save_rois(path):
+            self._export.open = False
+        if browse:
+            self._browse_export()
 
     def _browse_export(self):
         if self._file_dialog is None:
-            self._file_dialog = pfd.save_file("Export ROIs", self._export_path, _NPZ_FILTERS)
+            self._file_dialog = pfd.save_file("Export ROIs", self._export.path, _NPZ_FILTERS)
 
     def _poll_file_dialog(self):
         if self._file_dialog is None or not self._file_dialog.ready(0):
@@ -1859,7 +1802,7 @@ class SignalSelectionVis:
         result = self._file_dialog.result()
         self._file_dialog = None
         if result:
-            self._export_path = result
+            self._export.path = result
 
 
 def main(argv=None):
