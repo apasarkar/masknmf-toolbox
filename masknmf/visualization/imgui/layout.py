@@ -32,3 +32,16 @@ def resolve_time_reference(num_frames, frame_timings=None, ref_range=None, axis=
         ref_range = {axis: (0, num_frames, 1)}
         frame_timings = np.arange(num_frames)
     return ref_range, frame_timings
+
+
+def close_figure(figure):
+    """
+    Close a figure whether or not it was ever shown.
+
+    ``Figure.close`` goes through the output widget ``show`` creates, so closing
+    a figure that was only built raises; the canvas is what needs closing then.
+    """
+    try:
+        figure.close()
+    except AttributeError:
+        figure.canvas.close()

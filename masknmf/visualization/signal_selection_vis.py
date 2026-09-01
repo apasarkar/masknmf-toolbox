@@ -1,19 +1,9 @@
 """
-Manual signal selection after motion correction and PMD compression, with the
-demixed signals shown alongside when they exist.
-
-One FOV panel switches between the summary images, the PMD movie and the
-residual movie. Arm "draw" and drag a closed stroke around a cell: the enclosed
-pixels become a mask in a ``(Y, X)`` uint16 label image, so two ROIs can never
-claim the same pixel. Drawn masks and demixed footprints share one overlay
-treatment - feathered fill in the ROI's own color, white rim on the selection -
-and one table, where they are told apart by the source column. Clicking the
-image selects what is under the cursor, ctrl+click and shift+click build a
-group that labels and colors together.
-
 Traces are pulled per ROI from every movie behind the view, on a background
 thread, and stored against the ROI's uid, so deleting an ROI never remaps
-anyone else's traces. A demixed signal's traces come from the ROI averages the
+anyone else's traces.
+
+A demixed signal's traces come from the ROI averages the
 demixer already computed. The trace panel plots the selection (or whatever is
 checked in the trace table) as percent dF/F, with the playhead bound to the
 viewer's frame.
@@ -26,11 +16,17 @@ from typing import Optional, Sequence, Tuple
 import os
 import queue
 import threading
+import warnings
 
 import cv2
 import numpy as np
 import fastplotlib as fpl
-from imgui_bundle import imgui, implot, icons_fontawesome_6 as fa, portable_file_dialogs as pfd
+from imgui_bundle import (
+    imgui,
+    implot,
+    icons_fontawesome_6 as fa,
+    portable_file_dialogs as pfd,
+)
 from fastplotlib.widgets.nd_widget._index import ReferenceIndex
 
 from masknmf.compression import PMDArray
@@ -42,6 +38,7 @@ from masknmf.visualization.imgui import (
     RoiOrder,
     RowAction,
     StrokeDrawer,
+    close_figure,
     draw_category_filter,
     draw_keybinds_popup,
     draw_label_buttons,
@@ -77,7 +74,14 @@ from masknmf.visualization.traces import (
     trace_stats,
 )
 
-__all__ = ["SignalSelectionVis", "main"]
+__all__ = ["SignalSelectionVis", "main", "resolve_device"]
+
+CPU_WARNING = (
+    "running on cpu: one frame of the pmd movie takes around 250 ms on a 512x512 "
+    "field of view, and twice that for the residual movie, against about 2 ms on "
+    "cuda. Pass --device cuda (or device='cuda') on a machine with a gpu."
+)
+CPU_BANNER = "on cpu: movie frames take ~0.25 s each"
 
 # free pixels a stroke needs to enclose before it becomes an ROI
 MIN_ROI_PIXELS = 9
@@ -140,6 +144,28 @@ def _cuda_available() -> bool:
     return torch.cuda.is_available()
 
 
+def resolve_device(device: Optional[str] = None) -> str:
+    """
+    The device to run on: the one asked for when it exists, else cpu.
+
+    Warns whenever the answer is cpu. The warnings module prints it once per
+    process, so a caller that resolves before building the viewer does not get
+    it twice.
+
+    Args:
+        device (Optional[str]): 'cpu', 'cuda', or None to take a gpu when there
+            is one
+    """
+    if device is not None and device.startswith("cuda") and not _cuda_available():
+        warnings.warn(f"{device} is not available, falling back to cpu")
+        device = None
+    if device is None:
+        device = "cuda" if _cuda_available() else "cpu"
+    if device == "cpu":
+        warnings.warn(CPU_WARNING)
+    return device
+
+
 def _line_colormap(rgb) -> int:
     """
     A registered single-color colormap for one trace line.
@@ -161,7 +187,9 @@ def _cleared_note(cleared) -> str:
     """Status tail naming the filters a selection had to drop to show itself."""
     if not cleared:
         return ""
-    return f" · cleared the {', '.join(cleared)} filter" + ("s" if len(cleared) > 1 else "")
+    return f" · cleared the {', '.join(cleared)} filter" + (
+        "s" if len(cleared) > 1 else ""
+    )
 
 
 class SignalSelectionVis:
@@ -178,8 +206,15 @@ class SignalSelectionVis:
             projections to offer; defaults to the PMD mean image
         show_signals (bool): initial state of the demixed footprint overlay
         label_names (Sequence[str]): class names the ROIs can be labeled with
-        device (str): 'cpu' or 'cuda'; 'cuda' is what makes the movies stream
-        size (tuple): figure size in pixels
+        device (Optional[str]): 'cpu' or 'cuda'; None takes a gpu when there is
+            one, which is what makes the movies stream
+        size (tuple): figure size in pixels. The panels are sized in pixels too,
+            so a figure much under 1200 wide leaves the FOV a narrow strip.
+        figure_kwargs: passed on to the figure, e.g. ``canvas="jupyter"``
+
+    In a notebook, construct and call ``show()`` in the same cell; the canvas is
+    picked up from the kernel, so nothing else is needed and ``fpl.loop.run()``
+    must not be called. ``close()`` takes the figure back down.
     """
 
     def __init__(
@@ -190,12 +225,13 @@ class SignalSelectionVis:
         summary_images: Optional[dict] = None,
         show_signals: bool = True,
         label_names: Sequence[str] = DEFAULT_LABEL_NAMES,
-        device: str = "cpu",
+        device: Optional[str] = None,
         size: Tuple[int, int] = (1700, 950),
+        **figure_kwargs,
     ):
-        self._device = device
+        self._device = resolve_device(device)
         self._results = results
-        results.to(device)
+        results.to(self._device)
 
         if isinstance(results, DemixingResults):
             self._pmd_array = results.pmd_array
@@ -223,7 +259,7 @@ class SignalSelectionVis:
         self._traces = {name: TraceSet(name) for name in self._movies}
         self._signal_entries: dict = {}
 
-        self._build_figure(summary_images, ref_range, size)
+        self._build_figure(summary_images, ref_range, size, figure_kwargs)
 
         self._store = RoiLabelStore(self._ny, self._nx, min_pixels=MIN_ROI_PIXELS)
         self._signals = None
@@ -242,7 +278,9 @@ class SignalSelectionVis:
         self._row_index: dict = {}
         self._promoted: dict = {}
         self._classes = LabelSet(0, label_names)
-        self._order = RoiOrder({"source": np.zeros(0, np.int64)}, self._classes.labels, 0)
+        self._order = RoiOrder(
+            {"source": np.zeros(0, np.int64)}, self._classes.labels, 0
+        )
         self._order.category_column = "source"
 
         self._show_masks = True
@@ -273,9 +311,21 @@ class SignalSelectionVis:
         self._drawer = StrokeDrawer(self._fov_subplot, self._on_stroke, self._pick)
 
         figure = self._ndw_fov.figure
-        figure.add_imgui_window(self._draw_controls, location="top", size=_CONTROLS_HEIGHT, title="Signal Selection")
-        figure.add_imgui_window(self._draw_roi_panel, location="left", size=_ROI_PANEL_WIDTH, title="ROIs")
-        figure.add_imgui_window(self._draw_trace_panel, location="right", size=_TRACE_PANEL_WIDTH, title="Traces")
+        figure.add_imgui_window(
+            self._draw_controls,
+            location="top",
+            size=_CONTROLS_HEIGHT,
+            title="Signal Selection",
+        )
+        figure.add_imgui_window(
+            self._draw_roi_panel, location="left", size=_ROI_PANEL_WIDTH, title="ROIs"
+        )
+        figure.add_imgui_window(
+            self._draw_trace_panel,
+            location="right",
+            size=_TRACE_PANEL_WIDTH,
+            title="Traces",
+        )
 
         for subplot in figure:
             subplot.tooltip.enabled = False
@@ -288,13 +338,15 @@ class SignalSelectionVis:
     # construction
     # ------------------------------------------------------------------
 
-    def _build_figure(self, summary_images, ref_range, size):
+    def _build_figure(self, summary_images, ref_range, size, figure_kwargs):
         """The FOV widget and one NDImage per selectable source."""
         if summary_images is None:
             summary_images = {"mean img": self._pmd_array.mean_img}
         summary_images = {name: _as_numpy(img) for name, img in summary_images.items()}
 
-        self._ndw_fov = fpl.NDWidget(ref_range, shape=(1, 1), names=["fov"], size=size)
+        self._ndw_fov = fpl.NDWidget(
+            ref_range, shape=(1, 1), names=["fov"], size=size, **figure_kwargs
+        )
         self._reference_index = self._ndw_fov.indices
         self._fov_subplot = self._ndw_fov.figure["fov"]
 
@@ -345,7 +397,9 @@ class SignalSelectionVis:
             overlay.vmin, overlay.vmax = 0, 255
             for tile in overlay.world_object.children:
                 tile.material.pick_write = False
-        self._signal_overlay.visible = self._signals is not None and self._signals.visible
+        self._signal_overlay.visible = (
+            self._signals is not None and self._signals.visible
+        )
 
     # ------------------------------------------------------------------
     # public state
@@ -419,8 +473,9 @@ class SignalSelectionVis:
         return self._ndw_fov.show()
 
     def close(self):
-        """Take the stroke handlers back off the renderer."""
+        """Take the stroke handlers off the renderer and close the figure."""
         self._drawer.close()
+        close_figure(self._ndw_fov.figure)
 
     # ------------------------------------------------------------------
     # export
@@ -491,7 +546,10 @@ class SignalSelectionVis:
                 sources.append(1)
                 areas.append(self._signals.area(k))
         self._row_index = {pair: row for row, pair in enumerate(self._rows)}
-        if self._selected_signal is not None and (0, self._selected_signal) not in self._row_index:
+        if (
+            self._selected_signal is not None
+            and (0, self._selected_signal) not in self._row_index
+        ):
             self._selected_signal = None
         self._buffer = [pair for pair in self._buffer if pair in self._row_index]
 
@@ -531,7 +589,9 @@ class SignalSelectionVis:
         si, k = self._rows[row]
         if si < 0:
             return "drawn"
-        return f"{SIGNAL_SET_NAME} · promoted" if k in self._promoted else SIGNAL_SET_NAME
+        return (
+            f"{SIGNAL_SET_NAME} · promoted" if k in self._promoted else SIGNAL_SET_NAME
+        )
 
     def _format_area(self, row: int) -> str:
         si, k = self._rows[row]
@@ -550,7 +610,9 @@ class SignalSelectionVis:
         if on == self._drawer.armed:
             return
         self._drawer.arm(on)
-        self._status = "drag a closed stroke around a cell" if on else f"{self.n_rois} ROIs"
+        self._status = (
+            "drag a closed stroke around a cell" if on else f"{self.n_rois} ROIs"
+        )
 
     def _on_stroke(self, stroke):
         # runs inside a renderer pointer event, where a raise would vanish into
@@ -676,7 +738,9 @@ class SignalSelectionVis:
             record = self._store.rois[self._selected]
             self._note = record.note
             cleared = self._order.reveal(self._selected)
-            self._status = f"ROI {self._selected}: {record.area} px" + _cleared_note(cleared)
+            self._status = f"ROI {self._selected}: {record.area} px" + _cleared_note(
+                cleared
+            )
             if self._follow:
                 self._center_on(*self._feather(self._selected)[:2])
         self._sync_trace_sel()
@@ -694,7 +758,9 @@ class SignalSelectionVis:
         row = self._row_index.get((0, k))
         cleared = self._order.reveal(row) if row is not None else []
         tail = " · promoted" if k in self._promoted else ""
-        self._status = f"signal {k}: {self._signals.area(k)} px{tail}" + _cleared_note(cleared)
+        self._status = f"signal {k}: {self._signals.area(k)} px{tail}" + _cleared_note(
+            cleared
+        )
         if self._follow:
             ypix, xpix, _lam = self._signals.footprints[k]
             self._center_on(ypix, xpix)
@@ -800,7 +866,9 @@ class SignalSelectionVis:
         pairs = self._buffer or [pair for pair in (self._selected_pair(),) if pair]
         for si, k in pairs:
             if si < 0:
-                self._store.set_color(k, None if rgb is None else tuple(int(round(v * 255)) for v in rgb))
+                self._store.set_color(
+                    k, None if rgb is None else tuple(int(round(v * 255)) for v in rgb)
+                )
             elif rgb is None:
                 self._signals.colors.pop(k, None)
             else:
@@ -814,7 +882,9 @@ class SignalSelectionVis:
 
     def assign_class(self, class_index: int):
         """Label the group, or the selection when there is no group."""
-        rows = [self._row_index[pair] for pair in self._buffer if pair in self._row_index]
+        rows = [
+            self._row_index[pair] for pair in self._buffer if pair in self._row_index
+        ]
         if not rows:
             pair = self._selected_pair()
             if pair is None or pair not in self._row_index:
@@ -921,11 +991,16 @@ class SignalSelectionVis:
         if not work:
             return
         thread = threading.Thread(
-            target=self._trace_worker, args=(work,), name="signal-selection-trace", daemon=True
+            target=self._trace_worker,
+            args=(work,),
+            name="signal-selection-trace",
+            daemon=True,
         )
         self._trace_threads.append(thread)
         self._status = (
-            f"tracing ROI {indices[0]}" if len(work) == 1 else f"tracing {len(work)} ROIs"
+            f"tracing ROI {indices[0]}"
+            if len(work) == 1
+            else f"tracing {len(work)} ROIs"
         )
         thread.start()
 
@@ -1035,7 +1110,11 @@ class SignalSelectionVis:
         if pair is None:
             return None
         si, k = pair
-        rgb = tuple(v / 255.0 for v in self._store.rgb(k)) if si < 0 else self._signals.color(k)
+        rgb = (
+            tuple(v / 255.0 for v in self._store.rgb(k))
+            if si < 0
+            else self._signals.color(k)
+        )
         fade = _MOVIE_FADE * list(self._movies).index(key[0])
         return tuple(v + (1.0 - v) * fade for v in rgb)
 
@@ -1170,7 +1249,9 @@ class SignalSelectionVis:
             if self._signals is None:
                 return
             dirty = False
-            changed, self._signals.visible = imgui.checkbox("demixed", self._signals.visible)
+            changed, self._signals.visible = imgui.checkbox(
+                "demixed", self._signals.visible
+            )
             if changed:
                 self._resync()
                 dirty = True
@@ -1240,6 +1321,12 @@ class SignalSelectionVis:
                 self.assign_class(picked)
 
     def _draw_status(self):
+        if self._device == "cpu":
+            imgui.text_colored(
+                to_vec4(THEME.err), f"{fa.ICON_FA_TRIANGLE_EXCLAMATION} {CPU_BANNER}"
+            )
+            set_tooltip(CPU_WARNING)
+            imgui.same_line(0, em(1))
         color = THEME.warn if self.trace_busy else THEME.text_dim
         imgui.text_colored(to_vec4(color), self._status)
         if self.drawing:
@@ -1271,7 +1358,9 @@ class SignalSelectionVis:
         changed = draw_label_filter(self._order, self._classes, "_roi")
         set_tooltip("filter by class label")
         if self._signals is not None:
-            changed |= draw_category_filter(self._order, ["drawn", SIGNAL_SET_NAME], "_roi")
+            changed |= draw_category_filter(
+                self._order, ["drawn", SIGNAL_SET_NAME], "_roi"
+            )
             set_tooltip("filter by source: drawn by hand, or found by the demixer")
         changed |= draw_range_filter(self._order, "_roi")
         imgui.text_disabled(f"{len(self._order.order)}/{self._order.n_items} in view")
@@ -1298,7 +1387,9 @@ class SignalSelectionVis:
                 if self._order.pos != pos and self._order.current is not None:
                     self.select_row(self._order.current)
             else:
-                imgui.text_disabled("no ROIs yet: press draw roi, then drag around a cell")
+                imgui.text_disabled(
+                    "no ROIs yet: press draw roi, then drag around a cell"
+                )
         imgui.end_child()
 
         pending, self._pending_delete = self._pending_delete, None
@@ -1343,7 +1434,9 @@ class SignalSelectionVis:
             return
         if self._selected >= 0:
             imgui.set_next_item_width(-1)
-            changed, self._note = imgui.input_text_with_hint("##note", "note", self._note)
+            changed, self._note = imgui.input_text_with_hint(
+                "##note", "note", self._note
+            )
             if changed:
                 self._store.set_note(self._selected, self._note)
             if imgui.button(f"{_TRACE_ICON} trace"):
@@ -1362,7 +1455,9 @@ class SignalSelectionVis:
                 self.promote_signal(k)
             if promoted:
                 imgui.end_disabled()
-            set_tooltip("copy this footprint into the drawn set so it exports with them")
+            set_tooltip(
+                "copy this footprint into the drawn set so it exports with them"
+            )
             return
         imgui.text_disabled("click an ROI in the image or the table")
 
@@ -1413,7 +1508,12 @@ class SignalSelectionVis:
     def _row_actions(self) -> tuple:
         return (
             RowAction(_TRACE_ICON, "trace this ROI in every movie", self._act_trace),
-            RowAction(_REMOVE_ICON, "delete this drawn ROI", self._act_remove, self._remove_row_disabled),
+            RowAction(
+                _REMOVE_ICON,
+                "delete this drawn ROI",
+                self._act_remove,
+                self._remove_row_disabled,
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -1514,11 +1614,17 @@ class SignalSelectionVis:
             pair = self._key_to_pair(key)
             if pair is None:
                 continue
-            if ctrl and implot.is_legend_entry_hovered(label) and imgui.is_mouse_clicked(0):
+            if (
+                ctrl
+                and implot.is_legend_entry_hovered(label)
+                and imgui.is_mouse_clicked(0)
+            ):
                 self.buffer_toggle(*pair)
             if implot.begin_legend_popup(label):
                 grouped = pair in self._buffer
-                if imgui.menu_item_simple("remove from group" if grouped else "add to group"):
+                if imgui.menu_item_simple(
+                    "remove from group" if grouped else "add to group"
+                ):
                     self.buffer_toggle(*pair)
                 if imgui.menu_item_simple("select this ROI"):
                     self.buffer_clear()
@@ -1533,7 +1639,9 @@ class SignalSelectionVis:
         """Trace keys in the order the table shows them."""
         rows = self._trace_rows()
         column, ascending = self._trace_sort
-        rows.sort(key=lambda key: self._trace_sort_key(key)[column], reverse=not ascending)
+        rows.sort(
+            key=lambda key: self._trace_sort_key(key)[column], reverse=not ascending
+        )
         return rows
 
     def _trace_sort_key(self, key) -> tuple:
@@ -1550,13 +1658,18 @@ class SignalSelectionVis:
             self._trace_sel.clear()
             self._trace_fit = True
         flags = (
-            imgui.TableFlags_.sortable | imgui.TableFlags_.row_bg
-            | imgui.TableFlags_.borders_inner_h | imgui.TableFlags_.scroll_y
-            | imgui.TableFlags_.resizable | imgui.TableFlags_.hideable
+            imgui.TableFlags_.sortable
+            | imgui.TableFlags_.row_bg
+            | imgui.TableFlags_.borders_inner_h
+            | imgui.TableFlags_.scroll_y
+            | imgui.TableFlags_.resizable
+            | imgui.TableFlags_.hideable
             | imgui.TableFlags_.sizing_stretch_prop
         )
         avail = imgui.get_content_region_avail()
-        if not imgui.begin_table("##trace_table", len(_TRACE_COLUMNS), flags, imgui.ImVec2(0, avail.y)):
+        if not imgui.begin_table(
+            "##trace_table", len(_TRACE_COLUMNS), flags, imgui.ImVec2(0, avail.y)
+        ):
             return
         imgui.table_setup_scroll_freeze(0, 1)
         for i, (name, weight, hidden) in enumerate(_TRACE_COLUMNS):
@@ -1673,8 +1786,9 @@ def main(argv=None):
     parser.add_argument("path", help="masknmf demixing_results or PMD .hdf5 file")
     parser.add_argument(
         "--device",
-        default="cuda" if _cuda_available() else "cpu",
-        help="'cpu' or 'cuda'; on cpu each movie frame is a full sparse reconstruction",
+        default=None,
+        help="'cpu' or 'cuda'; the default takes a gpu when there is one, since on "
+        "cpu each movie frame is a full sparse reconstruction of the field of view",
     )
     parser.add_argument(
         "--labels",
@@ -1683,14 +1797,15 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     label_names = args.labels.split(",") if args.labels else DEFAULT_LABEL_NAMES
+    device = resolve_device(args.device)
 
     with h5py.File(args.path, "r") as f:
         is_demixing = "DemixingResults" in f
     if is_demixing:
-        results = DemixingResults.from_hdf5(args.path, device=args.device)
+        results = DemixingResults.from_hdf5(args.path, device=device)
     else:
-        results = PMDArray.from_hdf5(args.path, device=args.device)
-    vis = SignalSelectionVis(results, label_names=label_names, device=args.device)
+        results = PMDArray.from_hdf5(args.path, device=device)
+    vis = SignalSelectionVis(results, label_names=label_names, device=device)
     vis.show()
     fpl.loop.run()
 

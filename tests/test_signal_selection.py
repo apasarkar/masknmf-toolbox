@@ -23,7 +23,11 @@ from masknmf.visualization.rois import (
     feather_mask,
     feathered_rgba,
 )
-from masknmf.visualization.signal_selection_vis import SignalSelectionVis
+from masknmf.visualization.signal_selection_vis import (
+    CPU_WARNING,
+    SignalSelectionVis,
+    resolve_device,
+)
 from masknmf.visualization.traces import (
     TraceSet,
     baseline,
@@ -89,7 +93,7 @@ def demixing_results() -> DemixingResults:
 
 @pytest.fixture
 def vis(pmd_array):
-    widget = SignalSelectionVis(pmd_array, size=FIGURE_SIZE)
+    widget = SignalSelectionVis(pmd_array, size=FIGURE_SIZE, device="cpu")
     widget.show()
     yield widget
     widget.close()
@@ -97,7 +101,7 @@ def vis(pmd_array):
 
 @pytest.fixture
 def demix_vis(demixing_results):
-    widget = SignalSelectionVis(demixing_results, size=FIGURE_SIZE)
+    widget = SignalSelectionVis(demixing_results, size=FIGURE_SIZE, device="cpu")
     widget.show()
     yield widget
     widget.close()
@@ -519,3 +523,57 @@ def test_every_panel_draws(demix_vis):
     demix_vis.toggle_signal_overlay()
     demix_vis.set_drawing(True)
     draw_frames(demix_vis, n=2)
+
+
+# ----------------------------------------------------------------------
+# device and lifecycle
+# ----------------------------------------------------------------------
+
+
+def test_resolve_device_warns_on_cpu(recwarn):
+    assert resolve_device("cpu") == "cpu"
+    assert any(CPU_WARNING in str(w.message) for w in recwarn)
+
+
+def test_resolve_device_takes_a_gpu_when_there_is_one():
+    assert resolve_device() == ("cuda" if torch.cuda.is_available() else "cpu")
+
+
+@pytest.mark.skipif(torch.cuda.is_available(), reason="cuda is available here")
+def test_resolve_device_falls_back_from_a_missing_gpu(recwarn):
+    assert resolve_device("cuda") == "cpu"
+    assert any("falling back to cpu" in str(w.message) for w in recwarn)
+
+
+def test_cpu_banner_draws(vis):
+    assert vis.device == "cpu"
+    draw_frames(vis, n=2)
+
+
+def test_close_works_on_a_figure_that_was_never_shown(pmd_array):
+    widget = SignalSelectionVis(pmd_array, size=FIGURE_SIZE, device="cpu")
+    widget.close()
+
+
+def test_notebook_canvas_builds_shows_and_closes(pmd_array):
+    from masknmf.visualization.imgui import is_notebook_canvas
+
+    widget = SignalSelectionVis(
+        pmd_array, size=(900, 600), device="cpu", canvas="jupyter"
+    )
+    assert is_notebook_canvas(widget.fov_widget.figure)
+    assert widget.show() is not None
+    widget.close()
+
+
+def test_every_viewer_that_shows_can_also_close():
+    import masknmf.visualization as viz
+
+    classes = [
+        getattr(viz, name)
+        for name in viz.__all__
+        if isinstance(getattr(viz, name), type)
+    ]
+    shown = [c.__name__ for c in classes if hasattr(c, "show")]
+    assert shown, "no viewer classes exported"
+    assert [c.__name__ for c in classes if hasattr(c, "show") and not hasattr(c, "close")] == []
