@@ -395,7 +395,7 @@ class MultiSessionDemixingVis:
             ## Let's define a mask for both arrays
             curr_ac_array = self.ac_arrays[index]
             curr_colorful_ac_array = self.colorful_ac_arrays[index]
-            curr_labels = tracking_results.labels_by_session[sess_id]
+            curr_labels = self.tracking_results.labels_by_session[sess_id]
             mask = np.isin(curr_labels, self.cluster_ids)
             curr_ac_array.mask = torch.from_numpy(mask)
             curr_colorful_ac_array.mask = torch.from_numpy(mask)
