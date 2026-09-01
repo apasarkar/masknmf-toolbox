@@ -108,6 +108,15 @@ _CONTROLS_HEIGHT = 165
 _ROI_PANEL_WIDTH = 380
 _TRACE_PANEL_WIDTH = 560
 
+_EXTRACT_LABEL = "extract traces"
+_EXTRACT_TOOLTIP = (
+    "Trace pmd and residual\n"
+    "Averages the ROI's pixels in each movie, frame by frame, reading only its "
+    "bounding box and weighting edge pixels down.\n"
+    "It runs on a background thread and the traces arrive in the Traces panel; "
+    "a demixed signal is instant, since the demixer already averaged it."
+)
+
 _TRACE_ICON = fa.ICON_FA_CHART_LINE
 _REMOVE_ICON = fa.ICON_FA_XMARK
 _CURSOR_COLOR = imgui.ImVec4(1.0, 0.85, 0.3, 0.9)
@@ -1431,7 +1440,7 @@ class SignalSelectionVis:
 
     def _draw_trace_all(self):
         """The trace-all row, right-aligned under the table's action icons."""
-        label = f"{_TRACE_ICON} trace all"
+        label = f"{_TRACE_ICON} {_EXTRACT_LABEL} for all"
         width = imgui.calc_text_size(label).x + imgui.get_style().frame_padding.x * 2
         avail = imgui.get_content_region_avail().x
         if width < avail:
@@ -1443,7 +1452,7 @@ class SignalSelectionVis:
             self.trace_listed()
         if not listed:
             imgui.end_disabled()
-        set_tooltip(f"trace all {len(listed)} listed ROIs")
+        set_tooltip(f"{_EXTRACT_TOOLTIP}\nRuns for all {len(listed)} ROIs the table lists.")
 
     def _draw_selection_footer(self):
         if len(self._buffer) > 1:
@@ -1456,8 +1465,9 @@ class SignalSelectionVis:
             )
             if changed:
                 self._store.set_note(self._selected, self._note)
-            if imgui.button(f"{_TRACE_ICON} trace"):
+            if imgui.button(f"{_TRACE_ICON} {_EXTRACT_LABEL}"):
                 self.trace_rois([self._selected])
+            set_tooltip(_EXTRACT_TOOLTIP)
             imgui.same_line(0, em(0.5))
             if imgui.button("delete"):
                 self.delete_roi(self._selected)
@@ -1524,7 +1534,7 @@ class SignalSelectionVis:
     @property
     def _row_actions(self) -> tuple:
         return (
-            RowAction(_TRACE_ICON, "trace this ROI in every movie", self._act_trace),
+            RowAction(_TRACE_ICON, _EXTRACT_TOOLTIP, self._act_trace),
             RowAction(
                 _REMOVE_ICON,
                 "delete this drawn ROI",
@@ -1548,7 +1558,7 @@ class SignalSelectionVis:
     def _draw_trace_plot(self):
         target = self._plot_lines()
         if target is None:
-            imgui.text_disabled(f"no traces yet: use {_TRACE_ICON} on a table row")
+            imgui.text_disabled(f"no traces yet: {_EXTRACT_LABEL} on an ROI, or {_TRACE_ICON} on a table row")
             return
         header, lines = target
         self._draw_trace_options(header)
@@ -1667,7 +1677,7 @@ class SignalSelectionVis:
     def _draw_trace_table(self):
         rows = self._sorted_trace_rows()
         if not rows:
-            imgui.text_disabled(f"no traces yet: use {_TRACE_ICON} on a table row")
+            imgui.text_disabled(f"no traces yet: {_EXTRACT_LABEL} on an ROI, or {_TRACE_ICON} on a table row")
             return
         imgui.text_disabled(f"{len(rows)} traces · {len(self._trace_sel)} plotted")
         imgui.same_line(0, em(0.8))
