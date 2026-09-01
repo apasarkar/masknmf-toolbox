@@ -8,6 +8,8 @@ bookkeeping, the trace extraction and its storage, the table order, the
 pointer wiring through the real renderer, and that every panel draws.
 """
 
+import os
+
 import numpy as np
 import pytest
 import torch
@@ -577,3 +579,25 @@ def test_every_viewer_that_shows_can_also_close():
     shown = [c.__name__ for c in classes if hasattr(c, "show")]
     assert shown, "no viewer classes exported"
     assert [c.__name__ for c in classes if hasattr(c, "show") and not hasattr(c, "close")] == []
+
+
+def test_export_popup_saves_to_a_typed_path(vis, tmp_path):
+    vis.add_roi(square(4, 4, 8))
+    vis._export_open = True
+    vis._export_path = str(tmp_path / "typed.npz")
+    draw_frames(vis, n=2)
+    assert vis._save_rois(vis._export_path)
+    assert (tmp_path / "typed.npz").exists()
+    assert "exported 1 roi(s)" in vis._status
+
+
+def test_export_popup_reports_a_bad_path(vis):
+    vis.add_roi(square(4, 4, 8))
+    assert not vis._save_rois(os.path.join("no", "such", "dir", "rois.npz"))
+    assert vis._status.startswith("export failed")
+
+
+def test_export_path_defaults_beside_the_cwd_and_can_be_set(vis, tmp_path):
+    assert vis.export_path.endswith("rois.npz")
+    vis.export_path = tmp_path / "elsewhere.npz"
+    assert vis.export_path == str(tmp_path / "elsewhere.npz")
