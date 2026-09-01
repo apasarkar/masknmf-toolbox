@@ -7,6 +7,7 @@ import numpy as np
 import fastplotlib as fpl
 from imgui_bundle import imgui, icons_fontawesome_6 as fa, portable_file_dialogs as pfd
 
+from masknmf.visualization.imgui.labels import LABEL_COLORS, LABEL_KEYS
 from masknmf.visualization.imgui.movie_player import MoviePlayer
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, close_button
@@ -20,16 +21,8 @@ from masknmf.demixing.labels import (
     write_predictions,
 )
 
-_LABEL_COLORS = (
-    (0.12, 0.47, 0.71), (1.00, 0.50, 0.05), (0.17, 0.63, 0.17),
-    (0.84, 0.15, 0.16), (0.58, 0.40, 0.74), (0.55, 0.34, 0.29),
-    (0.89, 0.47, 0.76), (0.50, 0.50, 0.50), (0.74, 0.74, 0.13),
-    (0.09, 0.75, 0.81),
-)
-_LABEL_KEYS = (
-    imgui.Key._1, imgui.Key._2, imgui.Key._3, imgui.Key._4, imgui.Key._5,
-    imgui.Key._6, imgui.Key._7, imgui.Key._8, imgui.Key._9,
-)
+_LABEL_COLORS = LABEL_COLORS
+_LABEL_KEYS = LABEL_KEYS
 _COLUMNS = ("id", "label", "pred", "area", "peak", "f", "skew")
 _MIN_PER_CLASS = 2  # labeled ROIs a class needs before training
 _CLF_FILTERS = ["ROICaT classifier", f"*{CLASSIFIER_SUFFIX}", "All files", "*"]

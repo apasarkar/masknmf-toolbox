@@ -109,3 +109,58 @@ def popup(title: str, is_open: bool, theme: Theme = THEME) -> tuple[bool, bool]:
 def close_button(theme: Theme = THEME) -> bool:
     imgui.dummy(imgui.ImVec2(0, em(0.3)))
     return imgui.button("Close", imgui.ImVec2(em(6), 0))
+
+
+LABEL_BUTTON_ALPHA = 0.5
+SELECTED_BUTTON = (0.26, 0.59, 1.00, 1.0)
+SELECTED_BUTTON_HOVER = (0.34, 0.66, 1.00, 1.0)
+
+
+@contextmanager
+def button_colors(button, hovered=None, active=None):
+    """Push button colors for the block; popped on exit even if it raises."""
+    n = 1
+    imgui.push_style_color(imgui.Col_.button, to_vec4(button))
+    if hovered is not None:
+        imgui.push_style_color(imgui.Col_.button_hovered, to_vec4(hovered))
+        n += 1
+    if active is not None:
+        imgui.push_style_color(imgui.Col_.button_active, to_vec4(active))
+        n += 1
+    try:
+        yield
+    finally:
+        imgui.pop_style_color(n)
+
+
+def label_button(rgb):
+    """Button colored like a class label."""
+    r, g, b = rgb[:3]
+    return button_colors((r, g, b, LABEL_BUTTON_ALPHA))
+
+
+def danger_button(theme: Theme = THEME):
+    """Button colored for a destructive action."""
+    return button_colors(theme.danger, theme.danger_hover)
+
+
+@contextmanager
+def toggle_button(active: bool):
+    """Style one button as the chosen option while ``active``; a no-op otherwise."""
+    if not active:
+        yield
+        return
+    with button_colors(SELECTED_BUTTON, SELECTED_BUTTON_HOVER):
+        yield
+
+
+def label_color(rgb, alpha: float = 1.0) -> imgui.ImVec4:
+    """A class color tuple as an ImVec4."""
+    r, g, b = rgb[:3]
+    return imgui.ImVec4(r, g, b, alpha)
+
+
+def set_tooltip(text: str):
+    """Tooltip on the item just drawn, shown for a disabled item too."""
+    if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+        imgui.set_tooltip(text)
