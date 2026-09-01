@@ -8,6 +8,7 @@ import fastplotlib as fpl
 from imgui_bundle import imgui, icons_fontawesome_6 as fa, portable_file_dialogs as pfd
 
 from masknmf.visualization.imgui.labels import LABEL_COLORS, LABEL_KEYS
+from masknmf.visualization.imgui.layout import close_figure
 from masknmf.visualization.imgui.movie_player import MoviePlayer
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, close_button
@@ -1621,6 +1622,9 @@ class ClassificationVis:
 
     def show(self):
         return self._figure.show()
+
+    def close(self):
+        close_figure(self._figure)
 
 
 def main(argv=None):

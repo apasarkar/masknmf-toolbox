@@ -28,7 +28,11 @@ from masknmf.visualization.imgui.table import (
     draw_range_filter,
     draw_roi_table,
 )
-from masknmf.visualization.imgui.layout import resolve_time_reference, is_notebook_canvas
+from masknmf.visualization.imgui.layout import (
+    close_figure,
+    is_notebook_canvas,
+    resolve_time_reference,
+)
 from masknmf.visualization.imgui.theme import (
     Theme,
     THEME,
@@ -61,6 +65,7 @@ __all__ = [
     "button_colors",
     "card",
     "class_color",
+    "close_figure",
     "component_at_pixel",
     "contours_to_bbox",
     "danger_button",

@@ -13,6 +13,7 @@ import h5py
 from fastplotlib.widgets.nd_widget._index import ReferenceIndex
 from masknmf.multisession import RoicatTrackingResults
 from masknmf.visualization.imgui import (
+    close_figure,
     component_at_pixel,
     contours_to_bbox,
     zoom_to_bbox,
@@ -487,4 +488,8 @@ class MultiSessionDemixingVis:
                 [VBox([self.ndw_videos.show(), self.ndw_mip.show()]), self.ndw_cluster_map.show(maintain_aspect=False)])
         else:
             return self.ndw_videos.show(), self.ndw_mip.show(), self.ndw_cluster_map.show(maintain_aspect=False)
+
+    def close(self):
+        for widget in (self.ndw_videos, self.ndw_mip, self.ndw_cluster_map):
+            close_figure(widget.figure)
 
