@@ -1610,10 +1610,23 @@ class SignalSelectionVis:
     def _remove_row_disabled(self, item: int) -> Optional[str]:
         return "demixed signals cannot be deleted" if self._rows[item][0] >= 0 else None
 
+    def _trace_row_hidden(self, item: int) -> bool:
+        """
+        Only a drawn ROI gets a trace button. A demixed signal's traces are the
+        averages the demixer already made, and selecting its row plots them, so
+        there is nothing for the button to extract.
+        """
+        return self._rows[item][0] >= 0
+
     @property
     def _row_actions(self) -> tuple:
         return (
-            RowAction(_TRACE_ICON, _EXTRACT_TOOLTIP, self._act_trace),
+            RowAction(
+                _TRACE_ICON,
+                _EXTRACT_TOOLTIP,
+                self._act_trace,
+                hidden=self._trace_row_hidden,
+            ),
             RowAction(
                 _REMOVE_ICON,
                 "delete this drawn ROI",

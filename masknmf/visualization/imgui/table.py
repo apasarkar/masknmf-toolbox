@@ -22,12 +22,17 @@ class RowAction(NamedTuple):
         disabled (Optional[Callable[[int], Optional[str]]]): why the action cannot
             run for that item; greys the button and replaces the tooltip. None
             means available.
+        hidden (Optional[Callable[[int], bool]]): whether the action does not
+            apply to that item at all, so it is left off the row rather than
+            greyed out. Its space is still reserved, keeping the actions that
+            follow in one column.
     """
 
     icon: str
     tooltip: str
     on_click: Callable[[int], None]
     disabled: Optional[Callable[[int], Optional[str]]] = None
+    hidden: Optional[Callable[[int], bool]] = None
 
 
 class RoiOrder:
@@ -258,6 +263,14 @@ def _draw_row_actions(actions: Sequence[RowAction], item: int, row: int):
     for k, action in enumerate(actions):
         if k:
             imgui.same_line(0, 2)
+        if action.hidden is not None and action.hidden(item):
+            # hold the space so the icons after it stay in one column
+            width = (
+                imgui.calc_text_size(action.icon).x
+                + imgui.get_style().frame_padding.x * 2
+            )
+            imgui.dummy(imgui.ImVec2(width, imgui.get_text_line_height()))
+            continue
         reason = action.disabled(item) if action.disabled is not None else None
         if reason is not None:
             imgui.begin_disabled()
