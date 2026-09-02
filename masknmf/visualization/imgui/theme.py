@@ -52,13 +52,16 @@ def card(name: str, title: str, height: float, width: float = 0.0, theme: Theme 
     Parameters
     ----------
     height : float
-        Fixed height so cards laid out on one row line up.
+        Fixed height so cards laid out on one row line up; 0 sizes the card to
+        its content, for cards stacked as rows.
     width : float
         0 sizes the card to its content.
     """
     flags = imgui.ChildFlags_.borders
     if width == 0:
         flags |= imgui.ChildFlags_.auto_resize_x
+    if height == 0:
+        flags |= imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_auto_resize
     imgui.push_style_color(imgui.Col_.border, to_vec4(theme.border))
     imgui.push_style_var(imgui.StyleVar_.child_rounding, theme.card_rounding)
     imgui.begin_child(

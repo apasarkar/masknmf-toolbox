@@ -29,7 +29,9 @@ from masknmf.visualization.imgui.table import (
     draw_roi_table,
 )
 from masknmf.visualization.imgui.layout import (
+    HANDLE_THICKNESS,
     close_figure,
+    draw_edge_handle,
     is_notebook_canvas,
     resolve_time_reference,
 )
@@ -50,6 +52,8 @@ from masknmf.visualization.imgui.theme import (
 )
 
 __all__ = [
+    "HANDLE_THICKNESS",
+    "draw_edge_handle",
     "CheckboxWindow",
     "FILTER_ALL",
     "LABEL_COLORS",
