@@ -32,6 +32,8 @@ from fastplotlib.widgets.nd_widget._index import ReferenceIndex
 from masknmf.compression import PMDArray
 from masknmf.demixing.demixing_results import DemixingResults
 from masknmf.visualization.imgui import (
+    HANDLE_THICKNESS,
+    draw_edge_handle,
     UNLABEL_ALL,
     UNLABELED,
     LabelSet,
@@ -108,8 +110,6 @@ _TRACE_COLUMNS = (
 # edge window sizes in px; all three are draggable once the figure is up
 _ROI_PANEL_WIDTH = 380
 _CONTROLS_WIDTH = 360
-# a control card stacks instead of sharing a row below this width
-_CARD_MIN_EM = 18
 # starting plot height in px; the drag strip under the plot changes it
 _TRACE_PLOT_HEIGHT = 240
 
@@ -133,7 +133,8 @@ _KEYBINDS = (
     ("esc", "stop drawing, else empty the group"),
     ("ctrl+z", "undo the last drawn ROI"),
     ("delete", "delete the selected drawn ROI"),
-    ("up / down", "previous / next ROI in the table"),
+    ("up / down", "previous / next ROI in the table (shift: by 10)"),
+    ("left / right", "cycle the FOV image"),
     ("u", "next unlabeled ROI"),
     ("f", "center the selection; labeling then advances"),
     ("1-9", "label the selection, then advance"),
@@ -141,11 +142,29 @@ _KEYBINDS = (
     ("t", "trace the selected ROI"),
     ("b", "toggle the drawn overlay"),
     ("d", "toggle the demixed overlay"),
+    ("k", "show these keybinds"),
     ("shift+scroll", "zoom the trace plot's time axis only"),
     ("click", "select what is under the cursor (drawing off)"),
     ("ctrl+click", "toggle an ROI in the group"),
     ("shift+click", "extend the group to a table row"),
 )
+
+
+def _enable_histogram(nd) -> None:
+    """
+    Turn a source's colorbar on, working around fastplotlib.
+
+    ``NDImageProcessor.compute_histogram`` recomputes before flipping its own
+    flag, and ``_recompute_histogram`` returns early while that flag is still
+    False, so a source built with ``compute_histogram=False`` can never get a
+    histogram back through the public setter and its colorbar never appears.
+    Setting the flag first makes the recompute run.
+    """
+    processor = nd.processor
+    if not processor.compute_histogram:
+        processor._compute_histogram = True
+        processor._recompute_histogram()
+    nd.compute_histogram = True
 
 
 def _as_numpy(img) -> np.ndarray:
@@ -321,6 +340,9 @@ class SignalSelectionVis:
         self._trace_sort = (0, True)
         self._trace_plot_height = float(_TRACE_PLOT_HEIGHT)
         self._trace_window = None
+        self._roi_window = None
+        # the trace dock sizes itself to its content until the user drags it
+        self._trace_manual = False
         self._trace_stats: dict = {}
         self._trace_display: dict = {}
         self._dff = True
@@ -345,8 +367,9 @@ class SignalSelectionVis:
             size=_TRACE_PLOT_HEIGHT,
             title="Traces",
         )
+        self._roi_window = ImguiWindow(update_call=self._draw_roi_panel)
         figure.add_imgui_window(
-            self._draw_roi_panel, location="left", size=_ROI_PANEL_WIDTH, title="ROIs"
+            self._roi_window, location="left", size=_ROI_PANEL_WIDTH, title="ROIs"
         )
         figure.add_imgui_window(
             self._draw_controls,
@@ -394,38 +417,38 @@ class SignalSelectionVis:
         self._reference_index = self._ndw_fov.indices
         self._fov_subplot = self._ndw_fov.figure["fov"]
 
-        self._source_names = list(summary_images) + ["pmd movie"]
-        if self._residual_array is not None:
-            self._source_names.append("residual movie")
-        self._source_idx = 0
-
-        movie_index_mapping = {"time": self._frame_timings}
-        self._nd_images = {}
-        for name, img in summary_images.items():
-            self._nd_images[name] = self._ndw_fov["fov"].add_nd_image(
-                img,
-                ["m", "n"],
-                ["m", "n"],
-                compute_histogram=name == self._source_names[0],
-                name=name,
-            )
         movies = {"pmd movie": self._pmd_array}
         if self._residual_array is not None:
             movies["residual movie"] = self._residual_array
+        # the movies open first, the summary images sit at the end of the list
+        self._source_names = list(movies) + list(summary_images)
+        self._source_idx = 0
+        first = self._source_names[0]
+
+        movie_index_mapping = {"time": self._frame_timings}
+        self._nd_images = {}
         for name, movie in movies.items():
             self._nd_images[name] = self._ndw_fov["fov"].add_nd_image(
                 movie,
                 ["time", "m", "n"],
                 ["m", "n"],
                 slider_dim_transforms=movie_index_mapping.copy(),
+                compute_histogram=name == first,
+                name=name,
+            )
+        for name, img in summary_images.items():
+            self._nd_images[name] = self._ndw_fov["fov"].add_nd_image(
+                img,
+                ["m", "n"],
+                ["m", "n"],
                 compute_histogram=False,
                 name=name,
             )
         for name, nd in self._nd_images.items():
-            if name != self._source_names[0]:
+            if name != first:
                 nd.graphic.visible = False
                 nd.pause = True
-        self._fov_subplot.title = self._source_names[0]
+        self._fov_subplot.title = first
 
     def _build_overlays(self):
         """Two blended RGBA images over the FOV: drawn masks and demixed ones."""
@@ -1267,20 +1290,10 @@ class SignalSelectionVis:
         self._poll_traces()
         self._poll_file_dialog()
         self._handle_keys()
-        gap = em(0.6)
-        avail = imgui.get_content_region_avail()
-        cards = (self._draw_view_card, self._draw_draw_card, self._draw_labels_card)
-        if avail.x >= 3 * em(_CARD_MIN_EM) + 2 * gap:
-            height = max(avail.y - em(1.6), em(6))
-            width = (avail.x - 2 * gap) / 3
-            for i, draw in enumerate(cards):
-                if i:
-                    imgui.same_line(0, gap)
-                draw(height, width)
-        else:
-            height = max((avail.y - em(1.6) - 2 * gap) / 3, em(6))
-            for draw in cards:
-                draw(height, -1.0)
+        # a left/right dock, so the sections stack as rows, each only as tall
+        # as its own content
+        for draw in (self._draw_view_card, self._draw_draw_card, self._draw_labels_card):
+            draw(0.0, -1.0)
         self._draw_status()
         self._keybinds_open = draw_keybinds_popup(_KEYBINDS, self._keybinds_open)
         self._draw_export_popup()
@@ -1291,7 +1304,10 @@ class SignalSelectionVis:
             changed, index = imgui.combo("source", self._source_idx, self._source_names)
             if changed:
                 self._set_source(index)
-            set_tooltip("what the FOV panel shows; the movies stream fastest on cuda")
+            set_tooltip(
+                "what the FOV panel shows (left / right); "
+                "the movies stream fastest on cuda"
+            )
             dirty, changed = False, False
             changed, self._show_masks = imgui.checkbox("drawn", self._show_masks)
             dirty |= changed
@@ -1392,6 +1408,11 @@ class SignalSelectionVis:
             imgui.same_line(0, em(1))
             imgui.text_disabled("click to add points; release to close the stroke")
 
+    def step_source(self, delta: int):
+        """Cycle the FOV image, like left / right in the classification GUI."""
+        if self._source_names:
+            self._set_source((self._source_idx + delta) % len(self._source_names))
+
     def _set_source(self, index: int):
         """Show one source and pause the others, so only it fetches frames."""
         if index == self._source_idx:
@@ -1403,7 +1424,7 @@ class SignalSelectionVis:
         old.pause = True
         new.pause = False
         new.graphic.visible = True
-        new.compute_histogram = True
+        _enable_histogram(new)
         self._source_idx = index
         self._fov_subplot.title = self._source_names[index]
         if "time" in new.dims:
@@ -1414,6 +1435,12 @@ class SignalSelectionVis:
     # ------------------------------------------------------------------
 
     def _draw_roi_panel(self):
+        if imgui.begin_child("##roi_body", imgui.ImVec2(-HANDLE_THICKNESS, 0)):
+            self._draw_roi_body()
+        imgui.end_child()
+        draw_edge_handle(self._roi_window)
+
+    def _draw_roi_body(self):
         changed = draw_label_filter(self._order, self._classes, "_roi")
         set_tooltip("filter by class label")
         if self._signals is not None:
@@ -1597,29 +1624,21 @@ class SignalSelectionVis:
 
     def _draw_trace_panel(self):
         self._draw_trace_plot()
-        self._draw_trace_resize_handle()
+        imgui.dummy(imgui.ImVec2(1, HANDLE_THICKNESS))
         self._fit_trace_window()
-
-    def _draw_trace_resize_handle(self):
-        """
-        A drag strip along the bottom edge. fastplotlib only builds resize
-        handles for the bottom and right docks, so a top dock needs its own.
-        """
-        imgui.invisible_button("##trace_resize", imgui.ImVec2(-1, em(0.5)))
-        if imgui.is_item_hovered():
-            imgui.set_mouse_cursor(imgui.MouseCursor_.resize_ns)
-            imgui.set_tooltip("drag to resize the trace plot")
-        if imgui.is_item_active() and imgui.is_mouse_dragging(0):
-            delta = imgui.get_mouse_drag_delta(0).y
-            self._trace_plot_height = min(
-                max(self._trace_plot_height + delta, em(6)), em(40)
-            )
-            imgui.reset_mouse_drag_delta(0)
+        window = self._trace_window
+        before = None if window is None else window.size
+        draw_edge_handle(window)
+        if window is not None and window.size != before:
+            self._trace_manual = True
 
     def _fit_trace_window(self):
-        """Size the dock to whatever the panel actually drew this frame."""
+        """
+        Size the dock to whatever the panel drew this frame, until the user
+        drags the handle; after that the size they chose is the size it keeps.
+        """
         window = self._trace_window
-        if window is None:
+        if window is None or self._trace_manual or window._collapsed:
             return
         pad = imgui.get_style().window_padding.y * 2
         wanted = int(imgui.get_cursor_pos_y() + pad)
@@ -1648,7 +1667,11 @@ class SignalSelectionVis:
         flags = implot.Flags_.no_title
         if len(lines) <= 1:
             flags |= implot.Flags_.no_legend
-        height = self._trace_plot_height
+        height = (
+            max(imgui.get_content_region_avail().y - HANDLE_THICKNESS, em(6))
+            if self._trace_manual
+            else self._trace_plot_height
+        )
         if not implot.begin_plot("##trace_plot", imgui.ImVec2(-1, height), flags):
             return
         try:
@@ -1840,10 +1863,15 @@ class SignalSelectionVis:
                 self.buffer_clear()
         if imgui.is_key_pressed(imgui.Key.delete, False) and self._selected >= 0:
             self.delete_roi(self._selected)
+        stride = 10 if io.key_shift else 1
         if imgui.is_key_pressed(imgui.Key.down_arrow, True):
-            self.step(1)
+            self.step(stride)
         if imgui.is_key_pressed(imgui.Key.up_arrow, True):
-            self.step(-1)
+            self.step(-stride)
+        if imgui.is_key_pressed(imgui.Key.left_arrow, True):
+            self.step_source(-1)
+        if imgui.is_key_pressed(imgui.Key.right_arrow, True):
+            self.step_source(1)
         if io.key_ctrl:
             if imgui.is_key_pressed(imgui.Key.z, False):
                 self.delete_roi(self.n_rois - 1)
@@ -1862,6 +1890,8 @@ class SignalSelectionVis:
             self.toggle_drawn_overlay()
         if imgui.is_key_pressed(imgui.Key.d, False):
             self.toggle_signal_overlay()
+        if imgui.is_key_pressed(imgui.Key.k, False):
+            self._keybinds_open = not self._keybinds_open
         picked = self._classes.hotkey_pressed()
         if picked is not None:
             self.assign_class(picked)
