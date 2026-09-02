@@ -104,9 +104,13 @@ _TRACE_COLUMNS = (
 )
 
 # edge window sizes in px; all three are draggable once the figure is up
-_CONTROLS_HEIGHT = 165
+_TRACE_PANEL_HEIGHT = 330
 _ROI_PANEL_WIDTH = 380
-_TRACE_PANEL_WIDTH = 560
+_CONTROLS_WIDTH = 360
+# a control card stacks instead of sharing a row below this width
+_CARD_MIN_EM = 18
+# the trace table takes this much of a wide panel, the plot the rest
+_TRACE_TABLE_EM = 28
 
 _EXTRACT_LABEL = "extract traces"
 _EXTRACT_TOOLTIP = (
@@ -136,6 +140,7 @@ _KEYBINDS = (
     ("t", "trace the selected ROI"),
     ("b", "toggle the drawn overlay"),
     ("d", "toggle the demixed overlay"),
+    ("shift+scroll", "zoom the trace plot's time axis only"),
     ("click", "select what is under the cursor (drawing off)"),
     ("ctrl+click", "toggle an ROI in the group"),
     ("shift+click", "extend the group to a table row"),
@@ -328,19 +333,19 @@ class SignalSelectionVis:
 
         figure = self._ndw_fov.figure
         figure.add_imgui_window(
-            self._draw_controls,
+            self._draw_trace_panel,
             location="top",
-            size=_CONTROLS_HEIGHT,
-            title="Signal Selection",
+            size=_TRACE_PANEL_HEIGHT,
+            title="Traces",
         )
         figure.add_imgui_window(
             self._draw_roi_panel, location="left", size=_ROI_PANEL_WIDTH, title="ROIs"
         )
         figure.add_imgui_window(
-            self._draw_trace_panel,
+            self._draw_controls,
             location="right",
-            size=_TRACE_PANEL_WIDTH,
-            title="Traces",
+            size=_CONTROLS_WIDTH,
+            title="Signal Selection",
         )
 
         for subplot in figure:
@@ -1240,14 +1245,19 @@ class SignalSelectionVis:
         self._poll_file_dialog()
         self._handle_keys()
         gap = em(0.6)
-        avail = imgui.get_content_region_avail().x
-        height = max(imgui.get_content_region_avail().y - em(1.6), em(6))
-        width = max((avail - 2 * gap) / 3, em(18))
-        self._draw_view_card(height, width)
-        imgui.same_line(0, gap)
-        self._draw_draw_card(height, width)
-        imgui.same_line(0, gap)
-        self._draw_labels_card(height, width)
+        avail = imgui.get_content_region_avail()
+        cards = (self._draw_view_card, self._draw_draw_card, self._draw_labels_card)
+        if avail.x >= 3 * em(_CARD_MIN_EM) + 2 * gap:
+            height = max(avail.y - em(1.6), em(6))
+            width = (avail.x - 2 * gap) / 3
+            for i, draw in enumerate(cards):
+                if i:
+                    imgui.same_line(0, gap)
+                draw(height, width)
+        else:
+            height = max((avail.y - em(1.6) - 2 * gap) / 3, em(6))
+            for draw in cards:
+                draw(height, -1.0)
         self._draw_status()
         self._keybinds_open = draw_keybinds_popup(_KEYBINDS, self._keybinds_open)
         self._draw_export_popup()
@@ -1548,8 +1558,21 @@ class SignalSelectionVis:
     # ------------------------------------------------------------------
 
     def _draw_trace_panel(self):
-        height = max(imgui.get_content_region_avail().y * 0.55, em(10))
-        if imgui.begin_child("##trace_plot", imgui.ImVec2(0, height)):
+        """Plot beside the table in the wide top band, stacked once it is narrow."""
+        avail = imgui.get_content_region_avail()
+        gap = em(0.8)
+        if avail.x >= 2 * em(_TRACE_TABLE_EM):
+            width = avail.x - em(_TRACE_TABLE_EM) - gap
+            if imgui.begin_child("##trace_plot_pane", imgui.ImVec2(width, 0)):
+                self._draw_trace_plot()
+            imgui.end_child()
+            imgui.same_line(0, gap)
+            if imgui.begin_child("##trace_table_pane", imgui.ImVec2(0, 0)):
+                self._draw_trace_table()
+            imgui.end_child()
+            return
+        height = max(avail.y * 0.55, em(10))
+        if imgui.begin_child("##trace_plot_pane", imgui.ImVec2(0, height)):
             self._draw_trace_plot()
         imgui.end_child()
         imgui.separator()
@@ -1607,7 +1630,9 @@ class SignalSelectionVis:
             self._x_unit = units[index]
             self._force_fit = True
         imgui.text_disabled(f"{header}, frame {self.current_frame()}")
-        set_tooltip("drag pans, scroll zooms, double-click fits")
+        set_tooltip(
+            "drag pans, scroll zooms, shift+scroll zooms time only, double-click fits"
+        )
 
     def _x_units(self) -> tuple:
         """Frames always; the reference axis only when it is not frame indices."""
@@ -1620,9 +1645,17 @@ class SignalSelectionVis:
 
     def _plot_lines_into(self, lines):
         """Draw the trace lines and the playhead inside an open implot plot."""
+        # holding shift locks y, so the wheel zooms the time axis alone
+        y_flags = (
+            implot.AxisFlags_.lock
+            if imgui.get_io().key_shift
+            else implot.AxisFlags_.none
+        )
         implot.setup_axes(
             "frame" if self._x_unit == "frames" else "time",
             "dF/F (%)" if self._dff else "intensity",
+            implot.AxisFlags_.none,
+            y_flags,
         )
         # a legend inside the frame covers the traces once a group is plotted
         implot.setup_legend(implot.Location_.north_west, implot.LegendFlags_.outside)
