@@ -87,6 +87,7 @@ class RoiLabelStore:
         self.rois: list[RoiRecord] = []
         self.min_pixels = int(min_pixels)
         self.next_uid = 1
+        self.dirty = False  # set by every mutation, cleared by annotation.save
 
     @property
     def ny(self) -> int:
@@ -114,6 +115,7 @@ class RoiLabelStore:
         )
         self.next_uid += 1
         self.labels[rows, cols] = len(self.rois)
+        self.dirty = True
         return len(self.rois) - 1
 
     def delete_roi(self, index: int) -> bool:
@@ -123,11 +125,13 @@ class RoiLabelStore:
         self.labels[self.labels == index + 1] = 0
         self.labels[self.labels > index + 1] -= 1
         self.rois.pop(index)
+        self.dirty = True
         return True
 
     def clear(self):
         self.labels[:] = 0
         self.rois.clear()
+        self.dirty = True
 
     def snapshot(self) -> "RoiLabelStore":
         """Deep copy that later mutations of either store cannot reach."""
@@ -139,13 +143,16 @@ class RoiLabelStore:
 
     def set_class(self, index: int, class_index: int):
         self.rois[index].class_index = int(class_index)
+        self.dirty = True
 
     def set_note(self, index: int, note: str):
         self.rois[index].note = str(note)
+        self.dirty = True
 
     def set_color(self, index: int, rgb: Optional[Tuple[int, int, int]]):
         """Give one ROI an explicit color; None reverts it to class or hue."""
         self.rois[index].color = None if rgb is None else tuple(int(v) for v in rgb)
+        self.dirty = True
 
     def uid_index(self, uid: int) -> Optional[int]:
         """Index currently holding ``uid``, or None when that ROI is gone."""

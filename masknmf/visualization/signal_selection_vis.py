@@ -1,17 +1,3 @@
-"""
-Traces are pulled per ROI from every movie behind the view, on a background
-thread, and stored against the ROI's uid, so deleting an ROI never remaps
-anyone else's traces.
-
-A demixed signal's traces come from the ROI averages the
-demixer already computed. The trace panel plots the selection (or whatever is
-checked in the trace table) as percent dF/F, with the playhead bound to the
-viewer's frame.
-
-Drawn ROIs export as spatial footprints, alone or appended to the existing
-signals for a seeded re-demix.
-"""
-
 from typing import Optional, Sequence, Tuple
 import os
 import queue
@@ -53,6 +39,7 @@ from masknmf.visualization.imgui import (
 )
 from fastplotlib.ui import ImguiWindow
 
+from masknmf.visualization import annotation
 from masknmf.visualization.imgui.files import PathPrompt, draw_path_prompt
 from masknmf.visualization.imgui.theme import (
     THEME,
@@ -152,13 +139,7 @@ _KEYBINDS = (
 
 def _enable_histogram(nd) -> None:
     """
-    Turn a source's colorbar on, working around fastplotlib.
-
-    ``NDImageProcessor.compute_histogram`` recomputes before flipping its own
-    flag, and ``_recompute_histogram`` returns early while that flag is still
-    False, so a source built with ``compute_histogram=False`` can never get a
-    histogram back through the public setter and its colorbar never appears.
-    Setting the flag first makes the recompute run.
+    workaround for fpl histogram bug, might no longer be needed
     """
     processor = nd.processor
     if not processor.compute_histogram:
@@ -262,6 +243,7 @@ class SignalSelectionVis:
         label_names: Sequence[str] = DEFAULT_LABEL_NAMES,
         device: Optional[str] = None,
         size: Tuple[int, int] = (1700, 950),
+        source_path=None,
         **figure_kwargs,
     ):
         self._device = resolve_device(device)
@@ -296,7 +278,13 @@ class SignalSelectionVis:
 
         self._build_figure(summary_images, ref_range, size, figure_kwargs)
 
-        self._store = RoiLabelStore(self._ny, self._nx, min_pixels=MIN_ROI_PIXELS)
+        self._source_path = str(source_path) if source_path is not None else None
+        self._summary_image = _as_numpy(
+            next(iter(summary_images.values()))
+            if summary_images
+            else self._pmd_array.mean_img
+        )
+        self._store, restored = self._load_labels()
         self._signals = None
         if self._ac_array is not None:
             self._signals = FootprintSet.from_sparse(
@@ -382,9 +370,47 @@ class SignalSelectionVis:
             subplot.tooltip.enabled = False
             subplot.toolbar = False
 
+        if restored:
+            self._classes = LabelSet(len(self._store.rois), restored)
         self._resync()
         self.refresh_overlays()
         self._show_first_row()
+
+    def _load_labels(self):
+        """The labels zarr beside the opened file, or an empty store."""
+        empty = RoiLabelStore(self._ny, self._nx, min_pixels=MIN_ROI_PIXELS)
+        if self._source_path is None:
+            return empty, ()
+        try:
+            store, names = annotation.load(self._source_path, MIN_ROI_PIXELS)
+        except (OSError, ValueError, KeyError) as error:
+            self._status = f"labels not loaded: {error}"
+            return empty, ()
+        if store is None or store.labels.shape != empty.labels.shape:
+            return empty, ()
+        return store, names
+
+    @property
+    def labels_path(self):
+        """Where the drawn ROIs autosave, or None when no file was named."""
+        if self._source_path is None:
+            return None
+        return annotation.labels_path(self._source_path)
+
+    def save_labels(self):
+        """Write the drawn ROIs to the labels zarr, reporting in the status row."""
+        if self._source_path is None:
+            return
+        try:
+            annotation.save(
+                self._source_path,
+                self._store,
+                self._classes.names,
+                self._summary_image,
+            )
+        except (OSError, ValueError) as error:
+            self._store.dirty = False
+            self._status = f"labels autosave failed: {error}"
 
     def _show_first_row(self):
         """
@@ -981,6 +1007,7 @@ class SignalSelectionVis:
         self.refresh_overlays()
 
     def add_label(self, name: str):
+        self._store.dirty = True
         if self._classes.add(name):
             self._order.rebuild()
 
@@ -1290,6 +1317,8 @@ class SignalSelectionVis:
     def _draw_controls(self):
         self._poll_traces()
         self._poll_file_dialog()
+        if self._store.dirty:
+            self.save_labels()
         self._handle_keys()
         # a left/right dock, so the sections stack as rows: view and draw take
         # only the height their content needs, labels take everything left, so
@@ -1973,7 +2002,9 @@ def main(argv=None):
         results = DemixingResults.from_hdf5(args.path, device=device)
     else:
         results = PMDArray.from_hdf5(args.path, device=device)
-    vis = SignalSelectionVis(results, label_names=label_names, device=device)
+    vis = SignalSelectionVis(
+        results, label_names=label_names, device=device, source_path=args.path
+    )
     vis.export_path = os.path.join(os.path.dirname(os.path.abspath(args.path)), "rois.npz")
     vis.show()
     fpl.loop.run()
