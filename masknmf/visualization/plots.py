@@ -8,7 +8,7 @@ import plotly.subplots as sp
 import matplotlib.pyplot as plt
 
 from masknmf.compression import PMDArray
-from masknmf.arrays import FactorizedVideo, ArrayLike, LazyFrameLoader
+from masknmf.arrays import ArrayLike, LazyFrameLoader
 from masknmf.demixing.demixing_arrays import ResidCorrMode
 
 # Custom sorting function to sort based on the numerical part after 'neuron_'
@@ -443,7 +443,7 @@ def roi_compare_pmd_raw(raw_stack: ArrayLike,
 
 
 def generate_raw_vs_resid_plot_folder(raw_stack: LazyFrameLoader,
-                                      pmd_movie: FactorizedVideo,
+                                      pmd_movie: ArrayLike,
                                       spatial_matrix: np.ndarray,
                                       folder_location: str,
                                       timeslice: Optional[slice]=None,
@@ -456,7 +456,7 @@ def generate_raw_vs_resid_plot_folder(raw_stack: LazyFrameLoader,
 
     Args:
         raw_stack (masknmf.arrays.LazyFrameLoader): Shape (num_frames, fov_dim1, fov_dim2)
-        pmd_movie (masknmf.arrays.FactorizedVideo): Shape (num_frames, fov_dim1, fov_dim2)
+        pmd_movie (masknmf.arrays.ArrayLike): Shape (num_frames, fov_dim1, fov_dim2)
         spatial_matrix (np.ndarray): Shape (fov_dim1, fov_dim2, num_neurons).
         folder_location (str): The folder path for this set of plots.
     """

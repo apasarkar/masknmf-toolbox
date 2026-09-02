@@ -9,9 +9,11 @@ import numpy as np
 from tqdm import tqdm
 
 import masknmf
-from masknmf.utils import torch_select_device
+from masknmf.utils import torch_select_device, display
+import numbers
 from .registration_methods import register_frames_rigid, register_frames_pwrigid
 from masknmf.utils import Serializer
+from masknmf.arrays.array_interfaces import ArrayLike
 
 
 class MotionCorrectionStrategy:
@@ -48,9 +50,9 @@ class MotionCorrectionStrategy:
 
     @batch_size.setter
     def batch_size(self, value: int):
-        if not isinstance(value, int):
-            raise ValueError(f"`batch_size` must be an <int>, you passed: {value}")
-        self._batch_size = value
+        if not isinstance(value, numbers.Integral):
+            raise ValueError(f"`batch_size` must be an int-like, you passed: {type(value)}")
+        self._batch_size = int(value)
 
     @property
     def device(self) -> str:
@@ -96,6 +98,7 @@ class MotionCorrectionStrategy:
             reference_movie_frames: np.ndarray,
             target_movie_frames: Optional[np.ndarray] = None,
     ) -> tuple[np.ndarray, np.ndarray]:
+        ## TODO: Decide whether this will really ever be needed
 
         """
         Apply motion correction. Reference frames is the set of frames that we align to the template (to learn
@@ -207,6 +210,11 @@ class MotionCorrectionStrategy:
         ]
         return slice_list
 
+    def motion_correct(self,
+                       reference_movie: ArrayLike,
+                       target_movie: ArrayLike) -> ArrayLike:
+        pass
+
 
 class DummyMotionCorrector(MotionCorrectionStrategy):
     
@@ -232,328 +240,5 @@ class DummyMotionCorrector(MotionCorrectionStrategy):
                          num_iterations: int = 3,
                          ):
         self._template = None
-
-
-class RigidMotionCorrector(MotionCorrectionStrategy, Serializer):
-
-    _serialized = {
-        "max_shifts",
-        "template",
-        "pixel_weighting",
-        "batch_size"
-    }
-    
-    def __init__(
-            self,
-            max_shifts: tuple[int, int] = (15, 15),
-            template: Optional[np.ndarray] = None,
-            pixel_weighting: Optional[np.ndarray] = None,
-            batch_size: int = 200,
-            device: str = "auto",
-    ):
-        super().__init__(template, batch_size=batch_size, device=device)
-
-        self._max_shifts = max_shifts
-        self._pixel_weighting = pixel_weighting
-
-    @property
-    def max_shifts(self) -> tuple[int, int]:
-        """max allowed shift in [row, cols] dim"""
-        return self._max_shifts
-
-    @max_shifts.setter
-    def max_shifts(self, value: tuple[int, int]):
-        value = self._validate_tuple_int_int("max_shifts", value)
-
-        self._template = None
-        self._max_shifts = value
-
-    @property
-    def pixel_weighting(self) -> None | np.ndarray:
-        if self._pixel_weighting is not None:
-            return self._pixel_weighting
-        else:
-            return None
-
-    def _correct_singlebatch(
-            self,
-            reference_frames: np.ndarray,
-            target_frames: Optional[np.ndarray] | None,
-    ) -> tuple[np.ndarray, np.ndarray]:
-
-        if self.template is None:
-            raise ValueError(
-                "Template is uninitialized"
-            )
-
-        #Move appropriate data to cuda
-        if target_frames is not None:
-            target_frames = torch.from_numpy(target_frames).to(self.device).float()
-        reference_frames = torch.from_numpy(reference_frames).to(self.device).float()
-        template = torch.from_numpy(self.template).to(self.device).float()
-        if self.pixel_weighting is not None:
-            pixel_weighting = torch.from_numpy(self.pixel_weighting).to(self.device).float()
-        else:
-            pixel_weighting = None
-
-        outputs = register_frames_rigid(
-            reference_frames,
-            template,
-            self.max_shifts,
-            target_frames=target_frames,
-            pixel_weighting=pixel_weighting
-        )
-        return outputs[0].cpu().numpy(), outputs[1].cpu().numpy()
-
-
-class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
-    
-    _serialized = {
-        "num_blocks",
-        "overlaps",
-        "max_rigid_shifts",
-        "max_deviation_rigid",
-        "template",
-        "pixel_weighting",
-        "batch_size"
-    }
-    
-    def __init__(
-            self,
-            num_blocks: tuple[int, int] = (12, 12),
-            overlaps: tuple[int, int] = (5, 5),
-            max_rigid_shifts: tuple[int, int] = (15, 15),
-            max_deviation_rigid: tuple[int, int] = (2, 2),
-            template: Optional[np.ndarray] = None,
-            pixel_weighting: Optional[np.ndarray] = None,
-            batch_size: int = 200,
-            device: str = "auto",
-    ):
-        super().__init__(template, batch_size=batch_size, device=device)
-        self._num_blocks = num_blocks
-        self._overlaps = overlaps
-        self._max_rigid_shifts = max_rigid_shifts
-        self._max_deviation_rigid = max_deviation_rigid
-        self._pixel_weighting = pixel_weighting.astype('float') if pixel_weighting is not None else None
-
-    @property
-    def num_blocks(self) -> tuple[int, int]:
-        """
-        Number of blocks that the image plane is split into, [rows, cols].
-        Motion is estimated in each block and then interpolated in 2D space across the entire image plane.
-        """
-        return self._num_blocks
-
-    @num_blocks.setter
-    def num_blocks(self, value):
-        value = self._validate_tuple_int_int("num_blocks", value)
-
-        self._template = None
-        self._num_blocks = value
-
-    @property
-    def pixel_weighting(self) -> None | np.ndarray:
-        return self._pixel_weighting
-
-    @property
-    def overlaps(self) -> tuple[int, int]:
-        """Number of pixels that overlap between adjacent blocks"""
-        return self._overlaps
-
-    @overlaps.setter
-    def overlaps(self, value):
-        value = self._validate_tuple_int_int("overlaps", value)
-
-        self._template = None
-        self._overlaps = value
-
-    @property
-    def max_rigid_shifts(self) -> tuple[int, int]:
-        """maximum shift for rigid iterations, [rows, cols] before piece-wise rigid registration"""
-        return self._max_rigid_shifts
-
-    @max_rigid_shifts.setter
-    def max_rigid_shifts(self, value: tuple[int, int]):
-        value = self._validate_tuple_int_int("max_rigid_shifts", value)
-
-        self._template = None
-        self._max_rigid_shifts = value
-
-    @property
-    def max_deviation_rigid(self) -> tuple[int, int]:
-        """maximum shift allowed in each piece-wise block relative to the rigid registered frame"""
-        return self._max_deviation_rigid
-
-    @max_deviation_rigid.setter
-    def max_deviation_rigid(self, value):
-        value = self._validate_tuple_int_int("max_deviation_rigid", value)
-
-        self._template = None
-        self._max_deviation_rigid = value
-
-    def _correct_singlebatch(
-            self,
-            reference_frames: np.ndarray,
-            target_frames: Optional[np.ndarray],
-    ) -> tuple[np.ndarray, np.ndarray]:
-
-        if self.template is None:
-            raise ValueError(
-                "Template is uninitialized"
-            )
-
-        if target_frames is not None:
-            target_frames = torch.from_numpy(target_frames).to(self.device).float()
-
-        reference_frames = torch.from_numpy(reference_frames).to(self.device).float()
-        
-        template = torch.from_numpy(self.template).to(self.device).float()
-        if self.pixel_weighting is not None:
-            pixel_weighting = torch.from_numpy(self.pixel_weighting).to(self.device).float()
-        else:
-            pixel_weighting = None
-
-        outputs = register_frames_pwrigid(
-            reference_frames.to(self.device),
-            template,
-            self.num_blocks,
-            self.overlaps,
-            self.max_rigid_shifts,
-            self.max_deviation_rigid,
-            target_frames=target_frames,
-            pixel_weighting=pixel_weighting
-        )
-
-        return outputs[0].cpu().numpy(), outputs[1].cpu().numpy()
-
-    def compute_template(
-            self,
-            frames: masknmf.ArrayLike | masknmf.LazyFrameLoader,
-            num_splits_per_iteration: int = 10,
-            num_frames_per_split: int = 200,
-            num_iterations: int = 1,
-    ):
-        rigid_strategy = RigidMotionCorrector(
-            self.max_rigid_shifts,
-            template=self.template.cpu().numpy() if self.template is not None else None,
-            pixel_weighting=self.pixel_weighting,
-            batch_size=self.batch_size,
-            device=self.device,
-        )
-
-        rigid_strategy.compute_template(
-            frames,
-        )
-
-        self._template = rigid_strategy.template
-
-        super().compute_template(
-            frames,
-            num_splits_per_iteration=num_splits_per_iteration,
-            num_frames_per_split=num_frames_per_split,
-            num_iterations=num_iterations,
-        )
-        torch.cuda.empty_cache()
-
-
-class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
-
-    _serialized = {
-        "template",
-        "batch_size"
-    }
-    def __init__(
-            self,
-            template: Optional[np.ndarray] = None,
-            batch_size: int = 200,
-            device: str = "auto",
-    ):
-        super().__init__(template, batch_size=batch_size, device=device)
-
-    @property
-    def batch_size(self) -> int:
-        """get or set the batch size, the number of frames sent to the GPU in batches for motion correction"""
-        return self._batch_size
-
-    @batch_size.setter
-    def batch_size(self, value: int):
-        if not isinstance(value, int):
-            raise ValueError(f"`batch_size` must be an <int>, you passed: {value}")
-        self._batch_size = value
-
-    @property
-    def template(self) -> None | np.ndarray:
-        """registration template to map raw frames onto"""
-        return self._template
-
-    def _correct_singlebatch(
-            self,
-            reference_frames: np.ndarray,
-            target_frames: Optional[np.ndarray],
-    ) -> tuple[np.ndarray, np.ndarray]:
-
-        if self.template is None:
-            raise ValueError(
-                "Template is uninitialized"
-            )
-
-        if target_frames is not None:
-            target_frames = torch.from_numpy(target_frames).to(self.device).float()
-
-        reference_frames = torch.from_numpy(reference_frames).to(self.device).float()
-        num_frames, height, width = reference_frames.shape
-        template = torch.from_numpy(self.template).to(self.device).float()
-        template_projector = torch.from_numpy(self._template_projector).to(self.device).float()
-
-        ref_flat = reference_frames.permute(1, 2, 0).reshape(-1, num_frames)  # [H*W, F]
-        if target_frames is not None:
-            target_flat = target_frames.permute(1, 2, 0).reshape(-1, num_frames)
-        else:
-            target_flat = None
-        shift = template_projector @ ref_flat  # [2, F]
-        if target_frames is not None:
-            result = target_flat - template @ shift
-        else:
-            result = ref_flat - template @ shift
-
-        result = result.reshape(height, width, num_frames).permute(2, 0, 1)
-        return result.cpu().numpy(), shift.cpu().numpy().T
-
-    def compute_template(
-            self,
-            frames: masknmf.ArrayLike | masknmf.LazyFrameLoader
-    ):
-        num_iters = math.ceil(frames.shape[0] / self.batch_size)
-        mean_img = np.zeros((frames.shape[1], frames.shape[2]))
-        for k in tqdm(range(num_iters)):
-            start = k * self.batch_size
-            end = start + self.batch_size
-            mean_img += (np.sum(frames[start:end], axis = 0) / frames.shape[0])
-
-        f0 = torch.from_numpy(mean_img)
-        dfdx = torch.nn.functional.pad(
-            (f0[:, 2:] - f0[:, :-2]) / 2, (1, 1), mode="constant"
-        )  # x-gradient [H, W]
-        dfdy = torch.nn.functional.pad(
-            (f0[2:, :] - f0[:-2, :]) / 2, (0, 0, 1, 1), mode="constant"
-        )  # y-gradient [H, W]
-
-        f0_flat = f0.flatten()  # [H*W]
-        f0_norm_sq = f0_flat @ f0_flat
-
-        def orthogonalize_against_f0(v):
-            return v - (f0_flat @ v) / f0_norm_sq * f0_flat
-
-        dfdx_flat = orthogonalize_against_f0(dfdx.flatten())
-        dfdy_flat = orthogonalize_against_f0(dfdy.flatten())
-
-        A = torch.stack([dfdx_flat, dfdy_flat], dim=1).float()  # [H*W, 2]
-        AtA_inv = torch.linalg.inv(A.T @ A)  # [2, 2]
-        A_projector = AtA_inv @ A.T  # [2, H*W]
-
-        self._template = A.cpu().numpy()
-        self._template_projector = A_projector.cpu().numpy()
-
-
 
 

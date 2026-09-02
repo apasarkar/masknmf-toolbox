@@ -1,10 +1,12 @@
 from typing import *
 import numpy as np
 from masknmf import display
-from masknmf.compression import PMDArray
-from masknmf.demixing.demixing_arrays import ACArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulACArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode
+from masknmf.compression import PMDArray, TrendArray
+from masknmf.demixing.demixing_arrays import ACArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulACArray, StaticBackgroundArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode, MultiunitBackgroundArray
 import torch
 from masknmf.utils import Serializer
+from masknmf.arrays.array_interfaces import TensorFlyWeight
+from masknmf.utils import display
 
 
 def test_slice_effect(my_slice: slice, spatial_dim: int) -> bool:
@@ -84,9 +86,11 @@ class DemixingResults(Serializer):
         "a",
         "c",
         "b",
-        "pmd_mean_img",
-        "pmd_var_img",
-        "pmd_u_projector",
+        "mean_img",
+        "var_img",
+        "u_local_projector",
+        "spatial_trend_basis",
+        "temporal_trend_basis",
         "factorized_bkgd_term1",
         "factorized_bkgd_term2",
         "global_residual_correlation_image",
@@ -99,9 +103,25 @@ class DemixingResults(Serializer):
         "bkgd_corr_img_normalizer",
         "pmd_roi_averages",
         "fluctuating_background_roi_averages",
-        "residual_roi_averages"
+        "residual_roi_averages",
+        "multiunit_basis_term1",
+        "multiunit_basis_term2",
     }
 
+    """
+    This lists arrays which are explicitly managed by demixing results.
+    When you do DemixingResults.to(new_device), this object is responsible for making sure all of these arrays are moved to that device
+    """
+    _managed_arrays = ["pmd_array",
+                       "ac_array",
+                       "colorful_ac_array",
+                       "fluctuating_background_array",
+                       "static_background_array",
+                       "standard_correlation_images",
+                       "residual_correlation_images",
+                       "multiunit_background_array",
+                       "trend_array"
+                       ]
     def __init__(
             self,
             shape: Tuple[int, int, int] | np.ndarray,
@@ -109,9 +129,11 @@ class DemixingResults(Serializer):
             v: torch.tensor,
             a: torch.sparse_coo_tensor,
             c: torch.tensor,
-            pmd_mean_img: Optional[torch.Tensor] = None,
-            pmd_var_img: Optional[torch.Tensor] = None,
-            pmd_u_projector: Optional[torch.sparse_coo_tensor] = None,
+            mean_img: Optional[torch.Tensor] = None,
+            var_img: Optional[torch.Tensor] = None,
+            u_local_projector: Optional[torch.sparse_coo_tensor] = None,
+            spatial_trend_basis: Optional[torch.Tensor] = None,
+            temporal_trend_basis: Optional[torch.Tensor] = None,
             factorized_bkgd_term1: Optional[torch.Tensor] = None,
             factorized_bkgd_term2: Optional[torch.Tensor] = None,
             b: Optional[torch.tensor] = None,
@@ -126,23 +148,31 @@ class DemixingResults(Serializer):
             pmd_roi_averages: Optional[torch.Tensor] = None,
             fluctuating_background_roi_averages: Optional[torch.Tensor] = None,
             residual_roi_averages: Optional[torch.Tensor] = None,
-            order: str = "C",
+            multiunit_basis_term1: torch.Tensor | None = None,
+            multiunit_basis_term2: torch.Tensor | None = None,
             device="cpu",
+            **kwargs
     ):
         """
         This class provides a convenient way to export all demixing result as array-like objects.
+
+        All input parameters must be symmetric with the arrays that demixing results manages.
+        For example, if PMDArray has u_local_projector as a constructor arg, the same name is used here
+
         Args:
             shape (tuple): (number of frames, field of view dimension 1, field of view dimension 2)
             u (torch.sparse_coo_tensor): shape (pixels, rank 1)
             v (torch.tensor): shape (rank 2, num_frames)
             a (torch.sparse_coo_tensor): shape (pixels, number of neural signals)
             c (torch.tensor): shape (number of frames, number of neural signals)
-            pmd_mean_img (Optional[torch.tensor]): The mean image of the imaging data, used for reconstructing PMD Arrays
-            pmd_var_img (Optional[torch.tensor]): The pixelwise noise variance image of the data, used for reconstructing PMD Arrays
-            pmd_u_projector (Optional[torch.sparse_coo_tensor]): A projection matrix used to project frames of data onto the PMD U subspace
+            mean_img (Optional[torch.Tensor]): The mean image of the imaging data, used for reconstructing PMD Arrays
+            var_img (Optional[torch.Tensor]): The pixelwise noise variance image of the data, used for reconstructing PMD Arrays
+            u_local_projector (Optional[torch.sparse_coo_tensor]): A projection matrix used to project frames of data onto the PMD U subspace
+            spatial_trend_basis (Optional[torch.Tensor]): Shape (num_pixels, basis_rank). The spatial trend basis identified by PMD
+            temporal_trend_basis (Optional[torch.Tensor]): Shape (basis_rank, num_frames). The temporal trend basis identified by PMD
             factorized_bkgd_term1: Optional[torch.Tensor]: tensor used to express low-rank background estimate
-            factorized_bkgd_term2: Optioal[torch.Tensor]: tensor used to express low-rank background estimate
-            b (torch.tensor): Optional[torch.tensor]. The per-pixel static baseline.
+            factorized_bkgd_term2: Optional[torch.Tensor]: tensor used to express low-rank background estimate
+            b (torch.tensor): Optional[torch.Tensor]. The per-pixel static baseline.
                 If not provided, the below code will set it so that the residual movie has mean 0.
                 The residual is defined as UV - AC - Fluctuaating background - Static Background
             std_corr_img_mean (Optional[torch.Tensor]): the mean image used to lazily construct the standard correlation image per neuron
@@ -156,152 +186,207 @@ class DemixingResults(Serializer):
             bkgd_corr_img_mean (Optional[torch.Tensor]): The mean image used to compute the correlation between the signal and the background.
             bkgd_corr_img_normalizer (Optional[torch.Tensor]): The mean image used to compute the correlation between the signal and the background.
             global_resid_correlation_image (torch.Tensor): The global correlation image of the residual. Shape (FOV dim 1, FOV dim 2).
-            order (str): order used to reshape data from 2D to 1D
             device (str): 'cpu' or 'cuda'. used to manage where the tensors reside
         """
         self._device = device
-        self._order = order
         self._shape = tuple(shape)
-        self._u_sparse = u.to(self.device).float()
-        self._v = v.to(self.device).float()
-        self._a = a.to(self.device).float()
-        self._c = c.to(self.device).float()
+        self._flyweight = TensorFlyWeight()
+        self.flyweight.u = u.to(self._device).float().coalesce()
+        self.flyweight.v = v.to(self._device).float()
+        self.flyweight.a = a.to(self._device).float().coalesce()
+        self.flyweight.c = c.to(self._device).float()
 
-        if pmd_mean_img is not None:
-            self._pmd_mean_img = pmd_mean_img
-        else:
-            self._pmd_mean_img = torch.zeros(self.shape[1], self.shape[2], device=self.device)
-        if pmd_var_img is not None:
-            self._pmd_var_img = pmd_var_img
-        else:
-            self._pmd_var_img= torch.ones(self.shape[1], self.shape[2], device=self.device)
+        self.flyweight.mean_img = mean_img.to(self._device) if mean_img is not None else torch.zeros(self.shape[1], self.shape[2], device=self._device)
+        self.flyweight.var_img = var_img.to(self._device) if var_img is not None else torch.ones(self.shape[1], self.shape[2], device=self._device)
 
-        self._pmd_u_projector = pmd_u_projector
+        #This is called
+        self.flyweight.normalizer = self.flyweight.var_img
+
+        self.flyweight.u_local_projector = u_local_projector.float().coalesce().to(self._device) if u_local_projector is not None else None
+
+
+        if spatial_trend_basis is None or temporal_trend_basis is None:
+            self.flyweight.spatial_trend_basis = torch.zeros(self.u.shape[0], 1, dtype=self.u.dtype,
+                                                               device=self._device)
+            self.flyweight.temporal_trend_basis = torch.zeros((1, self.v.shape[1]), dtype=self.u.dtype,
+                                                               device=self._device)
+        else:
+            self.flyweight.spatial_trend_basis = spatial_trend_basis.to(self._device)
+            self.flyweight.temporal_trend_basis = temporal_trend_basis.to(self._device)
 
         if factorized_bkgd_term1 is None or factorized_bkgd_term2 is None:
             display("Background term empty")
-            self._factorized_bkgd_term1 = torch.zeros(self.u.shape[1], 1, dtype=self.u.dtype, device=self.device)
-            self._factorized_bkgd_term2 = torch.zeros((1, self.v.shape[1]), dtype=self.u.dtype, device=self.device)
+            self.flyweight.factorized_bkgd_term1 = torch.zeros(self.u.shape[1], 1, dtype=self.u.dtype, device=self._device)
+            self.flyweight.factorized_bkgd_term2 = torch.zeros((1, self.v.shape[1]), dtype=self.u.dtype, device=self._device)
         else:
-            self._factorized_bkgd_term1 = factorized_bkgd_term1.to(self.device)
-            self._factorized_bkgd_term2 = factorized_bkgd_term2.to(self.device)
+            self.flyweight.factorized_bkgd_term1 = factorized_bkgd_term1.to(self._device)
+            self.flyweight.factorized_bkgd_term2 = factorized_bkgd_term2.to(self._device)
 
-        if global_residual_correlation_image is None:
-            self._global_residual_corr_img = torch.zeros(self.shape[1], self.shape[2], device=self.device, dtype=self._u_sparse.dtype)
-        else:
-            self._global_residual_corr_img = global_residual_correlation_image
+        self.flyweight.global_residual_correlation_image = global_residual_correlation_image.to(self._device) if global_residual_correlation_image is not None else torch.zeros(self.shape[1], self.shape[2], device=self._device, dtype=self.u.dtype)
+
 
         if b is None:
             display("Static term was not provided, constructing baseline to ensure residual is mean 0")
-            self._b = (torch.sparse.mm(self.u, torch.mean(self.v, dim=1, keepdim=True)) -
-                       torch.sparse.mm(self._a, torch.mean(self._c.T, dim=1, keepdim=True)) -
+            self.flyweight.b = (torch.sparse.mm(self.u, torch.mean(self.v, dim=1, keepdim=True)) -
+                       torch.sparse.mm(self.a, torch.mean(self.c.T, dim=1, keepdim=True)) -
                        torch.sparse.mm(self.u, (
                                    self.factorized_bkgd_term1 @ torch.mean(self.factorized_bkgd_term2, axis=1,
-                                                                           keepdim=True))))
+                                                                           keepdim=True)))).to(self._device)
         else:
-            self._b = b
+            self.flyweight.b = b.to(self._device)
+        self.flyweight.baseline = self.b.reshape(self.fov_shape)
 
-        if pmd_roi_averages is not None:
-            self._pmd_roi_averages = pmd_roi_averages
-        if fluctuating_background_roi_averages is not None:
-            self._fluctuating_background_roi_averages = fluctuating_background_roi_averages
-        if residual_roi_averages is not None:
-            self._residual_roi_averages = residual_roi_averages
+        self.flyweight.pmd_roi_averages = pmd_roi_averages
+        self.flyweight.fluctuating_background_roi_averages = fluctuating_background_roi_averages
+        self.flyweight.residual_roi_averages = residual_roi_averages
+
+        ## Set the roi averages above that are None
+        self._set_roi_averages()
+
+
 
         if std_corr_img_mean is None or std_corr_img_normalizer is None:
-            self._std_corr_img_mean = None
-            self._std_corr_img_normalizer = None
+            self.flyweight.std_corr_img_mean = None
+            self.flyweight.std_corr_img_normalizer = None
         else:
-            self._std_corr_img_mean = std_corr_img_mean  # standard_correlation_image.movie_mean
-            self._std_corr_img_normalizer = std_corr_img_normalizer  # standard_correlation_image.movie_normalizer
+            self.flyweight.std_corr_img_mean = std_corr_img_mean.to(self._device)  # standard_correlation_image.movie_mean
+            self.flyweight.std_corr_img_normalizer = std_corr_img_normalizer.to(self._device)  # standard_correlation_image.movie_normalizer
 
         if resid_corr_img_mean is None or resid_corr_img_support_values is None or resid_corr_img_normalizer is None:
-            self._resid_corr_img_support_values = None
-            self._resid_corr_img_mean = None
-            self._resid_corr_img_normalizer = None
+            self.flyweight.resid_corr_img_support_values = None
+            self.flyweight.resid_corr_img_mean = None
+            self.flyweight.resid_corr_img_normalizer = None
         else:
-            self._resid_corr_img_support_values = resid_corr_img_support_values
-            self._resid_corr_img_mean = resid_corr_img_mean
-            self._resid_corr_img_normalizer = resid_corr_img_normalizer
+            self.flyweight.resid_corr_img_support_values = resid_corr_img_support_values.coalesce().to(self._device)
+            self.flyweight.resid_corr_img_mean = resid_corr_img_mean.to(self._device)
+            self.flyweight.resid_corr_img_normalizer = resid_corr_img_normalizer.to(self._device)
 
         if bkgd_corr_img_mean is None or bkgd_corr_img_normalizer is None:
-            self._bkgd_corr_img_mean = None
-            self._bkgd_corr_img_normalizer = None
+            self.flyweight.bkgd_corr_img_mean = None
+            self.flyweight.bkgd_corr_img_normalizer = None
         else:
-            self._bkgd_corr_img_mean = bkgd_corr_img_mean
-            self._bkgd_corr_img_normalizer = bkgd_corr_img_normalizer
+            self.flyweight.bkgd_corr_img_mean = bkgd_corr_img_mean.to(self._device)
+            self.flyweight.bkgd_corr_img_normalizer = bkgd_corr_img_normalizer.to(self._device)
+
+        if multiunit_basis_term1 is None or multiunit_basis_term2 is None:
+            self.flyweight.multiunit_basis_term1 = torch.zeros(self.u.shape[1], 1, dtype=self.u.dtype,
+                                                               device=self._device)
+            self.flyweight.multiunit_basis_term2 = torch.zeros((1, self.v.shape[1]), dtype=self.u.dtype,
+                                                               device=self._device)
+        else:
+            self.flyweight.multiunit_basis_term1 = multiunit_basis_term1.to(self._device)
+            self.flyweight.multiunit_basis_term2 = multiunit_basis_term2.to(self._device)
+
+        self._ac_array = None
+        self._colorful_ac_array = None
+        self._pmd_array = None
+        self._fluctuating_background_array = None
+        self._multiunit_background_array = None
+        self._static_background_array = None
+        self._residual_array = None
+        self._residual_correlation_images = None
+        self._standard_correlation_images = None
+        self._trend_array = None
+
+
+
+        #Manage state of relevant arrays
+        self._rescale = False
 
         # Move all tracked tensors to desired location so everything is on one device
-        self.to(self.device)
+        self.to(self._device)
 
-        self._pmd_roi_averages = None
-        self._fluctuating_background_roi_averages = None
-        self._residual_roi_averages = None
 
     @property
-    def pmd_mean_img(self) -> Union[None, torch.Tensor]:
-        return self._pmd_mean_img
+    def flyweight(self) -> TensorFlyWeight:
+        return self._flyweight
 
     @property
-    def pmd_var_img(self) -> Union[None, torch.Tensor]:
-        return self._pmd_var_img
+    def device(self) -> str:
+        return self.flyweight.device
 
     @property
-    def pmd_u_projector(self) -> Union[None, torch.Tensor]:
-        return self._pmd_u_projector
+    def rescale(self):
+        return self._rescale
+
+    @rescale.setter
+    def rescale(self, new_value: bool):
+        managed_arrays_rescale = ['pmd_array',
+                          'ac_array',
+                          'static_background_array',
+                          'fluctuating_background_array',
+                          'multiunit_background_array']
+
+        self._rescale = new_value
+        for name in managed_arrays_rescale:
+            arr = getattr(self, name)
+            arr.rescale = new_value
 
     @property
-    def factorized_bkgd_term1(self) -> Union[None, torch.Tensor]:
-        return self._factorized_bkgd_term1
+    def mean_img(self) -> torch.Tensor:
+        return self.flyweight.mean_img
 
     @property
-    def factorized_bkgd_term2(self) -> Union[None, torch.Tensor]:
-        return self._factorized_bkgd_term2
+    def var_img(self) -> torch.Tensor:
+        """
+        This is the PMD Noise variance image
+        """
+        return self.flyweight.var_img
+
+    @property
+    def spatial_trend_basis(self) -> torch.Tensor | None:
+        return self.flyweight.spatial_trend_basis
+
+    @property
+    def temporal_trend_basis(self) -> torch.Tensor | None:
+        return self.flyweight.temporal_trend_basis
+
+    @property
+    def normalizer(self) -> torch.Tensor:
+        return self.flyweight.normalizer
+
+    @property
+    def u_local_projector(self) -> None | torch.Tensor:
+        return self.flyweight.u_local_projector
+
+    @property
+    def factorized_bkgd_term1(self) -> None | torch.Tensor:
+        return self.flyweight.factorized_bkgd_term1
+
+    @property
+    def factorized_bkgd_term2(self) -> None | torch.Tensor:
+        return self.flyweight.factorized_bkgd_term2
+
+    @property
+    def multiunit_basis_term1(self) -> None | torch.Tensor:
+        return self.flyweight.multiunit_basis_term1
+
+    @property
+    def multiunit_basis_term2(self) -> None | torch.Tensor:
+        return self.flyweight.multiunit_basis_term2
+
 
     @property
     def shape(self):
         return self._shape
 
     @property
-    def order(self):
-        return self._order
-
-    @property
     def device(self):
-        return self._device
+        return self.flyweight.device
 
     def to(self, new_device):
-        self._device = new_device
-        self._u_sparse = self._u_sparse.to(self.device)
-        self._factorized_bkgd_term1 = self._factorized_bkgd_term1.to(self.device)
-        self._factorized_bkgd_term2 = self._factorized_bkgd_term2.to(self.device)
-        self._v = self._v.to(self.device)
-        self._a = self._a.to(self.device)
-        self._c = self._c.to(self.device)
-        self._b = self._b.to(self.device)
+        self.flyweight.to(new_device)
+        self._move_managed_arrays(new_device)
 
-        if self._pmd_mean_img is not None:
-            self._pmd_mean_img = self._pmd_mean_img.to(self.device)
-        if self._pmd_var_img is not None:
-            self._pmd_var_img = self._pmd_var_img.to(self.device)
-        if self._pmd_u_projector is not None:
-            self._pmd_u_projector.to(self.device)
 
-        if self._std_corr_img_mean is not None: #This means all the std corr img data is not None from init logic
-            self._std_corr_img_mean = self._std_corr_img_mean.to(self.device)
-            self._std_corr_img_normalizer = self._std_corr_img_normalizer.to(self.device)
+    def _move_managed_tensors(self, new_device: str):
+        self.flyweight.to(new_device)
 
-        if self._bkgd_corr_img_mean is not None: #This means all the bkgd corr img data is not None from init logic
-            self._bkgd_corr_img_mean = self._bkgd_corr_img_mean.to(self.device)
-            self._bkgd_corr_img_normalizer = self._bkgd_corr_img_normalizer.to(self.device)
-
-        if self._resid_corr_img_mean is not None: #This means all the resid corr img data is not None from init logic
-            self._resid_corr_img_support_values = self._resid_corr_img_support_values.to(self.device)
-            self._resid_corr_img_mean = self._resid_corr_img_mean.to(self.device)
-            self._resid_corr_img_normalizer = self._resid_corr_img_normalizer.to(self.device)
-
-        if self._global_residual_corr_img is not None:
-            self._global_residual_corr_img = self._global_residual_corr_img.to(self.device)
+    def _move_managed_arrays(self, new_device: str):
+        for arr_name in self._managed_arrays:
+            curr_arr = getattr(self, arr_name)
+            if curr_arr is not None:
+                curr_arr.to(self.device)
 
     @property
     def fov_shape(self) -> Tuple[int, int]:
@@ -312,146 +397,151 @@ class DemixingResults(Serializer):
         return self.shape[0]
 
     @property
-    def u(self) -> torch.sparse_coo_tensor:
-        return self._u_sparse
+    def u(self) -> torch.Tensor:
+        return self.flyweight.u
 
     @property
-    def b(self) -> torch.tensor:
-        return self._b
+    def b(self) -> torch.Tensor:
+        return self.flyweight.b
 
     @property
-    def v(self) -> torch.tensor:
-        return self._v
+    def baseline(self) -> torch.Tensor:
+        """
+        Returns a (height, width)-shaped 2D tensor
+        """
+        return self.flyweight.baseline
 
     @property
-    def a(self) -> torch.sparse_coo_tensor:
-        return self._a
+    def v(self) -> torch.Tensor:
+        return self.flyweight.v
 
     @property
-    def c(self) -> torch.tensor:
-        return self._c
+    def a(self) -> torch.Tensor:
+        return self.flyweight.a
 
     @property
-    def std_corr_img_mean(self) -> Union[None, torch.Tensor]:
-        return self._std_corr_img_mean
+    def c(self) -> torch.Tensor:
+        return self.flyweight.c
 
     @property
-    def std_corr_img_normalizer(self) -> Union[None, torch.Tensor]:
-        return self._std_corr_img_normalizer
+    def std_corr_img_mean(self) -> None | torch.Tensor:
+        return self.flyweight.std_corr_img_mean
 
     @property
-    def resid_corr_img_support_values(self) -> Union[None, torch.sparse_coo_tensor]:
-        return self._resid_corr_img_support_values
+    def std_corr_img_normalizer(self) -> None | torch.Tensor:
+        return self.flyweight.std_corr_img_normalizer
 
     @property
-    def resid_corr_img_mean(self) -> Union[None, torch.Tensor]:
-        return self._resid_corr_img_mean
+    def resid_corr_img_support_values(self) -> None | torch.Tensor:
+        return self.flyweight.resid_corr_img_support_values
 
     @property
-    def resid_corr_img_normalizer(self) -> Union[None, torch.Tensor]:
-        return self._resid_corr_img_normalizer
+    def resid_corr_img_mean(self) ->  None | torch.Tensor:
+        return self.flyweight.resid_corr_img_mean
 
     @property
-    def global_residual_correlation_image(self) -> Union[None, torch.Tensor]:
-        return self._global_residual_corr_img
+    def resid_corr_img_normalizer(self) -> None | torch.Tensor:
+        return self.flyweight.resid_corr_img_normalizer
 
     @property
-    def bkgd_corr_img_mean(self) -> Union[None, torch.Tensor]:
-        return self._bkgd_corr_img_mean
+    def global_residual_correlation_image(self) -> None | torch.Tensor:
+        return self.flyweight.global_residual_correlation_image
 
     @property
-    def bkgd_corr_img_normalizer(self) -> Union[None, torch.Tensor]:
-        return self._bkgd_corr_img_normalizer
+    def bkgd_corr_img_mean(self) -> None | torch.Tensor:
+        return self.flyweight.bkgd_corr_img_mean
 
-    def _roi_averages(self) -> tuple[torch.tensor, torch.tensor, torch.tensor]:
+    @property
+    def bkgd_corr_img_normalizer(self) -> None | torch.Tensor:
+        return self.flyweight.bkgd_corr_img_normalizer
+
+    def _set_roi_averages(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Returns the ROI averages for each spatial footprint of the AC Array in the PMD movie, fluctuating background movie,
         and residual movie.
         """
-        if self._residual_roi_averages is None or self._pmd_roi_averages is None or self._fluctuating_background_roi_averages is None:
-            residual_roi_averages = torch.zeros_like(self.c)
-            pmd_roi_averages = torch.zeros_like(self.c)
-            fluctuating_background_roi_averages = torch.zeros_like(self.c)
+        if self.flyweight.residual_roi_averages is None or self.flyweight.pmd_roi_averages is None or self.flyweight.fluctuating_background_roi_averages is None:
+            device = self.c.device
 
-            ind_select_tensor = torch.arange(self.a.shape[1], device=self.device).long()
-            avg_tensor = torch.zeros(self.a.shape[0], device=self.device)
-            u_t = self.u.t()
-            a_t = self.a.t()
-            for k in range(self.a.shape[1]):
-                row, col = torch.index_select(self.a, 1, ind_select_tensor[k:k+1]).coalesce().indices()
-                avg_tensor[row] = 1.0
-                divisor = torch.sum(avg_tensor)
-                avg_tensor[row] /= divisor
-                u_avg = torch.sparse.mm(u_t, avg_tensor[:, None]).T
-                avg_pmd = u_avg @ self.v
-                avg_bkgd = (u_avg @ self.factorized_bkgd_term1) @ self.factorized_bkgd_term2
-                avg_static_bkgd = avg_tensor[None, :] @ self.b
-                a_avg = torch.sparse.mm(a_t, avg_tensor[:, None])
-                ac_avg = (self.c @ a_avg).T
-                resid = avg_pmd - avg_bkgd - avg_static_bkgd - ac_avg
+            ## Compute an "ROI Average" tensor, which is just "a" where each neuron is binarized + normalized by size of support
+            values = self.a.values()
+            rows, cols = self.a.indices()
 
-                pmd_roi_averages[:, k] = avg_pmd.squeeze()
-                fluctuating_background_roi_averages[:, k] = avg_bkgd.squeeze()
-                residual_roi_averages[:, k] = resid.squeeze()
-                avg_tensor *= 0 #Reset this
-            self._pmd_roi_averages = pmd_roi_averages
-            self._fluctuating_background_roi_averages = fluctuating_background_roi_averages
-            self._residual_roi_averages = residual_roi_averages
+            values_keep = values != 0
+            values = values[values_keep]
+            rows = rows[values_keep]
+            cols = cols[values_keep]
 
-        return (self._pmd_roi_averages, self._fluctuating_background_roi_averages, self._residual_roi_averages)
+            values_bin = torch.ones_like(values)
+            counts = torch.zeros(self.a.shape[1], device=device)
+            counts.scatter_reduce_(0, cols, values_bin, reduce="sum")
+            values_bin /= counts[cols]
+            values_bin = torch.nan_to_num(values_bin, nan=0.0)
 
-    @property
-    def pmd_roi_averages(self) -> torch.tensor:
-        return self._roi_averages()[0]
+            #Note we do [cols, rows] instead of [rows, cols] because we want the transposed mat
+            roi_avg_operator = torch.sparse_coo_tensor(torch.stack([cols, rows], dim=0),
+                                                   values_bin,
+                                                   size=(self.a.shape[1], self.a.shape[0])).to(self.a.device).coalesce()
 
-    @property
-    def fluctuating_background_roi_averages(self) -> torch.tensor:
-        return self._roi_averages()[1]
+            rU = torch.sparse.mm(roi_avg_operator, self.u)
+            rA = torch.sparse.mm(roi_avg_operator, self.a)
+
+            pmd_roi_averages = torch.sparse.mm(rU, self.v)
+            ac_roi_averages = torch.sparse.mm(rA, self.c.T)
+            static_background_roi_averages = torch.sparse.mm(roi_avg_operator, self.b[..., None])
+            fluctuating_background_roi_averages = torch.sparse.mm(rU, self.factorized_bkgd_term1) @ self.factorized_bkgd_term2
+            residual_roi_averages = pmd_roi_averages - ac_roi_averages - static_background_roi_averages - fluctuating_background_roi_averages
+
+            self.flyweight.pmd_roi_averages = pmd_roi_averages
+            self.flyweight.fluctuating_background_roi_averages = fluctuating_background_roi_averages
+            self.flyweight.residual_roi_averages = residual_roi_averages
 
     @property
-    def residual_roi_averages(self) -> torch.tensor:
-        return self._roi_averages()[2]
+    def pmd_roi_averages(self) -> torch.Tensor:
+        return self.flyweight.pmd_roi_averages
 
     @property
-    def standard_correlation_image(self) -> Union[None, StandardCorrelationImages]:
+    def fluctuating_background_roi_averages(self) -> torch.Tensor:
+        return self.flyweight.fluctuating_background_roi_averages
+
+    @property
+    def residual_roi_averages(self) -> torch.Tensor:
+        return self.flyweight.residual_roi_averages
+
+    @property
+    def standard_correlation_images(self) -> None | StandardCorrelationImages:
         if self.std_corr_img_mean is not None:
-            return StandardCorrelationImages(self._u_sparse,
-                                             self._v,
-                                             self._c,
-                                             self.std_corr_img_mean,
-                                             self.std_corr_img_normalizer,
-                                             (self._shape[1], self._shape[2]),
-                                             order=self.order)
+            if self._standard_correlation_images is None:
+                self._standard_correlation_images = StandardCorrelationImages.from_flyweight(self.flyweight,
+                                                                                             (self._shape[1], self._shape[2]))
+            return self._standard_correlation_images
         else:
             return None
 
     @property
-    def background_to_signal_correlation_image(self) -> Union[None, StandardCorrelationImages]:
+    def background_to_signal_correlation_image(self) -> None | StandardCorrelationImages:
+        """
+        This array will not use the FlyWeight pattern that the other arrays use, since this is primarily an exploratory
+        property. If this becomes crucial, can re-organize
+        """
         if self.bkgd_corr_img_mean is not None:
-            return StandardCorrelationImages(self._u_sparse,
+            return StandardCorrelationImages.from_tensors(self.u,
                                              self.factorized_bkgd_term1 @ self.factorized_bkgd_term2,
-                                             self._c,
+                                             self.c,
                                              self.bkgd_corr_img_mean,
                                              self.bkgd_corr_img_normalizer,
-                                             (self._shape[1], self._shape[2]),
-                                             order=self.order)
+                                             (self._shape[1], self._shape[2]))
         else:
             return None
 
     @property
-    def residual_correlation_image(self) -> Union[None, ResidualCorrelationImages]:
+    def residual_correlation_images(self) -> None | ResidualCorrelationImages:
         if self.resid_corr_img_mean is not None:
-            return ResidualCorrelationImages(self.u,
-                                             self.v,
-                                             (self.factorized_bkgd_term1, self.factorized_bkgd_term2),
-                                             self.a,
-                                             self.c,
-                                             self.resid_corr_img_support_values,
-                                             self.resid_corr_img_mean,
-                                             self.resid_corr_img_normalizer,
-                                             (self.shape[1], self.shape[2]),
-                                             mode=ResidCorrMode.RESIDUAL,
-                                             order=self._order)
+            if self._residual_correlation_images is None:
+                self._residual_correlation_images = ResidualCorrelationImages.from_flyweight(self.flyweight,
+                                                                                             (self.shape[1], self.shape[2]),
+                                                                                             mode=ResidCorrMode.RESIDUAL)
+            return self._residual_correlation_images
         else:
             return None
 
@@ -460,45 +550,72 @@ class DemixingResults(Serializer):
         """
         Returns an ACArray using the tensors stored in this object
         """
-        return ACArray(self.fov_shape, self.a, self.c)
+        if self._ac_array is None:
+            self._ac_array = ACArray.from_flyweight(self.fov_shape, self.flyweight, rescale=self.rescale)
+        return self._ac_array
 
     @property
     def pmd_array(self) -> PMDArray:
         """
         Returns a PMDArray using the tensors stored in this object
         """
-        return PMDArray(
-            self.shape,
-            self.u,
-            self.v,
-            self.pmd_mean_img,
-            self.pmd_var_img,
-            u_local_projector=self.pmd_u_projector,
-            device=self.device,
-            rescale=True,
-        )
+        if self._pmd_array is None:
+            self._pmd_array = PMDArray.from_flyweight(
+                self.shape,
+                self.flyweight,
+                device=self.device,
+                rescale=self.rescale,
+            )
+        return self._pmd_array
+
+    @property
+    def trend_array(self) -> TrendArray:
+        if self._trend_array is None:
+            self._trend_array = TrendArray.from_flyweight(self.shape,
+                                          self.flyweight,
+                                          self.device)
+
+        return self._trend_array
 
     @property
     def fluctuating_background_array(self) -> FluctuatingBackgroundArray:
         """
         Returns a PMDArray using the tensors stored in this object
         """
-        return FluctuatingBackgroundArray(self.fov_shape,
-                                          self.order,
-                                          self.u,
-                                          self.factorized_bkgd_term1,
-                                          self.factorized_bkgd_term2)
+        if self._fluctuating_background_array is None:
+            self._fluctuating_background_array = FluctuatingBackgroundArray.from_flyweight(self.fov_shape,
+                                                                            self.flyweight,
+                                                                            rescale=self.rescale)
+        return self._fluctuating_background_array
+
+    @property
+    def multiunit_background_array(self) -> MultiunitBackgroundArray:
+        if self._multiunit_background_array is None:
+            self._multiunit_background_array = MultiunitBackgroundArray.from_flyweight(self.fov_shape,
+                                                                                       self.flyweight,
+                                                                                       rescale=self.rescale)
+        return self._multiunit_background_array
+
+    @property
+    def static_background_array(self) -> StaticBackgroundArray:
+
+        if self._static_background_array is None:
+            self._static_background_array = StaticBackgroundArray.from_flyweight(self.flyweight,
+                                                                             rescale = self.rescale)
+        return self._static_background_array
 
     @property
     def residual_array(self) -> ResidualArray:
-        return ResidualArray(
-            self.pmd_array,
-            self.ac_array,
-            self.fluctuating_background_array,
-            self.b.reshape(self.fov_shape),
-        )
+        if self._residual_array is None:
+            self._residual_array = ResidualArray(self.pmd_array,
+                                                self.ac_array,
+                                                self.fluctuating_background_array,
+                                                self.static_background_array,
+                                            )
+        return self._residual_array
 
     @property
     def colorful_ac_array(self) -> ColorfulACArray:
-        return ColorfulACArray(self.fov_shape, self.a, self.c)
-
+        if self._colorful_ac_array is None:
+            self._colorful_ac_array = ColorfulACArray.from_flyweight(self.fov_shape, self.flyweight)
+        return self._colorful_ac_array

@@ -1,4 +1,4 @@
-from masknmf.demixing.signal_demixer import SignalDemixer, InitializingState, DemixingState
+from masknmf.demixing.signal_demixer import SignalDemixer, InitializingState, DemixingState, DemixingError, NoSignalsDetectedError
 from masknmf.demixing.demixing_results import DemixingResults
 from masknmf.demixing.demixing_arrays import ACArray, StandardCorrelationImages, ResidualCorrelationImages, ResidCorrMode, FluctuatingBackgroundArray, ColorfulACArray, ResidualArray
 
@@ -19,6 +19,8 @@ __all__ = [
     "SignalDemixer",
     "InitializingState",
     "DemixingState",
-    "InitializationResults"
+    "InitializationResults",
+    "DemixingError",
+    "NoSignalsDetectedError"
 ]
 

@@ -1,213 +1,62 @@
 import math
-from typing import Optional, Callable, Union
+from typing import Optional, Callable, Union, Tuple
 import numpy as np
 from numpy.typing import DTypeLike
 
 import torch
 import masknmf
 from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
-from .strategies import MotionCorrectionStrategy, RigidMotionCorrector, GradientMotionCorrector, PiecewiseRigidMotionCorrector, DummyMotionCorrector
+from .strategies import MotionCorrectionStrategy, DummyMotionCorrector
 from .registration_methods import compute_pwrigid_patch_midpoints
 from masknmf.utils import Serializer
 from pathlib import Path
 import h5py
 import os
 from tqdm import tqdm
+from abc import ABC, abstractmethod
+from masknmf.utils._serialization import save_dict, load_dict
 
 
-class Shifts(ArrayLike):
-    def __init__(self, reg_arr):
-        self._reg = reg_arr
-
-    @property
-    def dtype(self) -> str:
-        return self._reg.dtype
+class BaseRegistrationArray(ArrayLike, Serializer, ABC):
+    _strategy_cls: type = None
 
     @property
-    def shape(self) -> tuple[int, int, int]:
-        return self._reg.shape
+    @abstractmethod
+    def shifts(self): ...
 
     @property
-    def ndim(self) -> int:
-        return self._reg.ndim
-
-    def __getitem__(self, ind):
-        return self._reg._index_frames_tensor(ind)[1].squeeze()
-
-
-class RegistrationArray(LazyFrameLoader, Serializer):
-
-    _motion_export_name = "motion_corrected"
-    _shifts_export_name = "shifts"
-
-    def __init__(
-        self,
-        reference_movie: LazyFrameLoader,
-        strategy: MotionCorrectionStrategy | None = None,
-        target_movie: Optional[LazyFrameLoader] = None,
-        shifts: Shifts | np.ndarray | None = None,
-        dtype: Union[str, np.dtype] = np.float32
-    ):
-        """
-        Array-like motion correction representation that support on-the-fly motion correction
-
-        Args:
-            reference_movie (LazyFrameLoader): Image stack that we use to compute motion correction transform relative to template
-            strategy (masknmf.MotionCorrectionStrategy): The method used to register each frame to the template.
-                Can initialize as ``None``, but must be set before slicing frames
-            target_movie (Optional[LazyFrameLoader]): Once we learn the motion correction transform by aligning reference_dataset
-                with template, we actually apply the transform to target_dataset, if it is specified. If None, we apply the
-                transform to reference_dataset
-        """
-        self._reference_movie = reference_movie
-
-        if strategy is None:
-            self.strategy = DummyMotionCorrector()
-        else:
-            self.strategy = strategy
-
-        self._target_movie = target_movie
-        self._shape = self.reference_movie.shape
-        self._ndim = self.reference_movie.ndim
-
-        if shifts is None:
-            self._shifts = Shifts(self)
-        else:
-            #Here the shifts are pre-computed
-            self._shifts = shifts
-
-        self._dtype = dtype
+    @abstractmethod
+    def input_movie(self): ...
 
     @property
-    def ndim(self) -> int:
-        return self._ndim
+    @abstractmethod
+    def strategy(self) -> Serializer: ...
 
     @property
-    def shape(self) -> tuple[int, int, int]:
-        return self._shape
-
-    @property
-    def dtype(self) ->  Union[str, np.dtype]:
-        return self._dtype
-
-    @property
-    def reference_movie(self) -> LazyFrameLoader:
-        return self._reference_movie
-
-    @property
-    def target_movie(self) -> LazyFrameLoader | None:
-        return self._target_movie
-
-    @property
-    def shifts(self) -> Shifts:
-        return self._shifts
-
-    @property
-    def strategy(self) -> PiecewiseRigidMotionCorrector | RigidMotionCorrector | None:
-        return self._strategy
-
-    @strategy.setter
-    def strategy(self, corrector: PiecewiseRigidMotionCorrector | RigidMotionCorrector | DummyMotionCorrector | None):
-        self._strategy = corrector
-
-        if isinstance(self.strategy, PiecewiseRigidMotionCorrector):
-            self._block_centers = compute_pwrigid_patch_midpoints(
-                num_blocks=self.strategy.num_blocks,
-                overlaps=self.strategy.overlaps,
-                fov_height=self.reference_movie.shape[1],
-                fov_width=self.reference_movie.shape[2]
-            )
-        else:
-            self._block_centers = None
-
-    @property
-    def block_centers(self) -> None | np.ndarray:
-        """centers of the blocks when using ``PiecewiseRigidMotionCorrector``, ``None`` otherwise"""
-        return self._block_centers
-
-    def _compute_at_indices(self, indices: list | int | slice) -> np.ndarray:
-        """
-        Lazy computation logic goes here to return frames. Slices the array over time (dimension 0) at the desired indices.
-
-        Args:
-            indices: Union[list, int, slice] the user's desired way of picking frames, either an int, list of ints, or slice
-                i.e. slice object or int passed from `__getitem__()`
-
-        Returns:
-            np.ndarray: array at the indexed slice
-        """
-        return self._index_frames_tensor(indices)[0]
-
-    def __getitem__(self, idx):
-        if isinstance(self.strategy, masknmf.DummyMotionCorrector):
-            return self.reference_movie.__getitem__(idx)
-        else:
-            return super().__getitem__(idx)
-
-    def _index_frames_tensor(
-        self,
-        idx: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """(corrected_frames, shifts) at index `idx`."""
-
-        reference_data_frames = self.reference_movie[idx]
-        target_data_frames = None if self.target_movie is None else self.target_movie[idx]
-
-        #Ensure that we pass in (num_frames, height, width) data to the correction code
-        if reference_data_frames.ndim == 2:
-            reference_data_frames = reference_data_frames[None, ...]
-        if target_data_frames is not None:
-            if target_data_frames.ndim == 2:
-                target_data_frames = target_data_frames[None, ...]
-
-        return self.strategy.correct(
-            reference_movie_frames=reference_data_frames,
-            target_movie_frames=target_data_frames,
-        )
+    @abstractmethod
+    def output_device(self): ...
 
     def export(self, path: str | Path):
-        data_output_shape = self.shape
-        if isinstance(self.strategy, masknmf.PiecewiseRigidMotionCorrector):
-            shifts_output_shape = self.shape[0], self.block_centers.shape[0], self.block_centers.shape[1], 2
-        elif isinstance(self.strategy, masknmf.RigidMotionCorrector) or isinstance(self.strategy, masknmf.GradientMotionCorrector):
-            shifts_output_shape = self.shape[0], 2
-        elif isinstance(self.strategy, masknmf.DummyMotionCorrector):
-            shifts_output_shape = None
-        else:
-            raise ValueError("Strategy not valid")
-        if os.path.isfile(path):
-            raise FileExistsError
-
-        with h5py.File(path, 'w') as f:
-            num_frames = self.shape[0]
-            moco_dset = f.create_dataset(self._motion_export_name,
-                                         data_output_shape,
-                                         dtype=self.dtype)
-            if shifts_output_shape is not None:
-                shifts_dset = f.create_dataset(self._shifts_export_name, shifts_output_shape)
-            else:
-                shifts_dset = None
-            batch_size = self.strategy.batch_size
-            for k in tqdm(range(math.ceil(num_frames / batch_size))):
-                start = k * batch_size
-                end = min(start + batch_size, num_frames)
-                moco_subset, shifts_subset = self._index_frames_tensor(slice(start, end))
-                moco_dset[start:end, :, :] = moco_subset.astype(self.dtype)
-                if shifts_dset is not None:
-                    shifts_dset[start:end, ...] = shifts_subset
+        d_array = self._to_dict()
+        d_strategy = self.strategy._to_dict()
+        save_dict(d_array, filename=path, group=self.__class__.__name__)
+        save_dict(d_strategy, filename=path, exists_ok=True, group=self._strategy_cls.__name__)
 
     @classmethod
-    def from_hdf5(cls, path, **kwargs):
-        """Load result from a hdf5 file. Any additional kwargs are passed to the constructor"""
-        registered_array = h5py.File(path, "r")[cls._motion_export_name]
-        with h5py.File(path, "r") as f:
-            if cls._shifts_export_name in f:
-                shifts = f[cls._shifts_export_name][()]
-            else:
-                shifts = None
+    def from_hdf5(cls,
+                  path,
+                  input_movie: ArrayLike,
+                  **kwargs):
+        if cls._strategy_cls is None:
+            raise NotImplementedError(
+                f"{cls.__name__} must set `_strategy_cls` to enable from_hdf5"
+            )
+        strat = cls._strategy_cls(**load_dict(path, cls._strategy_cls.__name__))
+        reg_arr_dict = load_dict(path, cls.__name__)
+        return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict)
 
-        return cls(reference_movie=registered_array,
-                   shifts=shifts)
+
+
 
 
 class FilteredArray(LazyFrameLoader):
@@ -269,7 +118,7 @@ class FilteredArray(LazyFrameLoader):
         """
         data type
         """
-        return self.raw_data_loader.dtype
+        return np.float32
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -318,3 +167,128 @@ class FilteredArray(LazyFrameLoader):
                 output.append(self.filter_function(curr_frames).cpu())
 
             return torch.concatenate(output, dim=0).numpy()
+
+
+class OphysArray(ArrayLike):
+
+    def __init__(self,
+                 dataset: ArrayLike,
+                 negative_indicator: bool = True,
+                 include_mean: bool = True,
+                 device='cuda',
+                 batch_size: int = 200):
+        """
+        Array-like object for viewing inverted, mean subtracted, and/or raw optical physiology data
+        Args:
+            dataset (masknmf.ArrayLike): Shape (num_frames, height, width)
+            negative_indicator (bool): True if indicator is negatively tuned, else False
+            include_mean (bool): If True, includes the mean into the "getitem" call. If false, getitem shows the "mean subtracted" movie
+            device (str): Which device to perform computations/return the tensor from getitem
+        """
+        self._dataset = dataset
+        self._device = device
+        self._batch_size = batch_size
+        self._negative_indicator = negative_indicator
+        self._compute_mean()
+        self._include_mean = include_mean
+
+    @property
+    def batch_size(self) -> int:
+        return self._batch_size
+
+    @batch_size.setter
+    def batch_size(self, new_size: int):
+        self._batch_size = new_size
+
+    def _compute_mean(self):
+        num_frames = self.shape[0]
+        cumulated_mean = torch.zeros(self.shape[1], self.shape[2], dtype=self.dtype, device=self.device)
+        num_batches = math.ceil(self.shape[0] / self.batch_size)
+        for ind in range(num_batches):
+            start_pt = ind * self.batch_size
+            end_pt = min(self.shape[0], start_pt + self.batch_size)
+            data_subset = self._dataset[start_pt:end_pt]
+            if isinstance(data_subset, np.ndarray):
+                subset = torch.from_numpy(data_subset).to(self.device).to(self.dtype)
+            elif isinstance(data_subset, torch.Tensor):
+                subset = data_subset.to(self.device).to(self.dtype)
+            else:
+                raise ValueError("Calling getitem on dataset should return either a torch tensor or np.ndarray")
+            cumulated_mean += torch.sum(subset, dim=0) / num_frames
+        self._mean_image = cumulated_mean
+
+    @property
+    def include_mean(self) -> bool:
+        return self._include_mean
+
+    @include_mean.setter
+    def include_mean(self, new_flag: bool):
+        self._include_mean = new_flag
+
+    @property
+    def negative_indicator(self) -> bool:
+        return self._negative_indicator
+
+    @property
+    def device(self) -> str:
+        return self._device
+
+    @property
+    def mean_image(self) -> torch.Tensor:
+        return self._mean_image
+
+    @property
+    def dtype(self) -> torch.dtype:
+        """
+        data type
+        """
+        return torch.float32
+
+    @property
+    def shape(self) -> Tuple[int, int, int]:
+        return self._dataset.shape
+
+    @property
+    def nbytes(self) -> int:
+        return math.prod(self.shape) * self.dtype.itemsize
+
+    def __getitem__(self,
+                    item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> torch.Tensor:
+        return self._get(item, include_mean=self.include_mean)
+
+    def _get(self,
+             item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+             include_mean: bool | None = None) -> torch.Tensor:
+        ## Private helper method designed to avoid race conditions associated with state variables like include_mean
+        if include_mean is None:
+            include_mean = self.include_mean
+
+        frame_indexer, item = self._parse_indices(item)
+        data_subset = torch.as_tensor(self._dataset[item]).to(self.device).to(self.dtype) ## Parse indices first to ensure consistent output
+
+        # Check if spatial cropping occurred, deal with mean image accordingly
+        if isinstance(item, tuple):
+            mean_crop = self._mean_image[item[1:]]
+        else:
+            mean_crop = self._mean_image
+
+        if data_subset.ndim > mean_crop.ndim: #This means that there is a temporal dimension, which means we need to broadcast
+            mean_crop = mean_crop[None, ...]
+
+        if self.negative_indicator:
+            data_subset *= -1
+            if include_mean:
+                data_subset += 2 * mean_crop
+            else:
+                data_subset += mean_crop
+        else:
+            if include_mean:
+                pass
+            else:
+                data_subset -= mean_crop
+        return data_subset
+
+
+
+
+
