@@ -30,34 +30,51 @@ def draw_progress(label_set, id_suffix: str = "") -> bool:
     return clicked
 
 
-def draw_label_buttons(label_set, id_suffix: str = "") -> Optional[int]:
+def _count_text(label_set, i: int) -> str:
     """
-    One colored button per class, plus unlabel and unlabel all.
+    The count column of a class button.
 
-    Returns the clicked label index, ``UNLABELED`` to clear the current item,
-    ``UNLABEL_ALL`` to clear every item, or None.
+    "n=3", not "(3)": the (1-9) that follows the button is the keybind, and a
+    bare count beside it read as one too.
     """
+    return f"n={label_set.count(i)}"
+
+
+def _draw_class_text(label_set, i: int, count_w: float) -> None:
+    """
+    Paint one class button's count and name as two left-aligned columns.
+    """
+    lo, hi = imgui.get_item_rect_min(), imgui.get_item_rect_max()
+    pad = imgui.get_style().frame_padding.x
+    y = lo.y + (hi.y - lo.y - imgui.get_text_line_height()) * 0.5
+    draw = imgui.get_window_draw_list()
+    color = imgui.get_color_u32(imgui.Col_.text)
+
+    # a long name is clipped to its own button instead of bleeding into the
+    # column beside it
+    draw.push_clip_rect(imgui.ImVec2(lo.x, lo.y), imgui.ImVec2(hi.x - 1, hi.y), True)
+
+    draw.add_text(imgui.ImVec2(lo.x + pad, y), color, _count_text(label_set, i))
+    draw.add_text(imgui.ImVec2(lo.x + pad + count_w, y), color, label_set.names[i])
+    draw.pop_clip_rect()
+
+
+def _draw_unlabel_row(id_suffix: str) -> Optional[int]:
+    """Unlabel at the left, unlabel all at the right, however many classes there are."""
     picked = None
-    for i, name in enumerate(label_set.names):
-        if i:
-            imgui.same_line(0, em(0.6))
-        with label_button(label_set.color(i)):
-            if imgui.button(f"{name} ({label_set.count(i)})##label{i}{id_suffix}"):
-                picked = i
-        if i < 9:
-            imgui.same_line(0, em(0.25))
-            imgui.text_disabled(f"({i + 1})")
-    if not label_set.names:
-        imgui.text_disabled("no labels yet: add one")
-        return None
-    imgui.same_line(0, em(0.8))
-    if imgui.button(f"unlabel##{id_suffix}"):
+    x0 = imgui.get_cursor_pos_x()
+    avail = imgui.get_content_region_avail().x
+    if imgui.small_button(f"unlabel##{id_suffix}"):
         picked = UNLABELED
     imgui.same_line(0, em(0.25))
     imgui.text_disabled("(0)")
-    imgui.same_line(0, em(0.6))
+    right = (
+        imgui.calc_text_size("unlabel all").x + imgui.get_style().frame_padding.x * 2
+    )
+    imgui.same_line()
+    imgui.set_cursor_pos_x(max(x0 + avail - right, imgui.get_cursor_pos_x()))
     with danger_button():
-        if imgui.button(f"unlabel all##{id_suffix}"):
+        if imgui.small_button(f"unlabel all##{id_suffix}"):
             picked = UNLABEL_ALL
     return picked
 
@@ -108,7 +125,9 @@ def draw_label_editor(label_set, new_label: str, id_suffix: str = "") -> tuple:
     changed = False
     imgui.set_next_item_width(em(7))
     entered, new_label = imgui.input_text_with_hint(
-        f"##new-label{id_suffix}", "new label", new_label,
+        f"##new-label{id_suffix}",
+        "new label",
+        new_label,
         imgui.InputTextFlags_.enter_returns_true,
     )
     imgui.same_line(0, em(0.3))
@@ -135,17 +154,22 @@ def draw_label_editor(label_set, new_label: str, id_suffix: str = "") -> tuple:
     return new_label, changed
 
 
-def draw_keybinds_popup(bindings: Sequence[tuple], is_open: bool, title: str = "Keybinds") -> bool:
+def draw_keybinds_popup(
+    bindings: Sequence[tuple], is_open: bool, title: str = "Keybinds"
+) -> bool:
     """Key reference window. Returns the new open state."""
     if not is_open:
         return False
     imgui.set_next_window_pos(
-        imgui.get_main_viewport().get_center(), imgui.Cond_.appearing,
+        imgui.get_main_viewport().get_center(),
+        imgui.Cond_.appearing,
         pivot=imgui.ImVec2(0.5, 0.5),
     )
     opened, is_open = imgui.begin(
-        f"{title}###keybinds", is_open,
-        flags=imgui.WindowFlags_.no_saved_settings | imgui.WindowFlags_.always_auto_resize,
+        f"{title}###keybinds",
+        is_open,
+        flags=imgui.WindowFlags_.no_saved_settings
+        | imgui.WindowFlags_.always_auto_resize,
     )
     if opened:
         flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.borders_inner_h

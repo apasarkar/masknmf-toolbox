@@ -1290,10 +1290,13 @@ class SignalSelectionVis:
         self._poll_traces()
         self._poll_file_dialog()
         self._handle_keys()
-        # a left/right dock, so the sections stack as rows, each only as tall
-        # as its own content
-        for draw in (self._draw_view_card, self._draw_draw_card, self._draw_labels_card):
-            draw(0.0, -1.0)
+        # a left/right dock, so the sections stack as rows: view and draw take
+        # only the height their content needs, labels take everything left, so
+        # its buttons get the most columns the panel can hold
+        self._draw_view_card(0.0, -1.0)
+        self._draw_draw_card(0.0, -1.0)
+        room = imgui.get_content_region_avail().y - imgui.get_frame_height_with_spacing()
+        self._draw_labels_card(max(room, em(8)), -1.0)
         self._draw_status()
         self._keybinds_open = draw_keybinds_popup(_KEYBINDS, self._keybinds_open)
         self._draw_export_popup()
