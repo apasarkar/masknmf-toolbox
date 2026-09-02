@@ -49,6 +49,8 @@ from masknmf.visualization.imgui import (
     draw_roi_table,
     resolve_time_reference,
 )
+from fastplotlib.ui import ImguiWindow
+
 from masknmf.visualization.imgui.files import PathPrompt, draw_path_prompt
 from masknmf.visualization.imgui.theme import (
     THEME,
@@ -104,13 +106,12 @@ _TRACE_COLUMNS = (
 )
 
 # edge window sizes in px; all three are draggable once the figure is up
-_TRACE_PANEL_HEIGHT = 330
 _ROI_PANEL_WIDTH = 380
 _CONTROLS_WIDTH = 360
 # a control card stacks instead of sharing a row below this width
 _CARD_MIN_EM = 18
-# the trace table takes this much of a wide panel, the plot the rest
-_TRACE_TABLE_EM = 28
+# starting plot height in px; the drag strip under the plot changes it
+_TRACE_PLOT_HEIGHT = 240
 
 _EXTRACT_LABEL = "extract traces"
 _EXTRACT_TOOLTIP = (
@@ -318,6 +319,8 @@ class SignalSelectionVis:
 
         self._trace_sel: set = set()
         self._trace_sort = (0, True)
+        self._trace_plot_height = float(_TRACE_PLOT_HEIGHT)
+        self._trace_window = None
         self._trace_stats: dict = {}
         self._trace_display: dict = {}
         self._dff = True
@@ -332,10 +335,14 @@ class SignalSelectionVis:
         self._drawer = StrokeDrawer(self._fov_subplot, self._on_stroke, self._pick)
 
         figure = self._ndw_fov.figure
+        # an ImguiWindow instance rather than a bare callback, because
+        # add_imgui_window hands the callback form back instead of the window
+        # and the panel needs the window to size itself
+        self._trace_window = ImguiWindow(update_call=self._draw_trace_panel)
         figure.add_imgui_window(
-            self._draw_trace_panel,
+            self._trace_window,
             location="top",
-            size=_TRACE_PANEL_HEIGHT,
+            size=_TRACE_PLOT_HEIGHT,
             title="Traces",
         )
         figure.add_imgui_window(
@@ -354,6 +361,22 @@ class SignalSelectionVis:
 
         self._resync()
         self.refresh_overlays()
+        self._show_first_row()
+
+    def _show_first_row(self):
+        """
+        Open on the first ROI the table lists, with its traces already pulled,
+        so the plot has something in it before the user clicks anything.
+        """
+        if not len(self._order.order):
+            return
+        item = int(self._order.order[0])
+        self.select_row(item)
+        si, k = self._rows[item]
+        if si >= 0:
+            self.collect_signal_traces(k)
+        else:
+            self.trace_rois([k])
 
     # ------------------------------------------------------------------
     # construction
@@ -1403,7 +1426,7 @@ class SignalSelectionVis:
         if changed:
             self._order.rebuild()
 
-        footer = 4 * imgui.get_frame_height_with_spacing() + em(0.8)
+        footer = self._footer_height()
         if imgui.begin_child("##roi_table", imgui.ImVec2(0, -footer)):
             if self._rows:
                 pos = self._order.pos
@@ -1436,6 +1459,20 @@ class SignalSelectionVis:
         self._draw_selection_footer()
         self._draw_trace_all()
 
+    def _footer_height(self) -> float:
+        """
+        Exactly the rows the footer draws, so no dead space opens under the
+        table. The trace-all button shares the last row, making it frame tall.
+        """
+        text = imgui.get_text_line_height_with_spacing()
+        frame = imgui.get_frame_height_with_spacing()
+        pad = imgui.get_style().item_spacing.y + 2
+        if len(self._buffer) > 1 or self._selected >= 0:
+            return 2 * frame + pad
+        if self._selected_signal is not None:
+            return text + frame + pad
+        return frame + pad
+
     def listed_rows(self) -> list:
         """The (kind, index) pairs the table is currently showing."""
         return [self._rows[item] for item in self._order.order]
@@ -1449,9 +1486,10 @@ class SignalSelectionVis:
                 self.collect_signal_traces(k)
 
     def _draw_trace_all(self):
-        """The trace-all row, right-aligned under the table's action icons."""
+        """Right-aligned on the footer's last row, level with its buttons."""
         label = f"{_TRACE_ICON} {_EXTRACT_LABEL} for all"
         width = imgui.calc_text_size(label).x + imgui.get_style().frame_padding.x * 2
+        imgui.same_line(0, em(0.5))
         avail = imgui.get_content_region_avail().x
         if width < avail:
             imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + avail - width)
@@ -1558,25 +1596,36 @@ class SignalSelectionVis:
     # ------------------------------------------------------------------
 
     def _draw_trace_panel(self):
-        """Plot beside the table in the wide top band, stacked once it is narrow."""
-        avail = imgui.get_content_region_avail()
-        gap = em(0.8)
-        if avail.x >= 2 * em(_TRACE_TABLE_EM):
-            width = avail.x - em(_TRACE_TABLE_EM) - gap
-            if imgui.begin_child("##trace_plot_pane", imgui.ImVec2(width, 0)):
-                self._draw_trace_plot()
-            imgui.end_child()
-            imgui.same_line(0, gap)
-            if imgui.begin_child("##trace_table_pane", imgui.ImVec2(0, 0)):
-                self._draw_trace_table()
-            imgui.end_child()
+        self._draw_trace_plot()
+        self._draw_trace_resize_handle()
+        self._fit_trace_window()
+
+    def _draw_trace_resize_handle(self):
+        """
+        A drag strip along the bottom edge. fastplotlib only builds resize
+        handles for the bottom and right docks, so a top dock needs its own.
+        """
+        imgui.invisible_button("##trace_resize", imgui.ImVec2(-1, em(0.5)))
+        if imgui.is_item_hovered():
+            imgui.set_mouse_cursor(imgui.MouseCursor_.resize_ns)
+            imgui.set_tooltip("drag to resize the trace plot")
+        if imgui.is_item_active() and imgui.is_mouse_dragging(0):
+            delta = imgui.get_mouse_drag_delta(0).y
+            self._trace_plot_height = min(
+                max(self._trace_plot_height + delta, em(6)), em(40)
+            )
+            imgui.reset_mouse_drag_delta(0)
+
+    def _fit_trace_window(self):
+        """Size the dock to whatever the panel actually drew this frame."""
+        window = self._trace_window
+        if window is None:
             return
-        height = max(avail.y * 0.55, em(10))
-        if imgui.begin_child("##trace_plot_pane", imgui.ImVec2(0, height)):
-            self._draw_trace_plot()
-        imgui.end_child()
-        imgui.separator()
-        self._draw_trace_table()
+        pad = imgui.get_style().window_padding.y * 2
+        wanted = int(imgui.get_cursor_pos_y() + pad)
+        # a 1px deadband, since every set relays out the whole figure
+        if abs(wanted - (window.size or 0)) > 1:
+            window.size = wanted
 
     def _draw_trace_plot(self):
         target = self._plot_lines()
@@ -1599,7 +1648,7 @@ class SignalSelectionVis:
         flags = implot.Flags_.no_title
         if len(lines) <= 1:
             flags |= implot.Flags_.no_legend
-        height = max(imgui.get_content_region_avail().y - em(0.3), em(6))
+        height = self._trace_plot_height
         if not implot.begin_plot("##trace_plot", imgui.ImVec2(-1, height), flags):
             return
         try:
