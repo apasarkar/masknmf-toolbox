@@ -783,10 +783,11 @@ class SignalSelectionVis:
             if hit is not None:
                 self.buffer_add(*hit)
             return
-        self.buffer_clear()
         if hit is None:
-            self.select_roi(-1)
-        elif hit[0] < 0:
+            # empty space: keep the selection, so its traces stay on the plot
+            return
+        self.buffer_clear()
+        if hit[0] < 0:
             self.select_roi(hit[1])
         else:
             self.select_signal(hit[1])
