@@ -62,6 +62,47 @@ def draw_label_buttons(label_set, id_suffix: str = "") -> Optional[int]:
     return picked
 
 
+def draw_label_buttons(label_set, id_suffix: str = "") -> Optional[int]:
+    """
+    The unlabel actions across the top, then one button per class in columns
+    filled evenly down the space the card has, at least two wide.
+
+    Returns the clicked label index, ``UNLABELED`` to clear the current item,
+    ``UNLABEL_ALL`` to clear every item, or None.
+    """
+    if not label_set.names:
+        imgui.text_disabled("no labels yet: add one")
+        return None
+    picked = _draw_unlabel_row(id_suffix)
+    n = len(label_set.names)
+    avail = imgui.get_content_region_avail()
+    rows = max(int(avail.y // imgui.get_frame_height_with_spacing()), 1)
+    ncols = max(2, -(-n // rows))
+    per_col = -(-n // ncols)
+    gap, hint = em(0.8), em(2.0)
+    col_w = max((avail.x - gap * (ncols - 1)) / ncols, em(5))
+    # a touch narrower than the column: the buttons carried more empty space
+    # than the names needed, and the hint sits outside them
+    size = imgui.ImVec2(max(col_w - hint - em(0.7), em(3.0)), 0)
+    count_w = max(
+        imgui.calc_text_size(_count_text(label_set, i)).x for i in range(n)
+    ) + em(0.5)
+    for start in range(0, n, per_col):
+        if start:
+            imgui.same_line(0, gap)
+        imgui.begin_group()
+        for i in range(start, min(start + per_col, n)):
+            with label_button(label_set.color(i)):
+                if imgui.button(f"##lab{i}{id_suffix}", size):
+                    picked = i
+            _draw_class_text(label_set, i, count_w)
+            if i < 9:
+                imgui.same_line(0, 4)
+                imgui.text_disabled(f"({i + 1})")
+        imgui.end_group()
+    return picked
+
+
 def draw_label_editor(label_set, new_label: str, id_suffix: str = "") -> tuple:
     """Add and remove class controls. Returns (new_label_text, changed)."""
     changed = False
