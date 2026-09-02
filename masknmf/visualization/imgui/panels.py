@@ -11,6 +11,7 @@ from masknmf.visualization.imgui.theme import (
     em,
     label_button,
     label_color,
+    set_tooltip,
     to_vec4,
 )
 
@@ -59,30 +60,30 @@ def _draw_class_text(label_set, i: int, count_w: float) -> None:
     draw.pop_clip_rect()
 
 
-def _draw_unlabel_row(id_suffix: str) -> Optional[int]:
-    """Unlabel at the left, unlabel all at the right, however many classes there are."""
+def _draw_unlabel_row(size, gap: float, id_suffix: str) -> Optional[int]:
+    """
+    The two clear actions, on the same grid as the class buttons under them so
+    the card reads as one set of columns rather than a toolbar over a grid.
+    """
     picked = None
-    x0 = imgui.get_cursor_pos_x()
-    avail = imgui.get_content_region_avail().x
-    if imgui.small_button(f"unlabel##{id_suffix}"):
+    if imgui.button(f"unlabel##{id_suffix}", size):
         picked = UNLABELED
-    imgui.same_line(0, em(0.25))
+    set_tooltip("clear the selected ROI's label")
+    imgui.same_line(0, 4)
     imgui.text_disabled("(0)")
-    right = (
-        imgui.calc_text_size("unlabel all").x + imgui.get_style().frame_padding.x * 2
-    )
-    imgui.same_line()
-    imgui.set_cursor_pos_x(max(x0 + avail - right, imgui.get_cursor_pos_x()))
+    imgui.same_line(0, gap)
     with danger_button():
-        if imgui.small_button(f"unlabel all##{id_suffix}"):
+        if imgui.button(f"unlabel all##{id_suffix}", size):
             picked = UNLABEL_ALL
+    set_tooltip("clear every label")
+    imgui.dummy(imgui.ImVec2(0, em(0.25)))
     return picked
 
 
 def draw_label_buttons(label_set, id_suffix: str = "") -> Optional[int]:
     """
-    The unlabel actions across the top, then one button per class in columns
-    filled evenly down the space the card has, at least two wide.
+    The two clear actions, then one button per class, in columns filled evenly
+    down the space the card has and at least two wide.
 
     Returns the clicked label index, ``UNLABELED`` to clear the current item,
     ``UNLABEL_ALL`` to clear every item, or None.
@@ -90,17 +91,18 @@ def draw_label_buttons(label_set, id_suffix: str = "") -> Optional[int]:
     if not label_set.names:
         imgui.text_disabled("no labels yet: add one")
         return None
-    picked = _draw_unlabel_row(id_suffix)
     n = len(label_set.names)
     avail = imgui.get_content_region_avail()
-    rows = max(int(avail.y // imgui.get_frame_height_with_spacing()), 1)
+    # one row goes to the clear actions, the rest to the classes
+    rows = max(int(avail.y // imgui.get_frame_height_with_spacing()) - 1, 1)
     ncols = max(2, -(-n // rows))
     per_col = -(-n // ncols)
     gap, hint = em(0.8), em(2.0)
     col_w = max((avail.x - gap * (ncols - 1)) / ncols, em(5))
     # a touch narrower than the column: the buttons carried more empty space
-    # than the names needed, and the hint sits outside them
+    # than the names needed, and the keybind hint sits outside them
     size = imgui.ImVec2(max(col_w - hint - em(0.7), em(3.0)), 0)
+    picked = _draw_unlabel_row(size, gap, id_suffix)
     count_w = max(
         imgui.calc_text_size(_count_text(label_set, i)).x for i in range(n)
     ) + em(0.5)
