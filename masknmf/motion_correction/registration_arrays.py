@@ -1,18 +1,12 @@
 import math
 from typing import Optional, Callable, Union, Tuple
 import numpy as np
-from numpy.typing import DTypeLike
 
 import torch
 import masknmf
 from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
-from .strategies import MotionCorrectionStrategy, DummyMotionCorrector
-from .registration_methods import compute_pwrigid_patch_midpoints
 from masknmf.utils import Serializer
 from pathlib import Path
-import h5py
-import os
-from tqdm import tqdm
 from abc import ABC, abstractmethod
 from masknmf.utils._serialization import save_dict, load_dict
 
@@ -26,6 +20,10 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
 
     @property
     @abstractmethod
+    def dtype(self) -> torch.dtype: ...
+
+    @property
+    @abstractmethod
     def input_movie(self): ...
 
     @property
@@ -33,8 +31,22 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
     def strategy(self) -> Serializer: ...
 
     @property
+    def output_device(self) -> torch.device:
+        return self._output_device
+
+    @output_device.setter
+    def output_device(self, value: str | torch.device):
+        self._output_device = torch.device(value)
+
     @abstractmethod
-    def output_device(self): ...
+    def __getitem__(self, idx) -> torch.Tensor:
+        """
+        Index into the array.
+
+        Always returns a ``torch.Tensor`` on ``self.output_device`` with dtype
+        ``self.dtype``. Never returns a numpy array, for any index pattern,
+        including empty selections.
+        """
 
     def export(self, path: str | Path):
         d_array = self._to_dict()
@@ -53,7 +65,7 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
             )
         strat = cls._strategy_cls(**load_dict(path, cls._strategy_cls.__name__))
         reg_arr_dict = load_dict(path, cls.__name__)
-        return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict)
+        return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict, **kwargs)
 
 
 
