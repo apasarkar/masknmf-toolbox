@@ -10,7 +10,7 @@ import masknmf.arrays
 from masknmf.utils import display
 from functools import partial
 from fastplotlib.widgets.nd_widget._index import ReferenceIndex
-from masknmf.visualization.imgui import resolve_time_reference, is_notebook_canvas
+from masknmf.visualization.imgui import close_figure, resolve_time_reference, is_notebook_canvas
 
 class SingleSessionDemixingVis:
     """
@@ -393,6 +393,10 @@ class SingleSessionDemixingVis:
             return VBox([self.fov_widget.show(), self.trace_widget.show(), self.local_signal_widget.show()])
         else:
             return self.fov_widget.show(), self.trace_widget.show(), self.local_signal_widget.show()
+
+    def close(self):
+        for widget in (self.fov_widget, self.trace_widget, self.local_signal_widget):
+            close_figure(widget.figure)
 
 
 def extract_per_trace_roi_averages(colorful_ac_array: masknmf.ACArray,

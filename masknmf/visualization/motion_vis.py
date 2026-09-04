@@ -9,7 +9,7 @@ from collections import OrderedDict
 import masknmf.arrays
 from masknmf.arrays.array_interfaces import ArrayLike
 from masknmf.utils import display
-from masknmf.visualization.imgui import resolve_time_reference
+from masknmf.visualization.imgui import close_figure, resolve_time_reference
 
 
 class MotionCorrectionVis:
@@ -170,6 +170,9 @@ class MotionCorrectionVis:
 
     def show(self):
         return self.widget.show()
+
+    def close(self):
+        close_figure(self.widget.figure)
 
 
 def pwrigid_shifts_to_ndvector(shifts, block_centers):

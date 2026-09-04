@@ -7,6 +7,9 @@ import numpy as np
 import fastplotlib as fpl
 from imgui_bundle import imgui, icons_fontawesome_6 as fa, portable_file_dialogs as pfd
 
+from masknmf.visualization.imgui.files import NATIVE_DIALOGS, PathPrompt, draw_path_prompt
+from masknmf.visualization.imgui.labels import LABEL_COLORS, LABEL_KEYS
+from masknmf.visualization.imgui.layout import close_figure
 from masknmf.visualization.imgui.movie_player import MoviePlayer
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, close_button
@@ -20,16 +23,8 @@ from masknmf.demixing.labels import (
     write_predictions,
 )
 
-_LABEL_COLORS = (
-    (0.12, 0.47, 0.71), (1.00, 0.50, 0.05), (0.17, 0.63, 0.17),
-    (0.84, 0.15, 0.16), (0.58, 0.40, 0.74), (0.55, 0.34, 0.29),
-    (0.89, 0.47, 0.76), (0.50, 0.50, 0.50), (0.74, 0.74, 0.13),
-    (0.09, 0.75, 0.81),
-)
-_LABEL_KEYS = (
-    imgui.Key._1, imgui.Key._2, imgui.Key._3, imgui.Key._4, imgui.Key._5,
-    imgui.Key._6, imgui.Key._7, imgui.Key._8, imgui.Key._9,
-)
+_LABEL_COLORS = LABEL_COLORS
+_LABEL_KEYS = LABEL_KEYS
 _COLUMNS = ("id", "label", "pred", "area", "peak", "f", "skew")
 _MIN_PER_CLASS = 2  # labeled ROIs a class needs before training
 _CLF_FILTERS = ["ROICaT classifier", f"*{CLASSIFIER_SUFFIX}", "All files", "*"]
@@ -113,6 +108,15 @@ class ClassificationVis:
         self._set_label_names(label_names)
         self._help_open = False
         self._file_dialog = None
+        self._open_prompt = PathPrompt(
+            "Open demixing results", action="open", hint="a .hdf5 file, read by this process"
+        )
+        self._folder_prompt = PathPrompt(
+            "Open a folder", action="open", hint="a folder of .hdf5 files, read by this process"
+        )
+        self._clf_prompt = PathPrompt(
+            "Select classifier", action="select", hint="a saved classifier, read by this process"
+        )
         self._placeholder = False
         self._clf_source: Optional[tuple[str, str]] = None  # ('trained' | 'file', path)
         self._classified_with = ""
@@ -1049,6 +1053,7 @@ class ClassificationVis:
         self._summary.draw()
         self._draw_help_popup()
         self._draw_keybinds_popup()
+        self._draw_path_prompts()
 
     def _draw_nav_card(self, h: float):
         with card("##nav", "NAVIGATE", h):
@@ -1219,31 +1224,59 @@ class ClassificationVis:
         self._error = None
         self.load_masknmf(files)
 
+    def _open_start(self) -> str:
+        return os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
+
     def open_file(self):
-        """Native picker for one or more demixing_results .hdf5 files; loaded when the dialog returns."""
-        if self._file_dialog is None:
-            start = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
-            self._file_dialog = (
-                "hdf5", pfd.open_file("Open demixing results", start, _HDF5_FILTERS, pfd.opt.multiselect)
-            )
+        """Prompt for one or more demixing_results .hdf5 files, or a folder of them."""
+        self._open_prompt.start(self._open_start())
 
     def open_folder(self):
-        """Native picker for a folder; every .hdf5 in it is loaded as a session."""
-        if self._file_dialog is None:
-            start = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
-            self._file_dialog = ("folder", pfd.select_folder("Open a folder of demixing results", start))
+        """Prompt for a folder; every .hdf5 in it is loaded as a session."""
+        self._folder_prompt.start(self._open_start())
 
     def browse(self):
-        """Native picker for a saved classifier to classify with; applied when the dialog returns."""
-        if self._file_dialog is None:
-            start = os.path.dirname(self._classifier_path or self._default_classifier_path())
-            self._file_dialog = ("open", pfd.open_file("Select a ROICaT classifier", start, _CLF_FILTERS))
+        """Prompt for a saved classifier to classify with."""
+        self._clf_prompt.start(self._classifier_path or self._default_classifier_path())
 
     def browse_save(self):
-        """Native picker for where train saves the classifier."""
+        """Native picker for where train saves the classifier; the card has the field."""
         if self._file_dialog is None:
             start = self._classifier_path or self._default_classifier_path() + CLASSIFIER_SUFFIX
             self._file_dialog = ("save", pfd.save_file("Save classifier as", start, _CLF_FILTERS))
+
+    def _draw_path_prompts(self):
+        """The three typed-path popups, each with the native dialog as a shortcut."""
+        path, browse = draw_path_prompt(self._open_prompt)
+        if path is not None:
+            self._open_prompt.open = False
+            self.open_paths([path])
+        if browse and self._file_dialog is None:
+            self._file_dialog = (
+                "hdf5",
+                pfd.open_file(
+                    "Open demixing results", self._open_prompt.path, _HDF5_FILTERS, pfd.opt.multiselect
+                ),
+            )
+
+        path, browse = draw_path_prompt(self._folder_prompt)
+        if path is not None:
+            self._folder_prompt.open = False
+            self.open_paths([path])
+        if browse and self._file_dialog is None:
+            self._file_dialog = (
+                "folder", pfd.select_folder("Open a folder of demixing results", self._folder_prompt.path)
+            )
+
+        path, browse = draw_path_prompt(self._clf_prompt)
+        if path is not None:
+            self.select_classifier(path)
+            self._clf_prompt.status = self._error or ""
+            self._clf_prompt.open = bool(self._error)
+        if browse and self._file_dialog is None:
+            self._file_dialog = (
+                "open", pfd.open_file("Select a ROICaT classifier", self._clf_prompt.path, _CLF_FILTERS)
+            )
 
     def _poll_file_dialog(self):
         if self._file_dialog is None or not self._file_dialog[1].ready(0):
@@ -1254,11 +1287,11 @@ class ClassificationVis:
         if not result:
             return
         if kind == "open":
-            self.select_classifier(result[0])
+            self._clf_prompt.path = result[0]
         elif kind == "hdf5":
-            self.open_paths(result)
+            self._open_prompt.path = result[0]
         elif kind == "folder":
-            self.open_paths([result])
+            self._folder_prompt.path = result
         else:
             self._classifier_path = result
 
@@ -1291,10 +1324,18 @@ class ClassificationVis:
                     "(default: <first session dir>/classifier.roicat_classifier)"
                 )
             imgui.same_line(0, em(0.4))
+            if not NATIVE_DIALOGS:
+                imgui.begin_disabled()
             if imgui.button(f"{fa.ICON_FA_FLOPPY_DISK}##save-as"):
                 self.browse_save()
-            if imgui.is_item_hovered():
-                imgui.set_tooltip("choose where train saves the classifier")
+            if not NATIVE_DIALOGS:
+                imgui.end_disabled()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                imgui.set_tooltip(
+                    "choose where train saves the classifier"
+                    if NATIVE_DIALOGS
+                    else "no file dialog on this machine; type the path instead"
+                )
             if imgui.button(f"{fa.ICON_FA_FOLDER_OPEN}  Select classifier", imgui.ImVec2(row_w, 0)):
                 self.browse()
             if imgui.is_item_hovered():
@@ -1628,6 +1669,9 @@ class ClassificationVis:
 
     def show(self):
         return self._figure.show()
+
+    def close(self):
+        close_figure(self._figure)
 
 
 def main(argv=None):

@@ -67,6 +67,8 @@ dev = [
 
 [project.scripts]
 classification = "masknmf.visualization.classification_vis:main"
+signal-selection = "masknmf.visualization.signal_selection_vis:main"
+signal_selection = "masknmf.visualization.signal_selection_vis:main"
 
 [project.urls]
 Homepage = "https://github.com/apasarkar/masknmf-toolbox"
