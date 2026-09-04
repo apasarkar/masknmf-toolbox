@@ -20,9 +20,10 @@ from masknmf.visualization.motion_vis import MotionCorrectionVis
 from masknmf.visualization.demixing_vis import SingleSessionDemixingVis, visualize_superpixels_peaks
 from masknmf.visualization.multisession_vis import MultiSessionDemixingVis
 from masknmf.visualization.classification_vis import ClassificationVis
+from masknmf.visualization.compression_vis import CompressionVis
 
 __all__ = [
-    # "PMDWidget",
+    "CompressionVis",
     "visualize_superpixels_peaks",
     "plot_ith_roi",
     "construct_index",
