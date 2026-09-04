@@ -192,7 +192,8 @@ class PMDArray(ArrayLike, Serializer):
                        shape: Tuple[int, int, int] | np.ndarray,
                        flyweight: TensorFlyWeight,
                        device: str = "cpu",
-                       rescale: bool = True
+                       rescale: bool = True,
+                       include_trend: bool = True
                        ):
         """
         Memory efficient way to construct PMD Array from a flyweight tensor manager. See from_array for parameter documentation
@@ -200,7 +201,8 @@ class PMDArray(ArrayLike, Serializer):
         return cls(shape,
                    flyweight,
                    device=device,
-                   rescale=rescale)
+                   rescale=rescale,
+                   include_trend=include_trend)
 
     @classmethod
     def from_hdf5(cls, path, **kwargs):
@@ -400,7 +402,7 @@ class PMDArray(ArrayLike, Serializer):
             product *= var_img_crop.unsqueeze(1)
             product += mean_img_crop.unsqueeze(1)
 
-            if self.include_trend:
+            if self.include_trend and self.spatial_trend_basis is not None and self.temporal_trend_basis is not None:
                 if spatial_crop_terms is not None:
                     spatial_trend_crop = self.spatial_trend_basis[spatial_crop_terms]
                 else:
