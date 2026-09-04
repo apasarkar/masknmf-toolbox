@@ -27,7 +27,6 @@ __all__ = [
     "visualize_superpixels_peaks",
     "plot_ith_roi",
     "construct_index",
-    # "make_demixing_video",
     "MotionCorrectionVis",
     "SingleSessionDemixingVis",
     "MultiSessionDemixingVis",

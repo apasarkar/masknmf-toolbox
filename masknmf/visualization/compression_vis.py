@@ -20,9 +20,28 @@ class CompressionVis:
                  pmd_stack: PMDArray,
                  frame_batch_size: int = 200,
                  mean_subtract: bool = False,
+                 include_trend: bool = True,
                  device="cpu",
                  frame_timings: Optional[np.ndarray | List[np.ndarray]] = None,
                  ref_range: Optional[dict] = None):
+        """
+        A viewer for comparing raw (motion corrected) data vs. the masknmf compressed + denoised results
+
+        Args:
+            moco_stack (ArrayLike): Shape (frames, height, width) movie, the motion corrected dataset
+            pmd_stack (PMDArray): Shape (frames, height, width) movie, the compressed + denoised dataset
+            frame_batch_size (int): Used to accelerate the diagnostic computations. How many frames we can load onto GPU at a time
+            mean_subtract (int): Whether to display the mean subtracted raw and pmd movies. This often helps expose signals when the indicator
+                baseline is large relative to the signal amplitude (dF/F is small) or the SNR is very low
+            include_trend (bool): The compression estimates a pixelwise trend, stores this compactly, and then compresses the rest of the data
+                (motion corrected data - trend estimates). If include_trend is False, the displayed traces will show the raw trace, the
+                compressed + denoised trace ("detrended"). The residual trace will include the trend in this case. If include_trend is True,
+                the compressed + denoised trace will include the trend.
+            device (str): Which device to keep the compressed + denoised PMD Array
+            frame_timings: for advanced users, this can be used to synchronize this viewer with other data from an experiment
+            ref_range: same as frame_timings, this is useful for advanced users to synchronoize this viewer with other visualizations that operate
+                on identical axes
+        """
 
         self._mean_subtract = mean_subtract
         self._pmd_stack = PMDArray.from_flyweight(pmd_stack.shape,
@@ -31,14 +50,15 @@ class CompressionVis:
                                                           rescale=True,
                                                           include_trend=True)
         self._moco_stack = moco_stack
+        self._include_trend = include_trend
 
         # Tricky: comparison stack is not mean subtracted, which is what we need to pass in to the residual array and to the autocov diagnostic
         self._residual_stack = PMDResidualArray(self.moco_stack, self.pmd_stack)
         display('Computing Residual Statistics')
         raw_lag1, pmd_lag1, resid_lag1 = pmd_autocovariance_diagnostics(self.moco_stack,
-                                                                                            self.pmd_stack,
-                                                                                            batch_size=frame_batch_size,
-                                                                                            device=device)
+                                                                        self.pmd_stack,
+                                                                        batch_size=frame_batch_size,
+                                                                        device=device)
         display('Residual Statistics: Complete')
         self._mcorr_name = "motion corrected mean 0" if mean_subtract else "motion corrected"
         self._pmd_name = "compressed+denoised mean 0" if mean_subtract else "compressed + denoised"
@@ -110,6 +130,7 @@ class CompressionVis:
                                                                                                name=
                                                                                                self._diagnostic_names[
                                                                                                    0])
+        self._moco_lag1_graphic.graphic.cmap = "gray"
 
         self._pmd_lag1_graphic = self._ndw_diagnostics[self._diagnostic_names[1]].add_nd_image(pmd_lag1,
                                                                                                spatial_dims,
@@ -118,6 +139,7 @@ class CompressionVis:
                                                                                                name=
                                                                                                self._diagnostic_names[
                                                                                                    1])
+        self._pmd_lag1_graphic.graphic.cmap = "gray"
 
         self._residual_lag1_graphic = self._ndw_diagnostics[self._diagnostic_names[2]].add_nd_image(resid_lag1,
                                                                                                     spatial_dims,
@@ -126,11 +148,14 @@ class CompressionVis:
                                                                                                     name=
                                                                                                     self._diagnostic_names[
                                                                                                         2])
+        self._residual_lag1_graphic.graphic.cmap = "gray"
 
         ## Use one camera for all of these spatial panels
         self._synchronize_spatial_panels()
 
-        self._trace_panel_names = ['motion corrected', 'compressed + denoised', 'residual']
+        self._trace_panel_names = ['motion corrected',
+                                   'compressed trace' if include_trend else 'compressed trace without trend',
+                                   'residual' if include_trend else 'residual + trend from compression']
 
         self._ndw_temporal = fpl.NDWidget(ref_ranges=self.reference_index.ref_ranges,
                                           ref_index=self.reference_index,
@@ -243,6 +268,10 @@ class CompressionVis:
     @property
     def residual_stack(self):
         return self._residual_stack
+
+    @property
+    def include_trend(self):
+        return self._include_trend
 
     @property
     def trace_xdata(self):
@@ -399,7 +428,13 @@ class CompressionVis:
     def _crop_and_display(self):
         xdata = self.trace_xdata
         mcorr_temporal = self.moco_stack[:, self._row_slice, self._col_slice].mean(axis=(1, 2))
+
+        if self.include_trend:
+            self.pmd_stack.include_trend = True
+        else:
+            self.pmd_stack.include_trend = False
         pmd_temporal = self.pmd_stack[:, self._row_slice, self._col_slice].mean(axis=(1, 2))
+        self.pmd_stack.include_trend = True ## Reset it
         residual_temporal = mcorr_temporal - pmd_temporal
 
         self._moco_trace_graphic.data = fpl.utils.heatmap_to_positions(mcorr_temporal[None, :], xdata)
