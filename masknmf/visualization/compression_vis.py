@@ -3,7 +3,7 @@ from typing import *
 import numpy as np
 from masknmf.compression import PMDArray, PMDResidualArray
 from masknmf.utils import display
-from masknmf.visualization.imgui import resolve_time_reference, is_notebook_canvas
+from masknmf.visualization.imgui import TracePlot, resolve_time_reference, is_notebook_canvas
 from masknmf.diagnostics import pmd_autocovariance_diagnostics
 import fastplotlib as fpl
 from collections import OrderedDict
@@ -84,6 +84,7 @@ class CompressionVis:
             controller_ids=[
                 tuple(self._video_names),
             ],
+            size=(1200, 900),
         )
         self._reference_index = self._ndw_videos.indices
 
@@ -121,6 +122,7 @@ class CompressionVis:
                                              shape=(1, 3),
                                              names=[*self._diagnostic_names],
                                              controller_ids=[tuple(self._diagnostic_names)],
+                                             size=(1200, 450),
                                              )
 
         self._moco_lag1_graphic = self.ndw_diagnostics[self._diagnostic_names[0]].add_nd_image(raw_lag1,
@@ -153,55 +155,15 @@ class CompressionVis:
         ## Use one camera for all of these spatial panels
         self._synchronize_spatial_panels()
 
-        self._trace_panel_names = ['motion corrected',
-                                   'compressed trace' if include_trend else 'compressed trace without trend',
-                                   'residual' if include_trend else 'residual + trend from compression']
-
-        self._ndw_temporal = fpl.NDWidget(ref_ranges=self.reference_index.ref_ranges,
-                                          ref_index=self.reference_index,
-                                          shape=(3, 1),
-                                          names=[*self._trace_panel_names],
-                                          controller_ids=[
-                                              tuple(self._trace_panel_names),
-                                          ],
-                                          )
-        self._synchronize_cameras_temporal()
-
-        self._moco_trace_graphic = self._ndw_temporal[self._trace_panel_names[0]].add_nd_timeseries(
-            None,
-            ("l", "time", "d"),
-            ("l", "time", "d"),
-            slider_dim_transforms=movie_index_mapping.copy(),
-            max_display_datapoints=5000,
-            x_range_mode="auto",
-            display_window=None,
-            name=self._trace_panel_names[1],
+        self._trace_panel_names = ("moco", "pmd", "residual")
+        self._trace_labels = (
+            "motion corrected",
+            "compressed + denoised" if include_trend else "compressed, no trend",
+            "residual" if include_trend else "residual + trend",
         )
-
-        self._pmd_trace_graphic = self._ndw_temporal[self._trace_panel_names[1]].add_nd_timeseries(
-            None,
-            ("l", "time", "d"),
-            ("l", "time", "d"),
-            slider_dim_transforms=movie_index_mapping.copy(),
-            max_display_datapoints=5000,
-            x_range_mode="auto",
-            display_window=None,
-            name=self._trace_panel_names[1],
-        )
-
-        self._residual_trace_graphic = self._ndw_temporal[self._trace_panel_names[2]].add_nd_timeseries(
-            None,
-            ("l", "time", "d"),
-            ("l", "time", "d"),
-            slider_dim_transforms=movie_index_mapping.copy(),
-            max_display_datapoints=5000,
-            x_range_mode="auto",
-            display_window=None,
-            name=self._trace_panel_names[2],
-        )
-
-        for subplot in self.ndw_temporal.figure:
-            subplot.toolbar = False
+        self._traces = TracePlot(self._trace_panel_names, self.moco_stack.shape[0], frame_timings)
+        self._traces.dock(self._ndw_videos.figure, size=420, title="traces")
+        self._traces.link(self.reference_index)
 
         for subplot in self._ndw_videos.figure:
             subplot.tooltip.enabled = False
@@ -254,8 +216,8 @@ class CompressionVis:
         return self._ndw_diagnostics
 
     @property
-    def ndw_temporal(self):
-        return self._ndw_temporal
+    def traces(self) -> TracePlot:
+        return self._traces
 
     @property
     def moco_stack(self):
@@ -272,24 +234,6 @@ class CompressionVis:
     @property
     def include_trend(self):
         return self._include_trend
-
-    @property
-    def trace_xdata(self):
-        ## This is used every time to update traces
-        return np.arange(self.moco_stack.shape[0])
-
-    def _synchronize_cameras_temporal(self):
-        for i, subplot in enumerate(self.ndw_temporal.figure):
-            curr_camera = subplot.camera
-            curr_controller = subplot.controller
-            for j, other_subplot in enumerate(self.ndw_temporal.figure):
-                if i >= j:
-                    continue
-                else:
-                    other_camera = other_subplot.camera
-                    other_controller = other_subplot.controller
-                    curr_controller.add_camera(other_camera, include_state={"x", "width"})
-                    other_controller.add_camera(curr_camera, include_state={"x", "width"})
 
     def _synchronize_spatial_panels(self):
         common_camera = self.ndw_videos.figure[0].camera
@@ -426,7 +370,6 @@ class CompressionVis:
         self._crop_and_display()
 
     def _crop_and_display(self):
-        xdata = self.trace_xdata
         mcorr_temporal = self.moco_stack[:, self._row_slice, self._col_slice].mean(axis=(1, 2))
 
         if self.include_trend:
@@ -437,12 +380,9 @@ class CompressionVis:
         self.pmd_stack.include_trend = True ## Reset it
         residual_temporal = mcorr_temporal - pmd_temporal
 
-        self._moco_trace_graphic.data = fpl.utils.heatmap_to_positions(mcorr_temporal[None, :], xdata)
-        self._pmd_trace_graphic.data = fpl.utils.heatmap_to_positions(pmd_temporal[None, :], xdata)
-        self._residual_trace_graphic.data = fpl.utils.heatmap_to_positions(residual_temporal[None, :], xdata)
-
-        for subplot in self.ndw_temporal.figure:
-            subplot.auto_scale()
+        traces = (mcorr_temporal, pmd_temporal, residual_temporal)
+        for panel, label, trace in zip(self._trace_panel_names, self._trace_labels, traces):
+            self._traces.set(panel, [(label, trace, None)])
 
         for subplot in self.ndw_videos.figure:
             subplot.controller.enabled = True
@@ -457,7 +397,6 @@ class CompressionVis:
         # parse based on canvas type
         if is_notebook_canvas(self.ndw_videos.figure):
             from ipywidgets import VBox
-            return VBox([VBox([self.ndw_videos.show(), self.ndw_temporal.show(maintain_aspect=False)]),
-                         self.ndw_diagnostics.show()])
+            return VBox([self.ndw_videos.show(), self.ndw_diagnostics.show()])
         else:
-            return self.ndw_videos.show(), self.ndw_diagnostics.show(), self.ndw_temporal.show(maintain_aspect=False)
+            return self.ndw_videos.show(), self.ndw_diagnostics.show()
