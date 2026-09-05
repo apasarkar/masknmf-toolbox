@@ -43,6 +43,10 @@ class TracePlot:
         self._window = None
         self._on_frame: Optional[Callable] = None
         self.frame = 0
+        # called with (panel, line index) when a panel is double-clicked
+        self.on_pick: Optional[Callable] = None
+        self._marks: list = []  # (label, frames, rgb): vertical lines in every panel
+        self._spans: list = []  # (label, starts, stops, rgb): shaded epochs in every panel
 
     @property
     def panels(self) -> tuple:
@@ -67,6 +71,24 @@ class TracePlot:
     def clear(self):
         for name in self._panels:
             self._lines[name] = []
+
+    def mark(self, label: str, frames, rgb=None):
+        """A vertical line at each of ``frames`` in every panel, e.g. stimulus onsets."""
+        frames = np.clip(np.asarray(frames, np.int64), 0, len(self._frames) - 1)
+        self._marks.append((str(label), frames, rgb))
+        self._fit = True
+
+    def span(self, label: str, starts, stops, rgb=None):
+        """A shaded band from each start to its stop (frames) in every panel, e.g. stimulus epochs."""
+        last = len(self._frames) - 1
+        starts = np.clip(np.asarray(starts, np.int64), 0, last)
+        stops = np.clip(np.asarray(stops, np.int64), 0, last)
+        self._spans.append((str(label), starts, stops, rgb))
+        self._fit = True
+
+    def clear_events(self):
+        self._marks.clear()
+        self._spans.clear()
 
     def dock(self, figure, size: int = 320, title: str = "traces", on_frame: Optional[Callable] = None) -> ImguiWindow:
         """A resizable window along the top of ``figure``; ``on_frame`` gets the frame the playhead is dragged to."""
@@ -130,9 +152,54 @@ class TracePlot:
         self._fit = False
         return fit
 
+    @staticmethod
+    def _spec(rgb, fill: bool = False, alpha: float = 1.0) -> implot.Spec:
+        """Item styling for one plot call: a line or fill color when given, else implot's next default."""
+        spec = implot.Spec()
+        if rgb is not None:
+            color = imgui.ImVec4(*rgb[:3], 1.0)
+            if fill:
+                spec.fill_color = color
+            else:
+                spec.line_color = color
+        spec.fill_alpha = alpha
+        return spec
+
+    def _draw_spans(self, xs):
+        """Shaded epochs across the panel's full height; drawn first so the lines sit on top."""
+        if not self._spans:
+            return
+        limits = implot.get_plot_limits()
+        lo, hi = float(limits.y.min), float(limits.y.max)
+        top, bottom = np.array([hi, hi], np.float32), np.array([lo, lo], np.float32)
+        for label, starts, stops, rgb in self._spans:
+            spec = self._spec(rgb, fill=True, alpha=0.15)
+            for start, stop in zip(starts, stops):
+                implot.plot_shaded(label, np.array([xs[start], xs[stop]], np.float32), top, bottom, spec)
+
+    def _draw_marks(self, xs):
+        for label, frames, rgb in self._marks:
+            implot.plot_inf_lines(label, xs[frames].astype(np.float32), self._spec(rgb))
+
+    @staticmethod
+    def _nearest_line(lines, xs) -> int:
+        """Index of the line closest to the mouse at the mouse's x."""
+        mouse = implot.get_plot_mouse_pos()
+        i = int(np.clip(np.searchsorted(xs, mouse.x), 0, len(xs) - 1))
+        return int(np.argmin([abs(float(trace[i]) - mouse.y) for _, trace, _ in lines]))
+
+    def _y_limits(self, name: str) -> Optional[tuple]:
+        """Padded data range of a panel, or of every panel when y is linked."""
+        panels = self._panels if self._link_y else (name,)
+        traces = [trace for p in panels for _, trace, _ in self._lines[p]]
+        if not traces:
+            return None
+        lo = min(float(t.min()) for t in traces)
+        hi = max(float(t.max()) for t in traces)
+        pad = (hi - lo) * 0.05 or 1.0
+        return lo - pad, hi + pad
+
     def _draw_panel(self, name: str, fit: bool, last: bool) -> Optional[int]:
-        if fit:
-            implot.set_next_axes_to_fit()
         lines = self._lines[name]
         flags = implot.Flags_.no_title
         if len(lines) <= 1:
@@ -147,12 +214,21 @@ class TracePlot:
             # above the plot, so a panel with a legend keeps the same width as the others
             implot.setup_legend(implot.Location_.north, implot.LegendFlags_.outside | implot.LegendFlags_.horizontal)
             xs = self.x
+            if fit:
+                implot.setup_axis_limits(implot.ImAxis_.x1, float(xs[0]), float(xs[-1]), implot.Cond_.always)
+                limits = self._y_limits(name)
+                if limits is not None:
+                    implot.setup_axis_limits(implot.ImAxis_.y1, *limits, implot.Cond_.always)
+            self._draw_spans(xs)
             for label, trace, rgb in lines:
                 if rgb is not None:
                     implot.push_colormap(_line_colormap(rgb))
                 implot.plot_line(label, xs, trace)
                 if rgb is not None:
                     implot.pop_colormap()
+            self._draw_marks(xs)
+            if self.on_pick is not None and lines and implot.is_plot_hovered() and imgui.is_mouse_double_clicked(0):
+                self.on_pick(name, self._nearest_line(lines, xs))
             moved, at = implot.drag_line_x(0, float(xs[self.frame]), _CURSOR_COLOR, 1.5)[:2]
             if moved:
                 self.frame = int(np.clip(np.searchsorted(xs, at), 0, len(xs) - 1))
