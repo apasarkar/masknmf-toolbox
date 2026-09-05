@@ -10,7 +10,7 @@ import masknmf.arrays
 from masknmf.utils import display
 from functools import partial
 from fastplotlib.widgets.nd_widget._index import ReferenceIndex
-from masknmf.visualization.imgui import resolve_time_reference, is_notebook_canvas
+from masknmf.visualization.imgui import TracePlot, resolve_time_reference
 
 class SingleSessionDemixingVis:
     """
@@ -156,161 +156,39 @@ class SingleSessionDemixingVis:
             self._ndw_fov.figure[self._video_panels[5]].title = summary_img_name if summary_img_name is not None else "Residual Correlation Image"
 
 
-        self._trace_panels = ("compressed trace",
-                        "demixed trace",
-                        "background trace",
-                        "residual trace")
-        self._trace_extents = {
-            self._trace_panels[0]: (0, 1, 0.0, 0.25),
-            self._trace_panels[1]: (0, 1, 0.25, 0.5),
-            self._trace_panels[2]: (0, 1, 0.5, 0.75),
-            self._trace_panels[3]: (0, 1, 0.75, 1.0)
-        }
-
-        self._ndw_traces = fpl.NDWidget(
-            ref_ranges=self.reference_index.ref_ranges,
-            ref_index=self.reference_index,
-            extents=self._trace_extents,
-            names=[*self._trace_panels],
-            controller_ids=[
-                tuple(self._trace_panels),
-            ],
-            size=(1200, 1200),
+        self._traces = TracePlot(("traces",), self.demixing_results.shape[0], frame_timings)
+        self._traces.dock(self._ndw_fov.figure, size=360, title="traces")
+        self._traces.link(self.reference_index)
+        self._traces.on_pick = self._select_signal
+        self._base_lines = ("compressed", "background", "residual")
+        # footprint of the signal picked in the trace dock, drawn over the signals movie
+        self._pick_selector = fpl.ImageHighlightSelector(
+            color="w",
+            selection_options={"pixels": self.demixing_results.ac_array.contours},
+            options_alpha=0.0,
+            alpha=0.6,
         )
-
-        #Traces for the denoised data
-        self._pmd_trace_graphic = self._ndw_traces[self._trace_panels[0]].add_nd_timeseries(
-                None,
-                ("l", "time", "d"),
-                ("l", "time", "d"),
-                slider_dim_transforms=movie_index_mapping.copy(),
-                max_display_datapoints=5000,
-                x_range_mode="auto",
-                display_window=None,
-                name=self._trace_panels[0],
-            )
-
-        #Traces for the color-matched signals
-        self._colorful_signal_trace_graphic = self._ndw_traces[self._trace_panels[1]].add_nd_timeseries(
-            None,
-            ("l", "time", "d"),
-            ("l", "time", "d"),
-            slider_dim_transforms=movie_index_mapping.copy(),
-            x_range_mode="auto",
-            max_display_datapoints=5000,
-            display_window=None,
-            name=self._trace_panels[1],
-        )
-
-        #Traces for the background
-        self._fluctuating_background_trace_graphic = self._ndw_traces[self._trace_panels[2]].add_nd_timeseries(
-            None,
-            ("l", "time", "d"),
-            ("l", "time", "d"),
-            slider_dim_transforms=movie_index_mapping.copy(),
-            x_range_mode="auto",
-            max_display_datapoints=5000,
-            display_window=None,
-            name=self._trace_panels[2],
-        )
-
-        #Traces for the residual
-        self._residual_trace_graphic = self._ndw_traces[self._trace_panels[3]].add_nd_timeseries(
-            None,
-            ("l", "time", "d"),
-            ("l", "time", "d"),
-            slider_dim_transforms=movie_index_mapping.copy(),
-            x_range_mode="auto",
-            max_display_datapoints=5000,
-            display_window=None,
-            name=self._trace_panels[3],
-        )
-
-        self._local_signal_panels = ("signal (scaled)", "trace")
-
-        self._local_signal_extents = {
-            self._local_signal_panels[0]: (0, 0.2, 0, 1),
-            self._local_signal_panels[1]: (0.2, 1, 0, 1)
-        }
-
-        self._ndw_local_signals = fpl.NDWidget(
-            ref_ranges=self.reference_index.ref_ranges,
-            ref_index=self.reference_index,
-            extents=self._local_signal_extents,
-            names=[*self._local_signal_panels],
-            controller_ids=[[self._local_signal_panels[0]],  [self._local_signal_panels[1]]],
-            size=(1200, 600),
-        )
-
-        movie_dims = ["m", "n"]
-        movie_spatial_dims = ["m", "n"]
-        self._local_signal_mean_image_graphic = self._ndw_local_signals[self._local_signal_panels[0]].add_nd_image(
-            np.zeros((self._demixing_results.shape[1], self._demixing_results.shape[1])),
-            movie_dims,
-            movie_spatial_dims,
-            slider_dim_transforms=None,
-            name=self._local_signal_panels[0],
-        )
-
-        self._local_signal_trace_graphic = self._ndw_local_signals[self._local_signal_panels[1]].add_nd_timeseries(
-            None,
-            ("l", "time", "d"),
-            ("l", "time", "d"),
-            slider_dim_transforms=movie_index_mapping.copy(),
-            max_display_datapoints=5000,
-            x_range_mode="auto",
-            display_window=None,
-            name=self._local_signal_panels[1],
-        )
-
+        self._pick_selector.add_graphic(self._ac_graphic.graphic)
 
         self._selected_signals = None
 
         for name in self._video_panels:
             self._ndw_fov[name][name].graphic.add_event_handler(partial(self._click_update), "double_click")
 
-        #Associate the colorful signal panel with the local click update event
-        self._ndw_traces.figure.renderer.add_event_handler(partial(self._local_click_update), "double_click")
-
         for subplot in self._ndw_fov.figure:
             subplot.tooltip.enabled = False
 
-        for subplot in self._ndw_traces.figure:
-            subplot.tooltip.enabled = False
-
-    def _local_click_update(self, ev: pygfx.PointerEvent):
-
-        values = self._ndw_traces.figure['demixed trace'].map_screen_to_world(ev).astype("float")[None, :]  # Shape (1, 3)
-
-        min_distances = []
-        for graphic in self._ndw_traces['demixed trace']['demixed trace'].graphic.graphics:
-            print(graphic.data[:].shape)
-            curr_graphic_coords = graphic.map_model_to_world(graphic.data[:]).astype("float")  # Shape (num_points, 3)
-            curr_min_distance = np.amin(np.sum((curr_graphic_coords - values) ** 2, axis=1))
-            min_distances.append(curr_min_distance)
-        if len(min_distances) == 0:
-            pass
-        else:
-            min_distances = np.array(min_distances)
-            final_min = np.argmin(min_distances)
-
-            selected_data = self._selected_signals[final_min]
-            index_tensor = torch.Tensor([selected_data]).long().to(self._demixing_results.device)
-            a_subset = torch.index_select(self._demixing_results.ac_array.a, 1, index_tensor).cpu().to_dense().numpy()
-            a_subset = a_subset.reshape(self._demixing_results.shape[1], self._demixing_results.shape[2])
-
-            a_subset /= np.amax(a_subset)
-            self._local_signal_mean_image_graphic.data = a_subset
-
-            ## Set the trace graphic data, ymin/ymax to match the other traces, and color
-            self._local_signal_trace_graphic.data = self._colorful_signal_trace_graphic.graphic.data[:][[int(final_min)], ...]
-            self._ndw_local_signals.figure[self._local_signal_panels[1]].y_range = self._ndw_traces.figure[self._trace_panels[0]].y_range
-            self._local_signal_trace_graphic.graphic.colors = self._colorful_signal_trace_graphic.graphic.colors[:][[int(final_min)], ...]
+    def _select_signal(self, panel: str, index: int):
+        """Highlight the footprint of the demixed signal whose line was double-clicked."""
+        index -= len(self._base_lines)
+        if self._selected_signals is None or not 0 <= index < len(self._selected_signals):
+            self._pick_selector.selection = []
+            return
+        self._pick_selector.selection = [int(self._selected_signals[index])]
 
     ## Let's make a dummy click event for now
     def _click_update(self, ev: pygfx.PointerEvent):
         num_frames, height, width = self.demixing_results.shape
-        x_data = np.arange(num_frames)
         col, row = ev.pick_info["index"]
 
         col_start, col_stop = max(0, col - self._roi_radius), min(width, col + self._roi_radius + 1)
@@ -321,37 +199,22 @@ class SingleSessionDemixingVis:
         residual_trace = np.mean(self._residual_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
         background_trace = np.mean(self._fluctuating_background_array[:, row_start:row_stop, col_start:col_stop], axis = (1, 2))
 
-        max_pmd_trace = np.amax(pmd_trace)
-        min_pmd_trace = np.amin(pmd_trace)
-
-        self._pmd_trace_graphic.data = fpl.utils.heatmap_to_positions(pmd_trace[None, :], x_data)
-        self._ndw_traces.figure[self._trace_panels[0]].y_range = (min_pmd_trace, max_pmd_trace)
-
         #Pull out colorful signals
         separated_ac_signals, separated_colors, unique_signals = extract_per_trace_roi_averages(self._colorful_ac_array,
                                                               slice(row_start, row_stop),
                                                               slice(col_start, col_stop))
 
         self._selected_signals = unique_signals
-
+        self._pick_selector.selection = []
+        greys = ((0.9, 0.9, 0.9), (0.6, 0.6, 0.6), (0.4, 0.4, 0.4))
+        lines = list(zip(self._base_lines, (pmd_trace, background_trace, residual_trace), greys))
         if separated_ac_signals is not None:
-            colorful_signals_to_display = fpl.utils.heatmap_to_positions(separated_ac_signals, x_data)
-            self._colorful_signal_trace_graphic.data = colorful_signals_to_display
-            self._ndw_traces.figure[self._trace_panels[1]].y_range = (min_pmd_trace, max_pmd_trace)
-            self._colorful_signal_trace_graphic.graphic.colors = separated_colors
-            self._ndw_traces.figure[self._trace_panels[1]].title = f"{separated_ac_signals.shape[0]} signals"
-        else:
-            colorful_signals_to_display = fpl.utils.heatmap_to_positions(np.ones((1, self.demixing_results.shape[0])), x_data)
-            self._colorful_signal_trace_graphic.data = colorful_signals_to_display
-            self._ndw_traces.figure[self._trace_panels[1]].title = "No signals here"
-            self._selected_signals = None
-
-
-        self._fluctuating_background_trace_graphic.data = fpl.utils.heatmap_to_positions(background_trace[None, :], x_data)
-        self._ndw_traces.figure[self._trace_panels[2]].y_range = (min_pmd_trace, max_pmd_trace)
-
-        self._ndw_traces[self._trace_panels[3]][self._trace_panels[3]].data = fpl.utils.heatmap_to_positions(residual_trace[None, :], x_data)
-        self._ndw_traces.figure[self._trace_panels[3]].y_range = (min_pmd_trace, max_pmd_trace)
+            # the movie's colors sum to 1 per signal; scaled up so the lines read on a dark plot
+            lines += [
+                (f"signal {k}", trace, tuple(color / color.max()))
+                for k, trace, color in zip(unique_signals, separated_ac_signals, separated_colors)
+            ]
+        self._traces.set("traces", lines)
 
     @property
     def roi_radius(self) -> int:
@@ -374,25 +237,15 @@ class SingleSessionDemixingVis:
         return self._ndw_fov
 
     @property
-    def trace_widget(self) -> fpl.NDWidget:
-        return self._ndw_traces
-
-    @property
-    def local_signal_widget(self) -> fpl.NDWidget:
-        return self._ndw_local_signals
+    def traces(self) -> TracePlot:
+        return self._traces
 
     @property
     def reference_index(self) -> ReferenceIndex:
         return self._reference_index
 
     def show(self):
-
-        # parse based on canvas type
-        if is_notebook_canvas(self.fov_widget.figure):
-            from ipywidgets import VBox
-            return VBox([self.fov_widget.show(), self.trace_widget.show(), self.local_signal_widget.show()])
-        else:
-            return self.fov_widget.show(), self.trace_widget.show(), self.local_signal_widget.show()
+        return self.fov_widget.show()
 
 
 def extract_per_trace_roi_averages(colorful_ac_array: masknmf.ACArray,
