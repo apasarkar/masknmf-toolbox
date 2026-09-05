@@ -202,7 +202,8 @@ class TracePlot:
     def _draw_panel(self, name: str, fit: bool, last: bool) -> Optional[int]:
         lines = self._lines[name]
         flags = implot.Flags_.no_title
-        if len(lines) <= 1:
+        # a legend only where a label adds something the panel name does not
+        if not lines or (len(lines) == 1 and lines[0][0] == name):
             flags |= implot.Flags_.no_legend
         if not implot.begin_plot(name, imgui.ImVec2(0, 0), flags):
             return None
