@@ -404,7 +404,8 @@ class PMDArray(ArrayLike, Serializer):
 
             if self.include_trend and self.spatial_trend_basis is not None and self.temporal_trend_basis is not None:
                 if spatial_crop_terms is not None:
-                    spatial_trend_crop = self.spatial_trend_basis[spatial_crop_terms]
+                    pixel_space_crop = self._pixel_mat[spatial_crop_terms].flatten()
+                    spatial_trend_crop = self.spatial_trend_basis[pixel_space_crop]
                 else:
                     spatial_trend_crop = self.spatial_trend_basis
                 temporal_trend_crop = self.temporal_trend_basis[:, frame_indexer]
