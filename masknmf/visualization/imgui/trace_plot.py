@@ -12,17 +12,6 @@ from masknmf.visualization.imgui.theme import em
 _CURSOR_COLOR = imgui.ImVec4(1.0, 1.0, 1.0, 0.7)
 
 
-def _line_colormap(rgb) -> int:
-    """A single-color colormap for one line; this implot build has no per-line color argument."""
-    key = tuple(int(round(float(v) * 255)) for v in rgb)
-    name = "masknmf_line_{}_{}_{}".format(*key)
-    index = implot.get_colormap_index(name)
-    if index < 0:
-        color = (key[0] / 255.0, key[1] / 255.0, key[2] / 255.0, 1.0)
-        index = implot.add_colormap(name, np.array([color, color], np.float32))
-    return int(index)
-
-
 class TracePlot:
     """
     One panel per name, stacked with a linked time axis. A panel holds lines of
@@ -33,16 +22,22 @@ class TracePlot:
         self._panels = tuple(panels)
         self._lines = {name: [] for name in self._panels}
         self._frames = np.arange(num_frames, dtype=np.float32)
+        # timings kept as given so frame lookups agree with the NDWidget's own searchsorted mapping
+        self._timings = None
         self._time = None
         if frame_timings is not None and not np.array_equal(frame_timings, self._frames):
-            self._time = np.asarray(frame_timings, np.float32)
+            self._timings = np.asarray(frame_timings)
+            if self._timings.shape != self._frames.shape:
+                raise ValueError(f"{len(self._timings)} frame timings for {num_frames} frames")
+            self._time = self._timings.astype(np.float32)
         self._link_y = link_y
         self._use_time = False
         self._autofit = True
         self._fit = True
         self._window = None
-        self._on_frame: Optional[Callable] = None
-        self.frame = 0
+        self._frame = 0
+        # called with the frame the playhead was dragged to
+        self.on_frame: Optional[Callable] = None
         # called with (panel, line index) when a panel is double-clicked
         self.on_pick: Optional[Callable] = None
         self._marks: list = []  # (label, frames, rgb): vertical lines in every panel
@@ -51,6 +46,14 @@ class TracePlot:
     @property
     def panels(self) -> tuple:
         return self._panels
+
+    @property
+    def frame(self) -> int:
+        return self._frame
+
+    @frame.setter
+    def frame(self, value: int):
+        self._frame = int(np.clip(value, 0, len(self._frames) - 1))
 
     @property
     def x(self) -> np.ndarray:
@@ -90,29 +93,28 @@ class TracePlot:
         self._marks.clear()
         self._spans.clear()
 
-    def dock(self, figure, size: int = 320, title: str = "traces", on_frame: Optional[Callable] = None) -> ImguiWindow:
-        """A resizable window along the top of ``figure``; ``on_frame`` gets the frame the playhead is dragged to."""
-        self._on_frame = on_frame
+    def dock(self, figure, size: int = 320, title: str = "traces") -> ImguiWindow:
+        """A resizable window along the top of ``figure``."""
         self._window = ImguiWindow(update_call=self._draw_dock)
         figure.add_imgui_window(self._window, location="top", size=size, title=title)
         return self._window
 
     def link(self, indices, dim: str = "time"):
         """Follow and drive a fastplotlib ReferenceIndex (``ndw.indices``) on ``dim``, in its reference units."""
-        ref = self._time if self._time is not None else self._frames
+        ref = self._timings if self._timings is not None else self._frames
 
         def follow(current):
-            self.frame = int(np.clip(np.searchsorted(ref, current[dim]), 0, len(ref) - 1))
+            self.frame = np.searchsorted(ref, current[dim])
 
         indices.add_event_handler(follow)
-        self._on_frame = lambda k: indices.set_dim_index(dim, float(ref[k]))
+        # cancel_awaiting: a drag only fetches the latest frame, like the widget's own slider
+        self.on_frame = lambda k: indices.set_dim_index(dim, float(ref[k]), cancel_awaiting=True)
 
     def _draw_dock(self):
         moved = self.draw(reserve=HANDLE_THICKNESS)
-        imgui.dummy(imgui.ImVec2(1, HANDLE_THICKNESS))
         draw_edge_handle(self._window)
-        if moved is not None and self._on_frame is not None:
-            self._on_frame(moved)
+        if moved is not None and self.on_frame is not None:
+            self.on_frame(moved)
 
     def draw(self, reserve: float = 0.0) -> Optional[int]:
         """Options row and the stacked panels filling the window but ``reserve`` px; returns the frame when the playhead was dragged."""
@@ -125,10 +127,14 @@ class TracePlot:
             flags |= implot.SubplotFlags_.link_all_y
         if not implot.begin_subplots("##traces", len(self._panels), 1, imgui.ImVec2(-1, height), flags):
             return None
+        shared = self._y_limits(self._panels) if fit and self._link_y else None
         moved = None
         try:
             for i, name in enumerate(self._panels):
-                got = self._draw_panel(name, fit, last=i == len(self._panels) - 1)
+                limits = None
+                if fit:
+                    limits = shared if self._link_y else self._y_limits((name,))
+                got = self._draw_panel(name, fit, limits, last=i == len(self._panels) - 1)
                 moved = got if got is not None else moved
         finally:
             implot.end_subplots()
@@ -157,7 +163,7 @@ class TracePlot:
         """Item styling for one plot call: a line or fill color when given, else implot's next default."""
         spec = implot.Spec()
         if rgb is not None:
-            color = imgui.ImVec4(*rgb[:3], 1.0)
+            color = imgui.ImVec4(float(rgb[0]), float(rgb[1]), float(rgb[2]), 1.0)
             if fill:
                 spec.fill_color = color
             else:
@@ -188,9 +194,8 @@ class TracePlot:
         i = int(np.clip(np.searchsorted(xs, mouse.x), 0, len(xs) - 1))
         return int(np.argmin([abs(float(trace[i]) - mouse.y) for _, trace, _ in lines]))
 
-    def _y_limits(self, name: str) -> Optional[tuple]:
-        """Padded data range of a panel, or of every panel when y is linked."""
-        panels = self._panels if self._link_y else (name,)
+    def _y_limits(self, panels) -> Optional[tuple]:
+        """Padded data range over the lines of ``panels``."""
         traces = [trace for p in panels for _, trace, _ in self._lines[p]]
         if not traces:
             return None
@@ -199,7 +204,7 @@ class TracePlot:
         pad = (hi - lo) * 0.05 or 1.0
         return lo - pad, hi + pad
 
-    def _draw_panel(self, name: str, fit: bool, last: bool) -> Optional[int]:
+    def _draw_panel(self, name: str, fit: bool, limits: Optional[tuple], last: bool) -> Optional[int]:
         lines = self._lines[name]
         flags = implot.Flags_.no_title
         # a legend only where a label adds something the panel name does not
@@ -217,22 +222,17 @@ class TracePlot:
             xs = self.x
             if fit:
                 implot.setup_axis_limits(implot.ImAxis_.x1, float(xs[0]), float(xs[-1]), implot.Cond_.always)
-                limits = self._y_limits(name)
-                if limits is not None:
-                    implot.setup_axis_limits(implot.ImAxis_.y1, *limits, implot.Cond_.always)
+            if limits is not None:
+                implot.setup_axis_limits(implot.ImAxis_.y1, *limits, implot.Cond_.always)
             self._draw_spans(xs)
             for label, trace, rgb in lines:
-                if rgb is not None:
-                    implot.push_colormap(_line_colormap(rgb))
-                implot.plot_line(label, xs, trace)
-                if rgb is not None:
-                    implot.pop_colormap()
+                implot.plot_line(label, xs, trace, self._spec(rgb))
             self._draw_marks(xs)
             if self.on_pick is not None and lines and implot.is_plot_hovered() and imgui.is_mouse_double_clicked(0):
                 self.on_pick(name, self._nearest_line(lines, xs))
             moved, at = implot.drag_line_x(0, float(xs[self.frame]), _CURSOR_COLOR, 1.5)[:2]
             if moved:
-                self.frame = int(np.clip(np.searchsorted(xs, at), 0, len(xs) - 1))
+                self.frame = np.searchsorted(xs, at)
                 return self.frame
         finally:
             implot.end_plot()
