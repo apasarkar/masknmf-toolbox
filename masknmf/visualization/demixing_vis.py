@@ -155,6 +155,8 @@ class SingleSessionDemixingVis:
 
             self._ndw_fov.figure[self._video_panels[5]].title = summary_img_name if summary_img_name is not None else "Residual Correlation Image"
 
+        for g in (self._pmd_graphic, self._ac_graphic, self._background_graphic, self._residual_graphic, self._summary_image):
+            g.graphic.cmap = "gray"
 
         self._trace_panels = ("compressed trace",
                         "demixed trace",
@@ -251,6 +253,7 @@ class SingleSessionDemixingVis:
             slider_dim_transforms=None,
             name=self._local_signal_panels[0],
         )
+        self._local_signal_mean_image_graphic.graphic.cmap = "gray"
 
         self._local_signal_trace_graphic = self._ndw_local_signals[self._local_signal_panels[1]].add_nd_timeseries(
             None,

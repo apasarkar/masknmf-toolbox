@@ -93,7 +93,7 @@ class MotionCorrectionVis:
             spatial_func=spatial_func_raw,
             slider_dim_transforms=movie_index_mapping.copy(),
             name=names[0],
-        )
+        ).graphic.cmap = "gray"
 
         if not rigid_shifts:
             vector_dims = ["time", "num vecs", "vec dim", "stack dim"]
@@ -118,7 +118,7 @@ class MotionCorrectionVis:
             spatial_func=spatial_func_register,
             slider_dim_transforms=movie_index_mapping.copy(),
             name=names[1],
-        )
+        ).graphic.cmap = "gray"
 
 
         self._ndw.figure[names[0]].tooltip.enabled = False
