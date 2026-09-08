@@ -7,12 +7,27 @@ from masknmf.visualization.imgui import TracePlot, resolve_time_reference, is_no
 from masknmf.diagnostics import pmd_autocovariance_diagnostics
 import fastplotlib as fpl
 from collections import OrderedDict
-from masknmf.visualization.imgui import CheckboxWindow
+from fastplotlib import ui
+from imgui_bundle import imgui
 import pygfx
 from functools import partial
 
 def mean_subtract_func(mean, frame):
     return frame - mean
+
+
+class _ControlPanel(ui.ImguiWindow):
+    """ROI checkbox plus a button that opens the lag-1 diagnostics window."""
+
+    def __init__(self, on_diagnostics):
+        super().__init__()
+        self.value = False
+        self._on_diagnostics = on_diagnostics
+
+    def update(self):
+        _, self.value = imgui.checkbox("Add ROI", self.value)
+        if imgui.button("lag-1 diagnostics"):
+            self._on_diagnostics()
 
 class CompressionVis:
     def __init__(self,
@@ -117,43 +132,14 @@ class CompressionVis:
                                                                                     name=self._residual_name)
         self._residual_graphic.graphic.cmap = "gray"
 
-        self._ndw_diagnostics = fpl.NDWidget(ref_ranges=self.reference_index.ref_ranges,
-                                             ref_index=self.reference_index,
-                                             shape=(1, 3),
-                                             names=[*self._diagnostic_names],
-                                             controller_ids=[tuple(self._diagnostic_names)],
-                                             size=(1200, 450),
-                                             )
+        self._lag1 = (raw_lag1, pmd_lag1, resid_lag1)
+        self._ndw_diagnostics = None
 
-        self._moco_lag1_graphic = self.ndw_diagnostics[self._diagnostic_names[0]].add_nd_image(raw_lag1,
-                                                                                               spatial_dims,
-                                                                                               spatial_dims,
-                                                                                               slider_dim_transforms=None,
-                                                                                               name=
-                                                                                               self._diagnostic_names[
-                                                                                                   0])
-        self._moco_lag1_graphic.graphic.cmap = "gray"
-
-        self._pmd_lag1_graphic = self._ndw_diagnostics[self._diagnostic_names[1]].add_nd_image(pmd_lag1,
-                                                                                               spatial_dims,
-                                                                                               spatial_dims,
-                                                                                               slider_dim_transforms=None,
-                                                                                               name=
-                                                                                               self._diagnostic_names[
-                                                                                                   1])
-        self._pmd_lag1_graphic.graphic.cmap = "gray"
-
-        self._residual_lag1_graphic = self._ndw_diagnostics[self._diagnostic_names[2]].add_nd_image(resid_lag1,
-                                                                                                    spatial_dims,
-                                                                                                    spatial_dims,
-                                                                                                    slider_dim_transforms=None,
-                                                                                                    name=
-                                                                                                    self._diagnostic_names[
-                                                                                                        2])
-        self._residual_lag1_graphic.graphic.cmap = "gray"
-
-        ## Use one camera for all of these spatial panels
-        self._synchronize_spatial_panels()
+        self._common_camera = self._ndw_videos.figure[0].camera
+        for subplot in self._ndw_videos.figure:
+            subplot.camera = self._common_camera
+            subplot.toolbar = False
+            subplot.tooltip.enabled = False
 
         self._trace_labels = (
             "motion corrected",
@@ -164,12 +150,6 @@ class CompressionVis:
         self._traces.dock(self._ndw_videos.figure, size=420, title="traces")
         self._traces.link(self.reference_index)
 
-        for subplot in self._ndw_videos.figure:
-            subplot.tooltip.enabled = False
-
-        for subplot in self._ndw_diagnostics.figure:
-            subplot.tooltip.enabled = False
-
         self.rect_selector_kwargs = dict(
             edge_thickness=1,
             edge_color="w",
@@ -179,28 +159,55 @@ class CompressionVis:
 
         self.image_graphics = [self._moco_graphic.graphic,
                                self._pmd_graphic.graphic,
-                               self._residual_graphic.graphic,
-                               self._moco_lag1_graphic.graphic,
-                               self._pmd_lag1_graphic.graphic,
-                               self._residual_lag1_graphic.graphic]
+                               self._residual_graphic.graphic]
 
         self.selectors = OrderedDict()
-
-        for img in self.image_graphics:
-            self.selectors[img] = list()
-
-        self.roi_manager = CheckboxWindow("Add ROI")
-        self.ndw_videos.figure.add_imgui_window(self.roi_manager, location="right", size=100, title="ROI Selector")
-
         self.RESIZING_NEW_RECT = False
+        self._wire_roi(self.ndw_videos.figure)
 
-        for graphic in self.image_graphics:
-            graphic.add_event_handler(self.add_rectangle, "pointer_down")
+        self.roi_manager = _ControlPanel(self.show_diagnostics)
+        self.ndw_videos.figure.add_imgui_window(self.roi_manager, location="right", size=140, title="controls")
 
-        self.ndw_videos.figure.renderer.add_event_handler(self.resize_rect_vids, "pointer_move")
-        self.ndw_videos.figure.renderer.add_event_handler(self.end_resize, "pointer_up")
-        self.ndw_diagnostics.figure.renderer.add_event_handler(self.resize_rect_diagnostics, "pointer_move")
-        self.ndw_diagnostics.figure.renderer.add_event_handler(self.end_resize, "pointer_up")
+    def _wire_roi(self, figure):
+        for subplot in figure:
+            for img in subplot.graphics:
+                self.selectors[img] = list()
+                img.add_event_handler(self.add_rectangle, "pointer_down")
+        figure.renderer.add_event_handler(partial(self.resize_rect, figure), "pointer_move")
+        figure.renderer.add_event_handler(self.end_resize, "pointer_up")
+
+    def _figures(self):
+        yield self.ndw_videos.figure
+        if self._ndw_diagnostics is not None and not self._ndw_diagnostics.figure.canvas.get_closed():
+            yield self._ndw_diagnostics.figure
+
+    def _build_diagnostics(self):
+        self._ndw_diagnostics = fpl.NDWidget(ref_ranges=self.reference_index.ref_ranges,
+                                             ref_index=self.reference_index,
+                                             shape=(1, 3),
+                                             names=[*self._diagnostic_names],
+                                             controller_ids=[tuple(self._diagnostic_names)],
+                                             size=(1200, 420),
+                                             )
+        spatial_dims = ["m", "n"]
+        for name, img in zip(self._diagnostic_names, self._lag1):
+            self._ndw_diagnostics[name].add_nd_image(img, spatial_dims, spatial_dims,
+                                                     slider_dim_transforms=None, name=name).graphic.cmap = "gray"
+        for subplot in self._ndw_diagnostics.figure:
+            subplot.camera = self._common_camera
+            subplot.toolbar = False
+            subplot.tooltip.enabled = False
+        self._wire_roi(self._ndw_diagnostics.figure)
+
+    def show_diagnostics(self):
+        """Open the lag-1 autocorrelation images in their own window, rebuilt if it was closed."""
+        if self._ndw_diagnostics is None or self._ndw_diagnostics.figure.canvas.get_closed():
+            self._build_diagnostics()
+        out = self._ndw_diagnostics.show()
+        if is_notebook_canvas(self._ndw_diagnostics.figure):
+            from IPython.display import display as ipy_display
+            ipy_display(out)
+        return out
 
     @property
     def reference_index(self):
@@ -234,13 +241,6 @@ class CompressionVis:
     def include_trend(self):
         return self._include_trend
 
-    def _synchronize_spatial_panels(self):
-        common_camera = self.ndw_videos.figure[0].camera
-        for subplot in self.ndw_videos.figure:
-            subplot.camera = common_camera
-        for subplot in self.ndw_diagnostics.figure:
-            subplot.camera = common_camera
-
     def rect_selector_moved(self, selectors_pair: Tuple[fpl.RectangleSelector], ev: fpl.GraphicFeatureEvent):
         for selector in selectors_pair:
             selector.selection = ev.info["value"]
@@ -257,90 +257,40 @@ class CompressionVis:
         if ev.button != 1:
             return
 
-        for subplot in self.ndw_videos.figure:
-            subplot.controller.enabled = False
-        for subplot in self.ndw_diagnostics.figure:
-            subplot.controller.enabled = False
+        for figure in self._figures():
+            for subplot in figure:
+                subplot.controller.enabled = False
 
         # in world space
         x, y = ev.pick_info["index"]
 
         new_selectors = list()
 
-        for subplot in self.ndw_videos.figure:
-            if len(subplot.graphics) < 1:
-                continue  # empty subplot
-
-            for img in subplot.graphics:
-
-                new_selector = img.add_rectangle_selector(
-                    selection=[x, x + 1, y, y + 1],
-                    **self.rect_selector_kwargs
-                )
-
-                if len(self.selectors[img]) > 0:
-                    old_selector = self.selectors[img].pop()
-                    subplot.remove_graphic(old_selector)
-
-                self.selectors[img].append(new_selector)
-                new_selectors.append(new_selector)
-
-        for subplot in self.ndw_diagnostics.figure:
-            if len(subplot.graphics) < 1:
-                continue  # empty subplot
-
-            for img in subplot.graphics:
-
-                new_selector = img.add_rectangle_selector(
-                    selection=[x, x + 1, y, y + 1],
-                    **self.rect_selector_kwargs
-                )
-
-                if len(self.selectors[img]) > 0:
-                    old_selector = self.selectors[img].pop()
-                    subplot.remove_graphic(old_selector)
-
-                self.selectors[img].append(new_selector)
-                new_selectors.append(new_selector)
+        for figure in self._figures():
+            for subplot in figure:
+                for img in subplot.graphics:
+                    new_selector = img.add_rectangle_selector(
+                        selection=[x, x + 1, y, y + 1],
+                        **self.rect_selector_kwargs
+                    )
+                    if len(self.selectors[img]) > 0:
+                        old_selector = self.selectors[img].pop()
+                        subplot.remove_graphic(old_selector)
+                    self.selectors[img].append(new_selector)
+                    new_selectors.append(new_selector)
 
         for sel in new_selectors:
             sel.add_event_handler(partial(self.rect_selector_moved, new_selectors), "selection")
 
         self.RESIZING_NEW_RECT = True
 
-    def resize_rect_vids(self, ev: pygfx.PointerEvent):
+    def resize_rect(self, figure, ev: pygfx.PointerEvent):
         if not self.RESIZING_NEW_RECT:
             return
 
-        img = self.image_graphics[0]
+        img = figure[0].graphics[0]
 
-        for subplot in self.ndw_videos.figure:
-            # world (x, y)
-            pos = subplot.map_screen_to_world(ev)
-            if pos is None:
-                continue
-            else:
-                break
-
-        if pos is None:
-            # if pointer was moved outside the subplot
-            self.RESIZING_NEW_RECT = False
-            return
-
-        x2, y2, _ = pos
-
-        # most recently added selector
-        x1, _, y1, _ = self.selectors[img][-1].selection
-
-        self.selectors[img][-1].selection = [x1, x2, y1, y2]
-
-    def resize_rect_diagnostics(self, ev: pygfx.PointerEvent):
-        if not self.RESIZING_NEW_RECT:
-            return
-
-        img = self.image_graphics[3]  ## First graphic belonging to the diagnostics plot
-
-        for subplot in self.ndw_diagnostics.figure:
+        for subplot in figure:
             # world (x, y)
             pos = subplot.map_screen_to_world(ev)
             if pos is None:
@@ -382,10 +332,9 @@ class CompressionVis:
         traces = (mcorr_temporal, pmd_temporal, residual_temporal)
         self._traces.set("crop mean", [(label, trace, None) for label, trace in zip(self._trace_labels, traces)])
 
-        for subplot in self.ndw_videos.figure:
-            subplot.controller.enabled = True
-        for subplot in self.ndw_diagnostics.figure:
-            subplot.controller.enabled = True
+        for figure in self._figures():
+            for subplot in figure:
+                subplot.controller.enabled = True
 
         self.RESIZING_NEW_RECT = False
         self._row_slice = None
@@ -393,8 +342,4 @@ class CompressionVis:
 
     def show(self):
         # parse based on canvas type
-        if is_notebook_canvas(self.ndw_videos.figure):
-            from ipywidgets import VBox
-            return VBox([self.ndw_videos.show(), self.ndw_diagnostics.show()])
-        else:
-            return self.ndw_videos.show(), self.ndw_diagnostics.show()
+        return self.ndw_videos.show()
