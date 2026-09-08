@@ -17,6 +17,7 @@ import tifffile
 
 import masknmf
 from masknmf.visualization import CompressionVis, MotionCorrectionVis, SingleSessionDemixingVis
+from masknmf.utils import torch_select_device
 
 RAW = {
     "glutamate": "X:/data/temp/red_green/kg236_expt2_green.tif",
@@ -40,9 +41,10 @@ def main():
     p.add_argument("--which", default="spine", choices=["spine", "global_activity"], help="demixing result to open")
     p.add_argument("--fps", type=float, default=19.66, help="frame rate, for the seconds axis")
     p.add_argument("--crop", type=int, default=400, help="frames dropped from the raw tiff (script crop + pipeline exclude)")
-    p.add_argument("--device", default="cuda")
+    p.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     args = p.parse_args()
     run = args.run
+    device = str(torch_select_device(args.device))
 
     raw = load_raw(args.channel, args.crop)
     timings = np.arange(raw.shape[0]) / args.fps
@@ -56,11 +58,11 @@ def main():
         pmd = masknmf.PMDArray.from_hdf5(run / f"pmd_{args.channel}.hdf5")
         # dense numpy, as in the notebook; the pipeline compressed the masked movie so masked-out pixels show in the residual
         moco = reg[:].cpu().numpy()
-        open_.append(CompressionVis(moco, pmd, frame_timings=timings, device=args.device))
+        open_.append(CompressionVis(moco, pmd, frame_timings=timings, device=device))
 
     if args.viz in ("demixing", "all"):
-        res = masknmf.DemixingResults.from_hdf5(run / f"{args.channel}_{args.which}_demixing.hdf5", device=args.device)
-        open_.append(SingleSessionDemixingVis(res, frame_timings=timings, device=args.device))
+        res = masknmf.DemixingResults.from_hdf5(run / f"{args.channel}_{args.which}_demixing.hdf5", device=device)
+        open_.append(SingleSessionDemixingVis(res, frame_timings=timings, device=device))
 
     for v in open_:
         v.show()
