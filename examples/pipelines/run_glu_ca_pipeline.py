@@ -3,10 +3,9 @@ Run the glutamate/calcium spine pipeline on raw tiffs.
 
 green = glutamate, red = calcium
 
-First 200 frames optionally cropped
+The pipeline drops the first --exclude-initial-frames frames.
 
-    python scripts/run_spine_pipeline.py
-    python scripts/run_spine_pipeline.py --glutamate glu.tif --calcium ca.tif --output ./test_outputs
+    python examples/pipelines/run_glu_ca_pipeline.py --glutamate glu.tif --calcium ca.tif --output ./test_outputs
 """
 
 import argparse
@@ -16,10 +15,6 @@ import tifffile
 
 from masknmf.pipelines.subcellular import GlutamateCalciumSpinePipeline
 
-DEFAULT_GLUTAMATE = "X:/data/temp/red_green/kg236_expt2_green.tif"
-DEFAULT_CALCIUM = "X:/data/temp/red_green/kg236_expt2_red.tif"
-DEFAULT_OUTPUT = "X:/data/temp/red_green/test_outputs"
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -27,22 +22,16 @@ def main():
     )
     parser.add_argument(
         "--glutamate",
-        default=DEFAULT_GLUTAMATE,
+        default=None,
         help="glutamate channel tiff, or 'none'",
     )
     parser.add_argument(
-        "--calcium", default=DEFAULT_CALCIUM, help="calcium channel tiff, or 'none'"
+        "--calcium", default=None, help="calcium channel tiff, or 'none'"
     )
     parser.add_argument(
         "--output",
-        default=DEFAULT_OUTPUT,
+        required=True,
         help="parent folder; a timestamped run folder is created inside",
-    )
-    parser.add_argument(
-        "--crop",
-        type=int,
-        default=200,
-        help="frames dropped from the start of each tiff, as in the notebook",
     )
     parser.add_argument(
         "--exclude-initial-frames",
@@ -56,12 +45,12 @@ def main():
     glu = (
         None
         if args.glutamate in (None, "none")
-        else tifffile.imread(args.glutamate)[args.crop :]
+        else tifffile.imread(args.glutamate)
     )
     calcium = (
         None
         if args.calcium in (None, "none")
-        else tifffile.imread(args.calcium)[args.crop :]
+        else tifffile.imread(args.calcium)
     )
     if glu is not None:
         print(f"glutamate {glu.shape} {glu.dtype}")
