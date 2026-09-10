@@ -247,7 +247,7 @@ class RigidRegistrationArray(BaseRegistrationArray):
         shifts: torch.Tensor,
         strategy: RigidMotionCorrector,
         sinc_margin: int = 12,
-        output_device: Optional[str] = None,
+        output_device: str | torch.device = "cpu",
     ):
         """
         Args:
@@ -260,13 +260,13 @@ class RigidRegistrationArray(BaseRegistrationArray):
             sinc_margin: Extra guard band, in pixels, beyond ceil(max|shift|), giving the
                 truncated sinc kernel room to decay. Added to, not maxed with, the wrap
                 requirement.
-            output_device: Device of the returned tensor. Defaults to the strategy device.
+            output_device: Device of the returned tensor.
         """
         self._input_movie = input_movie
         self._strategy = strategy
 
         self._device = strategy.device
-        self._output_device = self._device if output_device is None else output_device
+        self.output_device = output_device
 
         if shifts.ndim != 2 or shifts.shape[1] != 2:
             raise ValueError(
@@ -322,14 +322,6 @@ class RigidRegistrationArray(BaseRegistrationArray):
     @property
     def sinc_margin(self) -> int:
         return self._sinc_margin
-
-    @property
-    def output_device(self) -> str:
-        return self._output_device
-
-    @output_device.setter
-    def output_device(self, new_device: str):
-        self._output_device = new_device
 
     @property
     def strategy(self) -> MotionCorrectionStrategy:
@@ -459,7 +451,7 @@ class RigidRegistrationArray(BaseRegistrationArray):
             empty = torch.empty(
                 (frames.size, rows.size, cols.size),
                 dtype=self.dtype,
-                device=self._output_device,
+                device=self.output_device,
             )
             return self._drop_axes(empty, drop_rows, drop_cols)
 
@@ -477,7 +469,7 @@ class RigidRegistrationArray(BaseRegistrationArray):
         if not (_is_contiguous_run(col_local) and col_local.size == block.shape[2]):
             block = block[:, :, torch.as_tensor(col_local, device=block.device)]
 
-        block = block.to(self._output_device)
+        block = block.to(self.output_device)
         return self._drop_axes(block, drop_rows, drop_cols)
 
     @staticmethod

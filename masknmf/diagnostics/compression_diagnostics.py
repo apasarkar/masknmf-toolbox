@@ -30,7 +30,7 @@ def compute_general_spatial_correlation_map(
     for k in tqdm(range(num_iters)):
         start = k * batch_size
         end = min(start + batch_size, num_frames)
-        curr_frames = torch.from_numpy(stack[start:end]).to(device).float()
+        curr_frames = torch.as_tensor(stack[start:end], device=device, dtype=torch.float32)
         if curr_frames.ndim == 2:
             curr_frames = curr_frames[None, :, :]
         stack_mean += (torch.sum(curr_frames, dim=0) / num_frames)
@@ -38,7 +38,7 @@ def compute_general_spatial_correlation_map(
     for k in tqdm(range(num_iters)):
         start = k * batch_size
         end = min(start + batch_size, num_frames)
-        curr_frames = torch.from_numpy(stack[start:end]).to(device).float()
+        curr_frames = torch.as_tensor(stack[start:end], device=device, dtype=torch.float32)
         curr_frames -= stack_mean[None, :, :]
         if curr_frames.ndim == 2:
             curr_frames = curr_frames[None, :, :]
@@ -63,7 +63,7 @@ def compute_general_spatial_correlation_map(
 
         if stack_subset.ndim == 2:
             stack_subset = stack_subset[None, :, :]
-        stack_subset = (torch.from_numpy(stack_subset).to(device).float() - stack_mean[None, :, :])
+        stack_subset = (torch.as_tensor(stack_subset, device=device, dtype=torch.float32) - stack_mean[None, :, :])
         stack_subset /= stack_std[None, :, :]
         stack_subset = torch.nan_to_num(stack_subset, nan=0.0)
         top_left_bottom_right[0, :, :] += torch.sum(stack_subset[:, :-1, :-1] *
@@ -148,7 +148,7 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[masknmf.ArrayLike, mas
     for k in tqdm(range(num_iters)):
         start = batch_size * k
         end = min(start + batch_size, num_frames)
-        raw_subset = torch.from_numpy(raw_stack[start:end, :, :]).to(device).float()
+        raw_subset = torch.as_tensor(raw_stack[start:end, :, :], device=device, dtype=torch.float32)
         raw_mean += torch.sum(raw_subset, dim=0) / num_frames
         raw_std_img += torch.sum(raw_subset**2, dim=0) / num_frames
 
@@ -167,8 +167,8 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[masknmf.ArrayLike, mas
     for k in tqdm(range(num_iters)):
         start = batch_size * k
         end = min(start + batch_size, num_frames)
-        raw_subset = (torch.from_numpy(raw_stack[start:end, :, :]).to(device) - raw_mean) / raw_std_img
-        pmd_subset = (torch.from_numpy(pmd_stack[start:end, :, :]).to(device) - pmd_mean) / raw_std_img
+        raw_subset = (torch.as_tensor(raw_stack[start:end, :, :], device=device, dtype=torch.float32) - raw_mean) / raw_std_img
+        pmd_subset = (torch.as_tensor(pmd_stack[start:end, :, :], device=device, dtype=torch.float32) - pmd_mean) / raw_std_img
 
         pmd_subset = torch.nan_to_num(pmd_subset, nan=0)
         raw_subset = torch.nan_to_num(raw_subset, nan=0)
@@ -202,10 +202,10 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[masknmf.ArrayLike, mas
         top_right_bottom_left[2, :, :] += torch.sum(residual_subset[:, :-1, 1:] *
                                                     residual_subset[:, 1:, :-1], dim=0) / num_frames
 
-    counter_matrix = torch.zeros((fov_dim1, fov_dim2), device=device).float()
-    raw_final_img = torch.zeros((fov_dim1, fov_dim2), device=device).float()
-    pmd_final_img = torch.zeros((fov_dim1, fov_dim2), device=device).float()
-    resid_final_img = torch.zeros((fov_dim1, fov_dim2), device=device).float()
+    counter_matrix = torch.zeros((fov_dim1, fov_dim2), device=device, dtype=torch.float32)
+    raw_final_img = torch.zeros((fov_dim1, fov_dim2), device=device, dtype=torch.float32)
+    pmd_final_img = torch.zeros((fov_dim1, fov_dim2), device=device, dtype=torch.float32)
+    resid_final_img = torch.zeros((fov_dim1, fov_dim2), device=device, dtype=torch.float32)
 
     raw_final_img[:-1, :-1] += top_left_bottom_right[0, ...]
     raw_final_img[1:, 1:] += top_left_bottom_right[0, ...]
@@ -287,15 +287,15 @@ def pmd_autocovariance_diagnostics(raw_movie: Union[masknmf.ArrayLike, masknmf.L
     else:
         switch = False
     pmd_movie.rescale = True
-    raw_autocov = torch.zeros(fov_dim1, fov_dim2, device=device).float()
+    raw_autocov = torch.zeros(fov_dim1, fov_dim2, device=device, dtype=torch.float32)
     left_raw_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (
-            torch.from_numpy(raw_movie[-1]).float().to(device) / (
+            torch.as_tensor(raw_movie[-1], device=device, dtype=torch.float32) / (
             num_frames - 1))
     right_raw_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (
-            torch.from_numpy(raw_movie[0]).float().to(device) / (
+            torch.as_tensor(raw_movie[0], device=device, dtype=torch.float32) / (
             num_frames - 1))
 
-    pmd_autocov = torch.zeros(fov_dim1, fov_dim2, device=device).float()
+    pmd_autocov = torch.zeros(fov_dim1, fov_dim2, device=device, dtype=torch.float32)
     left_pmd_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (
             pmd_movie.getitem_tensor([num_frames - 1]).float().to(device) / (
             num_frames - 1))
@@ -303,7 +303,7 @@ def pmd_autocovariance_diagnostics(raw_movie: Union[masknmf.ArrayLike, masknmf.L
             pmd_movie.getitem_tensor([0]).float().to(device) / (
             num_frames - 1))
 
-    resid_autocov = torch.zeros(fov_dim1, fov_dim2, device=device).float()
+    resid_autocov = torch.zeros(fov_dim1, fov_dim2, device=device, dtype=torch.float32)
     left_resid_mean = left_raw_mean - left_pmd_mean
     right_resid_mean = right_raw_mean - right_pmd_mean
 
@@ -315,7 +315,7 @@ def pmd_autocovariance_diagnostics(raw_movie: Union[masknmf.ArrayLike, masknmf.L
     right_raw_sq_sum = torch.zeros_like(raw_autocov)
     for start in start_pts:
         end = min(start + batch_size, num_frames)
-        raw_subset = torch.from_numpy(raw_movie[start:end]).to(device)
+        raw_subset = torch.as_tensor(raw_movie[start:end], device=device, dtype = torch.float32)
         raw_left = (raw_subset[:-1] - left_raw_mean)
         raw_right = (raw_subset[1:] - right_raw_mean)
         left_raw_sq_sum += torch.sum(raw_left * raw_left, dim=0)

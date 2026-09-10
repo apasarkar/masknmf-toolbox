@@ -311,11 +311,11 @@ class GradientRegistrationArray(BaseRegistrationArray):
                  strategy: GradientMotionCorrector,
                  gradient_steps: torch.Tensor,
                  shifts: torch.Tensor,
-                 output_device: str = "cpu"):
+                 output_device: str | torch.device = "cpu"):
 
         self._input_movie = input_movie
         self._strategy = strategy
-        self._output_device = output_device
+        self.output_device = output_device
         self._gradient_steps_mean = None
         self._gradient = self.strategy.gradient.reshape(self.shape[1], self.shape[2], 2).to(self.strategy.device).to(self.dtype)
         self._shifts = shifts
@@ -330,14 +330,6 @@ class GradientRegistrationArray(BaseRegistrationArray):
     @property
     def dtype(self) -> torch.dtype:
         return self.strategy.dtype
-
-    @property
-    def output_device(self) -> str:
-        return self._output_device
-
-    @output_device.setter
-    def output_device(self, new_device:str):
-        self._output_device = new_device
 
     @property
     def nbytes(self) -> int:

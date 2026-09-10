@@ -287,12 +287,12 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
                  input_movie: ArrayLike,
                  shifts: torch.Tensor,
                  strategy: PiecewiseRigidMotionCorrector,
-                 output_device: str = 'cpu'):
+                 output_device: str | torch.device = 'cpu'):
         self._input_movie = input_movie
         self._shifts = shifts
         self._strategy = strategy
         self._device = self.strategy.device
-        self._output_device = output_device
+        self.output_device = output_device
         self._compute_block_centers()
 
     @property
@@ -334,14 +334,6 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
     @property
     def strategy(self) -> PiecewiseRigidMotionCorrector:
         return self._strategy
-
-    @property
-    def output_device(self):
-        return self._output_device
-
-    @output_device.setter
-    def output_device(self, new_device:str):
-        self._output_device = new_device
 
     def _corrected_roi(self,
                        frames,
@@ -389,7 +381,7 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
             empty = torch.empty(
                 (frames.size, rows.size, cols.size),
                 dtype=self.dtype,
-                device=self._output_device,
+                device=self.output_device,
             )
             return self._drop_axes(empty, drop_rows, drop_cols)
 
@@ -412,7 +404,7 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
         if not (_is_contiguous_run(col_local) and col_local.size == block.shape[2]):
             block = block[:, :, torch.as_tensor(col_local, device=block.device)]
 
-        block = block.to(self._output_device)
+        block = block.to(self.output_device)
         return self._drop_axes(block, drop_rows, drop_cols)
 
     @staticmethod
