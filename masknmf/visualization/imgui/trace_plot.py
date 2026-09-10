@@ -34,6 +34,8 @@ class TracePlot:
         self._use_time = False
         self._autofit = True
         self._fit = True
+        self._force_fit = False  # one-shot "fit now", requested from the right-click settings popup
+        self._popup_id = f"##trace_settings_{id(self)}"
         self._window = None
         self._frame = 0
         # called with the frame the playhead was dragged to
@@ -117,10 +119,11 @@ class TracePlot:
             self.on_frame(moved)
 
     def draw(self, reserve: float = 0.0) -> Optional[int]:
-        """Options row and the stacked panels filling the window but ``reserve`` px; returns the frame when the playhead was dragged."""
+        """The stacked panels filling the window but ``reserve`` px; returns the frame when the
+        playhead was dragged. Right-click any panel for autofit/fit/x-axis settings."""
         if implot.get_current_context() is None:
             implot.create_context()
-        fit = self._draw_options()
+        fit = self._resolve_fit()
         height = max(imgui.get_content_region_avail().y - reserve, em(4))
         flags = implot.SubplotFlags_.link_all_x
         if self._link_y:
@@ -138,25 +141,34 @@ class TracePlot:
                 moved = got if got is not None else moved
         finally:
             implot.end_subplots()
+        self._draw_settings_popup()
         return moved
 
-    def _draw_options(self) -> bool:
+    def _resolve_fit(self) -> bool:
+        force, self._force_fit = self._force_fit, False
+        fit = force or (self._fit and self._autofit)
+        self._fit = False
+        return fit
+
+    def _draw_settings_popup(self):
+        """Right-click context menu (opened from a panel in ``_draw_panel``) for autofit/fit/x-axis."""
+        if not imgui.begin_popup(self._popup_id):
+            return
+        imgui.text_disabled(f"frame {self.frame}")
+        imgui.separator()
         changed, self._autofit = imgui.checkbox("autofit", self._autofit)
-        force = changed and self._autofit
-        imgui.same_line(0, em(0.4))
-        force |= imgui.button("fit")
+        if changed and self._autofit:
+            self._force_fit = True
+        if imgui.button("fit now"):
+            self._force_fit = True
         if self._time is not None:
             imgui.same_line(0, em(0.6))
             imgui.set_next_item_width(em(6))
             changed, index = imgui.combo("##x_unit", int(self._use_time), ["frames", "time"])
             if changed:
                 self._use_time = bool(index)
-                force = True
-        imgui.same_line(0, em(0.8))
-        imgui.text_disabled(f"frame {self.frame}")
-        fit = force or (self._fit and self._autofit)
-        self._fit = False
-        return fit
+                self._force_fit = True
+        imgui.end_popup()
 
     @staticmethod
     def _spec(rgb, fill: bool = False, alpha: float = 1.0) -> implot.Spec:
@@ -228,8 +240,11 @@ class TracePlot:
             for label, trace, rgb in lines:
                 implot.plot_line(label, xs, trace, self._spec(rgb))
             self._draw_marks(xs)
-            if self.on_pick is not None and lines and implot.is_plot_hovered() and imgui.is_mouse_double_clicked(0):
-                self.on_pick(name, self._nearest_line(lines, xs))
+            if implot.is_plot_hovered():
+                if self.on_pick is not None and lines and imgui.is_mouse_double_clicked(0):
+                    self.on_pick(name, self._nearest_line(lines, xs))
+                if imgui.is_mouse_clicked(1):
+                    imgui.open_popup(self._popup_id)
             moved, at = implot.drag_line_x(0, float(xs[self.frame]), _CURSOR_COLOR, 1.5)[:2]
             if moved:
                 self.frame = np.searchsorted(xs, at)
