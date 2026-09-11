@@ -74,7 +74,7 @@ class SingleSessionDemixingVis:
         nmf_config: NMFConfig | None = None,
     ):
         self._source_path = None if source_path is None else str(source_path)
-        self._nmf_config = NMFConfig() if nmf_config is None else nmf_config
+        self._nmf_config = NMFConfig(min_brightness=None) if nmf_config is None else nmf_config
         self._min_brightness_cache = self._nmf_config.min_brightness or 1.0
         self._worker = None
         self._pending = None
@@ -232,7 +232,7 @@ class SingleSessionDemixingVis:
         if self._has_ac:
             blank = np.zeros((*self._shape[1:3], 4), np.uint8)
             self._mask_overlay = self._fov_subplot.add_image(
-                blank, name="masks", alpha_mode="blend", offset=(0, 0, 1)
+                blank, name="masks", alpha_mode="blend", offset=(0, 0, 0.5)
             )
             # literal RGBA bytes: auto-ranging the all-zero start saturates to white
             self._mask_overlay.vmin, self._mask_overlay.vmax = 0, 255
@@ -240,15 +240,7 @@ class SingleSessionDemixingVis:
                 tile.material.pick_write = False
             self._make_footprints()
 
-        for g in (
-            self._pmd_graphic,
-            self._ac_graphic,
-            self._background_graphic,
-            self._residual_graphic,
-            self._summary_image,
-        ):
-            if g is not None:
-                g.graphic.cmap = "gray"
+        self._set_gray_cmaps()
 
         self._traces = TracePlot(("traces",), self._shape[0], frame_timings)
         self._traces.dock(self._ndw_fov.figure, size=360, title="traces")
@@ -321,6 +313,11 @@ class SingleSessionDemixingVis:
                 partial(self._click_update), "double_click"
             )
 
+    def _set_gray_cmaps(self):
+        """NDGraphic.data= replaces the graphic instance, dropping its cmap too."""
+        for g in self._panel_graphics.values():
+            g.graphic.cmap = "gray"
+
     def _make_selectors(self):
         """(Re)build the footprint selectors over the current signals."""
         show = self._show_contours
@@ -365,12 +362,9 @@ class SingleSessionDemixingVis:
                 results.global_residual_correlation_image.cpu().numpy()
             )
         self._bind_click_handlers()
+        self._set_gray_cmaps()
         self._make_selectors()
         self._make_footprints()
-
-        for name, (vmin, vmax) in contrast.items():
-            graphic = self._panel_graphics[name].graphic
-            graphic.vmin, graphic.vmax = vmin, vmax
 
     def add_to_results(self):
         """
@@ -409,7 +403,11 @@ class SingleSessionDemixingVis:
             self._status = f"add to results failed: {pending}"
             return
         before = self._ac_array.a.shape[1]
-        self._load_results(pending)
+        try:
+            self._load_results(pending)
+        except Exception as e:
+            self._status = f"reload after demix failed: {e}"
+            return
         self._status = (
             f"{pending.a.shape[1]} signals (was {before}) written to "
             f"{os.path.basename(self._source_path)}"
@@ -721,8 +719,6 @@ class SingleSessionDemixingVis:
         imgui.end_disabled()
 
         imgui.begin_disabled(not self._rois)
-        if imgui.button("clear rois", imgui.ImVec2(-1, 0)):
-            self._clear_rois()
         if imgui.button("export rois", imgui.ImVec2(-1, 0)):
             self._browse_export()
         imgui.end_disabled()

@@ -34,5 +34,5 @@ move to a sibling `visualization/common/`.
 - **layout camera linking** — multisession shares one camera across the video and MIP
   figures; motion_vis links trace subplots on x only (`add_camera(..., include_state={"x", "width"})`).
   Two patterns: `share_camera(figures)` and `link_x(subplots)`.
-- **traces data helpers** — `extract_per_trace_roi_averages` in demixing_vis and `get_roi_avg` in
-  plots.py belong in `masknmf.demixing` utils rather than here.
+- **traces data helpers** — `get_roi_avg` in plots.py belongs in `masknmf.demixing` utils rather
+  than here.
