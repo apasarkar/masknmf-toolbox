@@ -64,7 +64,6 @@ class SingleSessionDemixingVis:
         | List[masknmf.DemixingResults],
         frame_timings: Optional[np.ndarray | List[np.ndarray]] = None,
         ref_range: Optional[dict] = None,
-        roi_radius: int = 1,
         summary_img: np.ndarray | masknmf.ArrayLike | None = None,
         summary_img_name: str | None = None,
         show_contours: bool = False,
@@ -74,9 +73,9 @@ class SingleSessionDemixingVis:
         source_path: str | os.PathLike | None = None,
         nmf_config: NMFConfig | None = None,
     ):
-        self._roi_radius = roi_radius
         self._source_path = None if source_path is None else str(source_path)
         self._nmf_config = NMFConfig() if nmf_config is None else nmf_config
+        self._min_brightness_cache = self._nmf_config.min_brightness or 1.0
         self._worker = None
         self._pending = None
         if device == "cpu":
@@ -271,10 +270,7 @@ class SingleSessionDemixingVis:
         self._status = ""
         self._file_dialog = None
 
-        for graphic in self._panel_graphics.values():
-            graphic.graphic.add_event_handler(
-                partial(self._click_update), "double_click"
-            )
+        self._bind_click_handlers()
 
         for subplot in self._ndw_fov.figure:
             subplot.tooltip.enabled = False
@@ -318,12 +314,18 @@ class SingleSessionDemixingVis:
             self._colorful_ac_array = None
             self._ac_array = None
 
+    def _bind_click_handlers(self):
+        """Re-attach double-click handlers: NDGraphic.data= replaces the graphic instance."""
+        for graphic in self._panel_graphics.values():
+            graphic.graphic.add_event_handler(
+                partial(self._click_update), "double_click"
+            )
+
     def _make_selectors(self):
         """(Re)build the footprint selectors over the current signals."""
         show = self._show_contours
         if self._image_selector is not None:
             self._set_contours(False)
-            self._pick_selector.remove_graphic(self._ac_graphic.graphic)
         # footprint of the signal picked in the trace dock, drawn over the signals movie
         self._pick_selector = fpl.ImageHighlightSelector(
             color="w",
@@ -362,8 +364,13 @@ class SingleSessionDemixingVis:
             self._summary_image.data = (
                 results.global_residual_correlation_image.cpu().numpy()
             )
+        self._bind_click_handlers()
         self._make_selectors()
         self._make_footprints()
+
+        for name, (vmin, vmax) in contrast.items():
+            graphic = self._panel_graphics[name].graphic
+            graphic.vmin, graphic.vmax = vmin, vmax
 
     def add_to_results(self):
         """
@@ -419,11 +426,7 @@ class SingleSessionDemixingVis:
         self._pick_selector.selection = [int(self._selected_signals[index])]
 
     def _click_update(self, ev: pygfx.PointerEvent):
-        """
-        Double click priority: a drawn roi, else an existing demixed component, else (when
-        demixing results are loaded) the neighborhood-average signal decomposition.
-        """
-
+        """Priority: a drawn roi, then an existing component, else clear the traces."""
         if self._drawing() or imgui.get_io().want_capture_mouse:
             return
         col, row = ev.pick_info["index"]
@@ -442,63 +445,11 @@ class SingleSessionDemixingVis:
                 return
 
         self._clear_component()
-
-        if self._ac_array is None:
-            self._active_roi = None
-            self._clear_traces()
-            return
-
-        num_frames, height, width = self._shape
-        col_start, col_stop = (
-            max(0, col - self._roi_radius),
-            min(width, col + self._roi_radius + 1),
-        )
-        row_start, row_stop = (
-            max(0, row - self._roi_radius),
-            min(height, row + self._roi_radius + 1),
-        )
-        ## For each array, add the appropriate data
-
-        pmd_trace = np.mean(
-            self._pmd_array[:, row_start:row_stop, col_start:col_stop], axis=(1, 2)
-        )
-        residual_trace = np.mean(
-            self._residual_array[:, row_start:row_stop, col_start:col_stop], axis=(1, 2)
-        )
-        background_trace = np.mean(
-            self._fluctuating_background_array[
-                :, row_start:row_stop, col_start:col_stop
-            ],
-            axis=(1, 2),
-        )
-
-        # Pull out colorful signals
-        separated_ac_signals, separated_colors, unique_signals = (
-            extract_per_trace_roi_averages(
-                self._colorful_ac_array,
-                slice(row_start, row_stop),
-                slice(col_start, col_stop),
-            )
-        )
-
-        self._selected_signals = unique_signals
-        self._pick_selector.selection = []
-        lines = list(
-            zip(
-                self._base_lines,
-                (pmd_trace, background_trace, residual_trace),
-                _BASE_LINE_COLORS,
-            )
-        )
-        if separated_ac_signals is not None:
-            # the movie's colors sum to 1 per signal; scaled up so the lines read on a dark plot
-            lines += [
-                (f"signal {k}", trace, tuple(color / color.max()))
-                for k, trace, color in zip(
-                    unique_signals, separated_ac_signals, separated_colors
-                )
-            ]
-        self._traces.set("traces", lines)
+        self._active_roi = None
+        self._selected_signals = None
+        if self._pick_selector is not None:
+            self._pick_selector.selection = []
+        self._clear_traces()
 
     @property
     def _base_graphic(self):
@@ -736,6 +687,13 @@ class SingleSessionDemixingVis:
         self._handle_keys()
         drawing = self._drawing()
 
+        existing = len(self._footprints) if self._footprints is not None else 0
+        imgui.text_disabled(
+            f"{existing + len(self._rois)} roi(s) total"
+            f" ({existing} existing, {len(self._rois)} drawn)"
+        )
+        imgui.separator()
+
         if self._image_selector is not None:
             changed, show = imgui.checkbox("masks", self._show_masks)
             if changed:
@@ -753,12 +711,12 @@ class SingleSessionDemixingVis:
                 self._refresh_masks()
 
         imgui.begin_disabled(drawing)
-        if imgui.button("draw roi", imgui.ImVec2(-1, 0)):
+        if imgui.button("Add ROI", imgui.ImVec2(-1, 0)):
             self._start_roi()
         imgui.end_disabled()
 
         imgui.begin_disabled(self._active_roi is None)
-        if imgui.button("delete roi", imgui.ImVec2(-1, 0)):
+        if imgui.button("Delete ROI", imgui.ImVec2(-1, 0)):
             self._delete_roi(self._active_roi)
         imgui.end_disabled()
 
@@ -775,7 +733,7 @@ class SingleSessionDemixingVis:
             or self._source_path is None
             or self._worker is not None
         )
-        if imgui.button("add to results", imgui.ImVec2(-1, 0)):
+        if imgui.button("Demix", imgui.ImVec2(-1, 0)):
             self.add_to_results()
         imgui.end_disabled()
         if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
@@ -783,6 +741,23 @@ class SingleSessionDemixingVis:
                 "demix the drawn rois with the existing signals and rewrite the results file"
                 if self._source_path is not None
                 else "open the results with source_path to enable"
+            )
+
+        changed, filter_dim = imgui.checkbox(
+            "filter dim rois", self._nmf_config.min_brightness is not None
+        )
+        if changed:
+            if filter_dim:
+                self._nmf_config.min_brightness = self._min_brightness_cache
+            else:
+                self._min_brightness_cache = (
+                    self._nmf_config.min_brightness or self._min_brightness_cache
+                )
+                self._nmf_config.min_brightness = None
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "delete signals that never get bright enough during the nmf pass. "
+                "turn off if a hand-drawn roi keeps disappearing from add to results."
             )
 
         imgui.push_text_wrap_pos(0)
@@ -803,14 +778,6 @@ class SingleSessionDemixingVis:
             and (time.perf_counter() - self._last_roi_event > _PREVIEW_DELAY)
         ):
             self._update_preview()
-
-    @property
-    def roi_radius(self) -> int:
-        return self._roi_radius
-
-    @roi_radius.setter
-    def roi_radius(self, new_radius):
-        self._roi_radius = new_radius
 
     @property
     def device(self) -> str:
@@ -837,64 +804,6 @@ class SingleSessionDemixingVis:
 
     def close(self):
         self._ndw_fov.close()
-
-
-def extract_per_trace_roi_averages(
-    colorful_ac_array: masknmf.ACArray, rowslice: slice, colslice: slice
-):
-    """
-
-    Args:
-        ac_array (masknmf.ACArray): The signal array that contains the factorized signals
-        coloring (torch.tensor): Shape (num_neurons, 3) #Each row is RGB coloring
-    """
-    device = colorful_ac_array.device
-    num_frames, height, width, _ = colorful_ac_array.shape
-    a = colorful_ac_array.a.coalesce()  # Shape (num_pixels, num_signals)
-    c = colorful_ac_array.c  # Shape (num_frames, num_signals)
-
-    pixel_space = (
-        torch.arange(height * width, device=device).reshape(height, width).long()
-    )
-    good_row_values = pixel_space[rowslice, colslice].flatten()
-    num_pixels = good_row_values.shape[0]
-
-    row, col = a.indices()
-    values = a.values()
-
-    valid_indices = torch.isin(row, good_row_values)
-    if torch.count_nonzero(valid_indices) == 0:
-        return None, None, None
-    else:
-        valid_columns = col[valid_indices]
-        unique_signals = torch.unique(valid_columns)
-
-        a_subset = torch.index_select(a, 1, unique_signals).coalesce()
-        filtered_rows, filtered_col = a_subset.indices()
-        filtered_values = a_subset.values()
-
-        valid_indices = valid_indices = torch.isin(filtered_rows, good_row_values)
-        filtered_rows = filtered_rows[valid_indices]
-        filtered_col = filtered_col[valid_indices]
-        filtered_values = filtered_values[valid_indices]
-
-        reduce_tensor = torch.zeros(a_subset.shape[1], device=device)
-        reduce_tensor.scatter_reduce_(0, filtered_col, filtered_values, reduce="sum")
-        reduce_tensor = reduce_tensor / num_pixels
-
-        # unique_signals = torch.unique(filtered_col)
-        # unique_scales = reduce_tensor[unique_signals]
-
-        weighted_signals = (
-            reduce_tensor[None, :] * c[:, unique_signals]
-        )  # Shape (num_frames, neural_signals)
-        colors = colorful_ac_array.colors[unique_signals, :]  # (neural_signals, 3)
-
-        return (
-            weighted_signals.T.cpu().numpy(),
-            colors.cpu().numpy(),
-            unique_signals.cpu().numpy(),
-        )
 
 
 def visualize_superpixels_peaks(init_results: masknmf.InitializationResults):

@@ -3121,6 +3121,7 @@ class DemixingState(SignalProcessingState):
             torch.stack([rows * 0, columns]), values, (1, support_data.shape[1])
         ).coalesce()
         boolean_indices = new_vector.to_dense().squeeze(0).bool()
+        corr_survivors = int(torch.count_nonzero(boolean_indices))
         ## Check for min brightness if applicable
         if min_brightness is not None:
             if self.detrender is not None and False:
@@ -3140,6 +3141,18 @@ class DemixingState(SignalProcessingState):
         indices_to_keep = torch.arange(support_data.shape[1], device=self.device)[
             boolean_indices
         ]
+
+        if indices_to_keep.numel() == 0:
+            if corr_survivors == 0:
+                raise ValueError(
+                    f"all {support_data.shape[1]} remaining signal(s) were deleted: none had a "
+                    f"residual correlation above deletion_threshold={deletion_threshold}"
+                )
+            raise ValueError(
+                f"all {support_data.shape[1]} remaining signal(s) were deleted: none met "
+                f"min_brightness={min_brightness} (draw a brighter/larger roi, or set "
+                f"min_brightness=None in NMFConfig to disable this check)"
+            )
 
         return indices_to_keep
 
@@ -3400,7 +3413,10 @@ class DemixingState(SignalProcessingState):
                 f"support_threshold has invalid type: {type(support_threshold)}"
             )
 
-        min_brightness_list = np.linspace(0, min_brightness, maxiter)
+        min_brightness_list = (
+            [None] * maxiter if min_brightness is None
+            else np.linspace(0, min_brightness, maxiter)
+        )
 
         if denoise is None:
             denoise = [False for i in range(maxiter)]
