@@ -13,6 +13,7 @@ pipe.run(glutamate_channel=glu, calcium_channel=calcium)
 
 Writes `results/<YYYYMMDD_HHMMSS>_glutamate_calcium_spine_results/`. Either channel may be `None`.
 `run` drops the first 200 frames (`exclude_initial_frames`); every output has `frames - 200` frames.
+`retained_frames.npy` lists the raw frame indices that were kept; index the raw stack with it.
 
 ```python
 from pathlib import Path
@@ -20,7 +21,7 @@ import numpy as np
 import masknmf
 
 run = Path("results/20260908_112158_glutamate_calcium_spine_results")
-calcium = tifffile.imread("red.tif")[200:]
+calcium = tifffile.imread("red.tif")[np.load(run / "retained_frames.npy")]
 timings = np.arange(calcium.shape[0]) / 19.66  # optional seconds axis
 ```
 

@@ -6,7 +6,7 @@
     python examples/pipelines/view_glu_ca_results.py <run_folder> signals --channel glutamate
     python examples/pipelines/view_glu_ca_results.py <run_folder> all red.tif
 
-The raw tiff is cropped from the front so its frame count matches the stored shifts.
+The raw tiff is indexed with the run's retained_frames.npy so it matches the stored shifts.
 It's only needed (and required) for motion/compression/all; demixing and signals read
 solely from the exported pmd_*.hdf5 / *_demixing.hdf5 and don't take a raw tiff.
 signals opens SingleSessionDemixingVis on the bare compressed movie for drawing/labeling
@@ -18,7 +18,6 @@ import argparse
 from pathlib import Path
 
 import fastplotlib as fpl
-import h5py
 import numpy as np
 import tifffile
 
@@ -27,11 +26,8 @@ from masknmf.visualization import CompressionVis, MotionCorrectionVis, SingleSes
 from masknmf.utils import torch_select_device
 
 def registration(run, channel, raw_path):
-    """Registered array over the raw tiff, cropped from the front to match the stored shifts."""
-    raw = tifffile.imread(raw_path)
-    with h5py.File(run / f"{channel}_moco.hdf5") as h:
-        num_frames = h["RigidRegistrationArray/shifts"].shape[0]
-    raw = raw[raw.shape[0] - num_frames:]
+    """Registered array over the raw frames the run kept."""
+    raw = tifffile.imread(raw_path)[np.load(run / "retained_frames.npy")]
     return raw, masknmf.RigidRegistrationArray.from_hdf5(run / f"{channel}_moco.hdf5", input_movie=raw)
 
 
