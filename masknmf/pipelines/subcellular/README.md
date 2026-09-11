@@ -11,9 +11,11 @@ pipe = GlutamateCalciumSpinePipeline(output_folder="results/")
 pipe.run(glutamate_channel=glu, calcium_channel=calcium)
 ```
 
-Writes `results/<YYYYMMDD_HHMMSS>_glutamate_calcium_spine_results/`. Either channel may be `None`.
-`run` drops the first 200 frames (`exclude_initial_frames`); every output has `frames - 200` frames.
-`retained_frames.npy` lists the raw frame indices that were kept; index the raw stack with it.
+Writes `results/<YYYYMMDD_HHMMSS>_glutamate_calcium_spine_results/`. 
+- Either channel may be `None`.
+- `run` drops the first 200 frames (`exclude_initial_frames`);
+- every output has `frames - 200` frames.
+- `retained_frames.npy` lists the raw frame indices that were kept; index the raw stack with it.
 
 ```python
 from pathlib import Path
@@ -31,7 +33,7 @@ timings = np.arange(calcium.shape[0]) / 19.66  # optional seconds axis
 |---|---|
 | `calcium_moco.hdf5`, `glutamate_moco.hdf5` | `RigidRegistrationArray` (shifts, sinc_margin), `RigidMotionCorrector` (template, max_shifts, batch_size) |
 
-The movie is not stored. Pass the cropped raw stack back in.
+The registered movie is recreated from the raw frames and the shifts stored in `*_moco.hdf5`.
 
 ```python
 reg = masknmf.RigidRegistrationArray.from_hdf5(run / "calcium_moco.hdf5", input_movie=calcium)

@@ -228,16 +228,18 @@ class SingleSessionDemixingVis:
         self._show_masks = show_masks
         self._mask_opacity = mask_opacity
         self._footprints = None
-        self._mask_overlay = None
+        self._mask_overlays = {}
         if self._has_ac:
             blank = np.zeros((*self._shape[1:3], 4), np.uint8)
-            self._mask_overlay = self._fov_subplot.add_image(
-                blank, name="masks", alpha_mode="blend", offset=(0, 0, 0.5)
-            )
-            # literal RGBA bytes: auto-ranging the all-zero start saturates to white
-            self._mask_overlay.vmin, self._mask_overlay.vmax = 0, 255
-            for tile in self._mask_overlay.world_object.children:
-                tile.material.pick_write = False
+            for name in self._video_panels:
+                overlay = self._ndw_fov.figure[name].add_image(
+                    blank, name="masks", alpha_mode="blend", offset=(0, 0, 0.5)
+                )
+                # literal RGBA bytes: auto-ranging the all-zero start saturates to white
+                overlay.vmin, overlay.vmax = 0, 255
+                for tile in overlay.world_object.children:
+                    tile.material.pick_write = False
+                self._mask_overlays[name] = overlay
             self._make_footprints()
 
         self._set_gray_cmaps()
@@ -282,13 +284,19 @@ class SingleSessionDemixingVis:
         self._refresh_masks()
 
     def _refresh_masks(self):
-        if self._mask_overlay is None:
+        if not self._mask_overlays:
             return
-        self._mask_overlay.visible = self._show_masks
-        if self._show_masks:
-            self._mask_overlay.data = self._footprints.rgba(
+        rgba = (
+            self._footprints.rgba(
                 tuple(self._shape[1:3]), self._mask_opacity, self._active_component
             )
+            if self._show_masks
+            else None
+        )
+        for overlay in self._mask_overlays.values():
+            overlay.visible = self._show_masks
+            if rgba is not None:
+                overlay.data = rgba
 
     def _bind_arrays(self):
         if self._has_ac:
@@ -317,6 +325,17 @@ class SingleSessionDemixingVis:
         """NDGraphic.data= replaces the graphic instance, dropping its cmap too."""
         for g in self._panel_graphics.values():
             g.graphic.cmap = "gray"
+
+    def _video_graphics(self):
+        """The NDImage wrapper for every video panel, in ``_video_panels`` order."""
+        return (
+            self._pmd_graphic,
+            self._ac_graphic,
+            self._background_graphic,
+            self._residual_graphic,
+            self._colorful_signal_graphic,
+            self._summary_image,
+        )
 
     def _make_selectors(self):
         """(Re)build the footprint selectors over the current signals."""
@@ -494,12 +513,15 @@ class SingleSessionDemixingVis:
         self._show_contours = show
         if self._image_selector is None:
             return
-        graphic = self._summary_image.graphic
-        attached = graphic in self._image_selector.graphics
-        if show and not attached:
-            self._image_selector.add_graphic(graphic)
-        elif not show and attached:
-            self._image_selector.remove_graphic(graphic)
+        for g in self._video_graphics():
+            if g is None:
+                continue
+            graphic = g.graphic
+            attached = graphic in self._image_selector.graphics
+            if show and not attached:
+                self._image_selector.add_graphic(graphic)
+            elif not show and attached:
+                self._image_selector.remove_graphic(graphic)
 
     def _drawing(self) -> bool:
         return (
