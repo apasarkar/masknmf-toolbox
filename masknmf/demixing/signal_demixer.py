@@ -430,6 +430,38 @@ def process_custom_signals(
     return init_res
 
 
+def append_signals(
+        a: torch.sparse_coo_tensor,
+        c: torch.tensor,
+        init_res: InitializationResults,
+        u_sparse: torch.sparse_coo_tensor,
+        v: torch.tensor,
+) -> InitializationResults:
+    """
+    Place newly initialized signals after the existing ones, as the superpixel passes do, and refit the baseline.
+
+    Params:
+        a (torch.sparse_coo_tensor): shape (d1*d2, K), the existing spatial footprints
+        c (torch.tensor): shape (T, K), the existing temporal footprints
+        init_res (InitializationResults): the new signals
+        u_sparse, v: the PMD factors, used for the baseline
+    """
+    a = a.coalesce()
+    a_new = init_res.a.coalesce().to(a.device)
+    c_new = init_res.c.to(c.device)
+    a_row, a_col = a.indices()
+    new_row, new_col = a_new.indices()
+    rows = torch.cat([a_row, new_row])
+    cols = torch.cat([a_col, new_col + a.shape[1]])
+    vals = torch.cat([a.values(), a_new.values()])
+    a_all = torch.sparse_coo_tensor(
+        torch.stack([rows, cols]), vals, (a.shape[0], a.shape[1] + a_new.shape[1])
+    ).coalesce()
+    c_all = torch.cat([c, c_new], dim=1)
+    b = regression_update.baseline_update(get_mean_data(u_sparse, v), a_all, c_all)
+    return InitializationResults(a_all, a_all.bool(), c_all, b)
+
+
 def get_median(tensor, axis):
     max_val = torch.max(tensor, dim=axis, keepdim=True)[0]
     tensor_med_1 = torch.median(
@@ -2126,6 +2158,9 @@ class SignalDemixer:
             pmd_array,
             device: str = "cpu",
             frame_batch_size: int = 5000,
+            a: Optional[torch.sparse_coo_tensor] = None,
+            c: Optional[torch.tensor] = None,
+            factorized_ring_term: Optional[Tuple[torch.tensor, torch.tensor]] = None,
     ):
         """
         A class to manage the state and execution of the maskNMF demixing pipeline
@@ -2140,6 +2175,11 @@ class SignalDemixer:
             device (str): Indicator for pytorch for which device to use ("cpu" or "cuda")
             frame_batch_size (int): Number of full frames of data we load onto the GPU at a time
             pixel_batch_size (int): Number of full pixels of data we load onto the GPU at a time
+            a (Optional[torch.sparse_coo_tensor]): Shape (pixels, signals). Existing spatial footprints; the next
+                initialization pass appends to them instead of starting from scratch
+            c (Optional[torch.tensor]): Shape (frames, signals). Temporal footprints matching ``a``
+            factorized_ring_term (Optional[Tuple[torch.tensor, torch.tensor]]): Fluctuating background from a
+                previous demixing pass, carried into the initialization
         """
         self.device = device
         self.pmd_obj = pmd_array
@@ -2158,9 +2198,34 @@ class SignalDemixer:
         self._state = InitializingState(
             self.pmd_obj,
             device=self.device,
-            a=None,
-            c=None,
+            a=a,
+            c=c,
             frame_batch_size=frame_batch_size,
+            factorized_ring_term=factorized_ring_term,
+        )
+
+    @classmethod
+    def from_results(
+            cls,
+            results: DemixingResults,
+            device: str = "cpu",
+            frame_batch_size: int = 5000,
+    ) -> "SignalDemixer":
+        """
+        Resume demixing from saved results: the signals and fluctuating background become the starting point of the
+        next initialization pass, as when a multipass run continues after ``demix``.
+        """
+        if results.factorized_bkgd_term1 is not None and results.factorized_bkgd_term2 is not None:
+            ring_term = (results.factorized_bkgd_term1, results.factorized_bkgd_term2)
+        else:
+            ring_term = None
+        return cls(
+            results.pmd_array,
+            device=device,
+            frame_batch_size=frame_batch_size,
+            a=results.a,
+            c=results.c,
+            factorized_ring_term=ring_term,
         )
 
     @property
@@ -2502,9 +2567,7 @@ class InitializingState(SignalProcessingState):
                 raise ValueError(f"baseline estimate should either be flattened (1D) or 2D. "
                                  f"Input has {baseline_estimate.ndim} dimensions")
 
-        (
-            self._init_results
-        ) = process_custom_signals(
+        init_results = process_custom_signals(
             processed_spatial_tensor,
             self.u_sparse,
             self.v,
@@ -2512,6 +2575,9 @@ class InitializingState(SignalProcessingState):
             c=temporal_footprints,
             c_nonneg=c_nonneg
         )
+        if self.a is not None:
+            init_results = append_signals(self.a, self.c, init_results, self.u_sparse, self.v)
+        self._init_results = init_results
 
     def initialize_signals(
             self,

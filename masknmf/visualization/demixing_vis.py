@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 from typing import *
 import numpy as np
@@ -20,6 +21,8 @@ from masknmf.visualization.imgui import (
 )
 from masknmf.visualization.imgui.theme import em, to_vec4
 from masknmf.visualization.classification_vis import _LABEL_COLORS, _LABEL_KEYS
+from masknmf.demixing import add_signals, replace_results
+from masknmf.pipelines.configs.demixing_configs import NMFConfig
 
 _ROI_COLORS = (
     (1.00, 0.50, 0.05),
@@ -46,6 +49,9 @@ class SingleSessionDemixingVis:
     existing masknmf.DemixingResults (or a bare PMDArray before demixing has run), and draw,
     label, and export ROIs for a custom SignalDemixer.initialize_signals(is_custom=True) pass.
 
+    With ``source_path`` set, "add to results" runs the drawn ROIs through the demixer's NMF pass
+    (``nmf_config``, the pipeline defaults when None) and rewrites that file with them as ordinary signals.
+
     TODO:
     -----
     - Could really support registration arrays?
@@ -65,8 +71,14 @@ class SingleSessionDemixingVis:
         show_contours: bool = True,
         label_names: Sequence[str] = DEFAULT_LABEL_NAMES,
         device="cpu",
+        source_path: str | os.PathLike | None = None,
+        nmf_config: NMFConfig | None = None,
     ):
         self._roi_radius = roi_radius
+        self._source_path = None if source_path is None else str(source_path)
+        self._nmf_config = NMFConfig() if nmf_config is None else nmf_config
+        self._worker = None
+        self._pending = None
         if device == "cpu":
             display(
                 "Using CPU; it will be much slower. Use CUDA for much faster rendering"
@@ -91,20 +103,7 @@ class SingleSessionDemixingVis:
             "summary img",
         )
 
-        if self._has_ac:
-            self._pmd_array = self.demixing_results.pmd_array
-            self._fluctuating_background_array = (
-                self.demixing_results.fluctuating_background_array
-            )
-            self._residual_array = self.demixing_results.residual_array
-            self._colorful_ac_array = self.demixing_results.colorful_ac_array
-            self._ac_array = self.demixing_results.ac_array
-        else:
-            self._pmd_array = self.demixing_results
-            self._fluctuating_background_array = None
-            self._residual_array = None
-            self._colorful_ac_array = None
-            self._ac_array = None
+        self._bind_arrays()
 
         self._video_extents = {
             self._video_panels[0]: (0, 0.333, 0.0, 0.5),
@@ -188,6 +187,7 @@ class SingleSessionDemixingVis:
             self._residual_graphic = None
             self._colorful_signal_graphic = None
 
+        self._own_summary = summary_img is None and self._has_ac
         if summary_img is not None:
             dimension_data = ["m", "n"] if summary_img.ndim == 2 else ["time", "m", "n"]
             self._summary_image = self._ndw_fov[self._video_panels[5]].add_nd_image(
@@ -242,31 +242,11 @@ class SingleSessionDemixingVis:
         self._base_lines = ("compressed", "background", "residual")
         self._selected_signals = None
 
-        # footprint of the signal picked in the trace dock, drawn over the signals movie
+        self._pick_selector = None
+        self._image_selector = None
+        self._show_contours = show_contours
         if self._ac_array is not None:
-            self._pick_selector = fpl.ImageHighlightSelector(
-                color="w",
-                selection_options={"pixels": self._ac_array.contours},
-                options_alpha=0.0,
-                alpha=0.6,
-            )
-            self._pick_selector.add_graphic(self._ac_graphic.graphic)
-
-            # all known footprints, toggled from the roi panel; also drives a picked existing component
-            self._image_selector = fpl.ImageHighlightSelector(
-                lut="tab10",
-                lut_wrap="repeat",
-                selection_options={"pixels": self._ac_array.contours},
-                options_color="w",
-                options_alpha=0.1,
-                alpha=0.7,
-            )
-            self._show_contours = False
-            self._set_contours(show_contours)
-        else:
-            self._pick_selector = None
-            self._image_selector = None
-            self._show_contours = False
+            self._make_selectors()
 
         self._rois = (
             OrderedDict()
@@ -288,12 +268,118 @@ class SingleSessionDemixingVis:
 
         for subplot in self._ndw_fov.figure:
             subplot.tooltip.enabled = False
+            subplot.toolbar = False
 
         # "right", not "bottom": NDWidget already docks its own play/pause/slider toolbar
         # at "bottom", and a figure only keeps one window per edge (a second add_imgui_window
         # at the same edge replaces it rather than stacking).
         self._ndw_fov.figure.add_imgui_window(
             self._draw_roi_panel, location="right", size=240, title="ROI Tools"
+        )
+
+    def _bind_arrays(self):
+        if self._has_ac:
+            self._pmd_array = self.demixing_results.pmd_array
+            self._fluctuating_background_array = (
+                self.demixing_results.fluctuating_background_array
+            )
+            self._residual_array = self.demixing_results.residual_array
+            self._colorful_ac_array = self.demixing_results.colorful_ac_array
+            self._ac_array = self.demixing_results.ac_array
+        else:
+            self._pmd_array = self.demixing_results
+            self._fluctuating_background_array = None
+            self._residual_array = None
+            self._colorful_ac_array = None
+            self._ac_array = None
+
+    def _make_selectors(self):
+        """(Re)build the footprint selectors over the current signals."""
+        show = self._show_contours
+        if self._image_selector is not None:
+            self._set_contours(False)
+            self._pick_selector.remove_graphic(self._ac_graphic.graphic)
+        # footprint of the signal picked in the trace dock, drawn over the signals movie
+        self._pick_selector = fpl.ImageHighlightSelector(
+            color="w",
+            selection_options={"pixels": self._ac_array.contours},
+            options_alpha=0.0,
+            alpha=0.6,
+        )
+        self._pick_selector.add_graphic(self._ac_graphic.graphic)
+        # all known footprints, toggled from the roi panel; also drives a picked existing component
+        self._image_selector = fpl.ImageHighlightSelector(
+            lut="tab10",
+            lut_wrap="repeat",
+            selection_options={"pixels": self._ac_array.contours},
+            options_color="w",
+            options_alpha=0.1,
+            alpha=0.7,
+        )
+        self._show_contours = False
+        self._set_contours(show)
+
+    def _load_results(self, results: masknmf.DemixingResults):
+        """Swap in re-demixed results: every movie panel, the selectors and the summary image follow."""
+        results.to(self.device)
+        self._demixing_results = results
+        self._bind_arrays()
+        self._clear_rois()
+        self._clear_component()
+        self._selected_signals = None
+        self._clear_traces()
+        self._pmd_graphic.data = self._pmd_array
+        self._ac_graphic.data = self._ac_array
+        self._background_graphic.data = self._fluctuating_background_array
+        self._residual_graphic.data = self._residual_array
+        self._colorful_signal_graphic.data = self._colorful_ac_array
+        if self._own_summary:
+            self._summary_image.data = (
+                results.global_residual_correlation_image.cpu().numpy()
+            )
+        self._make_selectors()
+
+    def add_to_results(self):
+        """
+        Run the drawn ROIs through the demixer's NMF pass, appended to the existing signals, and rewrite the
+        results file with the outcome. Runs on a thread; the viewer reloads when it finishes.
+        """
+        if self._ac_array is None or self._source_path is None:
+            raise ValueError("adding rois needs demixing results loaded from a file")
+        masks = self.roi_masks
+        if masks.shape[-1] == 0:
+            raise ValueError("no rois have been drawn")
+        if self._worker is not None:
+            raise RuntimeError("a demixing pass is already running")
+        self._status = f"demixing {masks.shape[-1]} roi(s)..."
+        self._worker = threading.Thread(
+            target=self._demix_rois, args=(masks,), daemon=True
+        )
+        self._worker.start()
+
+    def _demix_rois(self, masks: np.ndarray):
+        try:
+            results = add_signals(
+                self.demixing_results, masks, self._nmf_config, device=self.device
+            )
+            replace_results(self._source_path, results)
+            self._pending = results
+        except Exception as e:
+            self._pending = e
+
+    def _poll_worker(self):
+        if self._worker is None or self._worker.is_alive():
+            return
+        self._worker = None
+        pending, self._pending = self._pending, None
+        if isinstance(pending, Exception):
+            self._status = f"add to results failed: {pending}"
+            return
+        before = self._ac_array.a.shape[1]
+        self._load_results(pending)
+        self._status = (
+            f"{pending.a.shape[1]} signals (was {before}) written to "
+            f"{os.path.basename(self._source_path)}"
         )
 
     def _select_signal(self, panel: str, index: int):
@@ -698,6 +784,7 @@ class SingleSessionDemixingVis:
         """A narrow, vertically-stacked sidebar (docked at "right") so it stays out of the
         NDWidget playback toolbar's way at "bottom"."""
         self._poll_file_dialog()
+        self._poll_worker()
         self._handle_keys()
         drawing = self._drawing()
 
@@ -722,6 +809,22 @@ class SingleSessionDemixingVis:
         if imgui.button("export rois", imgui.ImVec2(-1, 0)):
             self._browse_export()
         imgui.end_disabled()
+
+        imgui.begin_disabled(
+            not self._rois
+            or self._ac_array is None
+            or self._source_path is None
+            or self._worker is not None
+        )
+        if imgui.button("add to results", imgui.ImVec2(-1, 0)):
+            self.add_to_results()
+        imgui.end_disabled()
+        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+            imgui.set_tooltip(
+                "demix the drawn rois with the existing signals and rewrite the results file"
+                if self._source_path is not None
+                else "open the results with source_path to enable"
+            )
 
         imgui.push_text_wrap_pos(0)
         if drawing:
