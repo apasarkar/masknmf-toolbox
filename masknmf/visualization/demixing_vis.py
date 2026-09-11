@@ -19,8 +19,7 @@ from masknmf.visualization.imgui import (
     resolve_time_reference,
     component_at_pixel,
 )
-from masknmf.visualization.imgui.theme import em, to_vec4
-from masknmf.visualization.classification_vis import _LABEL_COLORS, _LABEL_KEYS
+from masknmf.visualization.rois import FootprintSet
 from masknmf.demixing import add_signals, replace_results
 from masknmf.pipelines.configs.demixing_configs import NMFConfig
 
@@ -40,14 +39,14 @@ _PREVIEW_DELAY = (
 )
 # compressed/background/residual, in that order, so the 3 base lines read apart in the legend
 _BASE_LINE_COLORS = ((0.85, 0.85, 0.85), (0.95, 0.55, 0.15), (0.35, 0.65, 0.95))
-DEFAULT_LABEL_NAMES = ("cell", "not cell")
 
 
 class SingleSessionDemixingVis:
     """
     View and curate demixing results. Can be used whether demixing has been ran (pass in DemixingResults) or not (PMDArray).
-    existing masknmf.DemixingResults (or a bare PMDArray before demixing has run), and draw,
-    label, and export ROIs for a custom SignalDemixer.initialize_signals(is_custom=True) pass.
+    existing masknmf.DemixingResults (or a bare PMDArray before demixing has run), and draw
+    and export ROIs for a custom SignalDemixer.initialize_signals(is_custom=True) pass.
+    Footprints show as feathered masks and/or contours over the summary image.
 
     With ``source_path`` set, "add to results" runs the drawn ROIs through the demixer's NMF pass
     (``nmf_config``, the pipeline defaults when None) and rewrites that file with them as ordinary signals.
@@ -68,8 +67,9 @@ class SingleSessionDemixingVis:
         roi_radius: int = 1,
         summary_img: np.ndarray | masknmf.ArrayLike | None = None,
         summary_img_name: str | None = None,
-        show_contours: bool = True,
-        label_names: Sequence[str] = DEFAULT_LABEL_NAMES,
+        show_contours: bool = False,
+        show_masks: bool = True,
+        mask_opacity: float = 0.5,
         device="cpu",
         source_path: str | os.PathLike | None = None,
         nmf_config: NMFConfig | None = None,
@@ -225,6 +225,22 @@ class SingleSessionDemixingVis:
         self._panel_graphics[self._video_panels[5]] = self._summary_image
         self._fov_subplot = self._ndw_fov.figure[self._video_panels[5]]
 
+        self._active_component = None
+        self._show_masks = show_masks
+        self._mask_opacity = mask_opacity
+        self._footprints = None
+        self._mask_overlay = None
+        if self._has_ac:
+            blank = np.zeros((*self._shape[1:3], 4), np.uint8)
+            self._mask_overlay = self._fov_subplot.add_image(
+                blank, name="masks", alpha_mode="blend", offset=(0, 0, 1)
+            )
+            # literal RGBA bytes: auto-ranging the all-zero start saturates to white
+            self._mask_overlay.vmin, self._mask_overlay.vmax = 0, 255
+            for tile in self._mask_overlay.world_object.children:
+                tile.material.pick_write = False
+            self._make_footprints()
+
         for g in (
             self._pmd_graphic,
             self._ac_graphic,
@@ -248,18 +264,12 @@ class SingleSessionDemixingVis:
         if self._ac_array is not None:
             self._make_selectors()
 
-        self._rois = (
-            OrderedDict()
-        )  # PolygonSelector -> {"color": rgb, "label": class index}
+        self._rois = OrderedDict()  # PolygonSelector -> {"color": rgb}
         self._active_roi = None
-        self._active_component = None
         self._preview_stale = False
         self._last_roi_event = 0.0
         self._status = ""
         self._file_dialog = None
-        self._new_label = ""
-        self._label_colors = []
-        self._set_label_names(label_names)
 
         for graphic in self._panel_graphics.values():
             graphic.graphic.add_event_handler(
@@ -276,6 +286,21 @@ class SingleSessionDemixingVis:
         self._ndw_fov.figure.add_imgui_window(
             self._draw_roi_panel, location="right", size=240, title="ROI Tools"
         )
+        if self._has_ac and len(self._footprints):
+            self._select_component(0)
+
+    def _make_footprints(self):
+        self._footprints = FootprintSet.from_sparse(self._ac_array.a, tuple(self._shape[1:3]))
+        self._refresh_masks()
+
+    def _refresh_masks(self):
+        if self._mask_overlay is None:
+            return
+        self._mask_overlay.visible = self._show_masks
+        if self._show_masks:
+            self._mask_overlay.data = self._footprints.rgba(
+                tuple(self._shape[1:3]), self._mask_opacity, self._active_component
+            )
 
     def _bind_arrays(self):
         if self._has_ac:
@@ -338,6 +363,7 @@ class SingleSessionDemixingVis:
                 results.global_residual_correlation_image.cpu().numpy()
             )
         self._make_selectors()
+        self._make_footprints()
 
     def add_to_results(self):
         """
@@ -490,6 +516,7 @@ class SingleSessionDemixingVis:
         self._active_component = int(component)
         if self._image_selector is not None:
             self._image_selector.selection = [self._active_component]
+        self._refresh_masks()
         fields = (
             "pmd_roi_averages",
             "fluctuating_background_roi_averages",
@@ -512,15 +539,18 @@ class SingleSessionDemixingVis:
             self._active_component = None
             if self._image_selector is not None:
                 self._image_selector.selection = []
+            self._refresh_masks()
 
     def _set_contours(self, show: bool):
         self._show_contours = show
         if self._image_selector is None:
             return
-        if show:
-            self._image_selector.add_graphic(self._summary_image.graphic)
-        else:
-            self._image_selector.remove_graphic(self._summary_image.graphic)
+        graphic = self._summary_image.graphic
+        attached = graphic in self._image_selector.graphics
+        if show and not attached:
+            self._image_selector.add_graphic(graphic)
+        elif not show and attached:
+            self._image_selector.remove_graphic(graphic)
 
     def _drawing(self) -> bool:
         return (
@@ -545,7 +575,7 @@ class SingleSessionDemixingVis:
             vertex_size=8,
         )
         selector.add_event_handler(partial(self._roi_changed, selector), "selection")
-        self._rois[selector] = {"color": color, "label": -1}
+        self._rois[selector] = {"color": color}
         self._active_roi = selector
         self._clear_component()
 
@@ -614,30 +644,21 @@ class SingleSessionDemixingVis:
     def _clear_traces(self):
         self._traces.clear()
 
-    def _masks_and_labels(self) -> tuple[np.ndarray, np.ndarray]:
+    @property
+    def roi_masks(self) -> np.ndarray:
+        """The drawn ROIs as a binary mask stack of shape (fov dim1, fov dim2, num_rois)"""
         shape = tuple(self._shape[1:3])
-        masks, labels = [], []
-        for selector, roi in self._rois.items():
+        masks = []
+        for selector in self._rois:
             indices = selector.get_selected_indices(self._base_graphic)
             if indices.shape[0] == 0:
                 continue
             mask = np.zeros(shape, dtype=np.float32)
             mask[indices[:, 1], indices[:, 0]] = 1.0
             masks.append(mask)
-            labels.append(roi["label"])
         if not masks:
-            return np.zeros((*shape, 0), dtype=np.float32), np.zeros(0, dtype=np.int64)
-        return np.stack(masks, axis=-1), np.array(labels, dtype=np.int64)
-
-    @property
-    def roi_masks(self) -> np.ndarray:
-        """The drawn ROIs as a binary mask stack of shape (fov dim1, fov dim2, num_rois)"""
-        return self._masks_and_labels()[0]
-
-    @property
-    def roi_labels(self) -> np.ndarray:
-        """Class label index per drawn ROI (-1 = unlabeled), aligned with roi_masks"""
-        return self._masks_and_labels()[1]
+            return np.zeros((*shape, 0), dtype=np.float32)
+        return np.stack(masks, axis=-1)
 
     def _append_to_signals(self, masks: np.ndarray) -> np.ndarray:
         if self._ac_array is None:
@@ -656,23 +677,18 @@ class SingleSessionDemixingVis:
     def export_rois(self, path: str) -> str:
         """
         Save the drawn ROIs to an .npz file: 'spatial_footprints' is the
-        (fov dim1, fov dim2, num_rois) mask stack for a custom demixing initialization,
-        'class_labels' / 'label_names' carry the labels, and, when demixing results are
-        loaded, 'spatial_footprints_combined' appends the drawn ROIs to the existing
-        signals so SignalDemixer.initialize_signals(is_custom=True) re-demixes with
-        the drawn ROIs added to the results.
+        (fov dim1, fov dim2, num_rois) mask stack for a custom demixing initialization and,
+        when demixing results are loaded, 'spatial_footprints_combined' appends the drawn
+        ROIs to the existing signals so SignalDemixer.initialize_signals(is_custom=True)
+        re-demixes with the drawn ROIs added to the results.
         """
-        masks, labels = self._masks_and_labels()
+        masks = self.roi_masks
         if masks.shape[-1] == 0:
             raise ValueError("no rois have been drawn")
         path = str(path)
         if not path.endswith(".npz"):
             path += ".npz"
-        data = dict(
-            spatial_footprints=masks,
-            class_labels=labels,
-            label_names=np.array(self._label_names),
-        )
+        data = dict(spatial_footprints=masks)
         if self._ac_array is not None:
             data["spatial_footprints_combined"] = self._append_to_signals(masks)
         np.savez_compressed(path, **data)
@@ -696,89 +712,21 @@ class SingleSessionDemixingVis:
         except (OSError, ValueError) as e:
             self._status = f"export failed: {e}"
 
-    @property
-    def label_names(self) -> tuple:
-        return self._label_names
-
-    def _set_label_names(
-        self, names: Sequence[str], colors: Sequence[tuple] | None = None
-    ):
-        """Replace the label set, keeping (or extending from the palette) one color per label."""
-        names = tuple(names)
-        colors = list(colors if colors is not None else self._label_colors)[
-            : len(names)
-        ]
-        colors += [
-            _LABEL_COLORS[i % len(_LABEL_COLORS)]
-            for i in range(len(colors), len(names))
-        ]
-        self._label_names, self._label_colors = names, colors
-
-    def add_label(self, name: str):
-        """Add a new class name to the label set"""
-        if name and name not in self._label_names:
-            self._set_label_names((*self._label_names, name))
-
-    def label_selected(self, label_index: int):
-        """Give the selected drawn ROI a class label; -1 clears it"""
-        if self._active_roi is not None:
-            self._rois[self._active_roi]["label"] = int(label_index)
-
     def _handle_keys(self):
         if imgui.get_io().want_text_input:
             return
-        if imgui.is_key_pressed(imgui.Key._0, False):
-            self.label_selected(-1)
         if (
             imgui.is_key_pressed(imgui.Key.delete, False)
             and self._active_roi is not None
         ):
             self._delete_roi(self._active_roi)
-        for i, key in enumerate(_LABEL_KEYS[: len(self._label_names)]):
-            if imgui.is_key_pressed(key, False):
-                self.label_selected(i)
 
     def _selection_status(self) -> str:
         if self._active_component is not None:
             return f"signal {self._active_component} selected"
         if self._active_roi in self._rois:
-            label = self._rois[self._active_roi]["label"]
-            name = (
-                self._label_names[label]
-                if 0 <= label < len(self._label_names)
-                else "unlabeled"
-            )
-            return f"roi {list(self._rois).index(self._active_roi)} selected ({name})"
+            return f"roi {list(self._rois).index(self._active_roi)} selected"
         return "double-click a mask or roi to see its trace"
-
-    def _draw_label_row(self):
-        imgui.text_disabled("labels")
-        active = self._rois.get(self._active_roi)
-        for i, name in enumerate(self._label_names):
-            r, g, b = self._label_colors[i]
-            alpha = 1.0 if active is not None and active["label"] == i else 0.55
-            imgui.push_style_color(imgui.Col_.button, to_vec4((r, g, b, alpha)))
-            if imgui.button(f"{name}##label{i}", imgui.ImVec2(-1, 0)):
-                self.label_selected(i)
-            imgui.pop_style_color()
-            if imgui.is_item_hovered():
-                imgui.set_tooltip(f"label the selected roi ({i + 1}; 0 clears)")
-        imgui.set_next_item_width(-1)
-        entered, self._new_label = imgui.input_text_with_hint(
-            "##new-label",
-            "new label",
-            self._new_label,
-            imgui.InputTextFlags_.enter_returns_true,
-        )
-        if (
-            imgui.button("add label", imgui.ImVec2(-1, 0)) or entered
-        ) and self._new_label.strip():
-            self.add_label(self._new_label.strip())
-            self._new_label = ""
-        imgui.separator()
-        imgui.push_text_wrap_pos(0)
-        imgui.text_disabled(self._selection_status())
-        imgui.pop_text_wrap_pos()
 
     def _draw_roi_panel(self):
         """A narrow, vertically-stacked sidebar (docked at "right") so it stays out of the
@@ -789,9 +737,20 @@ class SingleSessionDemixingVis:
         drawing = self._drawing()
 
         if self._image_selector is not None:
+            changed, show = imgui.checkbox("masks", self._show_masks)
+            if changed:
+                self._show_masks = show
+                self._refresh_masks()
+            imgui.same_line()
             changed, show = imgui.checkbox("contours", self._show_contours)
             if changed:
                 self._set_contours(show)
+            imgui.set_next_item_width(-1)
+            changed, self._mask_opacity = imgui.slider_float(
+                "##mask-opacity", self._mask_opacity, 0.05, 1.0, "opacity %.2f"
+            )
+            if changed and self._show_masks:
+                self._refresh_masks()
 
         imgui.begin_disabled(drawing)
         if imgui.button("draw roi", imgui.ImVec2(-1, 0)):
@@ -834,7 +793,9 @@ class SingleSessionDemixingVis:
         imgui.pop_text_wrap_pos()
 
         imgui.separator()
-        self._draw_label_row()
+        imgui.push_text_wrap_pos(0)
+        imgui.text_disabled(self._selection_status())
+        imgui.pop_text_wrap_pos()
 
         if (
             self._preview_stale

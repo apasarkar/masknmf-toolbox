@@ -61,9 +61,10 @@ def main():
             open_.append(CompressionVis(moco, pmd, frame_timings=timings, device=device))
 
     if args.viz in ("demixing", "all"):
-        res = masknmf.DemixingResults.from_hdf5(run / f"{args.channel}_{args.which}_demixing.hdf5", device=device)
+        demix_path = run / f"{args.channel}_{args.which}_demixing.hdf5"
+        res = masknmf.DemixingResults.from_hdf5(demix_path, device=device)
         demix_timings = np.arange(res.shape[0]) / args.fps
-        open_.append(SingleSessionDemixingVis(res, frame_timings=demix_timings, device=device))
+        open_.append(SingleSessionDemixingVis(res, frame_timings=demix_timings, device=device, source_path=demix_path))
 
     if args.viz == "signals":
         pmd = masknmf.PMDArray.from_hdf5(run / f"pmd_{args.channel}.hdf5", device=device)
