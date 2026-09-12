@@ -11,12 +11,18 @@ from masknmf.visualization.imgui.layout import (
     resolve_time_reference,
 )
 from masknmf.visualization.imgui.trace_plot import TracePlot
+from masknmf.visualization.imgui.table import RoiOrder, draw_range_filter, draw_roi_table
+from masknmf.visualization.imgui.panels import draw_keybinds_popup
 from masknmf.visualization.imgui.theme import Theme, THEME, to_vec4, em, card, section, popup
 
 __all__ = [
     "CheckboxWindow",
     "HANDLE_THICKNESS",
     "TracePlot",
+    "RoiOrder",
+    "draw_range_filter",
+    "draw_roi_table",
+    "draw_keybinds_popup",
     "draw_edge_handle",
     "Theme",
     "THEME",

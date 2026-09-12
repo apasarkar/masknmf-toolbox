@@ -12,37 +12,47 @@ from masknmf.visualization.imgui.theme import em
 _CURSOR_COLOR = imgui.ImVec4(1.0, 1.0, 1.0, 0.7)
 
 
-def _line_colormap(rgb) -> int:
-    """A single-color colormap for one line; this implot build has no per-line color argument."""
-    key = tuple(int(round(float(v) * 255)) for v in rgb)
-    name = "masknmf_line_{}_{}_{}".format(*key)
-    index = implot.get_colormap_index(name)
-    if index < 0:
-        color = (key[0] / 255.0, key[1] / 255.0, key[2] / 255.0, 1.0)
-        index = implot.add_colormap(name, np.array([color, color], np.float32))
-    return int(index)
-
-
 class TracePlot:
     """
     One panel per name, stacked with a linked time axis. A panel holds lines of
     ``(label, trace, rgb)`` with rgb in 0-1 or None for the default color.
     """
 
-    def __init__(self, panels: Sequence[str], num_frames: int, frame_timings=None, link_y: bool = False):
+    def __init__(
+        self,
+        panels: Sequence[str],
+        num_frames: int,
+        frame_timings=None,
+        link_y: bool = False,
+        autofit: bool = True,
+    ):
+        """
+        Args:
+            autofit (bool): refit the axes whenever the lines change. False keeps the zoom the user
+                set; the first data and "fit now" still fit. Toggled from the right-click popup too.
+        """
         self._panels = tuple(panels)
         self._lines = {name: [] for name in self._panels}
         self._frames = np.arange(num_frames, dtype=np.float32)
+        # timings kept as given so frame lookups agree with the NDWidget's own searchsorted mapping
+        self._timings = None
         self._time = None
         if frame_timings is not None and not np.array_equal(frame_timings, self._frames):
-            self._time = np.asarray(frame_timings, np.float32)
+            self._timings = np.asarray(frame_timings)
+            if self._timings.shape != self._frames.shape:
+                raise ValueError(f"{len(self._timings)} frame timings for {num_frames} frames")
+            self._time = self._timings.astype(np.float32)
         self._link_y = link_y
         self._use_time = False
-        self._autofit = True
-        self._fit = True
+        self._autofit = autofit
+        self._fit = False
+        self._fitted = False  # the axes have been fit to data at least once
+        self._force_fit = False  # one-shot "fit now", requested from the right-click settings popup
+        self._popup_id = f"##trace_settings_{id(self)}"
         self._window = None
-        self._on_frame: Optional[Callable] = None
-        self.frame = 0
+        self._frame = 0
+        # called with the frame the playhead was dragged to
+        self.on_frame: Optional[Callable] = None
         # called with (panel, line index) when a panel is double-clicked
         self.on_pick: Optional[Callable] = None
         self._marks: list = []  # (label, frames, rgb): vertical lines in every panel
@@ -53,12 +63,23 @@ class TracePlot:
         return self._panels
 
     @property
+    def frame(self) -> int:
+        return self._frame
+
+    @frame.setter
+    def frame(self, value: int):
+        self._frame = int(np.clip(value, 0, len(self._frames) - 1))
+
+    @property
     def x(self) -> np.ndarray:
         """Sample positions on the axis currently shown: frames, or timings when selected."""
         return self._time if self._use_time and self._time is not None else self._frames
 
-    def set(self, panel: str, lines: Sequence[tuple]):
-        """Replace a panel's lines; the axes refit on the next draw."""
+    def set(self, panel: str, lines: Sequence[tuple], fit: Optional[bool] = None):
+        """
+        Replace a panel's lines. The axes refit on the next draw when ``fit`` is True, the first
+        time the plot gets data, or when autofit is on; otherwise the current zoom stays.
+        """
         stored = []
         for label, trace, rgb in lines:
             trace = np.ascontiguousarray(trace, np.float32)
@@ -66,7 +87,8 @@ class TracePlot:
                 raise ValueError(f"trace has {trace.shape[0]} samples, the plot has {len(self._frames)} frames")
             stored.append((str(label), trace, rgb))
         self._lines[panel] = stored
-        self._fit = True
+        if fit if fit is not None else (not self._fitted or self._autofit):
+            self._fit = True
 
     def clear(self):
         for name in self._panels:
@@ -90,74 +112,91 @@ class TracePlot:
         self._marks.clear()
         self._spans.clear()
 
-    def dock(self, figure, size: int = 320, title: str = "traces", on_frame: Optional[Callable] = None) -> ImguiWindow:
-        """A resizable window along the top of ``figure``; ``on_frame`` gets the frame the playhead is dragged to."""
-        self._on_frame = on_frame
+    def dock(self, figure, size: int = 320, title: str = "traces") -> ImguiWindow:
+        """A resizable window along the top of ``figure``."""
         self._window = ImguiWindow(update_call=self._draw_dock)
         figure.add_imgui_window(self._window, location="top", size=size, title=title)
         return self._window
 
     def link(self, indices, dim: str = "time"):
         """Follow and drive a fastplotlib ReferenceIndex (``ndw.indices``) on ``dim``, in its reference units."""
-        ref = self._time if self._time is not None else self._frames
+        ref = self._timings if self._timings is not None else self._frames
 
         def follow(current):
-            self.frame = int(np.clip(np.searchsorted(ref, current[dim]), 0, len(ref) - 1))
+            self.frame = np.searchsorted(ref, current[dim])
 
         indices.add_event_handler(follow)
-        self._on_frame = lambda k: indices.set_dim_index(dim, float(ref[k]))
+        # cancel_awaiting: a drag only fetches the latest frame, like the widget's own slider
+        self.on_frame = lambda k: indices.set_dim_index(dim, float(ref[k]), cancel_awaiting=True)
 
     def _draw_dock(self):
         moved = self.draw(reserve=HANDLE_THICKNESS)
-        imgui.dummy(imgui.ImVec2(1, HANDLE_THICKNESS))
         draw_edge_handle(self._window)
-        if moved is not None and self._on_frame is not None:
-            self._on_frame(moved)
+        if moved is not None and self.on_frame is not None:
+            self.on_frame(moved)
 
     def draw(self, reserve: float = 0.0) -> Optional[int]:
-        """Options row and the stacked panels filling the window but ``reserve`` px; returns the frame when the playhead was dragged."""
+        """The stacked panels filling the window but ``reserve`` px; returns the frame when the
+        playhead was dragged. Right-click any panel for autofit/fit/x-axis settings."""
         if implot.get_current_context() is None:
             implot.create_context()
-        fit = self._draw_options()
+        fit = self._resolve_fit()
         height = max(imgui.get_content_region_avail().y - reserve, em(4))
         flags = implot.SubplotFlags_.link_all_x
         if self._link_y:
             flags |= implot.SubplotFlags_.link_all_y
         if not implot.begin_subplots("##traces", len(self._panels), 1, imgui.ImVec2(-1, height), flags):
             return None
+        shared = self._y_limits(self._panels) if fit and self._link_y else None
         moved = None
         try:
             for i, name in enumerate(self._panels):
-                got = self._draw_panel(name, fit, last=i == len(self._panels) - 1)
+                limits = None
+                if fit:
+                    limits = shared if self._link_y else self._y_limits((name,))
+                got = self._draw_panel(name, fit, limits, last=i == len(self._panels) - 1)
                 moved = got if got is not None else moved
         finally:
             implot.end_subplots()
+        self._draw_settings_popup()
         return moved
 
-    def _draw_options(self) -> bool:
+    def _resolve_fit(self) -> bool:
+        force, self._force_fit = self._force_fit, False
+        fit = force or self._fit
+        self._fit = False
+        if fit and any(self._lines.values()):
+            self._fitted = True
+        return fit
+
+    def _draw_settings_popup(self):
+        """Right-click context menu (opened from a panel in ``_draw_panel``) for autofit/fit/x-axis."""
+        if not imgui.begin_popup(self._popup_id):
+            return
+        imgui.text_disabled(f"frame {self.frame}")
+        imgui.separator()
         changed, self._autofit = imgui.checkbox("autofit", self._autofit)
-        force = changed and self._autofit
-        imgui.same_line(0, em(0.4))
-        force |= imgui.button("fit")
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("refit the axes whenever the lines change; off keeps your zoom")
+        if changed and self._autofit:
+            self._force_fit = True
+        if imgui.button("fit now"):
+            self._force_fit = True
         if self._time is not None:
             imgui.same_line(0, em(0.6))
             imgui.set_next_item_width(em(6))
             changed, index = imgui.combo("##x_unit", int(self._use_time), ["frames", "time"])
             if changed:
                 self._use_time = bool(index)
-                force = True
-        imgui.same_line(0, em(0.8))
-        imgui.text_disabled(f"frame {self.frame}")
-        fit = force or (self._fit and self._autofit)
-        self._fit = False
-        return fit
+                self._force_fit = True
+        imgui.end_popup()
 
     @staticmethod
     def _spec(rgb, fill: bool = False, alpha: float = 1.0) -> implot.Spec:
         """Item styling for one plot call: a line or fill color when given, else implot's next default."""
         spec = implot.Spec()
         if rgb is not None:
-            color = imgui.ImVec4(*rgb[:3], 1.0)
+            color = imgui.ImVec4(float(rgb[0]), float(rgb[1]), float(rgb[2]), 1.0)
             if fill:
                 spec.fill_color = color
             else:
@@ -188,9 +227,8 @@ class TracePlot:
         i = int(np.clip(np.searchsorted(xs, mouse.x), 0, len(xs) - 1))
         return int(np.argmin([abs(float(trace[i]) - mouse.y) for _, trace, _ in lines]))
 
-    def _y_limits(self, name: str) -> Optional[tuple]:
-        """Padded data range of a panel, or of every panel when y is linked."""
-        panels = self._panels if self._link_y else (name,)
+    def _y_limits(self, panels) -> Optional[tuple]:
+        """Padded data range over the lines of ``panels``."""
         traces = [trace for p in panels for _, trace, _ in self._lines[p]]
         if not traces:
             return None
@@ -199,7 +237,7 @@ class TracePlot:
         pad = (hi - lo) * 0.05 or 1.0
         return lo - pad, hi + pad
 
-    def _draw_panel(self, name: str, fit: bool, last: bool) -> Optional[int]:
+    def _draw_panel(self, name: str, fit: bool, limits: Optional[tuple], last: bool) -> Optional[int]:
         lines = self._lines[name]
         flags = implot.Flags_.no_title
         # a legend only where a label adds something the panel name does not
@@ -217,22 +255,20 @@ class TracePlot:
             xs = self.x
             if fit:
                 implot.setup_axis_limits(implot.ImAxis_.x1, float(xs[0]), float(xs[-1]), implot.Cond_.always)
-                limits = self._y_limits(name)
-                if limits is not None:
-                    implot.setup_axis_limits(implot.ImAxis_.y1, *limits, implot.Cond_.always)
+            if limits is not None:
+                implot.setup_axis_limits(implot.ImAxis_.y1, *limits, implot.Cond_.always)
             self._draw_spans(xs)
             for label, trace, rgb in lines:
-                if rgb is not None:
-                    implot.push_colormap(_line_colormap(rgb))
-                implot.plot_line(label, xs, trace)
-                if rgb is not None:
-                    implot.pop_colormap()
+                implot.plot_line(label, xs, trace, self._spec(rgb))
             self._draw_marks(xs)
-            if self.on_pick is not None and lines and implot.is_plot_hovered() and imgui.is_mouse_double_clicked(0):
-                self.on_pick(name, self._nearest_line(lines, xs))
+            if implot.is_plot_hovered():
+                if self.on_pick is not None and lines and imgui.is_mouse_double_clicked(0):
+                    self.on_pick(name, self._nearest_line(lines, xs))
+                if imgui.is_mouse_clicked(1):
+                    imgui.open_popup(self._popup_id)
             moved, at = implot.drag_line_x(0, float(xs[self.frame]), _CURSOR_COLOR, 1.5)[:2]
             if moved:
-                self.frame = int(np.clip(np.searchsorted(xs, at), 0, len(xs) - 1))
+                self.frame = np.searchsorted(xs, at)
                 return self.frame
         finally:
             implot.end_plot()

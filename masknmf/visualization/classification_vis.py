@@ -8,6 +8,7 @@ import fastplotlib as fpl
 from imgui_bundle import imgui, icons_fontawesome_6 as fa, portable_file_dialogs as pfd
 
 from masknmf.visualization.imgui.movie_player import MoviePlayer
+from masknmf.visualization.imgui.panels import draw_keybinds_popup
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, close_button
 from masknmf.demixing.labels import (
@@ -1471,24 +1472,7 @@ class ClassificationVis:
     )
 
     def _draw_keybinds_popup(self):
-        if not self._keybinds_open:
-            return
-        opened, self._keybinds_open = popup("Keybinds", self._keybinds_open)
-        if opened:
-            flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.borders_inner_h
-            if imgui.begin_table("##keybinds-table", 2, flags):
-                imgui.table_setup_column("key", imgui.TableColumnFlags_.width_fixed, em(10))
-                imgui.table_setup_column("action")
-                for key, action in self._KEYBINDS:
-                    imgui.table_next_row()
-                    imgui.table_next_column()
-                    imgui.text_colored(to_vec4(THEME.warn), key)
-                    imgui.table_next_column()
-                    imgui.text(action)
-                imgui.end_table()
-            if close_button():
-                self._keybinds_open = False
-        imgui.end()
+        self._keybinds_open = draw_keybinds_popup(self._KEYBINDS, self._keybinds_open)
 
     def _draw_table(self):
         names = ("all", "unlabeled", *self._label_names)

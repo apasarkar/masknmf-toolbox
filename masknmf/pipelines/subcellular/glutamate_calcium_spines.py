@@ -220,6 +220,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             reference_input = calcium
         else:
             reference_input = glu
+        np.save(os.path.join(final_output_folder, "retained_frames.npy"),
+                np.arange(exclude_initial_frames, exclude_initial_frames + reference_input.shape[0]))
 
         pre_moco_strategy = masknmf.CompressStrategy(block_sizes=self.compress_config.block_sizes,
                                                max_components=self.compress_config.max_components,
