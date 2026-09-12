@@ -1,5 +1,6 @@
 import os
 import threading
+from dataclasses import replace
 from typing import *
 import numpy as np
 import fastplotlib as fpl
@@ -39,6 +40,17 @@ _ROI_COLORS = (
 )
 _NPZ_FILTERS = ["NumPy archive", "*.npz", "All files", "*"]
 _SIGNAL_COLUMNS = ("id", "area", "peak", "del")
+# signals selected together, in order of mutual contrast on the dark plot; no red, a mask marked for
+# deletion is red
+_GROUP_COLORS = (
+    (1.00, 0.55, 0.10),
+    (0.25, 0.85, 0.35),
+    (0.95, 0.35, 0.90),
+    (0.35, 0.80, 1.00),
+    (1.00, 0.95, 0.35),
+    (0.65, 0.50, 1.00),
+    (1.00, 1.00, 1.00),
+)
 _KEYBINDS = (
     ("up / down", "previous / next signal in the table (shift: by 10)"),
     ("ctrl + click", "toggle a signal in the group, in the image or the table"),
@@ -88,9 +100,10 @@ class SingleSessionDemixingVis:
         nmf_config: NMFConfig | None = None,
     ):
         self._source_path = None if source_path is None else str(source_path)
-        self._nmf_config = NMFConfig(min_brightness=None) if nmf_config is None else nmf_config
-        mb = self._nmf_config.min_brightness
-        self._min_brightness_cache = 1.0 if mb is None else mb
+        base = NMFConfig() if nmf_config is None else nmf_config
+        self._min_brightness_cache = 1.0 if base.min_brightness is None else base.min_brightness
+        # "filter dim rois" starts off: a hand-drawn roi that never gets bright would vanish from the pass
+        self._nmf_config = replace(base, min_brightness=None)
         self._worker = None
         self._pending = None
         if device == "cpu":
@@ -274,6 +287,7 @@ class SingleSessionDemixingVis:
 
         self._image_selector = None
         self._show_contours = show_contours
+        self._contour_opacity = 0.9
         if self._ac_array is not None:
             self._make_selectors()
 
@@ -313,7 +327,7 @@ class SingleSessionDemixingVis:
                 self._mask_opacity,
                 self._active_component,
                 self._marked,
-                self._group,
+                self._group_colors(),
             )
             if self._show_masks
             else None
@@ -373,7 +387,7 @@ class SingleSessionDemixingVis:
             lut_wrap="repeat",
             selection_options={"pixels": self._ac_array.contours},
             options_color="w",
-            options_alpha=0.1,
+            options_alpha=self._contour_opacity,
             alpha=0.7,
         )
         self._show_contours = False
@@ -523,6 +537,12 @@ class SingleSessionDemixingVis:
             self._active_component = None
             self._sync_highlight()
 
+    def _group_colors(self) -> dict:
+        """One contrasting color per grouped signal, shared by its trace, mask and table row."""
+        if len(self._group) < 2:
+            return {}
+        return {k: _GROUP_COLORS[i % len(_GROUP_COLORS)] for i, k in enumerate(self._group)}
+
     def _highlighted(self) -> list:
         picks = list(self._group)
         if self._active_component is not None and self._active_component not in picks:
@@ -545,8 +565,8 @@ class SingleSessionDemixingVis:
             self._selected_signals = list(self._group)
             averages = results.pmd_roi_averages
             lines = [
-                (f"signal {k}", averages[k].cpu().numpy(), self._footprints.color(k))
-                for k in self._selected_signals
+                (f"signal {k}", averages[k].cpu().numpy(), rgb)
+                for k, rgb in self._group_colors().items()
             ]
         elif self._active_component is not None:
             k = self._active_component
@@ -807,7 +827,7 @@ class SingleSessionDemixingVis:
         self._poll_worker()
         self._handle_keys()
         if imgui.begin_tab_bar("##side"):
-            if imgui.begin_tab_item("ROI Tools")[0]:
+            if imgui.begin_tab_item("Curation")[0]:
                 self._draw_roi_tools()
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Signals")[0]:
@@ -844,6 +864,7 @@ class SingleSessionDemixingVis:
         footer = imgui.get_frame_height_with_spacing() * 2.5
         if imgui.begin_child("##signal_table", imgui.ImVec2(0, -footer)):
             formatters = {name: partial(self._format_cell, name) for name in _SIGNAL_COLUMNS[1:]}
+            colors = self._group_colors()
             self._scroll_to_current = draw_roi_table(
                 self._order,
                 _SIGNAL_COLUMNS,
@@ -854,7 +875,7 @@ class SingleSessionDemixingVis:
                 is_grouped=self._group.__contains__,
                 on_ctrl_select=self.group_toggle,
                 on_shift_select=self.group_extend_to,
-                row_color=self._footprints.color,
+                row_color=lambda k: colors.get(k, self._footprints.color(k)),
             )
         imgui.end_child()
         imgui.separator()
@@ -868,6 +889,42 @@ class SingleSessionDemixingVis:
         imgui.text_disabled(self._selection_status())
         imgui.pop_text_wrap_pos()
 
+    def _draw_overlay_controls(self):
+        """Two rows: a toggle and its opacity slider, for the masks and for the contours."""
+        if not imgui.begin_table("##overlays", 2):
+            return
+        toggle_width = imgui.calc_text_size("contours").x + imgui.get_frame_height() + em(0.8)
+        imgui.table_setup_column("##toggle", imgui.TableColumnFlags_.width_fixed, toggle_width)
+        imgui.table_setup_column("##opacity", imgui.TableColumnFlags_.width_stretch)
+
+        imgui.table_next_row()
+        imgui.table_next_column()
+        changed, show = imgui.checkbox("masks", self._show_masks)
+        if changed:
+            self._show_masks = show
+            self._refresh_masks()
+        imgui.table_next_column()
+        imgui.set_next_item_width(-1)
+        changed, self._mask_opacity = imgui.slider_float(
+            "##mask-opacity", self._mask_opacity, 0.05, 1.0, "opacity %.2f"
+        )
+        if changed and self._show_masks:
+            self._refresh_masks()
+
+        imgui.table_next_row()
+        imgui.table_next_column()
+        changed, show = imgui.checkbox("contours", self._show_contours)
+        if changed:
+            self._set_contours(show)
+        imgui.table_next_column()
+        imgui.set_next_item_width(-1)
+        changed, self._contour_opacity = imgui.slider_float(
+            "##contour-opacity", self._contour_opacity, 0.05, 1.0, "opacity %.2f"
+        )
+        if changed:
+            self._image_selector.options_alpha = self._contour_opacity
+        imgui.end_table()
+
     def _draw_roi_tools(self):
         drawing = self._drawing()
 
@@ -879,20 +936,7 @@ class SingleSessionDemixingVis:
         imgui.separator()
 
         if self._image_selector is not None:
-            changed, show = imgui.checkbox("masks", self._show_masks)
-            if changed:
-                self._show_masks = show
-                self._refresh_masks()
-            imgui.same_line()
-            changed, show = imgui.checkbox("contours", self._show_contours)
-            if changed:
-                self._set_contours(show)
-            imgui.set_next_item_width(-1)
-            changed, self._mask_opacity = imgui.slider_float(
-                "##mask-opacity", self._mask_opacity, 0.05, 1.0, "opacity %.2f"
-            )
-            if changed and self._show_masks:
-                self._refresh_masks()
+            self._draw_overlay_controls()
 
         imgui.begin_disabled(drawing)
         if imgui.button("Add ROI", imgui.ImVec2(-1, 0)):

@@ -2,7 +2,7 @@
 
 import colorsys
 from dataclasses import dataclass
-from typing import Iterable, Optional, Tuple
+from typing import Iterable, Mapping, Optional, Tuple
 
 import numpy as np
 import torch
@@ -120,13 +120,14 @@ class FootprintSet:
         opacity: float,
         selected: Optional[int] = None,
         marked: Iterable[int] = (),
-        grouped: Iterable[int] = (),
+        grouped: Optional[Mapping[int, Tuple[float, float, float]]] = None,
     ) -> np.ndarray:
         """
-        (ny, nx, 4) uint8 overlay; ``grouped`` and then ``selected`` are filled at SELECTED_ALPHA
-        with a white rim, and ``marked`` footprints are drawn in MARKED_COLOR.
+        (ny, nx, 4) uint8 overlay; ``grouped`` (index -> rgb) and then ``selected`` are filled at
+        SELECTED_ALPHA with a white rim, and ``marked`` footprints are drawn in MARKED_COLOR.
         """
         marked = set(marked)
+        grouped = dict(grouped or {})
         comps = [
             (ypix, xpix, lam, MARKED_COLOR if k in marked else self.color(k), opacity)
             for k, (ypix, xpix, lam) in enumerate(self.footprints)
@@ -135,6 +136,7 @@ class FootprintSet:
         if selected is not None:
             picks.append(selected)
         highlighted = [
-            (*self.footprints[k][:2], MARKED_COLOR if k in marked else self.color(k)) for k in picks
+            (*self.footprints[k][:2], MARKED_COLOR if k in marked else grouped.get(k, self.color(k)))
+            for k in picks
         ]
         return feathered_rgba(shape, comps, highlighted)
