@@ -2210,21 +2210,33 @@ class SignalDemixer:
             results: DemixingResults,
             device: str = "cpu",
             frame_batch_size: int = 5000,
+            drop: Optional[Sequence[int]] = None,
     ) -> "SignalDemixer":
         """
         Resume demixing from saved results: the signals and fluctuating background become the starting point of the
         next initialization pass, as when a multipass run continues after ``demix``.
+
+        Args:
+            drop (Optional[Sequence[int]]): indices of signals to leave out of the resumed pass
         """
         if results.factorized_bkgd_term1 is not None and results.factorized_bkgd_term2 is not None:
             ring_term = (results.factorized_bkgd_term1, results.factorized_bkgd_term2)
         else:
             ring_term = None
+        a = results.a.coalesce()
+        c = results.c
+        if drop:
+            keep = torch.ones(a.shape[1], dtype=torch.bool, device=a.device)
+            keep[torch.as_tensor(list(drop), dtype=torch.long, device=a.device)] = False
+            keep = torch.nonzero(keep).squeeze(1)
+            a = a.index_select(1, keep).coalesce()
+            c = c[:, keep.to(c.device)]
         return cls(
             results.pmd_array,
             device=device,
             frame_batch_size=frame_batch_size,
-            a=results.a,
-            c=results.c,
+            a=a,
+            c=c,
             factorized_ring_term=ring_term,
         )
 
@@ -2244,6 +2256,12 @@ class SignalDemixer:
         if isinstance(self.state, DemixingState):
             self._state.lock_results_and_continue(self, carry_background=carry_background)
         return self._state.initialize_signals(**kwargs)
+
+    def keep_existing_signals(self, carry_background: bool = False):
+        """Skip initialization: the signals already held go into the next NMF pass as they are."""
+        if isinstance(self.state, DemixingState):
+            self._state.lock_results_and_continue(self, carry_background=carry_background)
+        return self._state.keep_existing_signals()
 
     def demix(self, carry_background: bool = False, **kwargs):
         if isinstance(self.state, InitializingState):
@@ -2578,6 +2596,13 @@ class InitializingState(SignalProcessingState):
         if self.a is not None:
             init_results = append_signals(self.a, self.c, init_results, self.u_sparse, self.v)
         self._init_results = init_results
+
+    def keep_existing_signals(self):
+        """Use the signals passed at construction, with a refit baseline, as the initialization."""
+        if self.a is None:
+            raise ValueError("No existing signals to keep. Run initialize signals instead.")
+        b = regression_update.baseline_update(get_mean_data(self.u_sparse, self.v), self.a, self.c)
+        self._init_results = InitializationResults(self.a, self.a.bool(), self.c, b)
 
     def initialize_signals(
             self,
