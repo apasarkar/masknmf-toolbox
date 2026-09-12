@@ -18,7 +18,19 @@ class TracePlot:
     ``(label, trace, rgb)`` with rgb in 0-1 or None for the default color.
     """
 
-    def __init__(self, panels: Sequence[str], num_frames: int, frame_timings=None, link_y: bool = False):
+    def __init__(
+        self,
+        panels: Sequence[str],
+        num_frames: int,
+        frame_timings=None,
+        link_y: bool = False,
+        autofit: bool = True,
+    ):
+        """
+        Args:
+            autofit (bool): refit the axes whenever the lines change. False keeps the zoom the user
+                set; the first data and "fit now" still fit. Toggled from the right-click popup too.
+        """
         self._panels = tuple(panels)
         self._lines = {name: [] for name in self._panels}
         self._frames = np.arange(num_frames, dtype=np.float32)
@@ -32,8 +44,9 @@ class TracePlot:
             self._time = self._timings.astype(np.float32)
         self._link_y = link_y
         self._use_time = False
-        self._autofit = True
-        self._fit = True
+        self._autofit = autofit
+        self._fit = False
+        self._fitted = False  # the axes have been fit to data at least once
         self._force_fit = False  # one-shot "fit now", requested from the right-click settings popup
         self._popup_id = f"##trace_settings_{id(self)}"
         self._window = None
@@ -62,8 +75,11 @@ class TracePlot:
         """Sample positions on the axis currently shown: frames, or timings when selected."""
         return self._time if self._use_time and self._time is not None else self._frames
 
-    def set(self, panel: str, lines: Sequence[tuple]):
-        """Replace a panel's lines; the axes refit on the next draw."""
+    def set(self, panel: str, lines: Sequence[tuple], fit: Optional[bool] = None):
+        """
+        Replace a panel's lines. The axes refit on the next draw when ``fit`` is True, the first
+        time the plot gets data, or when autofit is on; otherwise the current zoom stays.
+        """
         stored = []
         for label, trace, rgb in lines:
             trace = np.ascontiguousarray(trace, np.float32)
@@ -71,7 +87,8 @@ class TracePlot:
                 raise ValueError(f"trace has {trace.shape[0]} samples, the plot has {len(self._frames)} frames")
             stored.append((str(label), trace, rgb))
         self._lines[panel] = stored
-        self._fit = True
+        if fit if fit is not None else (not self._fitted or self._autofit):
+            self._fit = True
 
     def clear(self):
         for name in self._panels:
@@ -146,8 +163,10 @@ class TracePlot:
 
     def _resolve_fit(self) -> bool:
         force, self._force_fit = self._force_fit, False
-        fit = force or (self._fit and self._autofit)
+        fit = force or self._fit
         self._fit = False
+        if fit and any(self._lines.values()):
+            self._fitted = True
         return fit
 
     def _draw_settings_popup(self):
@@ -157,6 +176,8 @@ class TracePlot:
         imgui.text_disabled(f"frame {self.frame}")
         imgui.separator()
         changed, self._autofit = imgui.checkbox("autofit", self._autofit)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("refit the axes whenever the lines change; off keeps your zoom")
         if changed and self._autofit:
             self._force_fit = True
         if imgui.button("fit now"):
