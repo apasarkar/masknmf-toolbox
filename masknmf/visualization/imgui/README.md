@@ -8,6 +8,8 @@ Reusable GUI-layer building blocks shared by the interactive viewers
 - `widgets.py` — imgui `EdgeWindow` panels. `CheckboxWindow` (was `ROIManager` in `interactive_guis.py`).
 - `picking.py` — data-space picking. `component_at_pixel` (was duplicated as `CurationVis._neuron_at` and `MultiSessionDemixingVis.neuron_selection`), `contours_to_bbox` / `zoom_to_bbox` (from `multisession_vis.py`).
 - `layout.py` — figure-level helpers. `resolve_time_reference` (frame_timings/ref_range block that was triplicated across curation/demixing/motion), `is_notebook_canvas` (canvas-class check in `show()` dispatch) and `draw_edge_handle` (resize/collapse handle for top/left edge windows, which fastplotlib only has for bottom/right).
+- `table.py` — `RoiOrder` (filter / sort / cursor over per-item columns) and `draw_roi_table` (clipped sortable table with ctrl / shift multi-select callbacks), `draw_range_filter`.
+- `panels.py` — `draw_keybinds_popup`: the (key, action) reference window.
 - `trace_plot.py` — `TracePlot`: stacked implot panels docked on top of a figure, playhead linked to the NDWidget time index, stimulus marks/spans, double-click pick.
 - `movie_player.py` — `MoviePlayer`: imgui transport bar over a lazy (T, H, W) array.
 - `theme.py` — palette and card/section/popup helpers shared by the imgui panels.
@@ -22,9 +24,6 @@ move to a sibling `visualization/common/`.
   (`add_rectangle` / `resize_rect` / `end_resize`, the per-graphic selector `OrderedDict`,
   `rect_selector_kwargs`): a self-contained "draw one rect, mirror it across synced
   subplots, fire a callback on release" widget. Biggest remaining extraction.
-- **panels.py** — imgui draw-callback side panels registered via
-  `figure.add_imgui_window(...)`. `CurationVis._draw_panel` (counts + action buttons) is
-  the only instance so far; generalize once a second GUI needs one.
 - **selection.py** — the `ImageHighlightSelector` wiring repeated in curation /
   multisession / demixing (`lut="tab10"`, `lut_wrap="repeat"`, contour pixel options,
   white options color): a `make_contour_selector(contours, **overrides)` factory, plus the

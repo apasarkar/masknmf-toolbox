@@ -1,6 +1,5 @@
 import os
 import threading
-import time
 from typing import *
 import numpy as np
 import fastplotlib as fpl
@@ -15,12 +14,17 @@ from masknmf.utils import display
 from functools import partial
 from fastplotlib.widgets.nd_widget._index import ReferenceIndex
 from masknmf.visualization.imgui import (
+    RoiOrder,
     TracePlot,
-    resolve_time_reference,
     component_at_pixel,
+    draw_keybinds_popup,
+    draw_range_filter,
+    draw_roi_table,
+    em,
+    resolve_time_reference,
 )
 from masknmf.visualization.rois import FootprintSet
-from masknmf.demixing import add_signals, replace_results
+from masknmf.demixing import update_signals, replace_results
 from masknmf.pipelines.configs.demixing_configs import NMFConfig
 
 _ROI_COLORS = (
@@ -34,8 +38,15 @@ _ROI_COLORS = (
     (0.12, 0.47, 0.71),
 )
 _NPZ_FILTERS = ["NumPy archive", "*.npz", "All files", "*"]
-_PREVIEW_DELAY = (
-    0.4  # seconds after the last roi edit before the preview trace recomputes
+_SIGNAL_COLUMNS = ("id", "area", "peak", "del")
+_KEYBINDS = (
+    ("up / down", "previous / next signal in the table (shift: by 10)"),
+    ("ctrl + click", "toggle a signal in the group, in the image or the table"),
+    ("shift + click", "add a signal to the group; in the table, every row up to it"),
+    ("esc", "empty the group"),
+    ("f", "center the view on the selection and keep following it"),
+    ("delete", "remove the selected roi, or mark the selected signal for deletion"),
+    ("k", "show these keybinds"),
 )
 # compressed/background/residual, in that order, so the 3 base lines read apart in the legend
 _BASE_LINE_COLORS = ((0.85, 0.85, 0.85), (0.95, 0.55, 0.15), (0.35, 0.65, 0.95))
@@ -48,8 +59,11 @@ class SingleSessionDemixingVis:
     and export ROIs for a custom SignalDemixer.initialize_signals(is_custom=True) pass.
     Footprints show as feathered masks and/or contours over the summary image.
 
-    With ``source_path`` set, "add to results" runs the drawn ROIs through the demixer's NMF pass
-    (``nmf_config``, the pipeline defaults when None) and rewrites that file with them as ordinary signals.
+    With ``source_path`` set, "Demix" runs the drawn ROIs and the signals marked with "Delete" through the
+    demixer's NMF pass (``nmf_config``, the pipeline defaults when None) and rewrites that file: drawn ROIs
+    become ordinary signals, marked signals are gone.
+
+    The "Signals" tab lists every demixed signal; ctrl / shift select a group whose traces share the plot.
 
     TODO:
     -----
@@ -75,7 +89,8 @@ class SingleSessionDemixingVis:
     ):
         self._source_path = None if source_path is None else str(source_path)
         self._nmf_config = NMFConfig(min_brightness=None) if nmf_config is None else nmf_config
-        self._min_brightness_cache = self._nmf_config.min_brightness or 1.0
+        mb = self._nmf_config.min_brightness
+        self._min_brightness_cache = 1.0 if mb is None else mb
         self._worker = None
         self._pending = None
         if device == "cpu":
@@ -225,6 +240,12 @@ class SingleSessionDemixingVis:
         self._fov_subplot = self._ndw_fov.figure[self._video_panels[5]]
 
         self._active_component = None
+        self._marked = set()  # signal indices "Delete" has marked; removed on the next "Demix"
+        self._group: list = []  # signals selected together; their traces share the plot
+        self._order = None  # RoiOrder over the signals, built with the footprints
+        self._follow = False
+        self._scroll_to_current = False
+        self._keybinds_open = False
         self._show_masks = show_masks
         self._mask_opacity = mask_opacity
         self._footprints = None
@@ -249,9 +270,8 @@ class SingleSessionDemixingVis:
         self._traces.link(self.reference_index)
         self._traces.on_pick = self._select_signal
         self._base_lines = ("compressed", "background", "residual")
-        self._selected_signals = None
+        self._selected_signals = None  # the signal behind each plotted line, when lines are signals
 
-        self._pick_selector = None
         self._image_selector = None
         self._show_contours = show_contours
         if self._ac_array is not None:
@@ -259,8 +279,6 @@ class SingleSessionDemixingVis:
 
         self._rois = OrderedDict()  # PolygonSelector -> {"color": rgb}
         self._active_roi = None
-        self._preview_stale = False
-        self._last_roi_event = 0.0
         self._status = ""
         self._file_dialog = None
 
@@ -274,13 +292,16 @@ class SingleSessionDemixingVis:
         # at "bottom", and a figure only keeps one window per edge (a second add_imgui_window
         # at the same edge replaces it rather than stacking).
         self._ndw_fov.figure.add_imgui_window(
-            self._draw_roi_panel, location="right", size=240, title="ROI Tools"
+            self._draw_side_panel, location="right", size=300, title="Tools"
         )
         if self._has_ac and len(self._footprints):
             self._select_component(0)
 
     def _make_footprints(self):
         self._footprints = FootprintSet.from_sparse(self._ac_array.a, tuple(self._shape[1:3]))
+        peaks = self.demixing_results.c.max(dim=0).values.cpu().numpy()
+        self._order = RoiOrder({"area": self._footprints.areas, "peak": peaks}, len(self._footprints))
+        self._order.set_range_column("area")
         self._refresh_masks()
 
     def _refresh_masks(self):
@@ -288,7 +309,11 @@ class SingleSessionDemixingVis:
             return
         rgba = (
             self._footprints.rgba(
-                tuple(self._shape[1:3]), self._mask_opacity, self._active_component
+                tuple(self._shape[1:3]),
+                self._mask_opacity,
+                self._active_component,
+                self._marked,
+                self._group,
             )
             if self._show_masks
             else None
@@ -342,15 +367,7 @@ class SingleSessionDemixingVis:
         show = self._show_contours
         if self._image_selector is not None:
             self._set_contours(False)
-        # footprint of the signal picked in the trace dock, drawn over the signals movie
-        self._pick_selector = fpl.ImageHighlightSelector(
-            color="w",
-            selection_options={"pixels": self._ac_array.contours},
-            options_alpha=0.0,
-            alpha=0.6,
-        )
-        self._pick_selector.add_graphic(self._ac_graphic.graphic)
-        # all known footprints, toggled from the roi panel; also drives a picked existing component
+        # all known footprints, toggled from the roi panel; also drives the selected and grouped components
         self._image_selector = fpl.ImageHighlightSelector(
             lut="tab10",
             lut_wrap="repeat",
@@ -368,6 +385,8 @@ class SingleSessionDemixingVis:
         self._demixing_results = results
         self._bind_arrays()
         self._clear_rois()
+        self._marked.clear()
+        self._group.clear()
         self._clear_component()
         self._selected_signals = None
         self._clear_traces()
@@ -385,28 +404,33 @@ class SingleSessionDemixingVis:
         self._make_selectors()
         self._make_footprints()
 
-    def add_to_results(self):
+    def demix(self):
         """
-        Run the drawn ROIs through the demixer's NMF pass, appended to the existing signals, and rewrite the
-        results file with the outcome. Runs on a thread; the viewer reloads when it finishes.
+        Run the drawn ROIs (appended) and the marked signals (removed) through the demixer's NMF pass and
+        rewrite the results file with the outcome. Runs on a thread; the viewer reloads when it finishes.
         """
         if self._ac_array is None or self._source_path is None:
-            raise ValueError("adding rois needs demixing results loaded from a file")
+            raise ValueError("editing signals needs demixing results loaded from a file")
         masks = self.roi_masks
-        if masks.shape[-1] == 0:
-            raise ValueError("no rois have been drawn")
+        drop = sorted(self._marked)
+        if masks.shape[-1] == 0 and not drop:
+            raise ValueError("no rois drawn and no signals marked for deletion")
         if self._worker is not None:
             raise RuntimeError("a demixing pass is already running")
-        self._status = f"demixing {masks.shape[-1]} roi(s)..."
+        self._status = f"demixing: +{masks.shape[-1]} roi(s), -{len(drop)} signal(s)..."
         self._worker = threading.Thread(
-            target=self._demix_rois, args=(masks,), daemon=True
+            target=self._demix, args=(masks, drop), daemon=True
         )
         self._worker.start()
 
-    def _demix_rois(self, masks: np.ndarray):
+    def _demix(self, masks: np.ndarray, drop: list):
         try:
-            results = add_signals(
-                self.demixing_results, masks, self._nmf_config, device=self.device
+            results = update_signals(
+                self.demixing_results,
+                masks,
+                drop,
+                self._nmf_config,
+                device=self.device,
             )
             replace_results(self._source_path, results)
             self._pending = results
@@ -419,7 +443,7 @@ class SingleSessionDemixingVis:
         self._worker = None
         pending, self._pending = self._pending, None
         if isinstance(pending, Exception):
-            self._status = f"add to results failed: {pending}"
+            self._status = f"demix failed: {pending}"
             return
         before = self._ac_array.a.shape[1]
         try:
@@ -433,20 +457,19 @@ class SingleSessionDemixingVis:
         )
 
     def _select_signal(self, panel: str, index: int):
-        """Highlight the footprint of the demixed signal whose line was double-clicked."""
-        index -= len(self._base_lines)
-        if self._selected_signals is None or not 0 <= index < len(
-            self._selected_signals
-        ):
-            self._pick_selector.selection = []
-            return
-        self._pick_selector.selection = [int(self._selected_signals[index])]
+        """Select the signal whose line was double-clicked in the trace dock."""
+        if self._selected_signals is not None and 0 <= index < len(self._selected_signals):
+            self._select_component(self._selected_signals[index])
 
     def _click_update(self, ev: pygfx.PointerEvent):
-        """Priority: a drawn roi, then an existing component, else clear the traces."""
+        """
+        Priority: a drawn roi, then an existing component, else clear the selection.
+        ctrl / shift on a component grow the group instead of replacing the selection.
+        """
         if self._drawing() or imgui.get_io().want_capture_mouse:
             return
         col, row = ev.pick_info["index"]
+        mods = set(getattr(ev, "modifiers", ()) or ())
 
         roi = self._roi_at(col, row)
         if roi is not None:
@@ -458,14 +481,19 @@ class SingleSessionDemixingVis:
                 self._ac_array.a, self._ac_array.centers, self._shape[1:], (col, row)
             )
             if component is not None:
-                self._select_component(component)
+                if mods & {"Control", "Ctrl"}:
+                    self.group_toggle(component)
+                elif "Shift" in mods:
+                    self.group_add(component)
+                else:
+                    self.group_clear()
+                    self._select_component(component)
                 return
 
+        self.group_clear()
         self._clear_component()
         self._active_roi = None
         self._selected_signals = None
-        if self._pick_selector is not None:
-            self._pick_selector.selection = []
         self._clear_traces()
 
     @property
@@ -473,41 +501,137 @@ class SingleSessionDemixingVis:
         return self._summary_image.graphic
 
     def _select_roi(self, selector):
+        self.group_clear()
         self._clear_component()
         self._active_roi = selector
-        self._preview_stale = True
-        self._last_roi_event = 0.0
+        self._clear_traces()
 
     def _select_component(self, component: int):
         self._active_roi = None
-        self._preview_stale = False
         self._active_component = int(component)
-        if self._image_selector is not None:
-            self._image_selector.selection = [self._active_component]
-        self._refresh_masks()
-        fields = (
-            "pmd_roi_averages",
-            "fluctuating_background_roi_averages",
-            "residual_roi_averages",
-        )
-        lines = list(
-            zip(
-                self._base_lines,
-                (
-                    getattr(self.demixing_results, f)[component].cpu().numpy()
-                    for f in fields
-                ),
-                _BASE_LINE_COLORS,
-            )
-        )
-        self._traces.set("traces", lines)
+        if self._order is not None:
+            if self._order.reveal(self._active_component):
+                self._status = "area filter widened to show the selection"
+            self._scroll_to_current = True
+        if self._follow:
+            self._center_on(self._active_component)
+        self._sync_highlight()
+        self._update_traces()
 
     def _clear_component(self):
         if self._active_component is not None:
             self._active_component = None
-            if self._image_selector is not None:
-                self._image_selector.selection = []
-            self._refresh_masks()
+            self._sync_highlight()
+
+    def _highlighted(self) -> list:
+        picks = list(self._group)
+        if self._active_component is not None and self._active_component not in picks:
+            picks.append(self._active_component)
+        return picks
+
+    def _sync_highlight(self):
+        """The contour selector and the mask overlay both show the group plus the selection."""
+        if self._image_selector is not None:
+            self._image_selector.selection = self._highlighted()
+        self._refresh_masks()
+
+    def _update_traces(self):
+        """
+        One signal: its compressed / background / residual roi averages. A group: every
+        member's compressed roi average, colored like its mask.
+        """
+        results = self.demixing_results
+        if len(self._group) > 1:
+            self._selected_signals = list(self._group)
+            averages = results.pmd_roi_averages
+            lines = [
+                (f"signal {k}", averages[k].cpu().numpy(), self._footprints.color(k))
+                for k in self._selected_signals
+            ]
+        elif self._active_component is not None:
+            k = self._active_component
+            self._selected_signals = None
+            fields = (
+                "pmd_roi_averages",
+                "fluctuating_background_roi_averages",
+                "residual_roi_averages",
+            )
+            lines = list(
+                zip(
+                    self._base_lines,
+                    (getattr(results, f)[k].cpu().numpy() for f in fields),
+                    _BASE_LINE_COLORS,
+                )
+            )
+        else:
+            self._selected_signals = None
+            self._clear_traces()
+            return
+        self._traces.set("traces", lines)
+
+    def _seed_group(self):
+        """A first ctrl or shift pick keeps the current selection in the group."""
+        if not self._group and self._active_component is not None:
+            self._group.append(self._active_component)
+
+    def group_add(self, component: int):
+        self._seed_group()
+        if component not in self._group:
+            self._group.append(int(component))
+        self._select_component(component)
+
+    def group_toggle(self, component: int):
+        self._seed_group()
+        if component in self._group:
+            self._group.remove(component)
+        else:
+            self._group.append(int(component))
+        self._select_component(component)
+
+    def group_extend_to(self, component: int):
+        """Add every table row between the cursor and ``component`` to the group."""
+        if self._order is None:
+            return
+        self._seed_group()
+        order = list(self._order.order)
+        current = self._order.current
+        if component not in order or current not in order:
+            self.group_add(component)
+            return
+        start, stop = order.index(current), order.index(component)
+        for k in order[min(start, stop) : max(start, stop) + 1]:
+            if k not in self._group:
+                self._group.append(int(k))
+        self._select_component(component)
+
+    def group_clear(self):
+        if self._group:
+            self._group.clear()
+            self._sync_highlight()
+            self._update_traces()
+
+    def _center_on(self, component: int):
+        """Frame every video panel on one footprint with some context around it."""
+        ypix, xpix, _lam = self._footprints.footprints[component]
+        if not len(ypix):
+            return
+        y0, y1 = float(ypix.min()), float(ypix.max())
+        x0, x1 = float(xpix.min()), float(xpix.max())
+        cy, cx = (y0 + y1) / 2, (x0 + x1) / 2
+        half = max(max(y1 - y0, x1 - x0, 1.0) * 2.0, 40.0)
+        for name in self._video_panels:
+            self._ndw_fov.figure[name].camera.show_rect(cx - half, cx + half, cy - half, cy + half)
+
+    def _toggle_follow(self):
+        self._follow = not self._follow
+        if self._follow and self._active_component is not None:
+            self._center_on(self._active_component)
+
+    def _step(self, delta: int):
+        """Move the table cursor and select what it lands on."""
+        if self._order is not None and self._order.step(delta):
+            self.group_clear()
+            self._select_component(self._order.current)
 
     def _set_contours(self, show: bool):
         self._show_contours = show
@@ -553,8 +677,6 @@ class SingleSessionDemixingVis:
     def _roi_changed(self, selector, ev):
         self._active_roi = selector
         self._clear_component()
-        self._preview_stale = True
-        self._last_roi_event = time.perf_counter()
 
     def _delete_roi(self, selector):
         if selector._move_info.mode is not None:
@@ -563,54 +685,22 @@ class SingleSessionDemixingVis:
         del self._rois[selector]
         if self._active_roi is selector:
             self._active_roi = next(reversed(self._rois), None)
-            if self._active_roi is None:
-                self._clear_traces()
-            else:
-                self._preview_stale = True
-                self._last_roi_event = 0.0
 
     def _clear_rois(self):
         for selector in list(self._rois):
             self._delete_roi(selector)
 
-    def _roi_average(self, movie, indices: np.ndarray) -> np.ndarray:
-        cols, rows = indices[:, 0], indices[:, 1]
-        row_slice = slice(int(rows.min()), int(rows.max()) + 1)
-        col_slice = slice(int(cols.min()), int(cols.max()) + 1)
-        crop = np.asarray(movie[:, row_slice, col_slice])
-        return crop[:, rows - row_slice.start, cols - col_slice.start].mean(axis=1)
+    def _toggle_marked(self, component: int):
+        """Mark a signal for deletion on the next demix, or unmark it."""
+        self._marked.symmetric_difference_update({int(component)})
+        self._refresh_masks()
 
-    def _update_preview(self):
-        self._preview_stale = False
-        selector = self._active_roi
-        if selector is None:
-            return
-        indices = selector.get_selected_indices(self._base_graphic)
-        if indices.shape[0] == 0:
-            return
-        lines = [
-            (
-                "compressed",
-                self._roi_average(self._pmd_array, indices),
-                _BASE_LINE_COLORS[0],
-            )
-        ]
-        if self._ac_array is not None:
-            lines.append(
-                (
-                    "background",
-                    self._roi_average(self._fluctuating_background_array, indices),
-                    _BASE_LINE_COLORS[1],
-                )
-            )
-            lines.append(
-                (
-                    "residual",
-                    self._roi_average(self._residual_array, indices),
-                    _BASE_LINE_COLORS[2],
-                )
-            )
-        self._traces.set("traces", lines)
+    def _delete_selected(self):
+        """The Delete action: drop an active drawn roi, else toggle the active signal's mark."""
+        if self._active_roi is not None:
+            self._delete_roi(self._active_roi)
+        elif self._active_component is not None:
+            self._toggle_marked(self._active_component)
 
     def _clear_traces(self):
         self._traces.clear()
@@ -684,27 +774,101 @@ class SingleSessionDemixingVis:
             self._status = f"export failed: {e}"
 
     def _handle_keys(self):
-        if imgui.get_io().want_text_input:
+        io = imgui.get_io()
+        if io.want_text_input:
             return
-        if (
-            imgui.is_key_pressed(imgui.Key.delete, False)
-            and self._active_roi is not None
-        ):
-            self._delete_roi(self._active_roi)
+        if imgui.is_key_pressed(imgui.Key.delete, False):
+            self._delete_selected()
+        if imgui.is_key_pressed(imgui.Key.escape, False):
+            self.group_clear()
+        stride = 10 if io.key_shift else 1
+        if imgui.is_key_pressed(imgui.Key.down_arrow, True):
+            self._step(stride)
+        if imgui.is_key_pressed(imgui.Key.up_arrow, True):
+            self._step(-stride)
+        if imgui.is_key_pressed(imgui.Key.f, False):
+            self._toggle_follow()
+        if imgui.is_key_pressed(imgui.Key.k, False):
+            self._keybinds_open = not self._keybinds_open
 
     def _selection_status(self) -> str:
+        if len(self._group) > 1:
+            return f"{len(self._group)} signals grouped: {sorted(self._group)}"
         if self._active_component is not None:
-            return f"signal {self._active_component} selected"
+            marked = " (marked for deletion)" if self._active_component in self._marked else ""
+            return f"signal {self._active_component} selected{marked}"
         if self._active_roi in self._rois:
             return f"roi {list(self._rois).index(self._active_roi)} selected"
         return "double-click a mask or roi to see its trace"
 
-    def _draw_roi_panel(self):
-        """A narrow, vertically-stacked sidebar (docked at "right") so it stays out of the
-        NDWidget playback toolbar's way at "bottom"."""
+    def _draw_side_panel(self):
+        """Docked at "right" (the NDWidget owns "bottom"): the roi tools and the signal table as tabs."""
         self._poll_file_dialog()
         self._poll_worker()
         self._handle_keys()
+        if imgui.begin_tab_bar("##side"):
+            if imgui.begin_tab_item("ROI Tools")[0]:
+                self._draw_roi_tools()
+                imgui.end_tab_item()
+            if imgui.begin_tab_item("Signals")[0]:
+                self._draw_signal_tab()
+                imgui.end_tab_item()
+            imgui.end_tab_bar()
+        self._keybinds_open = draw_keybinds_popup(_KEYBINDS, self._keybinds_open)
+
+    def _table_select(self, component: int):
+        self.group_clear()
+        self._select_component(component)
+
+    def _format_cell(self, name: str, component: int) -> str:
+        if name == "del":
+            return "x" if component in self._marked else ""
+        value = self._order.columns[name][component]
+        return f"{int(value)}" if name == "area" else f"{float(value):.3g}"
+
+    def _draw_signal_tab(self):
+        if self._order is None:
+            imgui.text_disabled("no demixed signals")
+            return
+        if draw_range_filter(self._order, "_signals"):
+            self._order.rebuild()
+        imgui.text_disabled(f"{len(self._order.order)}/{self._order.n_items} in view")
+        changed, self._follow = imgui.checkbox("center on selection", self._follow)
+        if changed and self._follow and self._active_component is not None:
+            self._center_on(self._active_component)
+        imgui.same_line(0, em(0.3))
+        imgui.text_disabled("(f)")
+        imgui.same_line(0, em(0.8))
+        if imgui.small_button("keys"):
+            self._keybinds_open = not self._keybinds_open
+        footer = imgui.get_frame_height_with_spacing() * 2.5
+        if imgui.begin_child("##signal_table", imgui.ImVec2(0, -footer)):
+            formatters = {name: partial(self._format_cell, name) for name in _SIGNAL_COLUMNS[1:]}
+            self._scroll_to_current = draw_roi_table(
+                self._order,
+                _SIGNAL_COLUMNS,
+                formatters,
+                self._scroll_to_current,
+                table_id="signals",
+                on_select=self._table_select,
+                is_grouped=self._group.__contains__,
+                on_ctrl_select=self.group_toggle,
+                on_shift_select=self.group_extend_to,
+                row_color=self._footprints.color,
+            )
+        imgui.end_child()
+        imgui.separator()
+        if len(self._group) > 1:
+            if imgui.small_button("ungroup"):
+                self.group_clear()
+            imgui.same_line(0, em(0.3))
+            imgui.text_disabled("(esc)")
+            imgui.same_line(0, em(0.8))
+        imgui.push_text_wrap_pos(0)
+        imgui.text_disabled(self._selection_status())
+        imgui.pop_text_wrap_pos()
+
+    def _draw_roi_tools(self):
         drawing = self._drawing()
 
         existing = len(self._footprints) if self._footprints is not None else 0
@@ -735,10 +899,20 @@ class SingleSessionDemixingVis:
             self._start_roi()
         imgui.end_disabled()
 
-        imgui.begin_disabled(self._active_roi is None)
-        if imgui.button("Delete ROI", imgui.ImVec2(-1, 0)):
-            self._delete_roi(self._active_roi)
+        imgui.begin_disabled(self._active_roi is None and self._active_component is None)
+        label = (
+            "Unmark signal"
+            if self._active_component is not None and self._active_component in self._marked
+            else "Delete"
+        )
+        if imgui.button(label, imgui.ImVec2(-1, 0)):
+            self._delete_selected()
         imgui.end_disabled()
+        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+            imgui.set_tooltip(
+                "remove the selected drawn roi, or mark the selected signal for deletion "
+                "on the next demix (press again to unmark)"
+            )
 
         imgui.begin_disabled(not self._rois)
         if imgui.button("export rois", imgui.ImVec2(-1, 0)):
@@ -746,17 +920,17 @@ class SingleSessionDemixingVis:
         imgui.end_disabled()
 
         imgui.begin_disabled(
-            not self._rois
+            (not self._rois and not self._marked)
             or self._ac_array is None
             or self._source_path is None
             or self._worker is not None
         )
         if imgui.button("Demix", imgui.ImVec2(-1, 0)):
-            self.add_to_results()
+            self.demix()
         imgui.end_disabled()
         if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
             imgui.set_tooltip(
-                "demix the drawn rois with the existing signals and rewrite the results file"
+                "re-demix: add the drawn rois, remove the marked signals, rewrite the results file"
                 if self._source_path is not None
                 else "open the results with source_path to enable"
             )
@@ -768,9 +942,7 @@ class SingleSessionDemixingVis:
             if filter_dim:
                 self._nmf_config.min_brightness = self._min_brightness_cache
             else:
-                self._min_brightness_cache = (
-                    self._nmf_config.min_brightness or self._min_brightness_cache
-                )
+                self._min_brightness_cache = self._nmf_config.min_brightness
                 self._nmf_config.min_brightness = None
         if imgui.is_item_hovered():
             imgui.set_tooltip(
@@ -782,20 +954,15 @@ class SingleSessionDemixingVis:
         if drawing:
             imgui.text_disabled("click to add points; click the first point to close")
         else:
-            imgui.text_disabled(f"{len(self._rois)} roi(s)  {self._status}")
+            imgui.text_disabled(
+                f"{len(self._rois)} roi(s), {len(self._marked)} marked  {self._status}"
+            )
         imgui.pop_text_wrap_pos()
 
         imgui.separator()
         imgui.push_text_wrap_pos(0)
         imgui.text_disabled(self._selection_status())
         imgui.pop_text_wrap_pos()
-
-        if (
-            self._preview_stale
-            and not drawing
-            and (time.perf_counter() - self._last_roi_event > _PREVIEW_DELAY)
-        ):
-            self._update_preview()
 
     @property
     def device(self) -> str:

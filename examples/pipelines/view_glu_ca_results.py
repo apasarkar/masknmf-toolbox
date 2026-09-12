@@ -15,6 +15,7 @@ once a demixed result is loaded.
 """
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 import fastplotlib as fpl
@@ -23,6 +24,8 @@ import tifffile
 
 import masknmf
 from masknmf.visualization import CompressionVis, MotionCorrectionVis, SingleSessionDemixingVis
+from masknmf.pipelines.configs.demixing_configs import NMFConfig
+from masknmf.pipelines.subcellular.glutamate_calcium_spines import DEFAULT_SPINE_NMF_CONFIG, NMF_JUST_HALS
 from masknmf.utils import torch_select_device
 
 def registration(run, channel, raw_path):
@@ -64,7 +67,17 @@ def main():
         demix_path = run / f"{args.channel}_{args.which}_demixing.hdf5"
         res = masknmf.DemixingResults.from_hdf5(demix_path, device=device)
         demix_timings = np.arange(res.shape[0]) / args.fps
-        open_.append(SingleSessionDemixingVis(res, frame_timings=demix_timings, device=device, source_path=demix_path))
+        # the pass the pipeline ran on this file: ring model off (ring_model_start_pt > maxiter), so Demix adds no background
+        nmf_config = (
+            replace(DEFAULT_SPINE_NMF_CONFIG)
+            if (args.channel, args.which) == ("glutamate", "spine")
+            else NMFConfig(**NMF_JUST_HALS)
+        )
+        open_.append(
+            SingleSessionDemixingVis(
+                res, frame_timings=demix_timings, device=device, source_path=demix_path, nmf_config=nmf_config
+            )
+        )
 
     if args.viz == "signals":
         pmd = masknmf.PMDArray.from_hdf5(run / f"pmd_{args.channel}.hdf5", device=device)

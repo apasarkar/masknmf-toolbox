@@ -2,7 +2,7 @@
 
 import colorsys
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 import numpy as np
 import torch
@@ -11,6 +11,7 @@ __all__ = ["FootprintSet", "SELECTED_ALPHA", "feathered_rgba", "roi_color"]
 
 # opacity a selected mask is filled at, whatever the overlay opacity
 SELECTED_ALPHA = 0.9
+MARKED_COLOR = (1.0, 0.15, 0.15)  # footprints marked for deletion
 
 
 def _make_roi_colors() -> np.ndarray:
@@ -40,7 +41,7 @@ def _rim(mask: np.ndarray) -> np.ndarray:
     return mask & ~core
 
 
-def feathered_rgba(shape: Tuple[int, int], comps, selected=None) -> np.ndarray:
+def feathered_rgba(shape: Tuple[int, int], comps, selected=()) -> np.ndarray:
     """
     Compose an (ny, nx, 4) uint8 overlay from footprints.
 
@@ -48,7 +49,8 @@ def feathered_rgba(shape: Tuple[int, int], comps, selected=None) -> np.ndarray:
         shape (tuple): (ny, nx) of the FOV
         comps: iterable of (ypix, xpix, lam, rgb, fill); each pixel takes lam / lam.max() * fill
             as its alpha, and where footprints overlap the higher alpha wins color and coverage
-        selected: (ypix, xpix, rgb) filled at SELECTED_ALPHA with a white rim, drawn over everything else
+        selected: iterable of (ypix, xpix, rgb), each filled at SELECTED_ALPHA with a white rim and
+            drawn over everything else, in order
     """
     ny, nx = shape
     rgba = np.zeros((ny, nx, 4), np.uint8)
@@ -63,8 +65,7 @@ def feathered_rgba(shape: Tuple[int, int], comps, selected=None) -> np.ndarray:
         best[yy, xx] = alpha[win]
         rgba[yy, xx, :3] = color
         rgba[yy, xx, 3] = np.rint(alpha[win] * 255).astype(np.uint8)
-    if selected is not None:
-        ypix, xpix, rgb = selected
+    for ypix, xpix, rgb in selected:
         mask = np.zeros((ny, nx), bool)
         mask[ypix, xpix] = True
         fill = np.uint8(round(SELECTED_ALPHA * 255))
@@ -108,11 +109,32 @@ class FootprintSet:
     def color(self, index: int) -> Tuple[float, float, float]:
         return tuple(v / 255.0 for v in roi_color(index))
 
-    def rgba(self, shape: Tuple[int, int], opacity: float, selected: Optional[int] = None) -> np.ndarray:
-        """(ny, nx, 4) uint8 overlay; ``selected`` is filled at SELECTED_ALPHA with a white rim."""
-        comps = [(ypix, xpix, lam, self.color(k), opacity) for k, (ypix, xpix, lam) in enumerate(self.footprints)]
-        pick = None
+    @property
+    def areas(self) -> np.ndarray:
+        """Pixel count of every footprint."""
+        return np.array([len(ypix) for ypix, _xpix, _lam in self.footprints], dtype=np.int64)
+
+    def rgba(
+        self,
+        shape: Tuple[int, int],
+        opacity: float,
+        selected: Optional[int] = None,
+        marked: Iterable[int] = (),
+        grouped: Iterable[int] = (),
+    ) -> np.ndarray:
+        """
+        (ny, nx, 4) uint8 overlay; ``grouped`` and then ``selected`` are filled at SELECTED_ALPHA
+        with a white rim, and ``marked`` footprints are drawn in MARKED_COLOR.
+        """
+        marked = set(marked)
+        comps = [
+            (ypix, xpix, lam, MARKED_COLOR if k in marked else self.color(k), opacity)
+            for k, (ypix, xpix, lam) in enumerate(self.footprints)
+        ]
+        picks = [k for k in grouped if k != selected]
         if selected is not None:
-            ypix, xpix, _lam = self.footprints[selected]
-            pick = (ypix, xpix, self.color(selected))
-        return feathered_rgba(shape, comps, pick)
+            picks.append(selected)
+        highlighted = [
+            (*self.footprints[k][:2], MARKED_COLOR if k in marked else self.color(k)) for k in picks
+        ]
+        return feathered_rgba(shape, comps, highlighted)
