@@ -8,7 +8,7 @@ from tqdm import tqdm
 import masknmf.arrays
 from masknmf.arrays.array_interfaces import ArrayLike
 from masknmf.utils import display
-from masknmf.visualization.imgui import resolve_time_reference
+from masknmf.visualization.imgui import TracePlot, resolve_time_reference
 from masknmf.motion_correction import BaseRegistrationArray
 
 def compute_mean_subtract(mean: np.ndarray | torch.Tensor,
@@ -67,28 +67,21 @@ class MotionCorrectionVis:
         names = [
             "raw data" if not mean_subtract else "raw data mean 0",
             "motion corrected" if not mean_subtract else "motion corrected mean 0",
-            "applied shifts (height)",
-            "applied shifts (width)",
         ]
 
         self._extents = {
-            names[0]: (0, 0.5, 0.0, 0.6),  # raw data
-            names[1]: (0.5, 1.0, 0.0, 0.6),  # motion correction
-            names[2]: (0.0, 1, 0.6, 0.8),  # traces y axis
-            names[3]: (0.0, 1, 0.8, 1.0),  # traces x axis
+            names[0]: (0, 0.5, 0.0, 1.0),  # raw data
+            names[1]: (0.5, 1.0, 0.0, 1.0),  # motion correction
         }
-
 
         self._ndw = fpl.NDWidget(
             ref_range,
             extents=self._extents,
             names=names,
-            controller_ids=[
-                [names[0], names[1]],
-                [names[2]], [names[3]],
-            ],
-            size=(1200, 1200),
+            controller_ids=[[names[0], names[1]]],
+            size=(1200, 800),
         )
+        self._reference_index = self._ndw.indices
 
         movie_dims = ["time", "m", "n"]
         movie_spatial_dims = ["m", "n"]
@@ -100,7 +93,7 @@ class MotionCorrectionVis:
             spatial_func=spatial_func_raw,
             slider_dim_transforms=movie_index_mapping.copy(),
             name=names[0],
-        )
+        ).graphic.cmap = "gray"
 
         if not rigid_shifts:
             vector_dims = ["time", "num vecs", "vec dim", "stack dim"]
@@ -125,7 +118,7 @@ class MotionCorrectionVis:
             spatial_func=spatial_func_register,
             slider_dim_transforms=movie_index_mapping.copy(),
             name=names[1],
-        )
+        ).graphic.cmap = "gray"
 
 
         self._ndw.figure[names[0]].tooltip.enabled = False
@@ -141,45 +134,13 @@ class MotionCorrectionVis:
             height_message = "max pwrigid shift height"
             width_message = "max pwrigid shift width"
 
-        height_shift_data = np.zeros((1, summary_shifts.shape[0], 2))
-        height_shift_data[0, :, 0] = np.arange(summary_shifts.shape[0])
-        height_shift_data[0, :, 1] = summary_shifts[:, 0]
-        self._ndw[names[2]].add_nd_timeseries(
-            height_shift_data,
-            ("l", "time", "d"),
-            ("l", "time", "d"),
-            slider_dim_transforms=movie_index_mapping.copy(),
-            x_range_mode="auto",
-            display_window=50.0,
-            name=names[2],
-        )
-
-        self._ndw.figure[names[2]].title = height_message
-
-        width_shift_data = np.zeros((1, summary_shifts.shape[0], 2))
-        width_shift_data[0, :, 0] = np.arange(summary_shifts.shape[0])
-        width_shift_data[0, :, 1] = summary_shifts[:, 1]
-        self._ndw[names[3]].add_nd_timeseries(
-            width_shift_data,
-            ("l", "time", "d"),
-            ("l", "time", "d"),
-            slider_dim_transforms=movie_index_mapping.copy(),
-            x_range_mode="auto",
-            display_window=50.0,
-            name=names[3],
-        )
-
-        self._ndw.figure[names[3]].title = width_message
-
-        #Link the traces in X but not in Y
-        camera_height = self.widget.figure[names[2]].camera
-        camera_width = self.widget.figure[names[3]].camera
-
-        controller_height = self.widget.figure[names[2]].controller
-        controller_width = self.widget.figure[names[3]].controller
-
-        controller_height.add_camera(camera_width, include_state={"x", "width"})
-        controller_width.add_camera(camera_height, include_state={"x", "width"})
+        self._traces = TracePlot(("shift (px)",), summary_shifts.shape[0], frame_timings)
+        self._traces.set("shift (px)", [
+            (height_message, summary_shifts[:, 0], (1.0, 0.6, 0.2)),
+            (width_message, summary_shifts[:, 1], (0.4, 0.7, 1.0)),
+        ])
+        self._traces.dock(self._ndw.figure, size=300, title="shifts")
+        self._traces.link(self.reference_index)
 
         for subplot in self.widget.figure:
             subplot.toolbar = False
@@ -219,6 +180,14 @@ class MotionCorrectionVis:
     @property
     def widget(self) -> fpl.NDWidget:
         return self._ndw
+
+    @property
+    def reference_index(self):
+        return self._reference_index
+
+    @property
+    def traces(self) -> TracePlot:
+        return self._traces
 
     def show(self):
         return self.widget.show()

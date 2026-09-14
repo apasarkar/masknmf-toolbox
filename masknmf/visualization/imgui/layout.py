@@ -18,13 +18,9 @@ def resolve_time_reference(num_frames, frame_timings=None, ref_range=None, axis=
     """
     if frame_timings is not None:
         if ref_range is None:
-            ref_range = {
-                axis: (
-                    0,
-                    np.amax(frame_timings),
-                    np.amin(frame_timings[1:] - frame_timings[:-1]),
-                )
-            }
+            # stop is exclusive, so the last timing stays reachable
+            step = np.amin(np.diff(frame_timings))
+            ref_range = {axis: (0, np.amax(frame_timings) + step, step)}
     else:
         if ref_range is not None:
             raise ValueError(
@@ -38,18 +34,19 @@ def resolve_time_reference(num_frames, frame_timings=None, ref_range=None, axis=
 HANDLE_THICKNESS = 14.0
 _HANDLE_TOOLTIP = "Drag to resize, double click to expand/collapse"
 _HANDLE_CURSORS = {"top": "ns_resize", "left": "ew_resize"}
+_MIN_RENDER_AREA = 150
 
 
-def _handle_rect(location, origin, width, height, thickness):
-    """The strip on the window's inboard edge, in screen coordinates."""
-    if location == "top":
+def _handle_rect(window, thickness):
+    """The strip on the window's inboard edge, from the rect the figure assigned to the window."""
+    if window.location == "top":
         return (
-            imgui.ImVec2(origin.x, origin.y + height - thickness),
-            imgui.ImVec2(origin.x + width, origin.y + height),
+            imgui.ImVec2(window.x, window.y + window.height - thickness),
+            imgui.ImVec2(window.x + window.width, window.y + window.height),
         )
     return (
-        imgui.ImVec2(origin.x + width - thickness, origin.y),
-        imgui.ImVec2(origin.x + width, origin.y + height),
+        imgui.ImVec2(window.x + window.width - thickness, window.y),
+        imgui.ImVec2(window.x + window.width, window.y + window.height),
     )
 
 
@@ -63,9 +60,7 @@ def draw_edge_handle(window) -> None:
     if location not in _HANDLE_CURSORS:
         return
     thickness = window._separator_thickness
-    rect_min, rect_max = _handle_rect(
-        location, imgui.get_window_pos(), imgui.get_window_width(), imgui.get_window_height(), thickness
-    )
+    rect_min, rect_max = _handle_rect(window, thickness)
     mouse = imgui.get_mouse_pos()
     hovered = rect_min.x <= mouse.x <= rect_max.x and rect_min.y <= mouse.y <= rect_max.y
 
@@ -98,11 +93,16 @@ def draw_edge_handle(window) -> None:
         # inboard edge, so a positive drag grows the window
         delta = drag.y if location == "top" else drag.x
         imgui.reset_mouse_drag_delta(0)
+        # never grow into the last _MIN_RENDER_AREA px of the canvas
+        _, _, render_w, render_h = window._figure.get_pygfx_render_area()
+        room = (render_h if location == "top" else render_w) - _MIN_RENDER_AREA
+        delta = min(delta, max(room, 0.0))
         if delta:
             window.size = max(30, round(window.size + delta))
             window._collapsed = False
 
-    draw_list = imgui.get_window_draw_list()
+    # foreground, so the handle stays visible when the window is collapsed to the strip
+    draw_list = imgui.get_foreground_draw_list()
     lit = hovered or active
     line = imgui.get_color_u32(imgui.ImVec4(0.9, 0.9, 0.9, 1.0) if lit else imgui.ImVec4(0.5, 0.5, 0.5, 0.8))
     background = imgui.get_color_u32(imgui.ImVec4(0.2, 0.2, 0.2, 0.8) if lit else imgui.ImVec4(0.15, 0.15, 0.15, 0.6))

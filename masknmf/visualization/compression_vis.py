@@ -155,13 +155,12 @@ class CompressionVis:
         ## Use one camera for all of these spatial panels
         self._synchronize_spatial_panels()
 
-        self._trace_panel_names = ("moco", "pmd", "residual")
         self._trace_labels = (
             "motion corrected",
             "compressed + denoised" if include_trend else "compressed, no trend",
             "residual" if include_trend else "residual + trend",
         )
-        self._traces = TracePlot(self._trace_panel_names, self.moco_stack.shape[0], frame_timings)
+        self._traces = TracePlot(("crop mean",), self.moco_stack.shape[0], frame_timings)
         self._traces.dock(self._ndw_videos.figure, size=420, title="traces")
         self._traces.link(self.reference_index)
 
@@ -381,8 +380,7 @@ class CompressionVis:
         residual_temporal = mcorr_temporal - pmd_temporal
 
         traces = (mcorr_temporal, pmd_temporal, residual_temporal)
-        for panel, label, trace in zip(self._trace_panel_names, self._trace_labels, traces):
-            self._traces.set(panel, [(label, trace, None)])
+        self._traces.set("crop mean", [(label, trace, None) for label, trace in zip(self._trace_labels, traces)])
 
         for subplot in self.ndw_videos.figure:
             subplot.controller.enabled = True
