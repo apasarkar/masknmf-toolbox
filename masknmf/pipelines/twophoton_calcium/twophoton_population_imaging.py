@@ -114,26 +114,26 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 'device': self.device}
 
     def run(self,
-            data: np.ndarray | ArrayLike,
+            data: np.ndarray | ArrayLike | None,
             frame_rate: float,
             exclude_border_radius: int = 0,
             remove_intermediates: bool = True):
         """
-                Uses the API to run rigid motion correction, compression (with denoising), and demixing.
+        Uses the API to run rigid motion correction, compression (with denoising), and demixing.
 
-                The pipeline takes the compressed data and filters to suppress background and identify signal. After demixing
-                this filtered data, it returns to the unfiltered data to further demix.
-                Args:
-                    data (Union[np.ndarray, ArrayLike]): The raw (frames, height, width) data stack
-                    motion_correct_config: Config object specifying parameters for motion correcting the data. If None,
-                        uses RigidMotionCorrectionConfig defaults. If "skip", skips motion correction entirely.
-                    compress_config: Config object specifying parameters for compressing the data.
-                        If None is specified, the joint compression + denoising code is run
-                    DemixConfig: Config object specifying parameters for demixing the data
-                    outpath_motion_correction (Optional[str]): Where to write out the motion corrected stack
-                    outpath_compression (Optional[str]): Where to write out the compression + results
-                    load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
-                """
+        The pipeline takes the compressed data and filters to suppress background and identify signal. After demixing
+        this filtered data, it returns to the unfiltered data to further demix.
+        Args:
+            data (Union[np.ndarray, ArrayLike]): The raw (frames, height, width) data stack
+            motion_correct_config: Config object specifying parameters for motion correcting the data. If None,
+                uses RigidMotionCorrectionConfig defaults. If "skip", skips motion correction entirely.
+            compress_config: Config object specifying parameters for compressing the data.
+                If None is specified, the joint compression + denoising code is run
+            DemixConfig: Config object specifying parameters for demixing the data
+            outpath_motion_correction (Optional[str]): Where to write out the motion corrected stack
+            outpath_compression (Optional[str]): Where to write out the compression + results
+            load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
+        """
 
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
@@ -144,6 +144,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 raise ValueError(f"If compress_config is a string, it can only be `skip`")
         else:
             ## Decide whether to motion correct data or not
+            if data is None:
+                raise ValueError("data is None starting from the motion correction step. Specify a dataset")
             if self.motion_correct_config is None:
                 moco_strategy = RigidMotionCorrector(**asdict(RigidMotionCorrectionConfig()), device=self.device,
                                                      batch_size=self.frame_batch_size)
@@ -253,7 +255,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                                                                              device=device,
                                                                              frame_batch_size=self.frame_batch_size)
 
-        num_frames = data.shape[0]
+        num_frames = pmd_denoise.shape[0]
         recording_seconds = num_frames / frame_rate
         window = int(20 * frame_rate)  # 20s rolling window
         sigma = max(2.0, 0.3 * frame_rate)  # 0.3s smoothing
