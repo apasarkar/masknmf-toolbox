@@ -119,7 +119,7 @@ class TracePlot:
         return self._window
 
     def link(self, indices, dim: str = "time"):
-        """Follow and drive a fastplotlib ReferenceIndex (``ndw.indices``) on ``dim``, in its reference units."""
+        """Follow and drive a fastplotlib ReferenceIndices (``ndw.indices``) on ``dim``, in its reference units."""
         ref = self._timings if self._timings is not None else self._frames
 
         def follow(current):

@@ -84,26 +84,26 @@ class MotionCorrectionVis:
         self._reference_index = self._ndw.indices
 
         movie_dims = ["time", "m", "n"]
-        movie_spatial_dims = ["m", "n"]
+        movie_display_dims = ["m", "n"]
         movie_index_mapping = {"time": frame_timings}
         self._ndw[names[0]].add_nd_image(
             self.raw_stack,
             movie_dims,
-            movie_spatial_dims,
+            movie_display_dims,
             spatial_func=spatial_func_raw,
-            slider_dim_transforms=movie_index_mapping.copy(),
+            slider_maps=movie_index_mapping.copy(),
             name=names[0],
         ).graphic.cmap = "gray"
 
         if not rigid_shifts:
             vector_dims = ["time", "num vecs", "vec dim", "stack dim"]
-            spatial_dims = ["num vecs", "vec dim", "stack dim"]
+            display_dims = ["num vecs", "vec dim", "stack dim"]
             vector_data = pwrigid_shifts_to_ndvector(self.shifts.cpu().numpy(), self.registration_array.block_centers.cpu().numpy())
             ndvec_graphic_kwargs = {'size': 5}
             self._ndvec = self._ndw[names[0]].add_nd_vectors(
                 vector_data,
                 vector_dims,
-                spatial_dims,
+                display_dims,
                 name="vectors",
                 graphic_kwargs=ndvec_graphic_kwargs
             )
@@ -114,9 +114,9 @@ class MotionCorrectionVis:
         self._ndw[names[1]].add_nd_image(
             self.registration_array,
             movie_dims,
-            movie_spatial_dims,
+            movie_display_dims,
             spatial_func=spatial_func_register,
-            slider_dim_transforms=movie_index_mapping.copy(),
+            slider_maps=movie_index_mapping.copy(),
             name=names[1],
         ).graphic.cmap = "gray"
 
