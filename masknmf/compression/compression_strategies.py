@@ -5,6 +5,8 @@ from masknmf.compression.denoising import train_total_variance_denoiser
 from masknmf.compression.decomposition import pmd_decomposition
 from masknmf import ArrayLike
 import numpy as np
+import torch
+from masknmf.compression.preprocessing import SplineDetrenderBase
 
 class CompressStrategy:
 
@@ -19,6 +21,8 @@ class CompressStrategy:
                  temporal_avg_factor:int=1,
                  compute_normalizer: Optional[bool] = True,
                  pixel_weighting: Optional[np.ndarray] = None,
+                 frame_weighting: np.ndarray | torch.Tensor | None = None,
+                 detrender: Optional[SplineDetrenderBase] = None,
                  device: Literal["auto", "cpu", "cuda"] = "auto",
                  ):
 
@@ -29,6 +33,7 @@ class CompressStrategy:
         self._frame_batch_size = frame_batch_size
         self._spatial_avg_factor = spatial_avg_factor
         self._temporal_avg_factor = temporal_avg_factor
+        self._detrender = detrender
         self._device=device
 
         ##Non user-settable parameters
@@ -36,6 +41,7 @@ class CompressStrategy:
         self._max_consecutive_failures=max_consecutive_failures
         self._compute_normalizer = compute_normalizer
         self._pixel_weighting = pixel_weighting
+        self._frame_weighting = frame_weighting
 
         self._results = None
 
@@ -104,6 +110,14 @@ class CompressStrategy:
         self._temporal_avg_factor = new_temporal_avg_factor
 
     @property
+    def detrender(self) -> SplineDetrenderBase | None:
+        return self._detrender
+
+    @detrender.setter
+    def detrender(self, new_detrender: SplineDetrenderBase):
+        self._detrender = new_detrender
+
+    @property
     def device(self) ->str:
         return self._device
 
@@ -127,6 +141,8 @@ class CompressStrategy:
                                           temporal_avg_factor=self.temporal_avg_factor,
                                           compute_normalizer=self._compute_normalizer,
                                           pixel_weighting=self._pixel_weighting,
+                                          frame_weighting=self._frame_weighting,
+                                          detrender=self.detrender,
                                           device=self.device)
 
         return self._results
@@ -145,9 +161,11 @@ class CompressDenoiseStrategy(CompressStrategy):
                  temporal_avg_factor:int=1,
                  compute_normalizer: Optional[bool] = True,
                  pixel_weighting: Optional[np.ndarray] = None,
+                 frame_weighting: np.ndarray | torch.Tensor | None = None,
                  device: Literal["auto", "cpu", "cuda"] = "auto",
                  noise_variance_quantile: float = 0.3,
-                 num_epochs: int = 10
+                 num_epochs: int = 10,
+                 detrender: Optional[SplineDetrenderBase] = None,
                  ):
 
         super().__init__(block_sizes,
@@ -160,7 +178,9 @@ class CompressDenoiseStrategy(CompressStrategy):
                          temporal_avg_factor,
                          compute_normalizer,
                          pixel_weighting,
-                         device)
+                         frame_weighting,
+                         detrender=detrender,
+                         device=device)
         self._num_epochs = num_epochs
         self._noise_variance_quantile = noise_variance_quantile
 
@@ -193,6 +213,8 @@ class CompressDenoiseStrategy(CompressStrategy):
                                             temporal_avg_factor=self.temporal_avg_factor,
                                             compute_normalizer=self._compute_normalizer,
                                             pixel_weighting=self._pixel_weighting,
+                                            frame_weighting=self._frame_weighting,
+                                            detrender=self.detrender,
                                             device=self.device)
 
         v = pmd_no_denoiser.v.cpu()
@@ -214,6 +236,8 @@ class CompressDenoiseStrategy(CompressStrategy):
                                                              temporal_avg_factor=self.temporal_avg_factor,
                                                              compute_normalizer=self._compute_normalizer,
                                                              pixel_weighting=self._pixel_weighting,
+                                                             frame_weighting=self._frame_weighting,
+                                                             detrender=self.detrender,
                                                              device=self.device,
                                                              temporal_denoiser=curr_temporal_denoiser)
 

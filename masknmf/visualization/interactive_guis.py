@@ -1,10 +1,8 @@
 from typing import *
 import numpy as np
-from fastplotlib.widgets import ImageWidget
+from fastplotlib.widgets.image_widget import ImageWidget
 from ipywidgets import HBox, VBox
 import fastplotlib as fpl
-from imgui_bundle import imgui
-from fastplotlib import ui
 import pygfx
 import torch
 from functools import partial
@@ -17,19 +15,7 @@ from masknmf.compression import PMDArray
 from masknmf.demixing import InitializationResults
 from masknmf.demixing.demixing_arrays import ACArray, ColorfulACArray
 from masknmf.demixing.demixing_utils import brightness_order
-
-class ROIManager(ui.EdgeWindow):
-    def __init__(self, figure, size):
-        super().__init__(
-            figure=figure,
-            size=size,
-            location="right",
-            title="ROI Selector"
-        )
-        self.add_rois_mode = False
-
-    def update(self):
-        _, self.add_rois_mode = imgui.checkbox("Add ROI", self.add_rois_mode)
+from masknmf.visualization.imgui import CheckboxWindow
 
 class PMDWidget:
     def __init__(self,
@@ -118,8 +104,8 @@ class PMDWidget:
         for img in self.image_graphics:
             self.selectors[img] = list()
 
-        self.roi_manager = ROIManager(self.iw.figure, size=100)
-        self.iw.figure.add_gui(self.roi_manager)
+        self.roi_manager = CheckboxWindow("Add ROI")
+        self.iw.figure.add_imgui_window(self.roi_manager, location="right", size=100, title="ROI Selector")
 
         self.RESIZING_NEW_RECT = False
 
@@ -178,7 +164,7 @@ class PMDWidget:
 
     def add_rectangle(self, ev: pygfx.PointerEvent):
 
-        if not self.roi_manager.add_rois_mode:
+        if not self.roi_manager.value:
             return
 
         if ev.button != 1:
@@ -582,22 +568,4 @@ def quantile_segregated_signal_gui(ac_arr: masknmf.ACArray,
                          figure_shape = (2, len(ac_arr_list)),
                          rgb = rgb)
     iw.cmap = "gray"
-    return iw
-
-def visualize_superpixels_peaks(init_results: InitializationResults):
-    superpixel_map = init_results.nmf_seed_map
-    pure_superpixel_map = init_results.pure_nmf_seed_map
-    correlation_image = init_results.correlation_img
-
-    superpixel_img = np.stack([correlation_image.copy()] * 3, axis=-1)
-    superpixel_img[superpixel_map > 0] = [4, 0, 0]
-
-    pure_superpixel_img = np.stack([correlation_image.copy()] * 3, axis=-1)
-    pure_superpixel_img[pure_superpixel_map > 0] = [4, 0, 0]
-    iw = fpl.ImageWidget(data=[np.stack([correlation_image] * 3, axis=-1),
-                               superpixel_img,
-                               pure_superpixel_img],
-                         rgb=[True, True, True],
-                         figure_shape=(1, 3),
-                         names=['corr', 'nmf seed map', 'pure nmf seed map'])
     return iw

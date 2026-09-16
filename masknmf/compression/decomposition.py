@@ -10,6 +10,7 @@ from tqdm import tqdm
 from masknmf import display
 from masknmf.utils import torch_select_device
 from typing import *
+from masknmf.compression.preprocessing import SplineDetrend, SplineDetrenderBase
 
 
 def truncated_random_svd(
@@ -746,7 +747,8 @@ def _temporal_basis_pca(temporal_basis: torch.tensor,
 
 def blockwise_decomposition(
         video_subset: torch.tensor,
-        subset_pixel_weighting: torch.tensor,
+        subset_pixel_weighting: torch.Tensor,
+        subset_frame_weighting: torch.Tensor,
         max_components: int,
         spatial_avg_factor: int,
         temporal_avg_factor: int,
@@ -760,6 +762,7 @@ def blockwise_decomposition(
 
     first_spatial, first_temporal, subset_mean, subset_noise_std = blockwise_decomposition_singlepass(video_subset,
                                                                        subset_pixel_weighting,
+                                                                       subset_frame_weighting,
                                                                        max_components,
                                                                        spatial_avg_factor,
                                                                        temporal_avg_factor,
@@ -813,7 +816,8 @@ def blockwise_decomposition(
     #     return final_spatial, final_temporal
 def blockwise_decomposition_singlepass(
         video_subset: torch.tensor,
-        subset_pixel_weighting: torch.tensor,
+        subset_pixel_weighting: torch.Tensor,
+        subset_frame_weighting: torch.Tensor,
         max_components: int,
         spatial_avg_factor: int,
         temporal_avg_factor: int,
@@ -845,6 +849,7 @@ def blockwise_decomposition_singlepass(
 
     subset = subset.permute(1, 2, 0)
     subset_weighted = subset * subset_pixel_weighting.to(device).to(dtype)[:, :, None]
+    subset_weighted *= subset_frame_weighting[None, None, :]
 
     if spatial_avg_factor != 1:
         spatial_pooled_subset = spatial_downsample(subset_weighted, spatial_avg_factor)
@@ -943,7 +948,8 @@ def residual_std_calculation(spatial_decomposition: torch.tensor,
 
 def blockwise_decomposition_with_rank_selection(
         video_subset: torch.tensor,
-        subset_pixel_weighting: torch.tensor,
+        subset_pixel_weighting: torch.Tensor,
+        subset_frame_weighting: torch.Tensor,
         max_components: int,
         max_consecutive_failures: int,
         spatial_roughness_threshold: float,
@@ -960,6 +966,7 @@ def blockwise_decomposition_with_rank_selection(
     local_spatial_basis, local_temporal_basis, subset_mean, subset_noise_std = blockwise_decomposition(
         video_subset,
         subset_pixel_weighting,
+        subset_frame_weighting,
         max_components,
         spatial_avg_factor,
         temporal_avg_factor,
@@ -1036,6 +1043,7 @@ def threshold_heuristic(
     sim_mean = torch.zeros((d1, d2), device=device, dtype=dtype)
     sim_noise_normalizer = torch.ones((d1, d2), device=device, dtype=dtype)
     pixel_weighting = torch.ones((d1, d2), device=device, dtype=dtype)
+    frame_weighting = torch.ones(t, device=device, dtype=dtype)
     max_components = num_comps
 
     for k in tqdm(range(iters)):
@@ -1046,6 +1054,7 @@ def threshold_heuristic(
         spatial, temporal, _, _ = blockwise_decomposition(
             sim_data,
             pixel_weighting,
+            frame_weighting,
             max_components,
             spatial_avg_factor,
             temporal_avg_factor,
@@ -1098,8 +1107,10 @@ def pmd_decomposition(
         window_chunks: Optional[int] = None,
         compute_normalizer: bool = True,
         pixel_weighting: Optional[np.ndarray] = None,
+        frame_weighting: np.ndarray | torch.Tensor | None = None,
         spatial_denoiser: Optional[torch.nn.Module] = None,
         temporal_denoiser: Optional[torch.nn.Module] = None,
+        detrender: Optional[SplineDetrenderBase] = None,
         device: Literal["auto", "cuda", "cpu"] = "auto",
 ) -> PMDArray:
     """
@@ -1123,6 +1134,7 @@ def pmd_decomposition(
          compute_normalizer (bool): Whether or not we estimate a pixelwise noise variance. If False, the normalizer is set to 1 (no normalization).
          pixel_weighting (Optional[np.ndarray]): Shape (fov_dim1, fov_dim2). We weight the data by this value to estimate a cleaner spatial basis. The pixel_weighting
             should intuitively boost the relative variance of pixels containing signal to those that do not contain signal.
+        frame_Weighting (np.ndarray | torch.Tensor | None): Shape (num_frames,). Weight certain frames of data as being "more important" in learning the low-rank data subspace
         spatial_denoiser (Optional[torch.nn.Module]): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
         temporal_denoiser (Optional[torch.nn.Module]): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
         device ("auto" | "cuda" | "cpu"): Which device the computations should be performed on.
@@ -1194,15 +1206,17 @@ def pmd_decomposition(
         max_components = int(len(frames) // temporal_avg_factor)
 
     if frame_batch_size >= num_frames:
-        dataset = torch.from_numpy(dataset[:]).to(device).to(dtype)
-        move_to_torch = False
-    else:
-        move_to_torch = True
+        dataset = torch.as_tensor(dataset[:], device=device, dtype=dtype)
 
     if pixel_weighting is None:
         pixel_weighting = torch.ones((fov_dim1, fov_dim2), device=device, dtype=dtype)
     else:
-        pixel_weighting = torch.from_numpy(pixel_weighting).to(device).to(dtype)
+        pixel_weighting = torch.as_tensor(pixel_weighting, device=device, dtype=dtype)
+
+    if frame_weighting is None:
+        frame_weighting = torch.ones(num_frames, device=device, dtype=dtype)
+    else:
+        frame_weighting = torch.as_tensor(frame_weighting, device=device, dtype=dtype)
 
     ## Define
     dim_1_iters = list(
@@ -1262,15 +1276,34 @@ def pmd_decomposition(
         device=device,
     )
 
+    if detrender is not None:
+        detrender = detrender.to(device)
+        spatial_preprocess_basis = torch.zeros(
+            fov_dim1, fov_dim2, detrender.spline_rank, device=device
+        )
+        temporal_preprocess_basis = detrender.basis.T  # (spline_rank, frames)
+    else:
+        spatial_preprocess_basis = None
+        temporal_preprocess_basis = None
+
+
     display("Running Blockwise Decompositions")
     for k in tqdm(dim_1_iters):
         for j in dim_2_iters:
             slice_dim1 = slice(k, k + block_sizes[0])
             slice_dim2 = slice(j, j + block_sizes[1])
-            if move_to_torch:
-                current_data_for_fit = torch.from_numpy(dataset[frames, slice_dim1, slice_dim2]).to(device).to(dtype)
-            else:
-                current_data_for_fit = dataset[frames, slice_dim1, slice_dim2]
+            current_data_for_fit = torch.as_tensor(dataset[frames, slice_dim1, slice_dim2], device=device, dtype=dtype)
+
+            if detrender is not None:
+                curr_shape = current_data_for_fit.shape
+                current_data_for_fit, curr_spline_basis = detrender(
+                    current_data_for_fit.reshape(curr_shape[0], -1)
+                )
+                spatial_preprocess_basis[slice_dim1, slice_dim2, :] = (
+                    curr_spline_basis.T.reshape(curr_shape[1], curr_shape[2], -1)
+                )
+                current_data_for_fit = current_data_for_fit.reshape(*curr_shape)
+
             (
                 unweighted_local_spatial_basis,
                 local_temporal_basis,
@@ -1279,6 +1312,7 @@ def pmd_decomposition(
             ) = blockwise_decomposition_with_rank_selection(
                 current_data_for_fit,
                 pixel_weighting[slice_dim1, slice_dim2],
+                frame_weighting,
                 max_components,
                 max_consecutive_failures,
                 spatial_roughness_threshold,
@@ -1356,18 +1390,8 @@ def pmd_decomposition(
     ).coalesce()
 
     if total_temporal_fit[0].shape[1] != num_frames:
-        display("Regressing the full dataset onto the learned spatial basis."
-                "Note that temporal denoising is not supported here. Submit a feature request if needed."
-                "(Or run the compression algorithm on the full set of frames)")
-        v_aggregated = regress_onto_spatial_basis(
-            dataset,
-            u_spatial_fit,
-            frame_batch_size,
-            dataset_mean,
-            dataset_noise_std,
-            dtype,
-            device,
-        )
+        raise ValueError("Fitting to part of the data is no longer supported")
+
     else:
         v_aggregated = torch.concatenate(total_temporal_fit, dim=0)
 
@@ -1380,15 +1404,26 @@ def pmd_decomposition(
     num_rows = fov_dim1 * fov_dim2
     u_local_projector = torch.sparse_coo_tensor(
         final_indices, spatial_overall_unweighted_values, (num_rows, num_cols)
-    )
+    ).coalesce()
 
     final_indices = torch.stack([final_row_indices, final_column_indices], dim=0)
     u_aggregated = torch.sparse_coo_tensor(
         final_indices, spatial_overall_values, (num_rows, num_cols)
-    )
+    ).coalesce()
     display(f"Constructed U matrix. Rank of U is {u_aggregated.shape[1]}")
 
-    final_pmd_arr = PMDArray(
+
+    ## If the preprocessing basis was used, re-assign the mean of that decomposition to the PMD Array
+    ## Also re-shape the spatial preprocess basis
+    if spatial_preprocess_basis is not None and temporal_preprocess_basis is not None:
+        temporal_basis_mean = torch.mean(temporal_preprocess_basis, dim = 1, keepdims = True)
+        curr_mean = spatial_preprocess_basis @ temporal_basis_mean
+        curr_mean = curr_mean.squeeze(-1)
+        dataset_mean += curr_mean
+        temporal_preprocess_basis = temporal_preprocess_basis - temporal_basis_mean
+        spatial_preprocess_basis = spatial_preprocess_basis.reshape(-1, spatial_preprocess_basis.shape[2])
+
+    final_pmd_arr = PMDArray.from_tensors(
         (num_frames, fov_dim1, fov_dim2),
         u_aggregated.cpu(),
         v_aggregated.cpu(),
@@ -1397,8 +1432,9 @@ def pmd_decomposition(
         u_local_projector=u_local_projector.cpu()
         if u_local_projector is not None
         else None,
+        spatial_trend_basis=spatial_preprocess_basis.cpu() if spatial_preprocess_basis is not None else None,
+        temporal_trend_basis = temporal_preprocess_basis.cpu() if temporal_preprocess_basis is not None else None,
         device="cpu",
     )
-    display("PMD Objected constructed")
+    display("PMD Object constructed")
     return final_pmd_arr
-
