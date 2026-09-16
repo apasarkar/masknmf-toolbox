@@ -13,7 +13,6 @@ from collections import OrderedDict
 import masknmf.arrays
 from masknmf.utils import display
 from functools import partial
-from fastplotlib.widgets.nd_widget._index import ReferenceIndex
 from masknmf.visualization.imgui import (
     RoiOrder,
     TracePlot,
@@ -162,13 +161,13 @@ class SingleSessionDemixingVis:
         self._panel_graphics = OrderedDict()
 
         movie_dims = ["time", "m", "n"]
-        movie_spatial_dims = ["m", "n"]
+        movie_display_dims = ["m", "n"]
         movie_index_mapping = {"time": frame_timings}
         self._pmd_graphic = self._ndw_fov[self._video_panels[0]].add_nd_image(
             self._pmd_array,
             movie_dims,
-            movie_spatial_dims,
-            slider_dim_transforms=movie_index_mapping.copy(),
+            movie_display_dims,
+            slider_maps=movie_index_mapping.copy(),
             name=self._video_panels[0],
         )
         self._panel_graphics[self._video_panels[0]] = self._pmd_graphic
@@ -177,8 +176,8 @@ class SingleSessionDemixingVis:
             self._ac_graphic = self._ndw_fov[self._video_panels[1]].add_nd_image(
                 self._ac_array,
                 movie_dims,
-                movie_spatial_dims,
-                slider_dim_transforms=movie_index_mapping.copy(),
+                movie_display_dims,
+                slider_maps=movie_index_mapping.copy(),
                 name=self._video_panels[1],
             )
 
@@ -187,28 +186,28 @@ class SingleSessionDemixingVis:
             ].add_nd_image(
                 self._fluctuating_background_array,
                 movie_dims,
-                movie_spatial_dims,
-                slider_dim_transforms=movie_index_mapping.copy(),
+                movie_display_dims,
+                slider_maps=movie_index_mapping.copy(),
                 name=self._video_panels[2],
             )
 
             self._residual_graphic = self._ndw_fov[self._video_panels[3]].add_nd_image(
                 self._residual_array,
                 movie_dims,
-                movie_spatial_dims,
-                slider_dim_transforms=movie_index_mapping.copy(),
+                movie_display_dims,
+                slider_maps=movie_index_mapping.copy(),
                 name=self._video_panels[3],
             )
 
             movie_dims_rgb = ["time", "m", "n", "c"]
-            movie_spatial_dims_rgb = ["m", "n", "c"]
+            movie_display_dims_rgb = ["m", "n", "c"]
             self._colorful_signal_graphic = self._ndw_fov[
                 self._video_panels[4]
             ].add_nd_image(
                 self._colorful_ac_array,
                 movie_dims_rgb,
-                movie_spatial_dims_rgb,
-                slider_dim_transforms=movie_index_mapping.copy(),
+                movie_display_dims_rgb,
+                slider_maps=movie_index_mapping.copy(),
                 rgb_dim="c",
                 name=self._video_panels[4],
             )
@@ -1092,7 +1091,7 @@ class SingleSessionDemixingVis:
         return self._traces
 
     @property
-    def reference_index(self) -> ReferenceIndex:
+    def reference_index(self) -> fpl.ReferenceIndices:
         return self._reference_index
 
     def show(self):

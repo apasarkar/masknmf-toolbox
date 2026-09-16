@@ -88,12 +88,12 @@ class CompressionVis:
         )
         self._reference_index = self._ndw_videos.indices
 
-        spatial_dims = ["m", "n"]
+        display_dims = ["m", "n"]
         dims = ["time", "m", "n"]
         self._moco_graphic = self._ndw_videos[self._mcorr_name].add_nd_image(self.moco_stack,
                                                                              dims,
-                                                                             spatial_dims,
-                                                                             slider_dim_transforms=movie_index_mapping.copy(),
+                                                                             display_dims,
+                                                                             slider_maps=movie_index_mapping.copy(),
                                                                              spatial_func=None if not mean_subtract else partial(
                                                                                  mean_subtract_func,
                                                                                  self.pmd_stack.mean_img.cpu().numpy()),
@@ -102,8 +102,8 @@ class CompressionVis:
 
         self._pmd_graphic = self._ndw_videos[self._pmd_name].add_nd_image(self.pmd_stack,
                                                                           dims,
-                                                                          spatial_dims,
-                                                                          slider_dim_transforms=movie_index_mapping.copy(),
+                                                                          display_dims,
+                                                                          slider_maps=movie_index_mapping.copy(),
                                                                           spatial_func=None if not mean_subtract else partial(
                                                                               mean_subtract_func,
                                                                               self.pmd_stack.mean_img.cpu().numpy()),
@@ -112,13 +112,13 @@ class CompressionVis:
 
         self._residual_graphic = self._ndw_videos[self._residual_name].add_nd_image(self.residual_stack,
                                                                                     dims,
-                                                                                    spatial_dims,
-                                                                                    slider_dim_transforms=movie_index_mapping.copy(),
+                                                                                    display_dims,
+                                                                                    slider_maps=movie_index_mapping.copy(),
                                                                                     name=self._residual_name)
         self._residual_graphic.graphic.cmap = "gray"
 
-        self._ndw_diagnostics = fpl.NDWidget(ref_ranges=self.reference_index.ref_ranges,
-                                             ref_index=self.reference_index,
+        self._ndw_diagnostics = fpl.NDWidget(ranges=self.reference_index.ref_ranges,
+                                             indices=self.reference_index,
                                              shape=(1, 3),
                                              names=[*self._diagnostic_names],
                                              controller_ids=[tuple(self._diagnostic_names)],
@@ -126,27 +126,27 @@ class CompressionVis:
                                              )
 
         self._moco_lag1_graphic = self.ndw_diagnostics[self._diagnostic_names[0]].add_nd_image(raw_lag1,
-                                                                                               spatial_dims,
-                                                                                               spatial_dims,
-                                                                                               slider_dim_transforms=None,
+                                                                                               display_dims,
+                                                                                               display_dims,
+                                                                                               slider_maps=None,
                                                                                                name=
                                                                                                self._diagnostic_names[
                                                                                                    0])
         self._moco_lag1_graphic.graphic.cmap = "gray"
 
         self._pmd_lag1_graphic = self._ndw_diagnostics[self._diagnostic_names[1]].add_nd_image(pmd_lag1,
-                                                                                               spatial_dims,
-                                                                                               spatial_dims,
-                                                                                               slider_dim_transforms=None,
+                                                                                               display_dims,
+                                                                                               display_dims,
+                                                                                               slider_maps=None,
                                                                                                name=
                                                                                                self._diagnostic_names[
                                                                                                    1])
         self._pmd_lag1_graphic.graphic.cmap = "gray"
 
         self._residual_lag1_graphic = self._ndw_diagnostics[self._diagnostic_names[2]].add_nd_image(resid_lag1,
-                                                                                                    spatial_dims,
-                                                                                                    spatial_dims,
-                                                                                                    slider_dim_transforms=None,
+                                                                                                    display_dims,
+                                                                                                    display_dims,
+                                                                                                    slider_maps=None,
                                                                                                     name=
                                                                                                     self._diagnostic_names[
                                                                                                         2])

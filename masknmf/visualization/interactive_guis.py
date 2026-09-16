@@ -1,6 +1,5 @@
 from typing import *
 import numpy as np
-from fastplotlib.widgets.image_widget import ImageWidget
 from ipywidgets import HBox, VBox
 import fastplotlib as fpl
 import pygfx
@@ -192,7 +191,7 @@ def make_demixing_video(
     device: str,
     v_range: Tuple[float, float],
     show_histogram: bool = False,
-) -> ImageWidget:
+) -> fpl.ImageWidget:
     results.to(device)
 
     ac_arr = results.ac_array
@@ -205,7 +204,7 @@ def make_demixing_video(
     colorful_arr = results.colorful_ac_array
     global_residual_img = results.global_residual_correlation_image.cpu().numpy()
 
-    iw = ImageWidget(
+    iw = fpl.ImageWidget(
         data=[pmd_arr, ac_arr, fluctuating_arr, residual_arr, colorful_arr, global_residual_img],
         names=[
             "pmd",
