@@ -1,5 +1,6 @@
 import os
 import threading
+from pathlib import Path
 from dataclasses import replace
 from typing import *
 import numpy as np
@@ -8,9 +9,11 @@ from imgui_bundle import imgui, portable_file_dialogs as pfd
 from fastplotlib import ui
 from fastplotlib.graphics.selectors._polygon import point_in_polygon
 import pygfx
+import h5py
 import torch
 from collections import OrderedDict
 import masknmf.arrays
+from masknmf.arrays import TiffArray
 from masknmf.utils import display
 from functools import partial
 from masknmf.visualization.imgui import (
@@ -57,13 +60,28 @@ _GROUP_COLORS = (
 # They share a lot of common functionality with demixing vis
 _KEYBINDS = (
     ("up / down", "previous / next signal in the table (shift: by 10)"),
-    ("click", "on an empty pixel: add its 5x5 pixel average to the plot as if grouped; on a drawn roi: plot its average alone"),
-    ("ctrl + click", "toggle a signal, drawn roi or pixel average in the group, in the image or the table"),
-    ("shift + click", "add a signal or drawn roi to the group; in the table, every row up to it"),
+    (
+        "click",
+        "on an empty pixel: add its 5x5 pixel average to the plot as if grouped; on a drawn roi: plot its average alone",
+    ),
+    (
+        "ctrl + click",
+        "toggle a signal, drawn roi or pixel average in the group, in the image or the table",
+    ),
+    (
+        "shift + click",
+        "add a signal or drawn roi to the group; in the table, every row up to it",
+    ),
     ("esc", "cancel a new roi, else empty the group"),
     ("f", "center the view on the selection and keep following it"),
-    ("p", "toggle pixel traces: a click on an empty pixel adds its 5x5 average to the plot"),
-    ("delete", "remove the selected roi, drop the active pixel average, or mark the selected signal for deletion"),
+    (
+        "p",
+        "toggle pixel traces: a click on an empty pixel adds its 5x5 average to the plot",
+    ),
+    (
+        "delete",
+        "remove the selected roi, drop the active pixel average, or mark the selected signal for deletion",
+    ),
     ("k", "show these keybinds"),
 )
 # compressed/signal/background/residual, in that order, so the 4 base lines read apart in the legend
@@ -95,6 +113,11 @@ class SingleSessionDemixingVis:
     A drawn roi gets the same kind of trace once it is closed ("roi n", groupable, in the table too) and,
     unlike a pixel average, is kept: Demix seeds the NMF pass with it and export writes it.
 
+    ``raw`` / ``raw_path`` add the raw movie as a seventh panel and ``shifts`` / ``motion_correction_path``
+    add the registration shifts as a panel above the traces (piecewise rigid: the largest block shift per
+    frame). With ``source_path`` set, a lone .tif and a motion_correction.hdf5 beside the results are picked
+    up when their frames match the results; given ones must match.
+
     TODO:
     -----
     - Could really support registration arrays?
@@ -116,6 +139,10 @@ class SingleSessionDemixingVis:
         device="cpu",
         source_path: str | os.PathLike | None = None,
         nmf_config: NMFConfig | None = None,
+        raw: masknmf.ArrayLike | np.ndarray | None = None,
+        raw_path: str | os.PathLike | None = None,
+        shifts: np.ndarray | torch.Tensor | None = None,
+        motion_correction_path: str | os.PathLike | None = None,
     ):
         self._source_path = None if source_path is None else str(source_path)
         base = NMFConfig() if nmf_config is None else nmf_config
@@ -137,10 +164,75 @@ class SingleSessionDemixingVis:
         self._has_ac = isinstance(demixing_results, masknmf.DemixingResults)
         self._shape = self.demixing_results.shape
 
+        # raw movie and shifts: given, or found beside the results; a found mismatch is skipped, a given one raises
+        folder = None if self._source_path is None else Path(self._source_path).parent
+        found_raw = found_shifts = False
+        if raw is None and raw_path is None and folder is not None:
+            tifs = sorted(p for ext in ("*.tif", "*.tiff") for p in folder.glob(ext))
+            if len(tifs) == 1:
+                raw_path, found_raw = tifs[0], True
+        if raw is None and raw_path is not None:
+            try:
+                raw = TiffArray(str(raw_path), memmap=True)
+            except (ValueError, TypeError):
+                raw = TiffArray(str(raw_path))
+        if raw is not None and tuple(raw.shape) != tuple(self._shape):
+            if not found_raw:
+                raise ValueError(
+                    f"raw movie has shape {tuple(raw.shape)}, the results have {tuple(self._shape)}"
+                )
+            display(
+                f"skipping {raw_path}: shape {tuple(raw.shape)} does not match the results"
+            )
+            raw = None
+        if shifts is None and motion_correction_path is None and folder is not None:
+            candidate = folder / "motion_correction.hdf5"
+            if candidate.is_file():
+                motion_correction_path, found_shifts = candidate, True
+        if shifts is None and motion_correction_path is not None:
+            with h5py.File(motion_correction_path, "r") as f:
+                groups = [
+                    g
+                    for g in (
+                        "PiecewiseRigidRegistrationArray",
+                        "RigidRegistrationArray",
+                    )
+                    if g in f
+                ]
+                if not groups:
+                    raise ValueError(
+                        f"{motion_correction_path} holds no registration array"
+                    )
+                shifts = f[groups[0]]["shifts"][()]
+        if shifts is not None:
+            if isinstance(shifts, torch.Tensor):
+                shifts = shifts.cpu().numpy()
+            shifts = np.asarray(shifts, np.float32)
+            if shifts.shape[0] != self._shape[0]:
+                if not found_shifts:
+                    raise ValueError(
+                        f"{shifts.shape[0]} shifts for {self._shape[0]} frames"
+                    )
+                display(
+                    f"skipping {motion_correction_path}: {shifts.shape[0]} shifts for {self._shape[0]} frames"
+                )
+                shifts = None
+        self._raw = raw
+        self._shift_lines = None
+        if shifts is not None:
+            # piecewise rigid shifts are (frames, height blocks, width blocks, 2): show the largest block shift
+            summary = np.abs(shifts).max(axis=(1, 2)) if shifts.ndim == 4 else shifts
+            prefix = "max block shift" if shifts.ndim == 4 else "shift"
+            self._shift_lines = [
+                (f"{prefix} height", summary[:, 0], (1.0, 0.6, 0.2)),
+                (f"{prefix} width", summary[:, 1], (0.4, 0.7, 1.0)),
+            ]
+
         ref_range, frame_timings = resolve_time_reference(
             self._shape[0], frame_timings, ref_range
         )
 
+        # TODO: make these a variable at the top of the file when the names for these visualizations are set
         self._video_panels = (
             "compressed+denoised",
             "signals",
@@ -148,18 +240,26 @@ class SingleSessionDemixingVis:
             "residual",
             "colorful_signals",
             "summary img",
-        )
+        ) + (("raw",) if self._raw is not None else ())
 
         self._bind_arrays()
 
+        # two rows; raw takes the first slot when present, which makes it four columns instead of three
+        shown = (("raw",) if self._raw is not None else ()) + self._video_panels[:6]
+        ncols = 4 if len(shown) > 6 else 3
         self._video_extents = {
-            self._video_panels[0]: (0, 0.333, 0.0, 0.5),
-            self._video_panels[1]: (0.33, 0.666, 0.0, 0.5),
-            self._video_panels[2]: (0.666, 1, 0.0, 0.5),
-            self._video_panels[3]: (0.0, 0.333, 0.5, 1.0),
-            self._video_panels[4]: (0.333, 0.666, 0.5, 1.0),
-            self._video_panels[5]: (0.666, 1, 0.5, 1.0),
+            name: (
+                (i % ncols) / ncols,
+                (i % ncols + 1) / ncols,
+                (i // ncols) / 2,
+                (i // ncols) / 2 + 0.5,
+            )
+            for i, name in enumerate(shown)
         }
+        if len(shown) % ncols:
+            # no hole in the grid: the last panel takes the rest of its row
+            x0, _x1, y0, y1 = self._video_extents[shown[-1]]
+            self._video_extents[shown[-1]] = (x0, 1.0, y0, y1)
 
         self._ndw_fov = fpl.NDWidget(
             ref_range,
@@ -185,6 +285,17 @@ class SingleSessionDemixingVis:
             name=self._video_panels[0],
         )
         self._panel_graphics[self._video_panels[0]] = self._pmd_graphic
+
+        self._raw_graphic = None
+        if self._raw is not None:
+            self._raw_graphic = self._ndw_fov["raw"].add_nd_image(
+                self._raw,
+                movie_dims,
+                movie_display_dims,
+                slider_maps=movie_index_mapping.copy(),
+                name="raw",
+            )
+            self._panel_graphics["raw"] = self._raw_graphic
 
         if self._ac_array is not None:
             self._ac_graphic = self._ndw_fov[self._video_panels[1]].add_nd_image(
@@ -302,9 +413,16 @@ class SingleSessionDemixingVis:
 
         # no autofit: the zoom set on one signal's traces is kept while selecting others
         self._traces = TracePlot(
-            ("traces",), self._shape[0], frame_timings, autofit=False
+            ("shift (px)", "traces") if self._shift_lines else ("traces",),
+            self._shape[0],
+            frame_timings,
+            autofit=False,
         )
-        self._traces.dock(self._ndw_fov.figure, size=360, title="traces")
+        self._traces.dock(
+            self._ndw_fov.figure, size=480 if self._shift_lines else 360, title="traces"
+        )
+        if self._shift_lines:
+            self._traces.set("shift (px)", self._shift_lines)
         self._traces.link(self.reference_index)
         self._traces.on_pick = self._select_signal
         self._base_lines = ("compressed", "signal", "background", "residual")
@@ -336,9 +454,6 @@ class SingleSessionDemixingVis:
             subplot.tooltip.enabled = False
             subplot.toolbar = False
 
-        # "right", not "bottom": NDWidget already docks its own play/pause/slider toolbar
-        # at "bottom", and a figure only keeps one window per edge (a second add_imgui_window
-        # at the same edge replaces it rather than stacking).
         self._ndw_fov.figure.add_imgui_window(
             self._draw_side_panel, location="right", size=300, title="Tools"
         )
@@ -365,7 +480,11 @@ class SingleSessionDemixingVis:
                 self._mask_opacity,
                 self._active_component,
                 self._marked,
-                {k: rgb for k, rgb in self._group_colors().items() if isinstance(k, int)},
+                {
+                    k: rgb
+                    for k, rgb in self._group_colors().items()
+                    if isinstance(k, int)
+                },
             )
             if self._show_masks
             else None
@@ -394,7 +513,9 @@ class SingleSessionDemixingVis:
     def _bind_click_handlers(self):
         """Re-attach the click handlers to every video panel: NDGraphic.data= replaces the graphic instance."""
         for name, graphic in self._panel_graphics.items():
-            graphic.graphic.add_event_handler(partial(self._pointer_down, name), "pointer_down")
+            graphic.graphic.add_event_handler(
+                partial(self._pointer_down, name), "pointer_down"
+            )
             graphic.graphic.add_event_handler(self._click_update, "click")
 
     def _pointer_down(self, name: str, ev: pygfx.PointerEvent):
@@ -416,6 +537,7 @@ class SingleSessionDemixingVis:
             self._residual_graphic,
             self._colorful_signal_graphic,
             self._summary_image,
+            self._raw_graphic,
         )
 
     def _make_selectors(self):
@@ -452,6 +574,9 @@ class SingleSessionDemixingVis:
         self._background_graphic.data = self._fluctuating_background_array
         self._residual_graphic.data = self._residual_array
         self._colorful_signal_graphic.data = self._colorful_ac_array
+        if self._raw_graphic is not None:
+            # same movie, new graphic instance: keeps the re-bound click handlers from doubling up
+            self._raw_graphic.data = self._raw
         if self._own_summary:
             self._summary_image.data = (
                 results.global_residual_correlation_image.cpu().numpy()
@@ -570,7 +695,11 @@ class SingleSessionDemixingVis:
                     self._select_component(component)
                 return
 
-        if self._pixel_traces and 0 <= row < self._shape[1] and 0 <= col < self._shape[2]:
+        if (
+            self._pixel_traces
+            and 0 <= row < self._shape[1]
+            and 0 <= col < self._shape[2]
+        ):
             pixel = (int(row), int(col))
             if mods & {"Control", "Ctrl"} and pixel in self._group:
                 self._group.remove(pixel)
@@ -580,7 +709,10 @@ class SingleSessionDemixingVis:
                         max(pixel[0] - 2, 0) : min(pixel[0] + 3, self._shape[1]),
                         max(pixel[1] - 2, 0) : min(pixel[1] + 3, self._shape[2]),
                     ]
-                    self._pixels[pixel] = (self._pmd_average(rows.ravel(), cols.ravel()), rows.size)
+                    self._pixels[pixel] = (
+                        self._pmd_average(rows.ravel(), cols.ravel()),
+                        rows.size,
+                    )
                     self._pixels.move_to_end(pixel, last=False)
                 self._seed_group()
                 if pixel not in self._group:
@@ -662,13 +794,23 @@ class SingleSessionDemixingVis:
             for i, k in enumerate(self._group):
                 rgb = _GROUP_COLORS[i % len(_GROUP_COLORS)]
                 if isinstance(k, tuple):
-                    lines.append((f"pixel avg ({k[0]}, {k[1]})", self._pixels[k][0], rgb))
+                    lines.append(
+                        (f"pixel avg ({k[0]}, {k[1]})", self._pixels[k][0], rgb)
+                    )
                 elif k in self._rois:
                     if self._rois[k]["trace"] is None:
                         continue
-                    lines.append((f"roi {list(self._rois).index(k)}", self._rois[k]["trace"], rgb))
+                    lines.append(
+                        (
+                            f"roi {list(self._rois).index(k)}",
+                            self._rois[k]["trace"],
+                            rgb,
+                        )
+                    )
                 else:
-                    lines.append((f"signal {k}", results.pmd_roi_averages[k].cpu().numpy(), rgb))
+                    lines.append(
+                        (f"signal {k}", results.pmd_roi_averages[k].cpu().numpy(), rgb)
+                    )
                 self._selected_signals.append(k)
         elif self._active_component is not None:
             k = self._active_component
@@ -689,7 +831,9 @@ class SingleSessionDemixingVis:
             )
             lines = [
                 (label, trace.cpu().numpy(), rgb)
-                for label, trace, rgb in zip(self._base_lines, traces, _BASE_LINE_COLORS)
+                for label, trace, rgb in zip(
+                    self._base_lines, traces, _BASE_LINE_COLORS
+                )
             ]
         else:
             self._selected_signals = None
@@ -705,7 +849,11 @@ class SingleSessionDemixingVis:
     def group_add(self, component):
         self._seed_group()
         if component not in self._group:
-            self._group.append(int(component) if isinstance(component, (int, np.integer)) else component)
+            self._group.append(
+                int(component)
+                if isinstance(component, (int, np.integer))
+                else component
+            )
         self._select_component(component)
 
     def group_toggle(self, component):
@@ -719,7 +867,11 @@ class SingleSessionDemixingVis:
                 self._update_traces()
                 return
         else:
-            self._group.append(int(component) if isinstance(component, (int, np.integer)) else component)
+            self._group.append(
+                int(component)
+                if isinstance(component, (int, np.integer))
+                else component
+            )
         self._select_component(component)
 
     def group_extend_to(self, component):
@@ -886,7 +1038,11 @@ class SingleSessionDemixingVis:
                 and pmd.spatial_trend_basis is not None
                 and pmd.temporal_trend_basis is not None
             ):
-                trace = trace + pmd.spatial_trend_basis[idx].mean(dim=0) @ pmd.temporal_trend_basis
+                trace = (
+                    trace
+                    + pmd.spatial_trend_basis[idx].mean(dim=0)
+                    @ pmd.temporal_trend_basis
+                )
         return trace.cpu().numpy()
 
     def _delete_roi(self, selector):
@@ -925,7 +1081,7 @@ class SingleSessionDemixingVis:
 
     def _clear_traces(self):
         self._active_pixel = None
-        self._traces.clear()
+        self._traces.set("traces", [])
 
     @property
     def roi_masks(self) -> np.ndarray:
@@ -1061,7 +1217,9 @@ class SingleSessionDemixingVis:
     def _format_cell(self, name: str, item) -> str:
         if isinstance(item, tuple):
             trace, area = self._pixels[item]
-            return {"area": f"{area}", "peak": f"{float(trace.max()):.3g}", "del": "x"}[name]
+            return {"area": f"{area}", "peak": f"{float(trace.max()):.3g}", "del": "x"}[
+                name
+            ]
         if item in self._rois:
             roi = self._rois[item]
             peak = "" if roi["trace"] is None else f"{float(roi['trace'].max()):.3g}"
@@ -1112,7 +1270,9 @@ class SingleSessionDemixingVis:
                     k,
                     MARKED_COLOR
                     if isinstance(k, tuple)
-                    else self._rois[k]["color"] if k in self._rois else self._footprints.color(k),
+                    else self._rois[k]["color"]
+                    if k in self._rois
+                    else self._footprints.color(k),
                 ),
                 prefix_rows=[(k, f"px {k[0]},{k[1]}") for k in self._pixels]
                 + [(sel, f"roi {i}") for i, sel in enumerate(self._rois)],

@@ -46,7 +46,7 @@ class TracePlot:
         self._use_time = False
         self._autofit = autofit
         self._fit = False
-        self._fitted = False  # the axes have been fit to data at least once
+        self._fitted = set()  # panels whose axes have been fit to data at least once
         self._force_fit = False  # one-shot "fit now", requested from the right-click settings popup
         self._popup_id = f"##trace_settings_{id(self)}"
         self._window = None
@@ -87,7 +87,7 @@ class TracePlot:
                 raise ValueError(f"trace has {trace.shape[0]} samples, the plot has {len(self._frames)} frames")
             stored.append((str(label), trace, rgb))
         self._lines[panel] = stored
-        if fit if fit is not None else (not self._fitted or self._autofit):
+        if fit if fit is not None else (panel not in self._fitted or self._autofit):
             self._fit = True
 
     def clear(self):
@@ -165,8 +165,8 @@ class TracePlot:
         force, self._force_fit = self._force_fit, False
         fit = force or self._fit
         self._fit = False
-        if fit and any(self._lines.values()):
-            self._fitted = True
+        if fit:
+            self._fitted.update(name for name, lines in self._lines.items() if lines)
         return fit
 
     def _draw_settings_popup(self):
