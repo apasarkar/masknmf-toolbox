@@ -137,7 +137,8 @@ class TracePlot:
 
     def draw(self, reserve: float = 0.0) -> Optional[int]:
         """The stacked panels filling the window but ``reserve`` px; returns the frame when the
-        playhead was dragged. Right-click any panel for autofit/fit/x-axis settings."""
+        playhead was dragged. Right-click any panel for autofit/fit/x-axis settings; shift or alt while
+        scrolling zooms x only or y only."""
         if implot.get_current_context() is None:
             implot.create_context()
         fit = self._resolve_fit()
@@ -246,8 +247,12 @@ class TracePlot:
         if not implot.begin_plot(name, imgui.ImVec2(0, 0), flags):
             return None
         try:
+            # shift: scroll zooms x only; alt: y only
+            io = imgui.get_io()
             x_flags = implot.AxisFlags_.none if last else implot.AxisFlags_.no_tick_labels
-            y_flags = implot.AxisFlags_.lock if imgui.get_io().key_shift else implot.AxisFlags_.none
+            if io.key_alt:
+                x_flags |= implot.AxisFlags_.lock
+            y_flags = implot.AxisFlags_.lock if io.key_shift else implot.AxisFlags_.none
             x_label = ("time" if self._use_time else "frame") if last else ""
             implot.setup_axes(x_label, name, x_flags, y_flags)
             # above the plot, so a panel with a legend keeps the same width as the others

@@ -82,6 +82,7 @@ _KEYBINDS = (
         "delete",
         "remove the selected roi, drop the active pixel average, or mark the selected signal for deletion",
     ),
+    ("shift / alt + scroll", "in the trace plot, zoom x only / y only"),
     ("k", "show these keybinds"),
 )
 # compressed/signal/background/residual, in that order, so the 4 base lines read apart in the legend
@@ -217,7 +218,24 @@ class SingleSessionDemixingVis:
                     f"skipping {motion_correction_path}: {shifts.shape[0]} shifts for {self._shape[0]} frames"
                 )
                 shifts = None
+        # say what was picked up, and how to add what was not, so the panels are discoverable
+        if raw is not None:
+            display(f"raw panel: {raw_path if raw_path is not None else 'movie given'}")
+        else:
+            display(
+                "no raw movie: raw_path= / raw= adds a raw panel; a lone .tif beside the results is picked up"
+            )
+        if shifts is not None:
+            display(
+                f"shift traces: {motion_correction_path if motion_correction_path is not None else 'shifts given'}"
+            )
+        else:
+            display(
+                "no motion shifts: motion_correction_path= / shifts= adds shift traces; "
+                "motion_correction.hdf5 beside the results is picked up"
+            )
         self._raw = raw
+        self._shifts = shifts
         self._shift_lines = None
         if shifts is not None:
             # piecewise rigid shifts are (frames, height blocks, width blocks, 2): show the largest block shift
@@ -1447,6 +1465,16 @@ class SingleSessionDemixingVis:
     @property
     def traces(self) -> TracePlot:
         return self._traces
+
+    @property
+    def raw(self) -> masknmf.ArrayLike | np.ndarray | None:
+        """The raw movie behind the "raw" panel, None without one."""
+        return self._raw
+
+    @property
+    def shifts(self) -> np.ndarray | None:
+        """The registration shifts behind the "shift (px)" panel, None without one."""
+        return self._shifts
 
     @property
     def reference_index(self) -> fpl.ReferenceIndices:
