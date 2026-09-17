@@ -96,6 +96,7 @@ def draw_roi_table(
     on_ctrl_select: Optional[Callable[[int], None]] = None,
     on_shift_select: Optional[Callable[[int], None]] = None,
     row_color: Optional[Callable[[int], Optional[tuple]]] = None,
+    prefix_rows: Sequence[tuple] = (),
 ) -> bool:
     """
     Sortable, clipped ROI table. Returns the new ``scroll_to_current`` flag.
@@ -105,6 +106,8 @@ def draw_roi_table(
     ``order.columns``. ``is_grouped`` highlights rows beyond the cursor; ctrl and
     shift clicks route to ``on_ctrl_select`` / ``on_shift_select`` when given,
     else to ``on_select``. ``row_color`` tints the id cell (rgb in 0-1).
+    ``prefix_rows`` are ``(item, label)`` pairs pinned above the sorted rows, outside
+    ``order`` but routed to the same formatters and callbacks.
     """
     flags = (
         imgui.TableFlags_.sortable
@@ -130,21 +133,27 @@ def draw_roi_table(
         specs.specs_dirty = False
         order.rebuild()
 
+    pinned = len(prefix_rows)
     clipper = imgui.ListClipper()
-    clipper.begin(len(order.order))
+    clipper.begin(pinned + len(order.order))
     if scroll_to_current:
-        clipper.include_item_by_index(order.pos)
+        clipper.include_item_by_index(pinned + order.pos)
     while clipper.step():
         for row in range(clipper.display_start, clipper.display_end):
-            item = int(order.order[row])
+            if row < pinned:
+                item, label = prefix_rows[row]
+                highlighted = is_grouped is not None and is_grouped(item)
+            else:
+                item = int(order.order[row - pinned])
+                label = f"{item}"
+                highlighted = row - pinned == order.pos or (is_grouped is not None and is_grouped(item))
             imgui.table_next_row()
             imgui.table_next_column()
-            highlighted = row == order.pos or (is_grouped is not None and is_grouped(item))
             rgb = row_color(item) if row_color is not None else None
             if rgb is not None:
                 imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(*rgb[:3], 1.0))
             clicked, _ = imgui.selectable(
-                f"{item}##row{row}", highlighted, imgui.SelectableFlags_.span_all_columns
+                f"{label}##row{row}", highlighted, imgui.SelectableFlags_.span_all_columns
             )
             if rgb is not None:
                 imgui.pop_style_color()
@@ -155,10 +164,11 @@ def draw_roi_table(
                 elif io.key_shift and on_shift_select is not None:
                     on_shift_select(item)
                 else:
-                    order.pos = row
+                    if row >= pinned:
+                        order.pos = row - pinned
                     if on_select is not None:
                         on_select(item)
-            if row == order.pos and scroll_to_current:
+            if row - pinned == order.pos and scroll_to_current:
                 imgui.set_scroll_here_y(0.5)
                 scroll_to_current = False
             for name in column_names[1:]:
