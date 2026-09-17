@@ -23,7 +23,7 @@ from masknmf.visualization.imgui import (
     em,
     resolve_time_reference,
 )
-from masknmf.visualization.rois import FootprintSet
+from masknmf.visualization.rois import MARKED_COLOR, FootprintSet
 from masknmf.demixing import update_signals, write_curated
 from masknmf.pipelines.configs.demixing_configs import NMFConfig
 
@@ -57,15 +57,21 @@ _GROUP_COLORS = (
 # They share a lot of common functionality with demixing vis
 _KEYBINDS = (
     ("up / down", "previous / next signal in the table (shift: by 10)"),
+    ("click", "on an empty pixel: add its 5x5 pixel average to the plot as if grouped; ctrl + click takes it out again"),
     ("ctrl + click", "toggle a signal in the group, in the image or the table"),
     ("shift + click", "add a signal to the group; in the table, every row up to it"),
     ("esc", "cancel a new roi, else empty the group"),
     ("f", "center the view on the selection and keep following it"),
-    ("delete", "remove the selected roi, or mark the selected signal for deletion"),
+    ("delete", "remove the selected roi, drop the active pixel average, or mark the selected signal for deletion"),
     ("k", "show these keybinds"),
 )
-# compressed/background/residual, in that order, so the 3 base lines read apart in the legend
-_BASE_LINE_COLORS = ((0.85, 0.85, 0.85), (0.95, 0.55, 0.15), (0.35, 0.65, 0.95))
+# compressed/signal/background/residual, in that order, so the 4 base lines read apart in the legend
+_BASE_LINE_COLORS = (
+    (0.85, 0.85, 0.85),
+    (0.30, 0.85, 0.40),
+    (0.95, 0.55, 0.15),
+    (0.35, 0.65, 0.95),
+)
 
 
 class SingleSessionDemixingVis:
@@ -82,6 +88,9 @@ class SingleSessionDemixingVis:
     further passes chain.
 
     The "Signals" tab lists every demixed signal; ctrl / shift select a group whose traces share the plot.
+    With "pixel traces" on (Curation tab, the default), clicking an empty pixel adds the compressed movie's 5x5
+    average there to the plot as if it were a grouped signal, and lists it at the top of the Signals table,
+    marked. Pixel averages are diagnostic only: Demix and export ignore them, Delete drops them.
 
     TODO:
     -----
@@ -295,10 +304,14 @@ class SingleSessionDemixingVis:
         self._traces.dock(self._ndw_fov.figure, size=360, title="traces")
         self._traces.link(self.reference_index)
         self._traces.on_pick = self._select_signal
-        self._base_lines = ("compressed", "background", "residual")
+        self._base_lines = ("compressed", "signal", "background", "residual")
         self._selected_signals = (
             None  # the signal behind each plotted line, when lines are signals
         )
+        # diagnostic only: (row, col) -> (compressed 5x5 average, pixel count), newest first; they join the group
+        self._pixel_traces = True
+        self._pixels = OrderedDict()
+        self._active_pixel = None
 
         self._image_selector = None
         self._show_contours = show_contours
@@ -348,7 +361,7 @@ class SingleSessionDemixingVis:
                 self._mask_opacity,
                 self._active_component,
                 self._marked,
-                self._group_colors(),
+                {k: rgb for k, rgb in self._group_colors().items() if isinstance(k, int)},
             )
             if self._show_masks
             else None
@@ -429,6 +442,7 @@ class SingleSessionDemixingVis:
         self._clear_component()
         self._selected_signals = None
         self._clear_traces()
+        self._pixels.clear()
         self._pmd_graphic.data = self._pmd_array
         self._ac_graphic.data = self._ac_array
         self._background_graphic.data = self._fluctuating_background_array
@@ -505,7 +519,11 @@ class SingleSessionDemixingVis:
         if self._selected_signals is not None and 0 <= index < len(
             self._selected_signals
         ):
-            self._select_component(self._selected_signals[index])
+            picked = self._selected_signals[index]
+            if isinstance(picked, tuple):
+                self._active_pixel = picked
+            else:
+                self._select_component(picked)
 
     def _click_update(self, ev: pygfx.PointerEvent):
         """
@@ -541,6 +559,28 @@ class SingleSessionDemixingVis:
                     self._select_component(component)
                 return
 
+        if self._pixel_traces and 0 <= row < self._shape[1] and 0 <= col < self._shape[2]:
+            pixel = (int(row), int(col))
+            if mods & {"Control", "Ctrl"} and pixel in self._group:
+                self._group.remove(pixel)
+            else:
+                if pixel not in self._pixels:
+                    crop = self._pmd_array[
+                        :,
+                        max(pixel[0] - 2, 0) : pixel[0] + 3,
+                        max(pixel[1] - 2, 0) : pixel[1] + 3,
+                    ]
+                    self._pixels[pixel] = (crop.mean(axis=(1, 2)), crop.shape[1] * crop.shape[2])
+                    self._pixels.move_to_end(pixel, last=False)
+                self._seed_group()
+                if pixel not in self._group:
+                    self._group.append(pixel)
+            self._active_pixel = pixel
+            self._active_roi = None
+            self._sync_highlight()
+            self._update_traces()
+            return
+
         self.group_clear()
         self._clear_component()
         self._active_roi = None
@@ -553,8 +593,17 @@ class SingleSessionDemixingVis:
         self._active_roi = selector
         self._clear_traces()
 
-    def _select_component(self, component: int):
+    def _select_component(self, component):
         self._active_roi = None
+        if isinstance(component, tuple):
+            # a pixel average is only ever plotted as a group member
+            if component not in self._group:
+                self._group.append(component)
+            self._active_pixel = component
+            self._sync_highlight()
+            self._update_traces()
+            return
+        self._active_pixel = None
         self._active_component = int(component)
         if self._order is not None:
             if self._order.reveal(self._active_component):
@@ -579,7 +628,7 @@ class SingleSessionDemixingVis:
         }
 
     def _highlighted(self) -> list:
-        picks = list(self._group)
+        picks = [k for k in self._group if isinstance(k, int)]
         if self._active_component is not None and self._active_component not in picks:
             picks.append(self._active_component)
         return picks
@@ -592,32 +641,40 @@ class SingleSessionDemixingVis:
 
     def _update_traces(self):
         """
-        One signal: its compressed / background / residual roi averages. A group: every
-        member's compressed roi average, colored like its mask.
+        One signal: its compressed / signal / background / residual roi averages. A group, or any pixel
+        average: every member's compressed trace, colored like its mask or table row.
         """
         results = self.demixing_results
-        if len(self._group) > 1:
+        if len(self._group) > 1 or any(isinstance(k, tuple) for k in self._group):
             self._selected_signals = list(self._group)
-            averages = results.pmd_roi_averages
-            lines = [
-                (f"signal {k}", averages[k].cpu().numpy(), rgb)
-                for k, rgb in self._group_colors().items()
-            ]
+            lines = []
+            for i, k in enumerate(self._group):
+                rgb = _GROUP_COLORS[i % len(_GROUP_COLORS)]
+                if isinstance(k, tuple):
+                    lines.append((f"pixel avg ({k[0]}, {k[1]})", self._pixels[k][0], rgb))
+                else:
+                    lines.append((f"signal {k}", results.pmd_roi_averages[k].cpu().numpy(), rgb))
         elif self._active_component is not None:
             k = self._active_component
             self._selected_signals = None
-            fields = (
-                "pmd_roi_averages",
-                "fluctuating_background_roi_averages",
-                "residual_roi_averages",
+            ypix, xpix, _lam = self._footprints.footprints[k]
+            support = torch.as_tensor(
+                ypix.astype(np.int64) * self._shape[2] + xpix, device=results.a.device
             )
-            lines = list(
-                zip(
-                    self._base_lines,
-                    (getattr(results, f)[k].cpu().numpy() for f in fields),
-                    _BASE_LINE_COLORS,
-                )
+            # the signal movie averaged over the footprint's support, like the stored roi averages
+            signal = torch.sparse.mm(
+                torch.index_select(results.a, 0, support), results.c.T
+            ).mean(dim=0)
+            traces = (
+                results.pmd_roi_averages[k],
+                signal,
+                results.fluctuating_background_roi_averages[k],
+                results.residual_roi_averages[k],
             )
+            lines = [
+                (label, trace.cpu().numpy(), rgb)
+                for label, trace, rgb in zip(self._base_lines, traces, _BASE_LINE_COLORS)
+            ]
         else:
             self._selected_signals = None
             self._clear_traces()
@@ -629,18 +686,23 @@ class SingleSessionDemixingVis:
         if not self._group and self._active_component is not None:
             self._group.append(self._active_component)
 
-    def group_add(self, component: int):
+    def group_add(self, component):
         self._seed_group()
         if component not in self._group:
-            self._group.append(int(component))
+            self._group.append(component if isinstance(component, tuple) else int(component))
         self._select_component(component)
 
-    def group_toggle(self, component: int):
+    def group_toggle(self, component):
         self._seed_group()
         if component in self._group:
             self._group.remove(component)
+            if isinstance(component, tuple):
+                self._active_pixel = component
+                self._sync_highlight()
+                self._update_traces()
+                return
         else:
-            self._group.append(int(component))
+            self._group.append(component if isinstance(component, tuple) else int(component))
         self._select_component(component)
 
     def group_extend_to(self, component: int):
@@ -769,13 +831,21 @@ class SingleSessionDemixingVis:
         self._refresh_masks()
 
     def _delete_selected(self):
-        """The Delete action: drop an active drawn roi, else toggle the active signal's mark."""
+        """The Delete action: drop an active drawn roi, else the active pixel average, else toggle the active signal's mark."""
         if self._active_roi is not None:
             self._delete_roi(self._active_roi)
+        elif self._active_pixel is not None:
+            self._pixels.pop(self._active_pixel, None)
+            if self._active_pixel in self._group:
+                self._group.remove(self._active_pixel)
+            self._active_pixel = None
+            self._sync_highlight()
+            self._update_traces()
         elif self._active_component is not None:
             self._toggle_marked(self._active_component)
 
     def _clear_traces(self):
+        self._active_pixel = None
         self._traces.clear()
 
     @property
@@ -868,8 +938,11 @@ class SingleSessionDemixingVis:
             self._keybinds_open = not self._keybinds_open
 
     def _selection_status(self) -> str:
-        if len(self._group) > 1:
-            return f"{len(self._group)} signals grouped: {sorted(self._group)}"
+        pixels = [k for k in self._group if isinstance(k, tuple)]
+        if len(self._group) > 1 or pixels:
+            signals = sorted(k for k in self._group if isinstance(k, int))
+            note = "; pixel avgs are marked, delete them when done" if pixels else ""
+            return f"{len(self._group)} grouped: signals {signals}, pixel avgs {pixels}{note}"
         if self._active_component is not None:
             marked = (
                 " (marked for deletion)"
@@ -896,23 +969,34 @@ class SingleSessionDemixingVis:
             imgui.end_tab_bar()
         self._keybinds_open = draw_keybinds_popup(_KEYBINDS, self._keybinds_open)
 
-    def _table_select(self, component: int):
+    def _table_select(self, component):
         self.group_clear()
+        if isinstance(component, tuple):
+            self._clear_component()
         self._select_component(component)
 
-    def _format_cell(self, name: str, component: int) -> str:
+    def _format_cell(self, name: str, item) -> str:
+        if isinstance(item, tuple):
+            trace, area = self._pixels[item]
+            return {"area": f"{area}", "peak": f"{float(trace.max()):.3g}", "del": "x"}[name]
         if name == "del":
-            return "x" if component in self._marked else ""
-        value = self._order.columns[name][component]
+            return "x" if item in self._marked else ""
+        value = self._order.columns[name][item]
         return f"{int(value)}" if name == "area" else f"{float(value):.3g}"
 
     def _draw_signal_tab(self):
-        if self._order is None:
+        if self._order is None and not self._pixels:
             imgui.text_disabled("no demixed signals")
             return
-        if draw_range_filter(self._order, "_signals"):
-            self._order.rebuild()
-        imgui.text_disabled(f"{len(self._order.order)}/{self._order.n_items} in view")
+        # a bare pmd array has no signals, but its pixel averages still get the table
+        order = (
+            self._order
+            if self._order is not None
+            else RoiOrder({"area": np.zeros(0), "peak": np.zeros(0)}, 0)
+        )
+        if draw_range_filter(order, "_signals"):
+            order.rebuild()
+        imgui.text_disabled(f"{len(order.order)}/{order.n_items} in view")
         changed, self._follow = imgui.checkbox("center on selection", self._follow)
         if changed and self._follow and self._active_component is not None:
             self._center_on(self._active_component)
@@ -928,7 +1012,7 @@ class SingleSessionDemixingVis:
             }
             colors = self._group_colors()
             self._scroll_to_current = draw_roi_table(
-                self._order,
+                order,
                 _SIGNAL_COLUMNS,
                 formatters,
                 self._scroll_to_current,
@@ -937,7 +1021,10 @@ class SingleSessionDemixingVis:
                 is_grouped=self._group.__contains__,
                 on_ctrl_select=self.group_toggle,
                 on_shift_select=self.group_extend_to,
-                row_color=lambda k: colors.get(k, self._footprints.color(k)),
+                row_color=lambda k: colors.get(
+                    k, MARKED_COLOR if isinstance(k, tuple) else self._footprints.color(k)
+                ),
+                prefix_rows=[(k, f"px {k[0]},{k[1]}") for k in self._pixels],
             )
         imgui.end_child()
         imgui.separator()
@@ -1004,13 +1091,29 @@ class SingleSessionDemixingVis:
         if self._image_selector is not None:
             self._draw_overlay_controls()
 
+        changed, self._pixel_traces = imgui.checkbox("pixel traces", self._pixel_traces)
+        if changed and not self._pixel_traces and self._pixels:
+            self._group[:] = [k for k in self._group if not isinstance(k, tuple)]
+            self._pixels.clear()
+            self._active_pixel = None
+            self._sync_highlight()
+            self._update_traces()
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "click an empty pixel to add the compressed movie's 5x5 average there to the plot, grouped "
+                "with whatever is shown, and to the top of the signals table, marked. demix and export "
+                "ignore it; delete drops it"
+            )
+
         imgui.begin_disabled(drawing)
         if imgui.button("Add ROI", imgui.ImVec2(-1, 0)):
             self._start_roi()
         imgui.end_disabled()
 
         imgui.begin_disabled(
-            self._active_roi is None and self._active_component is None
+            self._active_roi is None
+            and self._active_component is None
+            and self._active_pixel is None
         )
         label = (
             "Unmark signal"
@@ -1023,8 +1126,8 @@ class SingleSessionDemixingVis:
         imgui.end_disabled()
         if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
             imgui.set_tooltip(
-                "remove the selected drawn roi, or mark the selected signal for deletion "
-                "on the next demix (press again to unmark)"
+                "remove the selected drawn roi, drop the active pixel average, or mark the selected "
+                "signal for deletion on the next demix (press again to unmark)"
             )
 
         imgui.begin_disabled(not self._rois)
