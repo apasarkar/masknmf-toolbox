@@ -38,7 +38,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("run", type=Path, help="timestamped *_glutamate_calcium_spine_results folder")
     p.add_argument("viz", choices=["motion", "compression", "demixing", "signals", "all"])
-    p.add_argument("raw", type=Path, nargs="?", default=None, help="raw tiff of --channel; required for motion/compression/all, unused for demixing")
+    p.add_argument("raw", type=Path, nargs="?", default=None, help="raw tiff of --channel; required for motion/compression/all, optional for demixing (adds the raw panel and the shift traces)")
     p.add_argument("--channel", default="calcium", choices=["glutamate", "calcium"])
     p.add_argument("--which", default="spine", choices=["spine", "global_activity"], help="demixing result to open")
     p.add_argument("--fps", type=float, default=19.66, help="frame rate, for the seconds axis")
@@ -50,7 +50,8 @@ def main():
     device = str(torch_select_device(args.device))
     open_ = []
 
-    if args.viz in ("motion", "compression", "all"):
+    raw = reg = None
+    if args.raw is not None:
         raw, reg = registration(run, args.channel, args.raw)
         timings = np.arange(raw.shape[0]) / args.fps
 
@@ -75,7 +76,13 @@ def main():
         )
         open_.append(
             SingleSessionDemixingVis(
-                res, frame_timings=demix_timings, device=device, source_path=demix_path, nmf_config=nmf_config
+                res,
+                frame_timings=demix_timings,
+                device=device,
+                source_path=demix_path,
+                nmf_config=nmf_config,
+                raw=raw,
+                shifts=None if reg is None else reg.shifts,
             )
         )
 
