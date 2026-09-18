@@ -4,9 +4,11 @@ import os
 from dataclasses import asdict, is_dataclass
 from typing import Sequence
 
+import h5py
 import numpy as np
 
 from masknmf.demixing.demixing_results import DemixingResults
+from masknmf.utils import get_timestamp
 from masknmf.demixing.signal_demixer import SignalDemixer
 
 
@@ -48,12 +50,22 @@ def update_signals(
     return demixer.results
 
 
-def replace_results(path, results: DemixingResults) -> str:
-    """Overwrite an exported results file: written beside it, then renamed over it."""
-    path = str(path)
-    tmp = path + ".tmp"
-    if os.path.exists(tmp):
-        os.remove(tmp)
-    results.export(tmp)
-    os.replace(tmp, path)
-    return path
+def write_curated(path, results: DemixingResults, drop: Sequence[int] = (), num_masks: int = 0, nmf_config=None) -> str:
+    """
+    Write ``results`` to a new ``<name>.<timestamp>.curated.hdf5`` beside ``path``; the file at ``path`` is never
+    changed. The new file's ``description`` attribute says which file it came from and what was done.
+
+    Returns:
+        the path written
+    """
+    folder, name = os.path.split(str(path))
+    stamp = get_timestamp()
+    out = os.path.join(folder, f"{name.split('.')[0]}.{stamp}.curated.hdf5")
+    results.export(out)
+    config = asdict(nmf_config) if is_dataclass(nmf_config) else dict(nmf_config or {})
+    with h5py.File(out, "a") as f:
+        f.attrs["description"] = (
+            f"Curated from {name} at {stamp}: dropped signals {[int(i) for i in drop]}, added {int(num_masks)} "
+            f"drawn roi(s), then a full NMF pass with {config}."
+        )
+    return out

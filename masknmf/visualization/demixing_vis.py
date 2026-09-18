@@ -24,7 +24,7 @@ from masknmf.visualization.imgui import (
     resolve_time_reference,
 )
 from masknmf.visualization.rois import FootprintSet
-from masknmf.demixing import update_signals, replace_results
+from masknmf.demixing import update_signals, write_curated
 from masknmf.pipelines.configs.demixing_configs import NMFConfig
 
 _ROI_COLORS = (
@@ -76,8 +76,10 @@ class SingleSessionDemixingVis:
     Footprints show as feathered masks and/or contours over the summary image.
 
     With ``source_path`` set, "Demix" runs the drawn ROIs and the signals marked with "Delete" through the
-    demixer's NMF pass (``nmf_config``, the pipeline defaults when None) and rewrites that file: drawn ROIs
-    become ordinary signals, marked signals are gone.
+    demixer's NMF pass (``nmf_config``, the pipeline defaults when None) and writes the outcome to a new
+    ``<name>.<timestamp>.curated.hdf5`` beside the file, never over it: drawn ROIs become ordinary signals,
+    marked signals are gone, the new file's description says what was done, and the viewer moves on to it so
+    further passes chain.
 
     The "Signals" tab lists every demixed signal; ctrl / shift select a group whose traces share the plot.
 
@@ -444,7 +446,8 @@ class SingleSessionDemixingVis:
     def demix(self):
         """
         Run the drawn ROIs (appended) and the marked signals (removed) through the demixer's NMF pass and
-        rewrite the results file with the outcome. Runs on a thread; the viewer reloads when it finishes.
+        write the outcome to a new curated file beside the results. Runs on a thread; the viewer reloads
+        from the new file when it finishes.
         """
         if self._ac_array is None or self._source_path is None:
             raise ValueError(
@@ -471,8 +474,8 @@ class SingleSessionDemixingVis:
                 self._nmf_config,
                 device=self.device,
             )
-            replace_results(self._source_path, results)
-            self._pending = results
+            path = write_curated(self._source_path, results, drop, masks.shape[-1], self._nmf_config)
+            self._pending = (results, path)
         except Exception as e:
             self._pending = e
 
@@ -484,15 +487,17 @@ class SingleSessionDemixingVis:
         if isinstance(pending, Exception):
             self._status = f"demix failed: {pending}"
             return
+        results, path = pending
         before = self._ac_array.a.shape[1]
         try:
-            self._load_results(pending)
+            self._load_results(results)
         except Exception as e:
             self._status = f"reload after demix failed: {e}"
             return
+        parent, self._source_path = self._source_path, path
         self._status = (
-            f"{pending.a.shape[1]} signals (was {before}) written to "
-            f"{os.path.basename(self._source_path)}"
+            f"{results.a.shape[1]} signals (was {before}) written to {os.path.basename(path)}; "
+            f"{os.path.basename(parent)} kept"
         )
 
     def _select_signal(self, panel: str, index: int):
@@ -1038,7 +1043,8 @@ class SingleSessionDemixingVis:
         imgui.end_disabled()
         if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
             imgui.set_tooltip(
-                "re-demix: add the drawn rois, remove the marked signals, rewrite the results file"
+                "re-demix: add the drawn rois, remove the marked signals, write a new curated results file "
+                "beside the original (kept)"
                 if self._source_path is not None
                 else "open the results with source_path to enable"
             )
