@@ -125,7 +125,7 @@ class CompressionVis:
                                              indices=self.reference_index,
                                              shape=(1, 3),
                                              names=[*self._diagnostic_names],
-                                             controller_ids=[tuple(self._diagnostic_names)],
+                                             controllers=self._ndw_videos.figure[0].controller,
                                              size=(1200, 450),
                                              )
 
@@ -155,9 +155,6 @@ class CompressionVis:
                                                                                                     self._diagnostic_names[
                                                                                                         2])
         self._residual_lag1_graphic.graphic.cmap = "gray"
-
-        ## Use one camera for all of these spatial panels
-        self._synchronize_spatial_panels()
 
         self._trace_labels = (
             "motion corrected",
@@ -238,13 +235,6 @@ class CompressionVis:
     def include_trend(self):
         return self._include_trend
 
-    def _synchronize_spatial_panels(self):
-        common_camera = self.ndw_videos.figure[0].camera
-        for subplot in self.ndw_videos.figure:
-            subplot.camera = common_camera
-        for subplot in self.ndw_diagnostics.figure:
-            subplot.camera = common_camera
-
     def rect_selector_moved(self, selectors_pair: Tuple[fpl.RectangleSelector], ev: fpl.GraphicFeatureEvent):
         for selector in selectors_pair:
             selector.selection = ev.info["value"]
@@ -261,10 +251,7 @@ class CompressionVis:
         if ev.button != 1:
             return
 
-        for subplot in self.ndw_videos.figure:
-            subplot.controller.enabled = False
-        for subplot in self.ndw_diagnostics.figure:
-            subplot.controller.enabled = False
+        self.ndw_videos.figure[0].controller.enabled = False
 
         # in world space
         x, y = ev.pick_info["index"]
@@ -386,10 +373,7 @@ class CompressionVis:
         traces = (mcorr_temporal, pmd_temporal, residual_temporal)
         self._traces.set("crop mean", [(label, trace, None) for label, trace in zip(self._trace_labels, traces)])
 
-        for subplot in self.ndw_videos.figure:
-            subplot.controller.enabled = True
-        for subplot in self.ndw_diagnostics.figure:
-            subplot.controller.enabled = True
+        self.ndw_videos.figure[0].controller.enabled = True
 
         self.RESIZING_NEW_RECT = False
         self._row_slice = None
