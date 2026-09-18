@@ -21,8 +21,8 @@ class WidefieldSinglechannelPipeline(BasePipeline):
                  motion_correct_config: RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig | Literal[
                      "skip"] | None = None,
                  compress_config: CompressConfig | CompressDenoiseConfig | None = None,
-                 outpath_motion_correction: Optional[str] = "motion_correction.hdf5",
-                 outpath_compression: Optional[str] = "compression.hdf5",
+                 outpath_motion_correction: Optional[str] = "results.hdf5",
+                 outpath_compression: Optional[str] = "results.hdf5",
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"
                  ):
@@ -35,7 +35,8 @@ class WidefieldSinglechannelPipeline(BasePipeline):
             compress_config: Config object specifying parameters for compressing the data.
                 If None is specified, the joint compression + denoising code is run
             outpath_motion_correction (Optional[str]): Where to write out the motion corrected stack
-            outpath_compression (Optional[str]): Where to write out the compression + results
+            outpath_compression (Optional[str]): Where to write out the compression + results. The two outpaths
+                default to one file holding one hdf5 group per stage; give them different names for one file per stage
             frame_batch_size (int): Number of frames to load into GPU at a time for processing
             device (str): Indicates which device pytorch runs on
         """

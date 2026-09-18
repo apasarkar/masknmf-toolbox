@@ -121,8 +121,9 @@ class SingleSessionDemixingVis:
 
     ``raw`` / ``raw_path`` add the raw movie as a seventh panel and ``shifts`` / ``motion_correction_path``
     add the registration shifts as a panel above the traces (piecewise rigid: the largest block shift per
-    frame). With ``source_path`` set, a lone .tif and a motion_correction.hdf5 beside the results are picked
-    up when their frames match the results; given ones must match.
+    frame). With ``source_path`` set, a lone .tif beside the results, and the registration shifts from the
+    results file itself or from a motion_correction.hdf5 beside it, are picked up when their frames match the
+    results; given ones must match.
 
     TODO:
     -----
@@ -192,9 +193,14 @@ class SingleSessionDemixingVis:
             )
             raw = None
         if shifts is None and motion_correction_path is None and folder is not None:
-            candidate = folder / "motion_correction.hdf5"
-            if candidate.is_file():
-                motion_correction_path, found_shifts = candidate, True
+            # the results file itself when the pipeline wrote every stage to it, else the old separate file
+            for candidate in (Path(self._source_path), folder / "motion_correction.hdf5"):
+                if candidate.is_file():
+                    with h5py.File(candidate, "r") as f:
+                        found_shifts = "PiecewiseRigidRegistrationArray" in f or "RigidRegistrationArray" in f
+                    if found_shifts:
+                        motion_correction_path = candidate
+                        break
         if shifts is None and motion_correction_path is not None:
             with h5py.File(motion_correction_path, "r") as f:
                 groups = [
@@ -237,7 +243,7 @@ class SingleSessionDemixingVis:
         else:
             display(
                 "no motion shifts: motion_correction_path= / shifts= adds shift traces; "
-                "motion_correction.hdf5 beside the results is picked up"
+                "shifts in the results file or a motion_correction.hdf5 beside it are picked up"
             )
         self._raw = raw
         self._shifts = shifts

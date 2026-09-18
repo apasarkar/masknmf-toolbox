@@ -15,11 +15,12 @@ def save_dict(d, filename, group, exists_ok=False, raise_type_fail=True):
     Args:
         d (dict): dict to save as an hdf5 file
 
-        filename (str | Path): Full path to save the file to. File must not already exist.
+        filename (str | Path): Full path to save the file to. Must not already exist unless ``exists_ok``.
 
         group (str): group name to save the dict to
 
-        exists_ok (bool): Whether to write to an existing file. Useful for writing multiple serialized objects to a file
+        exists_ok (bool): Whether to write to an existing file; an existing ``group`` in it is replaced.
+        Useful for writing multiple serialized objects to a file
 
         raise_type_fail (bool): If True: raise an exception if saving a part of the dict fails.
         If False: prints a warning instead and saves the
@@ -46,6 +47,8 @@ def save_dict(d, filename, group, exists_ok=False, raise_type_fail=True):
 
 
     with h5py.File(filename, writemode) as h5file:
+        if group in h5file:
+            del h5file[group]
         _dicts_to_group(h5file, "{}/".format(group), d,
                         raise_meta_fail=raise_type_fail)
     #
@@ -237,19 +240,16 @@ class Serializer:
 
     def export(self, path: str | Path):
         """
-        Export to an HDF5 file.
+        Export to an HDF5 file, as the group named after this class.
         Requires ``h5py`` http://docs.h5py.org/
 
         Args:
-            path (str): Full file path. File must not already exist.
-
-        Raises
-            FileExistsError
-                If a file with the same path already exists.
+            path (str): Full file path. Created if missing; in an existing file the other groups are kept
+                and this class's group is replaced, so one file can hold every stage of a pipeline.
         """
 
         d = self._to_dict()
-        save_dict(d, filename=path, group=self.__class__.__name__)
+        save_dict(d, filename=path, group=self.__class__.__name__, exists_ok=True)
 
     @classmethod
     def from_hdf5(cls, path, **kwargs):
