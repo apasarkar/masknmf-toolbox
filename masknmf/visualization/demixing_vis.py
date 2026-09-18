@@ -77,7 +77,7 @@ class SingleSessionDemixingVis:
 
     With ``source_path`` set, "Demix" runs the drawn ROIs and the signals marked with "Delete" through the
     demixer's NMF pass (``nmf_config``, the pipeline defaults when None) and writes the outcome to a new
-    ``<name>.<timestamp>.curated.hdf5`` beside the file, never over it: drawn ROIs become ordinary signals,
+    ``<timestamp>.curated.hdf5`` beside the file, never over it: drawn ROIs become ordinary signals,
     marked signals are gone, the new file's description says what was done, and the viewer moves on to it so
     further passes chain.
 
@@ -474,7 +474,7 @@ class SingleSessionDemixingVis:
                 self._nmf_config,
                 device=self.device,
             )
-            path = write_curated(self._source_path, results, drop, masks.shape[-1], self._nmf_config)
+            path = write_curated(self._source_path, results, drop, masks.shape[-1])
             self._pending = (results, path)
         except Exception as e:
             self._pending = e

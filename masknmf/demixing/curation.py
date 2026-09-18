@@ -50,22 +50,19 @@ def update_signals(
     return demixer.results
 
 
-def write_curated(path, results: DemixingResults, drop: Sequence[int] = (), num_masks: int = 0, nmf_config=None) -> str:
+def write_curated(path, results: DemixingResults, drop: Sequence[int] = (), num_masks: int = 0) -> str:
     """
-    Write ``results`` to a new ``<name>.<timestamp>.curated.hdf5`` beside ``path``; the file at ``path`` is never
-    changed. The new file's ``description`` attribute says which file it came from and what was done.
+    Write ``results`` to a new ``<timestamp>.curated.hdf5`` beside ``path``; the file at ``path`` is never
+    changed. The new file's ``description`` attribute says what was done.
 
     Returns:
         the path written
     """
-    folder, name = os.path.split(str(path))
-    stamp = get_timestamp()
-    out = os.path.join(folder, f"{name.split('.')[0]}.{stamp}.curated.hdf5")
+    out = os.path.join(os.path.dirname(str(path)), f"{get_timestamp()}.curated.hdf5")
     results.export(out)
-    config = asdict(nmf_config) if is_dataclass(nmf_config) else dict(nmf_config or {})
     with h5py.File(out, "a") as f:
         f.attrs["description"] = (
-            f"Curated from {name} at {stamp}: dropped signals {[int(i) for i in drop]}, added {int(num_masks)} "
-            f"drawn roi(s), then a full NMF pass with {config}."
+            f"Demixing results after curation: {len(drop)} signal(s) removed and {int(num_masks)} drawn "
+            "roi(s) added, then a full NMF pass."
         )
     return out
