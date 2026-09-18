@@ -29,7 +29,7 @@ from masknmf.visualization.imgui import (
     to_vec4,
 )
 from masknmf.visualization.rois import MARKED_COLOR, FootprintSet
-from masknmf.demixing import update_signals, write_curated
+from masknmf.demixing import CellStats, update_signals, write_curated
 from masknmf.pipelines.configs.demixing_configs import NMFConfig
 
 _ROI_COLORS = (
@@ -43,7 +43,6 @@ _ROI_COLORS = (
     (0.12, 0.47, 0.71),
 )
 _NPZ_FILTERS = ["NumPy archive", "*.npz", "All files", "*"]
-_SIGNAL_COLUMNS = ("id", "area", "peak", "del")
 _CLICK_SLOP = (
     4  # px the pointer may travel between press and release and still be a click
 )
@@ -128,6 +127,10 @@ class SingleSessionDemixingVis:
     motion_correction.hdf5 beside the results are picked up when their frames match the results; given ones
     must match.
 
+    ``cell_stats`` / ``cell_stats_path`` (a :class:`CellStats`, or a .npy / .npz / .csv / .tsv it reads, one
+    row per signal) add sortable columns to the Signals table: click a header to order the signals by that
+    stat, then step through the top or bottom of the order. A Demix pass drops them since the signal set changes.
+
     TODO:
     -----
     - Could really support registration arrays?
@@ -151,6 +154,8 @@ class SingleSessionDemixingVis:
         nmf_config: NMFConfig | None = None,
         raw: masknmf.ArrayLike | np.ndarray | str | os.PathLike | None = None,
         shifts: np.ndarray | torch.Tensor | str | os.PathLike | None = None,
+        cell_stats: CellStats | None = None,
+        cell_stats_path: str | os.PathLike | None = None,
     ):
         self._results_path = None if results_path is None else str(results_path)
         base = NMFConfig() if nmf_config is None else nmf_config
@@ -171,6 +176,19 @@ class SingleSessionDemixingVis:
         self._demixing_results.to(self.device)
         self._has_ac = isinstance(demixing_results, masknmf.DemixingResults)
         self._shape = self.demixing_results.shape
+
+        if cell_stats is None and cell_stats_path is not None:
+            cell_stats = CellStats.read(cell_stats_path)
+        if cell_stats is not None:
+            num_signals = demixing_results.a.shape[1] if self._has_ac else 0
+            if cell_stats.values.shape[0] != num_signals:
+                raise ValueError(f"{cell_stats.values.shape[0]} cell stat rows for {num_signals} signals")
+            if set(cell_stats.names) & {"id", "area", "peak", "del"}:
+                raise ValueError(f"cell stat names clash with the table's own columns: {cell_stats.names}")
+            display(f"cell stats: {', '.join(cell_stats.names)} from {cell_stats_path if cell_stats_path is not None else 'stats given'}")
+        else:
+            display("no cell stats: cell_stats_path= / cell_stats= adds sortable Signals-table columns")
+        self._cell_stats = cell_stats
 
         # raw movie and shifts: data or a path, or found beside the results; a found mismatch is skipped, a given one raises
         folder = None if self._results_path is None else Path(self._results_path).parent
@@ -487,11 +505,12 @@ class SingleSessionDemixingVis:
             self._ac_array.a, tuple(self._shape[1:3])
         )
         peaks = self.demixing_results.c.max(dim=0).values.cpu().numpy()
-        self._order = RoiOrder(
-            {"area": self._footprints.areas, "peak": peaks, "del": np.zeros(len(self._footprints), np.int8)},
-            len(self._footprints),
-        )
-        self._order.sort_column, self._order.ascending = _SIGNAL_COLUMNS.index("del"), False
+        columns = {"area": self._footprints.areas, "peak": peaks}
+        if self._cell_stats is not None:
+            columns.update(zip(self._cell_stats.names, self._cell_stats.values.T))
+        columns["del"] = np.zeros(len(self._footprints), np.int8)
+        self._order = RoiOrder(columns, len(self._footprints))
+        self._order.sort_column, self._order.ascending = len(columns), False
         self._order.set_range_column("area")
         self._order.rebuild()
         self._refresh_masks()
@@ -589,6 +608,9 @@ class SingleSessionDemixingVis:
         """Swap in re-demixed results: every movie panel, the selectors and the summary image follow."""
         results.to(self.device)
         self._demixing_results = results
+        if self._cell_stats is not None:
+            display("cell stats dropped: the signal set changed")
+            self._cell_stats = None
         self._bind_arrays()
         self._clear_rois()
         self._drop_cut()
@@ -1328,13 +1350,11 @@ class SingleSessionDemixingVis:
     def _format_cell(self, name: str, item) -> str:
         if isinstance(item, tuple):
             trace, area = self._pixels[item]
-            return {"area": f"{area}", "peak": f"{float(trace.max()):.3g}", "del": "x"}[
-                name
-            ]
+            return {"area": f"{area}", "peak": f"{float(trace.max()):.3g}", "del": "x"}.get(name, "")
         if item in self._rois:
             roi = self._rois[item]
             peak = "" if roi["trace"] is None else f"{float(roi['trace'].max()):.3g}"
-            return {"area": f"{roi['area']}", "peak": peak, "del": ""}[name]
+            return {"area": f"{roi['area']}", "peak": peak, "del": ""}.get(name, "")
         if name == "del":
             return "x" if item in self._marked else ""
         value = self._order.columns[name][item]
@@ -1384,13 +1404,13 @@ class SingleSessionDemixingVis:
             self._keybinds_open = not self._keybinds_open
         footer = imgui.get_frame_height_with_spacing() * 2.5
         if imgui.begin_child("##signal_table", imgui.ImVec2(0, -footer)):
-            formatters = {
-                name: partial(self._format_cell, name) for name in _SIGNAL_COLUMNS[1:]
-            }
+            names = () if self._cell_stats is None else self._cell_stats.names
+            columns = ("id", "area", "peak", *names, "del")
+            formatters = {name: partial(self._format_cell, name) for name in columns[1:]}
             colors = self._group_colors()
             self._scroll_to_current = draw_roi_table(
                 order,
-                _SIGNAL_COLUMNS,
+                columns,
                 formatters,
                 self._scroll_to_current,
                 table_id="signals",
@@ -1615,6 +1635,11 @@ class SingleSessionDemixingVis:
     def shifts(self) -> np.ndarray | None:
         """The registration shifts behind the "shift (px)" panel, None without one."""
         return self._shifts
+
+    @property
+    def cell_stats(self) -> CellStats | None:
+        """The per-signal stats behind the extra Signals-table columns, None without any."""
+        return self._cell_stats
 
     @property
     def reference_index(self) -> fpl.ReferenceIndices:
