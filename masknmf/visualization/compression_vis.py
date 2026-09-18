@@ -9,10 +9,9 @@ import fastplotlib as fpl
 from collections import OrderedDict
 from masknmf.visualization.imgui import CheckboxWindow
 import pygfx
+import torch
 from functools import partial
-
-def mean_subtract_func(mean, frame):
-    return frame - mean
+from masknmf.visualization.motion_vis import compute_mean_subtract
 
 class CompressionVis:
     def __init__(self,
@@ -69,6 +68,15 @@ class CompressionVis:
         )
         movie_index_mapping = {"time": frame_timings}
 
+        # the mean is subtracted on each stack's own side: a registration array yields torch frames, which keep
+        # the tensor (on device, no host copy); PMDArray frames are numpy, so that panel gets a numpy mean
+        moco_mean_subtract = pmd_mean_subtract = None
+        if mean_subtract:
+            mean = self.pmd_stack.mean_img
+            moco_mean = mean if isinstance(self.moco_stack[0], torch.Tensor) else mean.cpu().numpy()
+            moco_mean_subtract = partial(compute_mean_subtract, moco_mean)
+            pmd_mean_subtract = partial(compute_mean_subtract, mean.cpu().numpy())
+
         self._video_names = [self._mcorr_name,
                              self._pmd_name,
                              self._residual_name]
@@ -94,9 +102,7 @@ class CompressionVis:
                                                                              dims,
                                                                              display_dims,
                                                                              slider_maps=movie_index_mapping.copy(),
-                                                                             spatial_func=None if not mean_subtract else partial(
-                                                                                 mean_subtract_func,
-                                                                                 self.pmd_stack.mean_img.cpu().numpy()),
+                                                                             spatial_func=moco_mean_subtract,
                                                                              name=self._mcorr_name)
         self._moco_graphic.graphic.cmap = "gray"
 
@@ -104,9 +110,7 @@ class CompressionVis:
                                                                           dims,
                                                                           display_dims,
                                                                           slider_maps=movie_index_mapping.copy(),
-                                                                          spatial_func=None if not mean_subtract else partial(
-                                                                              mean_subtract_func,
-                                                                              self.pmd_stack.mean_img.cpu().numpy()),
+                                                                          spatial_func=pmd_mean_subtract,
                                                                           name=self._pmd_name)
         self._pmd_graphic.graphic.cmap = "gray"
 
