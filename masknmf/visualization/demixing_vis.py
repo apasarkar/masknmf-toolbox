@@ -509,8 +509,7 @@ class SingleSessionDemixingVis:
         if self._cell_stats is not None:
             columns.update(zip(self._cell_stats.names, self._cell_stats.values.T))
         columns["del"] = np.zeros(len(self._footprints), np.int8)
-        self._order = RoiOrder(columns, len(self._footprints))
-        self._order.sort_column, self._order.ascending = len(columns), False
+        self._order = RoiOrder(columns, len(self._footprints), pinned="del")
         self._order.set_range_column("area")
         self._order.rebuild()
         self._refresh_masks()
@@ -1428,7 +1427,6 @@ class SingleSessionDemixingVis:
                 ),
                 prefix_rows=[(k, f"px {k[0]},{k[1]}") for k in self._pixels]
                 + [(sel, f"roi {i}") for i, sel in enumerate(self._rois)],
-                default_sort="del",
             )
         imgui.end_child()
         imgui.separator()
