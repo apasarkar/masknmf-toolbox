@@ -1,26 +1,55 @@
+import math
+from functools import partial
 from typing import *
 import numpy as np
-import fastplotlib as fpl
-from imgui_bundle import imgui
-from fastplotlib import ui
-import pygfx
 import torch
-from collections import OrderedDict
+import fastplotlib as fpl
+from tqdm import tqdm
 import masknmf.arrays
 from masknmf.arrays.array_interfaces import ArrayLike
 from masknmf.utils import display
-from masknmf.visualization.imgui import resolve_time_reference
+from masknmf.visualization.imgui import TracePlot, resolve_time_reference
+from masknmf.motion_correction import BaseRegistrationArray
+
+def compute_mean_subtract(mean: np.ndarray | torch.Tensor,
+                  frame: np.ndarray | torch.Tensor):
+    """
+    Basic function to do on the fly mean subtraction of ophys data
+    Args:
+        mean (np.ndarray). Shape (height, width)
+        frame (np.ndarray). Shape (height, width)
+    """
+    if isinstance(mean, torch.Tensor) and isinstance(frame, torch.Tensor):
+        return frame - mean.to(frame.device)
+    elif isinstance(mean, np.ndarray) and isinstance(frame, np.ndarray):
+        return frame - mean
+    else:
+        raise ValueError("both inputs must be torch tensors or np arrays")
 
 
 class MotionCorrectionVis:
     def __init__(
         self,
-        registration_array: ArrayLike, ## TODO: Make a clear interface object for this
+        registration_array: BaseRegistrationArray,
         ref_range: Optional[dict] = None,
         frame_timings: Optional[np.ndarray] = None,
+        mean_subtract: bool = False,
+        num_frames_mean_sketch: int = 1000,
     ):
         self._registration_array = registration_array
         self._raw_stack = self.registration_array.input_movie
+
+        if mean_subtract:
+            display(f"Sketching the mean of each stack with {num_frames_mean_sketch} frames")
+            raw_mean, register_mean = self._sketch_means(num_frames=num_frames_mean_sketch)
+            register_mean = torch.as_tensor(register_mean,
+                                            device=self.registration_array.output_device,
+                                            dtype=self.registration_array.dtype)
+            spatial_func_raw = partial(compute_mean_subtract, raw_mean)
+            spatial_func_register = partial(compute_mean_subtract, register_mean)
+        else:
+            spatial_func_raw = None
+            spatial_func_register = None
 
         self._shifts = self.registration_array.shifts
 
@@ -35,122 +64,109 @@ class MotionCorrectionVis:
         else:
             raise ValueError("Shifts can either have ndim 2 or 4")
 
+        names = [
+            "raw data" if not mean_subtract else "raw data mean 0",
+            "motion corrected" if not mean_subtract else "motion corrected mean 0",
+        ]
+
         self._extents = {
-            "raw data": (0, 0.5, 0.0, 0.6),  # raw data
-            "motion corrected": (0.5, 1.0, 0.0, 0.6),  # motion correction
-            "applied shifts (height)": (0.0, 1, 0.6, 0.8),  # traces y axis
-            "applied shifts (width)": (0.0, 1, 0.8, 1.0),  # traces x axis
+            names[0]: (0, 0.5, 0.0, 1.0),  # raw data
+            names[1]: (0.5, 1.0, 0.0, 1.0),  # motion correction
         }
 
         self._ndw = fpl.NDWidget(
             ref_range,
             extents=self._extents,
-            names=[
-                "raw data",
-                "motion corrected",
-                "applied shifts (height)",
-                "applied shifts (width)",
-            ],
-            controller_ids=[
-                ["raw data", "motion corrected"],
-                ["applied shifts (height)"], ["applied shifts (width)"],
-            ],
-            size=(1200, 1200),
+            names=names,
+            controller_ids=[[names[0], names[1]]],
+            size=(1200, 800),
         )
+        self._reference_index = self._ndw.indices
 
         movie_dims = ["time", "m", "n"]
-        movie_spatial_dims = ["m", "n"]
+        movie_display_dims = ["m", "n"]
         movie_index_mapping = {"time": frame_timings}
-        self._ndw["raw data"].add_nd_image(
+        self._ndw[names[0]].add_nd_image(
             self.raw_stack,
             movie_dims,
-            movie_spatial_dims,
-            slider_dim_transforms=movie_index_mapping.copy(),
-            name="raw data",
-        )
+            movie_display_dims,
+            spatial_func=spatial_func_raw,
+            slider_maps=movie_index_mapping.copy(),
+            name=names[0],
+        ).graphic.cmap = "gray"
 
         if not rigid_shifts:
             vector_dims = ["time", "num vecs", "vec dim", "stack dim"]
-            spatial_dims = ["num vecs", "vec dim", "stack dim"]
+            display_dims = ["num vecs", "vec dim", "stack dim"]
             vector_data = pwrigid_shifts_to_ndvector(self.shifts.cpu().numpy(), self.registration_array.block_centers.cpu().numpy())
             ndvec_graphic_kwargs = {'size': 5}
-            self._ndvec = self._ndw['raw data'].add_nd_vectors(
+            self._ndvec = self._ndw[names[0]].add_nd_vectors(
                 vector_data,
                 vector_dims,
-                spatial_dims,
+                display_dims,
                 name="vectors",
                 graphic_kwargs=ndvec_graphic_kwargs
             )
-            self._ndw.figure['raw data'].title = "Raw Data + Applied Shift Vectors"
+            self._ndw.figure[names[0]].title = names[0] + " Applied Shift Vectors"
         else:
             self._ndvec = None
 
-        self._ndw["motion corrected"].add_nd_image(
+        self._ndw[names[1]].add_nd_image(
             self.registration_array,
             movie_dims,
-            movie_spatial_dims,
-            slider_dim_transforms=movie_index_mapping.copy(),
-            name="motion corrected",
-        )
+            movie_display_dims,
+            spatial_func=spatial_func_register,
+            slider_maps=movie_index_mapping.copy(),
+            name=names[1],
+        ).graphic.cmap = "gray"
 
 
-        self._ndw.figure['raw data'].tooltip.enabled = False
-        self._ndw.figure['motion corrected'].tooltip.enabled = False
+        self._ndw.figure[names[0]].tooltip.enabled = False
+        self._ndw.figure[names[1]].tooltip.enabled = False
 
         #No matter what method was used, we construct a summary shift time series, one for each spatial dim (height, width)
         if rigid_shifts:
-            summary_shifts = self.shifts
+            summary_shifts = self.shifts.cpu().numpy()
             height_message = "applied rigid shifts height"
             width_message = "applied rigid shifts width"
         else:
-            summary_shifts = np.amax(np.abs(self.shifts.cpu().numpy()), axis = (1, 2))
-            height_message = "max pwrigid shift height"
-            width_message = "max pwrigid shift width"
+            # mean over the blocks, with the sign: max|shift| drops the direction, and the median
+            # snaps to the value the untouched blocks share, which moves in whole pixels
+            blocks = self.shifts.cpu().numpy()
+            summary_shifts = blocks.reshape(blocks.shape[0], -1, 2).mean(axis=1)
+            height_message = "mean pwrigid shift height"
+            width_message = "mean pwrigid shift width"
 
-        height_shift_data = np.zeros((1, summary_shifts.shape[0], 2))
-        height_shift_data[0, :, 0] = np.arange(summary_shifts.shape[0])
-        height_shift_data[0, :, 1] = summary_shifts[:, 0]
-        self._ndw["applied shifts (height)"].add_nd_timeseries(
-            height_shift_data,
-            ("l", "time", "d"),
-            ("l", "time", "d"),
-            slider_dim_transforms=movie_index_mapping.copy(),
-            x_range_mode="auto",
-            display_window=50.0,
-            name="applied shifts (height)",
-        )
-
-        self._ndw.figure['applied shifts (height)'].title = height_message
-
-        width_shift_data = np.zeros((1, summary_shifts.shape[0], 2))
-        width_shift_data[0, :, 0] = np.arange(summary_shifts.shape[0])
-        width_shift_data[0, :, 1] = summary_shifts[:, 1]
-        self._ndw["applied shifts (width)"].add_nd_timeseries(
-            width_shift_data,
-            ("l", "time", "d"),
-            ("l", "time", "d"),
-            slider_dim_transforms=movie_index_mapping.copy(),
-            x_range_mode="auto",
-            display_window=50.0,
-            name="applied shifts (width)",
-        )
-
-        self._ndw.figure['applied shifts (width)'].title = width_message
-
-        #Link the traces in X but not in Y
-        camera_height = self.widget.figure['applied shifts (height)'].camera
-        camera_width = self.widget.figure['applied shifts (width)'].camera
-
-        controller_height = self.widget.figure['applied shifts (height)'].controller
-        controller_width = self.widget.figure['applied shifts (width)'].controller
-
-        controller_height.add_camera(camera_width, include_state={"x", "width"})
-        controller_width.add_camera(camera_height, include_state={"x", "width"})
+        self._traces = TracePlot(("shift (px)",), summary_shifts.shape[0], frame_timings)
+        self._traces.set("shift (px)", [
+            (height_message, summary_shifts[:, 0], (1.0, 0.6, 0.2)),
+            (width_message, summary_shifts[:, 1], (0.4, 0.7, 1.0)),
+        ])
+        self._traces.dock(self._ndw.figure, size=300, title="shifts")
+        self._traces.link(self.reference_index)
 
         for subplot in self.widget.figure:
             subplot.toolbar = False
 
 
+    def _sketch_means(self, num_frames: int = 1000):
+        num_frames_used = min(num_frames, self.raw_stack.shape[0])
+        frame_indices = np.random.choice(np.arange(self.raw_stack.shape[0]), size=num_frames_used, replace=False)
+        raw_mean = np.zeros((self.raw_stack.shape[1], self.raw_stack.shape[2]))
+        register_mean = torch.zeros(self.registration_array.shape[1],
+                                    self.registration_array.shape[2],
+                                    device=self.registration_array.output_device,
+                                    dtype=self.registration_array.dtype)
+        batch_size = self.registration_array.strategy.batch_size
+        num_iters = math.ceil(num_frames_used / batch_size)
+        for k in tqdm(range(num_iters)):
+            start = k * batch_size
+            end = min(start + batch_size, frame_indices.shape[0])
+            raw_frames = self.raw_stack[frame_indices[start:end]]
+            reg_frames = self.registration_array[frame_indices[start:end]]
+            raw_mean += (np.sum(raw_frames, axis = 0) / num_frames_used)
+            register_mean += (torch.sum(reg_frames, dim = 0) / num_frames_used)
+        return raw_mean, register_mean
 
     @property
     def raw_stack(self) -> masknmf.LazyFrameLoader:
@@ -167,6 +183,14 @@ class MotionCorrectionVis:
     @property
     def widget(self) -> fpl.NDWidget:
         return self._ndw
+
+    @property
+    def reference_index(self):
+        return self._reference_index
+
+    @property
+    def traces(self) -> TracePlot:
+        return self._traces
 
     def show(self):
         return self.widget.show()
