@@ -130,9 +130,12 @@ class MotionCorrectionVis:
             height_message = "applied rigid shifts height"
             width_message = "applied rigid shifts width"
         else:
-            summary_shifts = np.amax(np.abs(self.shifts.cpu().numpy()), axis = (1, 2))
-            height_message = "max pwrigid shift height"
-            width_message = "max pwrigid shift width"
+            # mean over the blocks, with the sign: max|shift| drops the direction, and the median
+            # snaps to the value the untouched blocks share, which moves in whole pixels
+            blocks = self.shifts.cpu().numpy()
+            summary_shifts = blocks.reshape(blocks.shape[0], -1, 2).mean(axis=1)
+            height_message = "mean pwrigid shift height"
+            width_message = "mean pwrigid shift width"
 
         self._traces = TracePlot(("shift (px)",), summary_shifts.shape[0], frame_timings)
         self._traces.set("shift (px)", [

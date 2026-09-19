@@ -25,11 +25,14 @@ class TracePlot:
         frame_timings=None,
         link_y: bool = False,
         autofit: bool = True,
+        decimate: bool = True,
     ):
         """
         Args:
             autofit (bool): refit the axes whenever the lines change. False keeps the zoom the user
                 set; the first data and "fit now" still fit. Toggled from the right-click popup too.
+            decimate (bool): draw a trace with more samples than the panel has pixel columns as a
+                min/max band under its mean, rather than a polyline that smears into a solid block.
         """
         self._panels = tuple(panels)
         self._lines = {name: [] for name in self._panels}
@@ -45,8 +48,9 @@ class TracePlot:
         self._link_y = link_y
         self._use_time = False
         self._autofit = autofit
+        self._decimate = decimate
         self._fit = False
-        self._fitted = False  # the axes have been fit to data at least once
+        self._fitted = set()  # panels whose axes have been fit to data at least once
         self._force_fit = False  # one-shot "fit now", requested from the right-click settings popup
         self._popup_id = f"##trace_settings_{id(self)}"
         self._window = None
@@ -87,7 +91,7 @@ class TracePlot:
                 raise ValueError(f"trace has {trace.shape[0]} samples, the plot has {len(self._frames)} frames")
             stored.append((str(label), trace, rgb))
         self._lines[panel] = stored
-        if fit if fit is not None else (not self._fitted or self._autofit):
+        if fit if fit is not None else (panel not in self._fitted or self._autofit):
             self._fit = True
 
     def clear(self):
@@ -137,7 +141,8 @@ class TracePlot:
 
     def draw(self, reserve: float = 0.0) -> Optional[int]:
         """The stacked panels filling the window but ``reserve`` px; returns the frame when the
-        playhead was dragged. Right-click any panel for autofit/fit/x-axis settings."""
+        playhead was dragged. Right-click any panel for autofit/fit/x-axis settings; shift or alt while
+        scrolling zooms x only or y only."""
         if implot.get_current_context() is None:
             implot.create_context()
         fit = self._resolve_fit()
@@ -165,8 +170,8 @@ class TracePlot:
         force, self._force_fit = self._force_fit, False
         fit = force or self._fit
         self._fit = False
-        if fit and any(self._lines.values()):
-            self._fitted = True
+        if fit:
+            self._fitted.update(name for name, lines in self._lines.items() if lines)
         return fit
 
     def _draw_settings_popup(self):
@@ -203,6 +208,31 @@ class TracePlot:
                 spec.line_color = color
         spec.fill_alpha = alpha
         return spec
+
+    def _draw_trace(self, label, xs, trace, rgb, span, columns: int):
+        """One line: a plain polyline while it fits the panel, else a min/max band under its mean."""
+        # only the samples currently on screen matter, so zooming in re-bins and eventually plots raw
+        lo = int(np.searchsorted(xs, span[0], "left"))
+        hi = int(np.searchsorted(xs, span[1], "right"))
+        visible = hi - lo
+        if not self._decimate or columns < 2 or visible <= 2 * columns:
+            # one sample of margin each side keeps the line joined to its off-screen neighbours
+            a, b = max(lo - 1, 0), min(hi + 1, len(xs))
+            implot.plot_line(label, xs[a:b], trace[a:b], self._spec(rgb))
+            return
+        # one bin per pixel column: drawing more points than that packs each column with vertical strokes
+        window = trace[lo:hi]
+        edges = np.linspace(0, visible, columns + 1).astype(np.int64)
+        starts = edges[:-1]
+        counts = np.diff(edges).astype(np.float32)
+        lows = np.minimum.reduceat(window, starts)
+        highs = np.maximum.reduceat(window, starts)
+        means = np.add.reduceat(window, starts) / counts
+        centers = starts + counts.astype(np.int64) // 2
+        x = np.ascontiguousarray(xs[lo:hi][centers], np.float32)
+        # same label for both, so the legend keeps one entry and they toggle together
+        implot.plot_shaded(label, x, highs, lows, self._spec(rgb, fill=True, alpha=0.35))
+        implot.plot_line(label, x, np.ascontiguousarray(means, np.float32), self._spec(rgb))
 
     def _draw_spans(self, xs):
         """Shaded epochs across the panel's full height; drawn first so the lines sit on top."""
@@ -246,8 +276,12 @@ class TracePlot:
         if not implot.begin_plot(name, imgui.ImVec2(0, 0), flags):
             return None
         try:
+            # shift: scroll zooms x only; alt: y only
+            io = imgui.get_io()
             x_flags = implot.AxisFlags_.none if last else implot.AxisFlags_.no_tick_labels
-            y_flags = implot.AxisFlags_.lock if imgui.get_io().key_shift else implot.AxisFlags_.none
+            if io.key_alt:
+                x_flags |= implot.AxisFlags_.lock
+            y_flags = implot.AxisFlags_.lock if io.key_shift else implot.AxisFlags_.none
             x_label = ("time" if self._use_time else "frame") if last else ""
             implot.setup_axes(x_label, name, x_flags, y_flags)
             # above the plot, so a panel with a legend keeps the same width as the others
@@ -258,8 +292,10 @@ class TracePlot:
             if limits is not None:
                 implot.setup_axis_limits(implot.ImAxis_.y1, *limits, implot.Cond_.always)
             self._draw_spans(xs)
+            columns = int(implot.get_plot_size().x)
+            span = implot.get_plot_limits().x
             for label, trace, rgb in lines:
-                implot.plot_line(label, xs, trace, self._spec(rgb))
+                self._draw_trace(label, xs, trace, rgb, (span.min, span.max), columns)
             self._draw_marks(xs)
             if implot.is_plot_hovered():
                 if self.on_pick is not None and lines and imgui.is_mouse_double_clicked(0):

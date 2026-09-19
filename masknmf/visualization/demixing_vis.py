@@ -1,5 +1,6 @@
 import os
 import threading
+from pathlib import Path
 from dataclasses import replace
 from typing import *
 import numpy as np
@@ -8,12 +9,15 @@ from imgui_bundle import imgui, portable_file_dialogs as pfd
 from fastplotlib import ui
 from fastplotlib.graphics.selectors._polygon import point_in_polygon
 import pygfx
+import h5py
 import torch
 from collections import OrderedDict
 import masknmf.arrays
+from masknmf.arrays import TiffArray
 from masknmf.utils import display
 from functools import partial
 from masknmf.visualization.imgui import (
+    THEME,
     RoiOrder,
     TracePlot,
     component_at_pixel,
@@ -22,8 +26,9 @@ from masknmf.visualization.imgui import (
     draw_roi_table,
     em,
     resolve_time_reference,
+    to_vec4,
 )
-from masknmf.visualization.rois import FootprintSet
+from masknmf.visualization.rois import MARKED_COLOR, FootprintSet
 from masknmf.demixing import update_signals, write_curated
 from masknmf.pipelines.configs.demixing_configs import NMFConfig
 
@@ -57,15 +62,38 @@ _GROUP_COLORS = (
 # They share a lot of common functionality with demixing vis
 _KEYBINDS = (
     ("up / down", "previous / next signal in the table (shift: by 10)"),
-    ("ctrl + click", "toggle a signal in the group, in the image or the table"),
-    ("shift + click", "add a signal to the group; in the table, every row up to it"),
-    ("esc", "cancel a new roi, else empty the group"),
+    (
+        "click",
+        "on an empty pixel: add its 5x5 pixel average to the plot as if grouped; on a drawn roi: plot its average alone",
+    ),
+    (
+        "ctrl + click",
+        "toggle a signal, drawn roi or pixel average in the group, in the image or the table",
+    ),
+    (
+        "shift + click",
+        "add a signal or drawn roi to the group; in the table, every row up to it",
+    ),
+    ("esc", "cancel a new roi or a poly-delete, else empty the group"),
     ("f", "center the view on the selection and keep following it"),
-    ("delete", "remove the selected roi, or mark the selected signal for deletion"),
+    (
+        "p",
+        "toggle pixel traces: a click on an empty pixel adds its 5x5 average to the plot",
+    ),
+    (
+        "delete",
+        "remove the selected roi, drop the active pixel average, or mark the selected signal for deletion",
+    ),
+    ("shift / alt + scroll", "in the trace plot, zoom x only / y only"),
     ("k", "show these keybinds"),
 )
-# compressed/background/residual, in that order, so the 3 base lines read apart in the legend
-_BASE_LINE_COLORS = ((0.85, 0.85, 0.85), (0.95, 0.55, 0.15), (0.35, 0.65, 0.95))
+# compressed/signal/background/residual, in that order, so the 4 base lines read apart in the legend
+_BASE_LINE_COLORS = (
+    (0.85, 0.85, 0.85),
+    (0.30, 0.85, 0.40),
+    (0.95, 0.55, 0.15),
+    (0.35, 0.65, 0.95),
+)
 
 
 class SingleSessionDemixingVis:
@@ -75,13 +103,26 @@ class SingleSessionDemixingVis:
     and export ROIs for a custom SignalDemixer.initialize_signals(is_custom=True) pass.
     Footprints show as feathered masks and/or contours over the summary image.
 
-    With ``source_path`` set, "Demix" runs the drawn ROIs and the signals marked with "Delete" through the
+    With ``results_path`` set, "Demix" runs the drawn ROIs and the signals marked with "Delete" through the
     demixer's NMF pass (``nmf_config``, the pipeline defaults when None) and writes the outcome to a new
     ``<timestamp>.curated.hdf5`` beside the file, never over it: drawn ROIs become ordinary signals,
     marked signals are gone, the new file's description says what was done, and the viewer moves on to it so
     further passes chain.
 
     The "Signals" tab lists every demixed signal; ctrl / shift select a group whose traces share the plot.
+    With "pixel traces" on (Curation tab checkbox or the p key, off by default), clicking an empty pixel adds the compressed movie's 5x5
+    average there to the plot as if it were a grouped signal, and lists it at the top of the Signals table,
+    marked. Pixel averages are diagnostic only: Demix and export ignore them, Delete drops them.
+    A drawn roi gets the same kind of trace once it is closed ("roi n", groupable, in the table too) and,
+    unlike a pixel average, is kept: Demix seeds the NMF pass with it and export writes it.
+    "poly-delete", under the table's area filter, draws a red polygon on any panel; once it closes, a
+    confirmation marks every signal in view whose center falls outside it (or inside, per the toggle), as
+    Delete does one at a time. Nothing is removed until the next Demix.
+
+    ``raw`` (a movie, or a .tif path) adds the raw movie as a seventh panel and ``shifts`` (an array, or a
+    motion correction hdf5 path) adds the registration shifts as a panel above the traces (piecewise rigid:
+    the largest block shift per frame). With ``results_path`` set, a lone .tif and a motion_correction.hdf5
+    beside the results are picked up when their frames match the results; given ones must match.
 
     TODO:
     -----
@@ -102,10 +143,12 @@ class SingleSessionDemixingVis:
         show_masks: bool = True,
         mask_opacity: float = 0.5,
         device="cpu",
-        source_path: str | os.PathLike | None = None,
+        results_path: str | os.PathLike | None = None,
         nmf_config: NMFConfig | None = None,
+        raw: masknmf.ArrayLike | np.ndarray | str | os.PathLike | None = None,
+        shifts: np.ndarray | torch.Tensor | str | os.PathLike | None = None,
     ):
-        self._source_path = None if source_path is None else str(source_path)
+        self._results_path = None if results_path is None else str(results_path)
         base = NMFConfig() if nmf_config is None else nmf_config
         self._min_brightness_cache = (
             1.0 if base.min_brightness is None else base.min_brightness
@@ -125,10 +168,92 @@ class SingleSessionDemixingVis:
         self._has_ac = isinstance(demixing_results, masknmf.DemixingResults)
         self._shape = self.demixing_results.shape
 
+        # raw movie and shifts: data or a path, or found beside the results; a found mismatch is skipped, a given one raises
+        folder = None if self._results_path is None else Path(self._results_path).parent
+        found_raw = found_shifts = False
+        if raw is None and folder is not None:
+            tifs = sorted(p for ext in ("*.tif", "*.tiff") for p in folder.glob(ext))
+            if len(tifs) == 1:
+                raw, found_raw = tifs[0], True
+        raw_src = raw if isinstance(raw, (str, os.PathLike)) else None
+        if raw_src is not None:
+            try:
+                raw = TiffArray(str(raw_src), memmap=True)
+            except (ValueError, TypeError):
+                raw = TiffArray(str(raw_src))
+        if raw is not None and tuple(raw.shape) != tuple(self._shape):
+            if not found_raw:
+                raise ValueError(
+                    f"raw movie has shape {tuple(raw.shape)}, the results have {tuple(self._shape)}"
+                )
+            display(
+                f"skipping {raw_src}: shape {tuple(raw.shape)} does not match the results"
+            )
+            raw = None
+        if shifts is None and folder is not None:
+            candidate = folder / "motion_correction.hdf5"
+            if candidate.is_file():
+                shifts, found_shifts = candidate, True
+        shifts_src = shifts if isinstance(shifts, (str, os.PathLike)) else None
+        if shifts_src is not None:
+            with h5py.File(shifts_src, "r") as f:
+                groups = [
+                    g
+                    for g in (
+                        "PiecewiseRigidRegistrationArray",
+                        "RigidRegistrationArray",
+                    )
+                    if g in f
+                ]
+                if not groups:
+                    raise ValueError(f"{shifts_src} holds no registration array")
+                shifts = f[groups[0]]["shifts"][()]
+        if shifts is not None:
+            if isinstance(shifts, torch.Tensor):
+                shifts = shifts.cpu().numpy()
+            shifts = np.asarray(shifts, np.float32)
+            if shifts.shape[0] != self._shape[0]:
+                if not found_shifts:
+                    raise ValueError(
+                        f"{shifts.shape[0]} shifts for {self._shape[0]} frames"
+                    )
+                display(
+                    f"skipping {shifts_src}: {shifts.shape[0]} shifts for {self._shape[0]} frames"
+                )
+                shifts = None
+        # say what was picked up, and how to add what was not, so the panels are discoverable
+        if raw is not None:
+            display(f"raw panel: {raw_src if raw_src is not None else 'movie given'}")
+        else:
+            display(
+                "no raw movie: raw= (a movie or a .tif path) adds a raw panel; a lone .tif beside the results is picked up"
+            )
+        if shifts is not None:
+            display(
+                f"shift traces: {shifts_src if shifts_src is not None else 'shifts given'}"
+            )
+        else:
+            display(
+                "no motion shifts: shifts= (an array or a motion correction hdf5) adds shift traces; "
+                "motion_correction.hdf5 beside the results is picked up"
+            )
+        self._raw = raw
+        self._shifts = shifts
+        self._shift_lines = None
+        if shifts is not None:
+            # piecewise rigid shifts are (frames, height blocks, width blocks, 2): show the largest block shift
+            summary = np.abs(shifts).max(axis=(1, 2)) if shifts.ndim == 4 else shifts
+            prefix = "max block shift" if shifts.ndim == 4 else "shift"
+            self._shift_lines = [
+                (f"{prefix} height", summary[:, 0], (1.0, 0.6, 0.2)),
+                (f"{prefix} width", summary[:, 1], (0.4, 0.7, 1.0)),
+            ]
+
         ref_range, frame_timings = resolve_time_reference(
             self._shape[0], frame_timings, ref_range
         )
 
+        # TODO: make these a variable at the top of the file when the names for these visualizations are set
         self._video_panels = (
             "compressed+denoised",
             "signals",
@@ -136,18 +261,26 @@ class SingleSessionDemixingVis:
             "residual",
             "colorful_signals",
             "summary img",
-        )
+        ) + (("raw",) if self._raw is not None else ())
 
         self._bind_arrays()
 
+        # two rows; raw takes the first slot when present, which makes it four columns instead of three
+        shown = (("raw",) if self._raw is not None else ()) + self._video_panels[:6]
+        ncols = 4 if len(shown) > 6 else 3
         self._video_extents = {
-            self._video_panels[0]: (0, 0.333, 0.0, 0.5),
-            self._video_panels[1]: (0.33, 0.666, 0.0, 0.5),
-            self._video_panels[2]: (0.666, 1, 0.0, 0.5),
-            self._video_panels[3]: (0.0, 0.333, 0.5, 1.0),
-            self._video_panels[4]: (0.333, 0.666, 0.5, 1.0),
-            self._video_panels[5]: (0.666, 1, 0.5, 1.0),
+            name: (
+                (i % ncols) / ncols,
+                (i % ncols + 1) / ncols,
+                (i // ncols) / 2,
+                (i // ncols) / 2 + 0.5,
+            )
+            for i, name in enumerate(shown)
         }
+        if len(shown) % ncols:
+            # no hole in the grid: the last panel takes the rest of its row
+            x0, _x1, y0, y1 = self._video_extents[shown[-1]]
+            self._video_extents[shown[-1]] = (x0, 1.0, y0, y1)
 
         self._ndw_fov = fpl.NDWidget(
             ref_range,
@@ -173,6 +306,17 @@ class SingleSessionDemixingVis:
             name=self._video_panels[0],
         )
         self._panel_graphics[self._video_panels[0]] = self._pmd_graphic
+
+        self._raw_graphic = None
+        if self._raw is not None:
+            self._raw_graphic = self._ndw_fov["raw"].add_nd_image(
+                self._raw,
+                movie_dims,
+                movie_display_dims,
+                slider_maps=movie_index_mapping.copy(),
+                name="raw",
+            )
+            self._panel_graphics["raw"] = self._raw_graphic
 
         if self._ac_array is not None:
             self._ac_graphic = self._ndw_fov[self._video_panels[1]].add_nd_image(
@@ -290,15 +434,26 @@ class SingleSessionDemixingVis:
 
         # no autofit: the zoom set on one signal's traces is kept while selecting others
         self._traces = TracePlot(
-            ("traces",), self._shape[0], frame_timings, autofit=False
+            ("shift (px)", "traces") if self._shift_lines else ("traces",),
+            self._shape[0],
+            frame_timings,
+            autofit=False,
         )
-        self._traces.dock(self._ndw_fov.figure, size=360, title="traces")
+        self._traces.dock(
+            self._ndw_fov.figure, size=480 if self._shift_lines else 360, title="traces"
+        )
+        if self._shift_lines:
+            self._traces.set("shift (px)", self._shift_lines)
         self._traces.link(self.reference_index)
         self._traces.on_pick = self._select_signal
-        self._base_lines = ("compressed", "background", "residual")
+        self._base_lines = ("compressed", "signal", "background", "residual")
         self._selected_signals = (
             None  # the signal behind each plotted line, when lines are signals
         )
+        # diagnostic only: (row, col) -> (compressed 5x5 average, pixel count), newest first; they join the group
+        self._pixel_traces = False
+        self._pixels = OrderedDict()
+        self._active_pixel = None
 
         self._image_selector = None
         self._show_contours = show_contours
@@ -306,12 +461,18 @@ class SingleSessionDemixingVis:
         if self._ac_array is not None:
             self._make_selectors()
 
-        self._rois = OrderedDict()  # PolygonSelector -> {"color": rgb}
+        # PolygonSelector -> color, subplot, compressed average over it (None until closed), pixel count, dirty
+        self._rois = OrderedDict()
         self._active_roi = None
         self._status = ""
         self._file_dialog = None
         self._press = None  # screen position of the last pointer press on a video panel
-        self._armed = False  # "Add ROI" pressed: the next press on any video panel starts the roi there
+        self._armed = None  # "roi" / "cut": the next press on any video panel starts that polygon there
+        # the poly-delete polygon, its subplot, the signals it condemns once closed (None while drawing)
+        self._cut = None
+        self._cut_panel = None
+        self._cut_hits = None
+        self._cut_outside = True
 
         self._bind_click_handlers()
 
@@ -319,9 +480,6 @@ class SingleSessionDemixingVis:
             subplot.tooltip.enabled = False
             subplot.toolbar = False
 
-        # "right", not "bottom": NDWidget already docks its own play/pause/slider toolbar
-        # at "bottom", and a figure only keeps one window per edge (a second add_imgui_window
-        # at the same edge replaces it rather than stacking).
         self._ndw_fov.figure.add_imgui_window(
             self._draw_side_panel, location="right", size=300, title="Tools"
         )
@@ -348,7 +506,11 @@ class SingleSessionDemixingVis:
                 self._mask_opacity,
                 self._active_component,
                 self._marked,
-                self._group_colors(),
+                {
+                    k: rgb
+                    for k, rgb in self._group_colors().items()
+                    if isinstance(k, int)
+                },
             )
             if self._show_masks
             else None
@@ -377,13 +539,17 @@ class SingleSessionDemixingVis:
     def _bind_click_handlers(self):
         """Re-attach the click handlers to every video panel: NDGraphic.data= replaces the graphic instance."""
         for name, graphic in self._panel_graphics.items():
-            graphic.graphic.add_event_handler(partial(self._pointer_down, name), "pointer_down")
+            graphic.graphic.add_event_handler(
+                partial(self._pointer_down, name), "pointer_down"
+            )
             graphic.graphic.add_event_handler(self._click_update, "click")
 
     def _pointer_down(self, name: str, ev: pygfx.PointerEvent):
         self._press = (ev.x, ev.y)
-        if self._armed:
+        if self._armed == "roi":
             self._begin_roi(name)
+        elif self._armed == "cut":
+            self._begin_cut(name)
 
     def _set_gray_cmaps(self):
         """NDGraphic.data= replaces the graphic instance, dropping its cmap too."""
@@ -399,6 +565,7 @@ class SingleSessionDemixingVis:
             self._residual_graphic,
             self._colorful_signal_graphic,
             self._summary_image,
+            self._raw_graphic,
         )
 
     def _make_selectors(self):
@@ -424,16 +591,21 @@ class SingleSessionDemixingVis:
         self._demixing_results = results
         self._bind_arrays()
         self._clear_rois()
+        self._drop_cut()
         self._marked.clear()
         self._group.clear()
         self._clear_component()
         self._selected_signals = None
         self._clear_traces()
+        self._pixels.clear()
         self._pmd_graphic.data = self._pmd_array
         self._ac_graphic.data = self._ac_array
         self._background_graphic.data = self._fluctuating_background_array
         self._residual_graphic.data = self._residual_array
         self._colorful_signal_graphic.data = self._colorful_ac_array
+        if self._raw_graphic is not None:
+            # same movie, new graphic instance: keeps the re-bound click handlers from doubling up
+            self._raw_graphic.data = self._raw
         if self._own_summary:
             self._summary_image.data = (
                 results.global_residual_correlation_image.cpu().numpy()
@@ -449,7 +621,7 @@ class SingleSessionDemixingVis:
         write the outcome to a new curated file beside the results. Runs on a thread; the viewer reloads
         from the new file when it finishes.
         """
-        if self._ac_array is None or self._source_path is None:
+        if self._ac_array is None or self._results_path is None:
             raise ValueError(
                 "editing signals needs demixing results loaded from a file"
             )
@@ -474,7 +646,7 @@ class SingleSessionDemixingVis:
                 self._nmf_config,
                 device=self.device,
             )
-            path = write_curated(self._source_path, results, drop, masks.shape[-1])
+            path = write_curated(self._results_path, results, drop, masks.shape[-1])
             self._pending = (results, path)
         except Exception as e:
             self._pending = e
@@ -494,7 +666,7 @@ class SingleSessionDemixingVis:
         except Exception as e:
             self._status = f"reload after demix failed: {e}"
             return
-        parent, self._source_path = self._source_path, path
+        parent, self._results_path = self._results_path, path
         self._status = (
             f"{results.a.shape[1]} signals (was {before}) written to {os.path.basename(path)}; "
             f"{os.path.basename(parent)} kept"
@@ -505,7 +677,13 @@ class SingleSessionDemixingVis:
         if self._selected_signals is not None and 0 <= index < len(
             self._selected_signals
         ):
-            self._select_component(self._selected_signals[index])
+            picked = self._selected_signals[index]
+            if isinstance(picked, tuple):
+                self._active_pixel = picked
+            elif picked in self._rois:
+                self._active_roi = picked
+            else:
+                self._select_component(picked)
 
     def _click_update(self, ev: pygfx.PointerEvent):
         """
@@ -524,7 +702,12 @@ class SingleSessionDemixingVis:
 
         roi = self._roi_at(col, row)
         if roi is not None:
-            self._select_roi(roi)
+            if mods & {"Control", "Ctrl"}:
+                self.group_toggle(roi)
+            elif "Shift" in mods:
+                self.group_add(roi)
+            else:
+                self._select_roi(roi)
             return
 
         if self._ac_array is not None:
@@ -541,6 +724,34 @@ class SingleSessionDemixingVis:
                     self._select_component(component)
                 return
 
+        if (
+            self._pixel_traces
+            and 0 <= row < self._shape[1]
+            and 0 <= col < self._shape[2]
+        ):
+            pixel = (int(row), int(col))
+            if mods & {"Control", "Ctrl"} and pixel in self._group:
+                self._group.remove(pixel)
+            else:
+                if pixel not in self._pixels:
+                    rows, cols = np.mgrid[
+                        max(pixel[0] - 2, 0) : min(pixel[0] + 3, self._shape[1]),
+                        max(pixel[1] - 2, 0) : min(pixel[1] + 3, self._shape[2]),
+                    ]
+                    self._pixels[pixel] = (
+                        self._pmd_average(rows.ravel(), cols.ravel()),
+                        rows.size,
+                    )
+                    self._pixels.move_to_end(pixel, last=False)
+                self._seed_group()
+                if pixel not in self._group:
+                    self._group.append(pixel)
+            self._active_pixel = pixel
+            self._active_roi = None
+            self._sync_highlight()
+            self._update_traces()
+            return
+
         self.group_clear()
         self._clear_component()
         self._active_roi = None
@@ -548,13 +759,23 @@ class SingleSessionDemixingVis:
         self._clear_traces()
 
     def _select_roi(self, selector):
+        """A drawn roi alone: its average is the plot, once it has one."""
         self.group_clear()
         self._clear_component()
-        self._active_roi = selector
-        self._clear_traces()
+        self._select_component(selector)
 
-    def _select_component(self, component: int):
+    def _select_component(self, component):
+        if isinstance(component, tuple) or component in self._rois:
+            # pixel averages and drawn rois are only ever plotted as group members
+            if component not in self._group:
+                self._group.append(component)
+            self._active_pixel = component if isinstance(component, tuple) else None
+            self._active_roi = None if isinstance(component, tuple) else component
+            self._sync_highlight()
+            self._update_traces()
+            return
         self._active_roi = None
+        self._active_pixel = None
         self._active_component = int(component)
         if self._order is not None:
             if self._order.reveal(self._active_component):
@@ -579,7 +800,7 @@ class SingleSessionDemixingVis:
         }
 
     def _highlighted(self) -> list:
-        picks = list(self._group)
+        picks = [k for k in self._group if isinstance(k, int)]
         if self._active_component is not None and self._active_component not in picks:
             picks.append(self._active_component)
         return picks
@@ -592,32 +813,57 @@ class SingleSessionDemixingVis:
 
     def _update_traces(self):
         """
-        One signal: its compressed / background / residual roi averages. A group: every
-        member's compressed roi average, colored like its mask.
+        One signal: its compressed / signal / background / residual roi averages. A group, or any pixel
+        average or drawn roi: every member's compressed average, colored like its mask or table row.
         """
         results = self.demixing_results
-        if len(self._group) > 1:
-            self._selected_signals = list(self._group)
-            averages = results.pmd_roi_averages
-            lines = [
-                (f"signal {k}", averages[k].cpu().numpy(), rgb)
-                for k, rgb in self._group_colors().items()
-            ]
+        if len(self._group) > 1 or any(not isinstance(k, int) for k in self._group):
+            self._selected_signals = []
+            lines = []
+            for i, k in enumerate(self._group):
+                rgb = _GROUP_COLORS[i % len(_GROUP_COLORS)]
+                if isinstance(k, tuple):
+                    lines.append(
+                        (f"pixel avg ({k[0]}, {k[1]})", self._pixels[k][0], rgb)
+                    )
+                elif k in self._rois:
+                    if self._rois[k]["trace"] is None:
+                        continue
+                    lines.append(
+                        (
+                            f"roi {list(self._rois).index(k)}",
+                            self._rois[k]["trace"],
+                            rgb,
+                        )
+                    )
+                else:
+                    lines.append(
+                        (f"signal {k}", results.pmd_roi_averages[k].cpu().numpy(), rgb)
+                    )
+                self._selected_signals.append(k)
         elif self._active_component is not None:
             k = self._active_component
             self._selected_signals = None
-            fields = (
-                "pmd_roi_averages",
-                "fluctuating_background_roi_averages",
-                "residual_roi_averages",
+            ypix, xpix, _lam = self._footprints.footprints[k]
+            support = torch.as_tensor(
+                ypix.astype(np.int64) * self._shape[2] + xpix, device=results.a.device
             )
-            lines = list(
-                zip(
-                    self._base_lines,
-                    (getattr(results, f)[k].cpu().numpy() for f in fields),
-                    _BASE_LINE_COLORS,
+            # the signal movie averaged over the footprint's support, like the stored roi averages
+            signal = torch.sparse.mm(
+                torch.index_select(results.a, 0, support), results.c.T
+            ).mean(dim=0)
+            traces = (
+                results.pmd_roi_averages[k],
+                signal,
+                results.fluctuating_background_roi_averages[k],
+                results.residual_roi_averages[k],
+            )
+            lines = [
+                (label, trace.cpu().numpy(), rgb)
+                for label, trace, rgb in zip(
+                    self._base_lines, traces, _BASE_LINE_COLORS
                 )
-            )
+            ]
         else:
             self._selected_signals = None
             self._clear_traces()
@@ -629,26 +875,41 @@ class SingleSessionDemixingVis:
         if not self._group and self._active_component is not None:
             self._group.append(self._active_component)
 
-    def group_add(self, component: int):
+    def group_add(self, component):
         self._seed_group()
         if component not in self._group:
-            self._group.append(int(component))
+            self._group.append(
+                int(component)
+                if isinstance(component, (int, np.integer))
+                else component
+            )
         self._select_component(component)
 
-    def group_toggle(self, component: int):
+    def group_toggle(self, component):
         self._seed_group()
         if component in self._group:
             self._group.remove(component)
+            if not isinstance(component, (int, np.integer)):
+                self._active_pixel = component if isinstance(component, tuple) else None
+                self._active_roi = None if isinstance(component, tuple) else component
+                self._sync_highlight()
+                self._update_traces()
+                return
         else:
-            self._group.append(int(component))
+            self._group.append(
+                int(component)
+                if isinstance(component, (int, np.integer))
+                else component
+            )
         self._select_component(component)
 
-    def group_extend_to(self, component: int):
-        """Add every table row between the cursor and ``component`` to the group."""
-        if self._order is None:
+    def group_extend_to(self, component):
+        """Add every table row between the cursor and ``component`` to the group; a pixel average or drawn roi just joins."""
+        if self._order is None or not isinstance(component, (int, np.integer)):
+            self.group_add(component)
             return
         self._seed_group()
-        order = list(self._order.order)
+        order = [int(k) for k in self._order.order]
         current = self._order.current
         if component not in order or current not in order:
             self.group_add(component)
@@ -687,6 +948,17 @@ class SingleSessionDemixingVis:
                 cx - width / 2, cx + width / 2, cy - height / 2, cy + height / 2
             )
 
+    def _set_pixel_traces(self, on: bool):
+        """Turning pixel traces off drops every pixel average, from the plot and the table."""
+        self._pixel_traces = on
+        if on or not self._pixels:
+            return
+        self._group[:] = [k for k in self._group if not isinstance(k, tuple)]
+        self._pixels.clear()
+        self._active_pixel = None
+        self._sync_highlight()
+        self._update_traces()
+
     def _toggle_follow(self):
         self._follow = not self._follow
         if self._follow and self._active_component is not None:
@@ -713,9 +985,9 @@ class SingleSessionDemixingVis:
                 self._image_selector.remove_graphic(graphic)
 
     def _drawing(self) -> bool:
-        return self._armed or (
-            self._active_roi is not None
-            and self._active_roi._move_info.mode == "create"
+        return self._armed is not None or any(
+            s is not None and s._move_info.mode == "create"
+            for s in (self._active_roi, self._cut)
         )
 
     def _roi_at(self, col: int, row: int):
@@ -727,7 +999,7 @@ class SingleSessionDemixingVis:
 
     def _start_roi(self):
         """Arm a new roi: it is created on whichever video panel gets the next press."""
-        self._armed = True
+        self._armed = "roi"
         self._clear_component()
 
     def _begin_roi(self, name: str):
@@ -735,7 +1007,7 @@ class SingleSessionDemixingVis:
         Create the armed roi on panel ``name``. The press that got here also places its first
         vertex: pygfx bubbles it up to the renderer last, where the selector's fresh handlers wait.
         """
-        self._armed = False
+        self._armed = None
         color = _ROI_COLORS[len(self._rois) % len(_ROI_COLORS)]
         selector = self._panel_graphics[name].graphic.add_polygon_selector(
             fill_color=color,
@@ -745,12 +1017,62 @@ class SingleSessionDemixingVis:
             vertex_size=8,
         )
         selector.add_event_handler(partial(self._roi_changed, selector), "selection")
-        self._rois[selector] = {"color": color, "subplot": self._ndw_fov.figure[name]}
+        self._rois[selector] = {
+            "color": color,
+            "subplot": self._ndw_fov.figure[name],
+            "trace": None,
+            "area": 0,
+            "dirty": True,
+        }
         self._active_roi = selector
 
     def _roi_changed(self, selector, ev):
         self._active_roi = selector
+        self._rois[selector]["dirty"] = True
         self._clear_component()
+
+    def _poll_rois(self):
+        """Average the compressed movie over each drawn roi once its vertices settle; a new roi joins the plot."""
+        for selector, roi in self._rois.items():
+            if not roi["dirty"] or selector._move_info.mode is not None:
+                continue
+            roi["dirty"] = False
+            indices = selector.get_selected_indices(selector.parent)
+            if indices.shape[0] == 0:
+                continue
+            first = roi["trace"] is None
+            roi["trace"] = self._pmd_average(indices[:, 1], indices[:, 0])
+            roi["area"] = int(indices.shape[0])
+            if first:
+                self._seed_group()
+                self._select_component(selector)
+            elif selector in self._group:
+                self._update_traces()
+
+    def _pmd_average(self, rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
+        """The compressed movie averaged over the pixels (rows, cols), as the panel shows it, without building frames."""
+        pmd = self._pmd_array
+        idx = torch.as_tensor(
+            np.asarray(rows, np.int64) * self._shape[2] + np.asarray(cols, np.int64),
+            device=pmd.v.device,
+        )
+        u = torch.index_select(pmd.u, 0, idx).to_dense()
+        if pmd.rescale:
+            u = u * pmd.var_img.flatten()[idx, None]
+        trace = u.mean(dim=0) @ pmd.v
+        if pmd.rescale:
+            trace = trace + pmd.mean_img.flatten()[idx].mean()
+            if (
+                pmd.include_trend
+                and pmd.spatial_trend_basis is not None
+                and pmd.temporal_trend_basis is not None
+            ):
+                trace = (
+                    trace
+                    + pmd.spatial_trend_basis[idx].mean(dim=0)
+                    @ pmd.temporal_trend_basis
+                )
+        return trace.cpu().numpy()
 
     def _delete_roi(self, selector):
         if selector._move_info.mode is not None:
@@ -758,10 +1080,114 @@ class SingleSessionDemixingVis:
         self._rois.pop(selector)["subplot"].delete_graphic(selector)
         if self._active_roi is selector:
             self._active_roi = next(reversed(self._rois), None)
+        if selector in self._group:
+            self._group.remove(selector)
+            self._sync_highlight()
+            self._update_traces()
 
     def _clear_rois(self):
         for selector in list(self._rois):
             self._delete_roi(selector)
+
+    def _start_cut(self):
+        """Arm a poly-delete: its polygon is created on whichever video panel gets the next press."""
+        self._armed = "cut"
+        self._clear_component()
+
+    def _begin_cut(self, name: str):
+        """Create the armed poly-delete polygon on panel ``name``; the press places its first vertex, as for a roi."""
+        self._armed = None
+        self._cut = self._panel_graphics[name].graphic.add_polygon_selector(
+            fill_color=(0.0, 0.0, 0.0, 0.0),
+            edge_color=MARKED_COLOR,
+            vertex_color=MARKED_COLOR,
+            edge_thickness=2,
+            vertex_size=8,
+        )
+        self._cut_panel = self._ndw_fov.figure[name]
+
+    def _poll_cut(self):
+        """Once the poly-delete polygon closes, find the unmarked signals in view it condemns and ask."""
+        if (
+            self._cut is None
+            or self._cut_hits is not None
+            or self._cut._move_info.mode is not None
+        ):
+            return
+        polygon = self._cut.selection[:, :2]
+        if polygon.shape[0] < 3:
+            self._drop_cut()
+            return
+        view = self._order.order
+        centers = self._ac_array.centers.cpu().numpy()[view]
+        inside = np.fromiter(
+            (point_in_polygon((col, row), polygon) for row, col in centers),
+            bool,
+            len(view),
+        )
+        hits = view[~inside] if self._cut_outside else view[inside]
+        self._cut_hits = [int(k) for k in hits if int(k) not in self._marked]
+        if not self._cut_hits:
+            where = "outside" if self._cut_outside else "inside"
+            self._status = f"poly-delete: no unmarked signal in view is {where} the polygon"
+            self._drop_cut()
+            return
+        imgui.open_popup("poly-delete")
+
+    def _drop_cut(self):
+        if self._cut is None:
+            return
+        if self._cut._move_info.mode is not None:
+            self._cut._end_move_mode()
+        self._cut_panel.delete_graphic(self._cut)
+        self._cut = None
+        self._cut_hits = None
+
+    def _draw_cut_popup(self):
+        """Modal over a blacked-out canvas: confirm marking the poly-delete hits, or drop the polygon."""
+        # the dim behind a modal is read from the style at render time, after any push/pop
+        imgui.get_style().set_color_(
+            imgui.Col_.modal_window_dim_bg, imgui.ImVec4(0.0, 0.0, 0.0, 0.85)
+        )
+        imgui.set_next_window_pos(
+            imgui.get_main_viewport().get_center(),
+            imgui.Cond_.appearing,
+            pivot=imgui.ImVec2(0.5, 0.5),
+        )
+        if not imgui.begin_popup_modal(
+            "poly-delete",
+            None,
+            imgui.WindowFlags_.always_auto_resize | imgui.WindowFlags_.no_saved_settings,
+        )[0]:
+            return
+        if self._cut_hits is None:
+            # esc dropped the cut under the popup
+            imgui.close_current_popup()
+            imgui.end_popup()
+            return
+        n = len(self._cut_hits)
+        where = "outside" if self._cut_outside else "inside"
+        imgui.text(f"Are you sure you want to delete {n} signal{'s' if n != 1 else ''}?")
+        imgui.text_disabled(
+            f"{n} of the {len(self._order.order)} in view have their center {where} the polygon."
+        )
+        imgui.text_disabled("They are only marked here; the next Demix removes them.")
+        imgui.dummy(imgui.ImVec2(0, em(0.3)))
+        imgui.push_style_color(imgui.Col_.button, to_vec4(THEME.danger))
+        imgui.push_style_color(imgui.Col_.button_hovered, to_vec4(THEME.danger_hover))
+        imgui.push_style_color(imgui.Col_.button_active, to_vec4(THEME.danger_hover))
+        if imgui.button(f"delete {n}", imgui.ImVec2(em(7), 0)):
+            self._marked.update(self._cut_hits)
+            self._refresh_masks()
+            self._status = f"{n} signal(s) {where} the polygon marked"
+            self._drop_cut()
+            imgui.close_current_popup()
+        imgui.pop_style_color(3)
+        imgui.same_line(0, em(0.6))
+        if imgui.button("cancel", imgui.ImVec2(em(7), 0)):
+            self._drop_cut()
+            imgui.close_current_popup()
+        imgui.end_popup()
 
     def _toggle_marked(self, component: int):
         """Mark a signal for deletion on the next demix, or unmark it."""
@@ -769,14 +1195,22 @@ class SingleSessionDemixingVis:
         self._refresh_masks()
 
     def _delete_selected(self):
-        """The Delete action: drop an active drawn roi, else toggle the active signal's mark."""
+        """The Delete action: drop an active drawn roi, else the active pixel average, else toggle the active signal's mark."""
         if self._active_roi is not None:
             self._delete_roi(self._active_roi)
+        elif self._active_pixel is not None:
+            self._pixels.pop(self._active_pixel, None)
+            if self._active_pixel in self._group:
+                self._group.remove(self._active_pixel)
+            self._active_pixel = None
+            self._sync_highlight()
+            self._update_traces()
         elif self._active_component is not None:
             self._toggle_marked(self._active_component)
 
     def _clear_traces(self):
-        self._traces.clear()
+        self._active_pixel = None
+        self._traces.set("traces", [])
 
     @property
     def roi_masks(self) -> np.ndarray:
@@ -850,11 +1284,16 @@ class SingleSessionDemixingVis:
         io = imgui.get_io()
         if io.want_text_input:
             return
+        if self._cut is not None:
+            # a poly-delete owns the keys until it is confirmed or dropped
+            if imgui.is_key_pressed(imgui.Key.escape, False):
+                self._drop_cut()
+            return
         if imgui.is_key_pressed(imgui.Key.delete, False):
             self._delete_selected()
         if imgui.is_key_pressed(imgui.Key.escape, False):
-            if self._armed:
-                self._armed = False
+            if self._armed is not None:
+                self._armed = None
             else:
                 self.group_clear()
         stride = 10 if io.key_shift else 1
@@ -864,12 +1303,18 @@ class SingleSessionDemixingVis:
             self._step(-stride)
         if imgui.is_key_pressed(imgui.Key.f, False):
             self._toggle_follow()
+        if imgui.is_key_pressed(imgui.Key.p, False):
+            self._set_pixel_traces(not self._pixel_traces)
         if imgui.is_key_pressed(imgui.Key.k, False):
             self._keybinds_open = not self._keybinds_open
 
     def _selection_status(self) -> str:
-        if len(self._group) > 1:
-            return f"{len(self._group)} signals grouped: {sorted(self._group)}"
+        pixels = [k for k in self._group if isinstance(k, tuple)]
+        rois = [list(self._rois).index(k) for k in self._group if k in self._rois]
+        if len(self._group) > 1 or pixels or rois:
+            signals = sorted(k for k in self._group if isinstance(k, int))
+            note = "; pixel avgs are marked, delete them when done" if pixels else ""
+            return f"{len(self._group)} grouped: signals {signals}, rois {rois}, pixel avgs {pixels}{note}"
         if self._active_component is not None:
             marked = (
                 " (marked for deletion)"
@@ -885,6 +1330,8 @@ class SingleSessionDemixingVis:
         """Docked at "right" (the NDWidget owns "bottom"): the roi tools and the signal table as tabs."""
         self._poll_file_dialog()
         self._poll_worker()
+        self._poll_rois()
+        self._poll_cut()
         self._handle_keys()
         if imgui.begin_tab_bar("##side"):
             if imgui.begin_tab_item("Curation")[0]:
@@ -894,25 +1341,69 @@ class SingleSessionDemixingVis:
                 self._draw_signal_tab()
                 imgui.end_tab_item()
             imgui.end_tab_bar()
+        self._draw_cut_popup()
         self._keybinds_open = draw_keybinds_popup(_KEYBINDS, self._keybinds_open)
 
-    def _table_select(self, component: int):
+    def _table_select(self, component):
         self.group_clear()
+        if isinstance(component, tuple):
+            self._clear_component()
         self._select_component(component)
 
-    def _format_cell(self, name: str, component: int) -> str:
+    def _format_cell(self, name: str, item) -> str:
+        if isinstance(item, tuple):
+            trace, area = self._pixels[item]
+            return {"area": f"{area}", "peak": f"{float(trace.max()):.3g}", "del": "x"}[
+                name
+            ]
+        if item in self._rois:
+            roi = self._rois[item]
+            peak = "" if roi["trace"] is None else f"{float(roi['trace'].max()):.3g}"
+            return {"area": f"{roi['area']}", "peak": peak, "del": ""}[name]
         if name == "del":
-            return "x" if component in self._marked else ""
-        value = self._order.columns[name][component]
+            return "x" if item in self._marked else ""
+        value = self._order.columns[name][item]
         return f"{int(value)}" if name == "area" else f"{float(value):.3g}"
 
     def _draw_signal_tab(self):
-        if self._order is None:
+        if self._order is None and not self._pixels and not self._rois:
             imgui.text_disabled("no demixed signals")
             return
-        if draw_range_filter(self._order, "_signals"):
-            self._order.rebuild()
-        imgui.text_disabled(f"{len(self._order.order)}/{self._order.n_items} in view")
+        # a bare pmd array has no signals, but its pixel averages and drawn rois still get the table
+        order = (
+            self._order
+            if self._order is not None
+            else RoiOrder({"area": np.zeros(0), "peak": np.zeros(0)}, 0)
+        )
+        if draw_range_filter(order, "_signals"):
+            order.rebuild()
+        imgui.text_disabled(f"{len(order.order)}/{order.n_items} in view")
+        if self._order is not None:
+            imgui.begin_disabled(self._drawing() or self._worker is not None)
+            imgui.push_style_color(imgui.Col_.button, to_vec4(THEME.danger))
+            imgui.push_style_color(imgui.Col_.button_hovered, to_vec4(THEME.danger_hover))
+            imgui.push_style_color(imgui.Col_.button_active, to_vec4(THEME.danger_hover))
+            if imgui.button("poly-delete", imgui.ImVec2(em(6.5), 0)):
+                self._start_cut()
+            imgui.pop_style_color(3)
+            imgui.end_disabled()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                imgui.set_tooltip(
+                    "draw a polygon on any panel; once it closes, confirm to mark every signal in view "
+                    "whose center is outside (or inside) it for deletion on the next demix"
+                )
+            imgui.same_line(0, em(0.6))
+            if imgui.radio_button("outside", self._cut_outside):
+                self._cut_outside = True
+            imgui.same_line(0, em(0.4))
+            if imgui.radio_button("inside", not self._cut_outside):
+                self._cut_outside = False
+            imgui.push_text_wrap_pos(0)
+            if self._armed == "cut":
+                imgui.text_disabled("click on any panel to start the polygon (esc cancels)")
+            elif self._cut is not None and self._cut_hits is None:
+                imgui.text_disabled("click to add points; click the first point to close")
+            imgui.pop_text_wrap_pos()
         changed, self._follow = imgui.checkbox("center on selection", self._follow)
         if changed and self._follow and self._active_component is not None:
             self._center_on(self._active_component)
@@ -928,7 +1419,7 @@ class SingleSessionDemixingVis:
             }
             colors = self._group_colors()
             self._scroll_to_current = draw_roi_table(
-                self._order,
+                order,
                 _SIGNAL_COLUMNS,
                 formatters,
                 self._scroll_to_current,
@@ -937,7 +1428,16 @@ class SingleSessionDemixingVis:
                 is_grouped=self._group.__contains__,
                 on_ctrl_select=self.group_toggle,
                 on_shift_select=self.group_extend_to,
-                row_color=lambda k: colors.get(k, self._footprints.color(k)),
+                row_color=lambda k: colors.get(
+                    k,
+                    MARKED_COLOR
+                    if isinstance(k, tuple)
+                    else self._rois[k]["color"]
+                    if k in self._rois
+                    else self._footprints.color(k),
+                ),
+                prefix_rows=[(k, f"px {k[0]},{k[1]}") for k in self._pixels]
+                + [(sel, f"roi {i}") for i, sel in enumerate(self._rois)],
             )
         imgui.end_child()
         imgui.separator()
@@ -1004,13 +1504,27 @@ class SingleSessionDemixingVis:
         if self._image_selector is not None:
             self._draw_overlay_controls()
 
+        changed, on = imgui.checkbox("pixel traces", self._pixel_traces)
+        if changed:
+            self._set_pixel_traces(on)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "click an empty pixel to add the compressed movie's 5x5 average there to the plot, grouped "
+                "with whatever is shown, and to the top of the signals table, marked. demix and export "
+                "ignore it; delete drops it"
+            )
+        imgui.same_line(0, em(0.3))
+        imgui.text_disabled("(p)")
+
         imgui.begin_disabled(drawing)
         if imgui.button("Add ROI", imgui.ImVec2(-1, 0)):
             self._start_roi()
         imgui.end_disabled()
 
         imgui.begin_disabled(
-            self._active_roi is None and self._active_component is None
+            self._active_roi is None
+            and self._active_component is None
+            and self._active_pixel is None
         )
         label = (
             "Unmark signal"
@@ -1023,8 +1537,8 @@ class SingleSessionDemixingVis:
         imgui.end_disabled()
         if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
             imgui.set_tooltip(
-                "remove the selected drawn roi, or mark the selected signal for deletion "
-                "on the next demix (press again to unmark)"
+                "remove the selected drawn roi, drop the active pixel average, or mark the selected "
+                "signal for deletion on the next demix (press again to unmark)"
             )
 
         imgui.begin_disabled(not self._rois)
@@ -1035,7 +1549,7 @@ class SingleSessionDemixingVis:
         imgui.begin_disabled(
             (not self._rois and not self._marked)
             or self._ac_array is None
-            or self._source_path is None
+            or self._results_path is None
             or self._worker is not None
         )
         if imgui.button("Demix", imgui.ImVec2(-1, 0)):
@@ -1045,8 +1559,8 @@ class SingleSessionDemixingVis:
             imgui.set_tooltip(
                 "re-demix: add the drawn rois, remove the marked signals, write a new curated results file "
                 "beside the original (kept)"
-                if self._source_path is not None
-                else "open the results with source_path to enable"
+                if self._results_path is not None
+                else "open the results with results_path to enable"
             )
 
         changed, filter_dim = imgui.checkbox(
@@ -1065,8 +1579,8 @@ class SingleSessionDemixingVis:
             )
 
         imgui.push_text_wrap_pos(0)
-        if self._armed:
-            imgui.text_disabled("click on any panel to start the roi (esc cancels)")
+        if self._armed is not None:
+            imgui.text_disabled("click on any panel to start the polygon (esc cancels)")
         elif drawing:
             imgui.text_disabled("click to add points; click the first point to close")
         else:
@@ -1095,6 +1609,16 @@ class SingleSessionDemixingVis:
     @property
     def traces(self) -> TracePlot:
         return self._traces
+
+    @property
+    def raw(self) -> masknmf.ArrayLike | np.ndarray | None:
+        """The raw movie behind the "raw" panel, None without one."""
+        return self._raw
+
+    @property
+    def shifts(self) -> np.ndarray | None:
+        """The registration shifts behind the "shift (px)" panel, None without one."""
+        return self._shifts
 
     @property
     def reference_index(self) -> fpl.ReferenceIndices:
