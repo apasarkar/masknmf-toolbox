@@ -103,7 +103,7 @@ class SingleSessionDemixingVis:
     and export ROIs for a custom SignalDemixer.initialize_signals(is_custom=True) pass.
     Footprints show as feathered masks and/or contours over the summary image.
 
-    With ``source_path`` set, "Demix" runs the drawn ROIs and the signals marked with "Delete" through the
+    With ``results_path`` set, "Demix" runs the drawn ROIs and the signals marked with "Delete" through the
     demixer's NMF pass (``nmf_config``, the pipeline defaults when None) and writes the outcome to a new
     ``<timestamp>.curated.hdf5`` beside the file, never over it: drawn ROIs become ordinary signals,
     marked signals are gone, the new file's description says what was done, and the viewer moves on to it so
@@ -119,10 +119,10 @@ class SingleSessionDemixingVis:
     confirmation marks every signal in view whose center falls outside it (or inside, per the toggle), as
     Delete does one at a time. Nothing is removed until the next Demix.
 
-    ``raw`` / ``raw_path`` add the raw movie as a seventh panel and ``shifts`` / ``motion_correction_path``
-    add the registration shifts as a panel above the traces (piecewise rigid: the largest block shift per
-    frame). With ``source_path`` set, a lone .tif and a motion_correction.hdf5 beside the results are picked
-    up when their frames match the results; given ones must match.
+    ``raw`` (a movie, or a .tif path) adds the raw movie as a seventh panel and ``shifts`` (an array, or a
+    motion correction hdf5 path) adds the registration shifts as a panel above the traces (piecewise rigid:
+    the largest block shift per frame). With ``results_path`` set, a lone .tif and a motion_correction.hdf5
+    beside the results are picked up when their frames match the results; given ones must match.
 
     TODO:
     -----
@@ -143,14 +143,12 @@ class SingleSessionDemixingVis:
         show_masks: bool = True,
         mask_opacity: float = 0.5,
         device="cpu",
-        source_path: str | os.PathLike | None = None,
+        results_path: str | os.PathLike | None = None,
         nmf_config: NMFConfig | None = None,
-        raw: masknmf.ArrayLike | np.ndarray | None = None,
-        raw_path: str | os.PathLike | None = None,
-        shifts: np.ndarray | torch.Tensor | None = None,
-        motion_correction_path: str | os.PathLike | None = None,
+        raw: masknmf.ArrayLike | np.ndarray | str | os.PathLike | None = None,
+        shifts: np.ndarray | torch.Tensor | str | os.PathLike | None = None,
     ):
-        self._source_path = None if source_path is None else str(source_path)
+        self._results_path = None if results_path is None else str(results_path)
         base = NMFConfig() if nmf_config is None else nmf_config
         self._min_brightness_cache = (
             1.0 if base.min_brightness is None else base.min_brightness
@@ -170,33 +168,35 @@ class SingleSessionDemixingVis:
         self._has_ac = isinstance(demixing_results, masknmf.DemixingResults)
         self._shape = self.demixing_results.shape
 
-        # raw movie and shifts: given, or found beside the results; a found mismatch is skipped, a given one raises
-        folder = None if self._source_path is None else Path(self._source_path).parent
+        # raw movie and shifts: data or a path, or found beside the results; a found mismatch is skipped, a given one raises
+        folder = None if self._results_path is None else Path(self._results_path).parent
         found_raw = found_shifts = False
-        if raw is None and raw_path is None and folder is not None:
+        if raw is None and folder is not None:
             tifs = sorted(p for ext in ("*.tif", "*.tiff") for p in folder.glob(ext))
             if len(tifs) == 1:
-                raw_path, found_raw = tifs[0], True
-        if raw is None and raw_path is not None:
+                raw, found_raw = tifs[0], True
+        raw_src = raw if isinstance(raw, (str, os.PathLike)) else None
+        if raw_src is not None:
             try:
-                raw = TiffArray(str(raw_path), memmap=True)
+                raw = TiffArray(str(raw_src), memmap=True)
             except (ValueError, TypeError):
-                raw = TiffArray(str(raw_path))
+                raw = TiffArray(str(raw_src))
         if raw is not None and tuple(raw.shape) != tuple(self._shape):
             if not found_raw:
                 raise ValueError(
                     f"raw movie has shape {tuple(raw.shape)}, the results have {tuple(self._shape)}"
                 )
             display(
-                f"skipping {raw_path}: shape {tuple(raw.shape)} does not match the results"
+                f"skipping {raw_src}: shape {tuple(raw.shape)} does not match the results"
             )
             raw = None
-        if shifts is None and motion_correction_path is None and folder is not None:
+        if shifts is None and folder is not None:
             candidate = folder / "motion_correction.hdf5"
             if candidate.is_file():
-                motion_correction_path, found_shifts = candidate, True
-        if shifts is None and motion_correction_path is not None:
-            with h5py.File(motion_correction_path, "r") as f:
+                shifts, found_shifts = candidate, True
+        shifts_src = shifts if isinstance(shifts, (str, os.PathLike)) else None
+        if shifts_src is not None:
+            with h5py.File(shifts_src, "r") as f:
                 groups = [
                     g
                     for g in (
@@ -206,9 +206,7 @@ class SingleSessionDemixingVis:
                     if g in f
                 ]
                 if not groups:
-                    raise ValueError(
-                        f"{motion_correction_path} holds no registration array"
-                    )
+                    raise ValueError(f"{shifts_src} holds no registration array")
                 shifts = f[groups[0]]["shifts"][()]
         if shifts is not None:
             if isinstance(shifts, torch.Tensor):
@@ -220,23 +218,23 @@ class SingleSessionDemixingVis:
                         f"{shifts.shape[0]} shifts for {self._shape[0]} frames"
                     )
                 display(
-                    f"skipping {motion_correction_path}: {shifts.shape[0]} shifts for {self._shape[0]} frames"
+                    f"skipping {shifts_src}: {shifts.shape[0]} shifts for {self._shape[0]} frames"
                 )
                 shifts = None
         # say what was picked up, and how to add what was not, so the panels are discoverable
         if raw is not None:
-            display(f"raw panel: {raw_path if raw_path is not None else 'movie given'}")
+            display(f"raw panel: {raw_src if raw_src is not None else 'movie given'}")
         else:
             display(
-                "no raw movie: raw_path= / raw= adds a raw panel; a lone .tif beside the results is picked up"
+                "no raw movie: raw= (a movie or a .tif path) adds a raw panel; a lone .tif beside the results is picked up"
             )
         if shifts is not None:
             display(
-                f"shift traces: {motion_correction_path if motion_correction_path is not None else 'shifts given'}"
+                f"shift traces: {shifts_src if shifts_src is not None else 'shifts given'}"
             )
         else:
             display(
-                "no motion shifts: motion_correction_path= / shifts= adds shift traces; "
+                "no motion shifts: shifts= (an array or a motion correction hdf5) adds shift traces; "
                 "motion_correction.hdf5 beside the results is picked up"
             )
         self._raw = raw
@@ -623,7 +621,7 @@ class SingleSessionDemixingVis:
         write the outcome to a new curated file beside the results. Runs on a thread; the viewer reloads
         from the new file when it finishes.
         """
-        if self._ac_array is None or self._source_path is None:
+        if self._ac_array is None or self._results_path is None:
             raise ValueError(
                 "editing signals needs demixing results loaded from a file"
             )
@@ -648,7 +646,7 @@ class SingleSessionDemixingVis:
                 self._nmf_config,
                 device=self.device,
             )
-            path = write_curated(self._source_path, results, drop, masks.shape[-1])
+            path = write_curated(self._results_path, results, drop, masks.shape[-1])
             self._pending = (results, path)
         except Exception as e:
             self._pending = e
@@ -668,7 +666,7 @@ class SingleSessionDemixingVis:
         except Exception as e:
             self._status = f"reload after demix failed: {e}"
             return
-        parent, self._source_path = self._source_path, path
+        parent, self._results_path = self._results_path, path
         self._status = (
             f"{results.a.shape[1]} signals (was {before}) written to {os.path.basename(path)}; "
             f"{os.path.basename(parent)} kept"
@@ -1551,7 +1549,7 @@ class SingleSessionDemixingVis:
         imgui.begin_disabled(
             (not self._rois and not self._marked)
             or self._ac_array is None
-            or self._source_path is None
+            or self._results_path is None
             or self._worker is not None
         )
         if imgui.button("Demix", imgui.ImVec2(-1, 0)):
@@ -1561,8 +1559,8 @@ class SingleSessionDemixingVis:
             imgui.set_tooltip(
                 "re-demix: add the drawn rois, remove the marked signals, write a new curated results file "
                 "beside the original (kept)"
-                if self._source_path is not None
-                else "open the results with source_path to enable"
+                if self._results_path is not None
+                else "open the results with results_path to enable"
             )
 
         changed, filter_dim = imgui.checkbox(
