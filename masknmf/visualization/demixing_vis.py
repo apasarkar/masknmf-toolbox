@@ -355,6 +355,7 @@ class SingleSessionDemixingVis:
             )
             self._panel_graphics["background"] = self._background_graphic
             self._panel_graphics["residual"] = self._residual_graphic
+            self._panel_graphics["colorful_signals"] = self._colorful_signal_graphic
         else:
             self._background_graphic = None
             self._residual_graphic = None
@@ -552,7 +553,8 @@ class SingleSessionDemixingVis:
     def _set_gray_cmaps(self):
         """NDGraphic.data= replaces the graphic instance, dropping its cmap too."""
         for g in self._panel_graphics.values():
-            g.graphic.cmap = "gray"
+            if g is not self._colorful_signal_graphic:
+                g.graphic.cmap = "gray"
 
     def _video_graphics(self):
         """The NDImage wrapper for every video panel, in ``_video_panels`` order."""
