@@ -130,8 +130,9 @@ class SingleSessionDemixingVis:
     ``cell_stats`` / ``cell_stats_path`` (a :class:`CellStats`, or a .npy / .npz / .csv / .tsv it reads, one
     row per signal) add sortable columns to the Signals table: click a header to order the signals by that
     stat, then step through the top or bottom of the order. ``cell_order`` (signal ids in a custom order, or a
-    .npy / text file of them) adds an "order" column of ranks; signals it leaves out sort last. Marked signals
-    always come first. A Demix pass drops the stats since the signal set changes.
+    .npy / text file of them) adds an "order" column of ranks; signals it leaves out sort last. With
+    ``results_path`` set and nothing given, a pipeline's ``roi_stats.npy`` beside the results is picked up when
+    its rows match. Marked signals always come first. A Demix pass drops the stats since the signal set changes.
 
     TODO:
     -----
@@ -180,26 +181,36 @@ class SingleSessionDemixingVis:
         self._has_ac = isinstance(demixing_results, masknmf.DemixingResults)
         self._shape = self.demixing_results.shape
 
+        folder = None if self._results_path is None else Path(self._results_path).parent
         num_signals = demixing_results.a.shape[1] if self._has_ac else 0
+        # cell stats: given, or the pipeline's roi_stats.npy beside the results; a found mismatch is skipped, a given one raises
+        found_stats = False
+        if cell_stats is None and cell_stats_path is None and folder is not None and (folder / "roi_stats.npy").is_file():
+            cell_stats_path, found_stats = folder / "roi_stats.npy", True
         if cell_stats is None and cell_stats_path is not None:
             cell_stats = CellStats.read(cell_stats_path)
+        if cell_stats is not None and cell_stats.values.shape[0] != num_signals:
+            if not found_stats:
+                raise ValueError(f"{cell_stats.values.shape[0]} cell stat rows for {num_signals} signals")
+            display(f"skipping {cell_stats_path}: {cell_stats.values.shape[0]} rows for {num_signals} signals")
+            cell_stats = None
         if cell_order is not None:
             if isinstance(cell_order, (str, os.PathLike)):
                 cell_order = np.load(cell_order) if str(cell_order).endswith(".npy") else np.loadtxt(cell_order, dtype=np.int64, ndmin=1)
             ranks = CellStats.from_order(cell_order, num_signals)
             cell_stats = ranks if cell_stats is None else cell_stats.join(ranks)
         if cell_stats is not None:
-            if cell_stats.values.shape[0] != num_signals:
-                raise ValueError(f"{cell_stats.values.shape[0]} cell stat rows for {num_signals} signals")
             if set(cell_stats.names) & {"id", "area", "peak", "del"}:
                 raise ValueError(f"cell stat names clash with the table's own columns: {cell_stats.names}")
             display(f"cell stats: {', '.join(cell_stats.names)} from {cell_stats_path if cell_stats_path is not None else 'stats given'}")
         else:
-            display("no cell stats: cell_stats_path= / cell_stats= adds sortable Signals-table columns")
+            display(
+                "no cell stats: cell_stats_path= / cell_stats= / cell_order= adds sortable Signals-table columns; "
+                "roi_stats.npy beside the results is picked up"
+            )
         self._cell_stats = cell_stats
 
         # raw movie and shifts: data or a path, or found beside the results; a found mismatch is skipped, a given one raises
-        folder = None if self._results_path is None else Path(self._results_path).parent
         found_raw = found_shifts = False
         if raw is None and folder is not None:
             tifs = sorted(p for ext in ("*.tif", "*.tiff") for p in folder.glob(ext))
