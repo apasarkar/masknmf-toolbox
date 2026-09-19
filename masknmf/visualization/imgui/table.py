@@ -48,8 +48,9 @@ class RoiOrder:
         # keys has no entry for column 0, the id, which is the natural order
         keys = list(self.columns.values())
         if 0 < self.sort_column <= len(keys):
-            idx = idx[np.argsort(keys[self.sort_column - 1][idx], kind="stable")]
-        if not self.ascending:
+            key = keys[self.sort_column - 1][idx]
+            idx = idx[np.argsort(key if self.ascending else -key, kind="stable")]
+        elif not self.ascending:
             idx = idx[::-1]
         self.order = idx
         hits = np.flatnonzero(self.order == current) if current is not None else ()
@@ -97,6 +98,7 @@ def draw_roi_table(
     on_shift_select: Optional[Callable[[int], None]] = None,
     row_color: Optional[Callable[[int], Optional[tuple]]] = None,
     prefix_rows: Sequence[tuple] = (),
+    default_sort: Optional[str] = None,
 ) -> bool:
     """
     Sortable, clipped ROI table. Returns the new ``scroll_to_current`` flag.
@@ -107,7 +109,8 @@ def draw_roi_table(
     shift clicks route to ``on_ctrl_select`` / ``on_shift_select`` when given,
     else to ``on_select``. ``row_color`` tints the id cell (rgb in 0-1).
     ``prefix_rows`` are ``(item, label)`` pairs pinned above the sorted rows, outside
-    ``order`` but routed to the same formatters and callbacks.
+    ``order`` but routed to the same formatters and callbacks. ``default_sort`` names a
+    column that starts sorted descending; otherwise the id column starts ascending.
     """
     flags = (
         imgui.TableFlags_.sortable
@@ -119,10 +122,15 @@ def draw_roi_table(
     if not imgui.begin_table(table_id, len(column_names), flags, imgui.ImVec2(0, avail.y)):
         return scroll_to_current
     imgui.table_setup_scroll_freeze(0, 1)
-    imgui.table_setup_column(column_names[0], imgui.TableColumnFlags_.default_sort)
+    imgui.table_setup_column(
+        column_names[0], imgui.TableColumnFlags_.default_sort if default_sort is None else 0
+    )
     for name in column_names[1:]:
         sortable = name in order.columns
-        imgui.table_setup_column(name, 0 if sortable else imgui.TableColumnFlags_.no_sort)
+        flags = 0 if sortable else imgui.TableColumnFlags_.no_sort
+        if name == default_sort:
+            flags |= imgui.TableColumnFlags_.default_sort | imgui.TableColumnFlags_.prefer_sort_descending
+        imgui.table_setup_column(name, flags)
     imgui.table_headers_row()
 
     specs = imgui.table_get_sort_specs()
