@@ -42,6 +42,7 @@ def main():
     p.add_argument("--channel", default="calcium", choices=["glutamate", "calcium"])
     p.add_argument("--which", default="spine", choices=["spine", "global_activity"], help="demixing result to open")
     p.add_argument("--cell-stats", type=Path, default=None, help="per-signal stats (.npy/.npz/.csv/.tsv, one row per signal) shown as sortable Signals-table columns; demixing only")
+    p.add_argument("--cell-order", type=Path, default=None, help="signal ids in a custom order (.npy or one id per line), shown as an 'order' column; demixing only")
     p.add_argument("--fps", type=float, default=19.66, help="frame rate, for the seconds axis")
     p.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     args = p.parse_args()
@@ -85,6 +86,7 @@ def main():
                 raw=raw,
                 shifts=None if reg is None else reg.shifts,
                 cell_stats_path=args.cell_stats,
+                cell_order=args.cell_order,
             )
         )
 

@@ -129,7 +129,9 @@ class SingleSessionDemixingVis:
 
     ``cell_stats`` / ``cell_stats_path`` (a :class:`CellStats`, or a .npy / .npz / .csv / .tsv it reads, one
     row per signal) add sortable columns to the Signals table: click a header to order the signals by that
-    stat, then step through the top or bottom of the order. A Demix pass drops them since the signal set changes.
+    stat, then step through the top or bottom of the order. ``cell_order`` (signal ids in a custom order, or a
+    .npy / text file of them) adds an "order" column of ranks; signals it leaves out sort last. Marked signals
+    always come first. A Demix pass drops the stats since the signal set changes.
 
     TODO:
     -----
@@ -156,6 +158,7 @@ class SingleSessionDemixingVis:
         shifts: np.ndarray | torch.Tensor | str | os.PathLike | None = None,
         cell_stats: CellStats | None = None,
         cell_stats_path: str | os.PathLike | None = None,
+        cell_order: Sequence[int] | np.ndarray | str | os.PathLike | None = None,
     ):
         self._results_path = None if results_path is None else str(results_path)
         base = NMFConfig() if nmf_config is None else nmf_config
@@ -177,10 +180,15 @@ class SingleSessionDemixingVis:
         self._has_ac = isinstance(demixing_results, masknmf.DemixingResults)
         self._shape = self.demixing_results.shape
 
+        num_signals = demixing_results.a.shape[1] if self._has_ac else 0
         if cell_stats is None and cell_stats_path is not None:
             cell_stats = CellStats.read(cell_stats_path)
+        if cell_order is not None:
+            if isinstance(cell_order, (str, os.PathLike)):
+                cell_order = np.load(cell_order) if str(cell_order).endswith(".npy") else np.loadtxt(cell_order, dtype=np.int64, ndmin=1)
+            ranks = CellStats.from_order(cell_order, num_signals)
+            cell_stats = ranks if cell_stats is None else cell_stats.join(ranks)
         if cell_stats is not None:
-            num_signals = demixing_results.a.shape[1] if self._has_ac else 0
             if cell_stats.values.shape[0] != num_signals:
                 raise ValueError(f"{cell_stats.values.shape[0]} cell stat rows for {num_signals} signals")
             if set(cell_stats.names) & {"id", "area", "peak", "del"}:
@@ -1357,6 +1365,8 @@ class SingleSessionDemixingVis:
         if name == "del":
             return "x" if item in self._marked else ""
         value = self._order.columns[name][item]
+        if np.isnan(value):
+            return ""
         return f"{int(value)}" if name == "area" else f"{float(value):.3g}"
 
     def _draw_signal_tab(self):

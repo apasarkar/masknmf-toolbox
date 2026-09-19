@@ -38,8 +38,9 @@ class CellStats:
         """
         Load stats from a file, by suffix:
 
-        - ``.npy``: a (num_cells,) array named after the file, or a (num_cells, num_stats) array whose
-          columns are named ``<file> 0``, ``<file> 1``, ...
+        - ``.npy``: a (num_cells,) array named after the file, a (num_cells, num_stats) array whose
+          columns are named ``<file> 0``, ``<file> 1``, ..., or a structured array (a pipeline's
+          ``roi_stats.npy``) whose numeric fields are the stats
         - ``.npz``: one (num_cells,) array per stat, named by key
         - ``.csv`` / ``.tsv``: a header row of names, then one row per cell
         """
@@ -47,7 +48,11 @@ class CellStats:
         match path.suffix.lower():
             case ".npy":
                 values = np.load(path)
-                names = [path.stem] if values.ndim == 1 else [f"{path.stem} {j}" for j in range(values.shape[1])]
+                if values.dtype.names:
+                    names = [n for n in values.dtype.names if values[n].dtype.kind in "biuf"]
+                    values = np.column_stack([values[n] for n in names])
+                else:
+                    names = [path.stem] if values.ndim == 1 else [f"{path.stem} {j}" for j in range(values.shape[1])]
             case ".npz":
                 with np.load(path) as f:
                     names = list(f.keys())
@@ -59,3 +64,19 @@ class CellStats:
             case suffix:
                 raise ValueError(f"unsupported cell stats file {suffix!r}: use .npy, .npz, .csv or .tsv")
         return cls(tuple(names), values)
+
+    @classmethod
+    def from_order(cls, order, num_cells: int, name: str = "order") -> "CellStats":
+        """Ranks from a custom cell order: cell ``order[i]`` gets rank ``i``; cells left out get NaN and sort last."""
+        order = np.asarray(order, dtype=np.int64).ravel()
+        if len(np.unique(order)) != len(order) or (len(order) and (order.min() < 0 or order.max() >= num_cells)):
+            raise ValueError(f"a cell order lists distinct cell ids below {num_cells}")
+        ranks = np.full(num_cells, np.nan, np.float32)
+        ranks[order] = np.arange(len(order))
+        return cls((name,), ranks)
+
+    def join(self, other: "CellStats") -> "CellStats":
+        """Both sets of columns over the same cells."""
+        if other.values.shape[0] != self.values.shape[0]:
+            raise ValueError(f"{other.values.shape[0]} rows joined onto {self.values.shape[0]}")
+        return CellStats(self.names + other.names, np.column_stack([self.values, other.values]))
