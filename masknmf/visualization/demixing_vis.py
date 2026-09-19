@@ -43,6 +43,7 @@ _ROI_COLORS = (
     (0.12, 0.47, 0.71),
 )
 _NPZ_FILTERS = ["NumPy archive", "*.npz", "All files", "*"]
+_ORDER_FILTERS = ["Cell order", "*.npy *.txt", "All files", "*"]
 _CLICK_SLOP = (
     4  # px the pointer may travel between press and release and still be a click
 )
@@ -130,7 +131,9 @@ class SingleSessionDemixingVis:
     ``cell_stats`` / ``cell_stats_path`` (a :class:`CellStats`, or a .npy / .npz / .csv / .tsv it reads, one
     row per signal) add sortable columns to the Signals table: click a header to order the signals by that
     stat, then step through the top or bottom of the order. ``cell_order`` (signal ids in a custom order, or a
-    .npy / text file of them) adds an "order" column of ranks; signals it leaves out sort last. With
+    .npy / text file of them) adds an "order" column of ranks and opens the table in that order; signals it
+    leaves out sort last. :meth:`load_cell_order` and :meth:`add_cell_stats` (or the Signals tab's "load order"
+    button) do the same with the results open. With
     ``results_path`` set and nothing given, a pipeline's ``roi_stats.npy`` beside the results is picked up when
     its rows match; its columns start hidden, the Signals tab's "columns" button shows them. Marked signals
     always come first. A Demix pass drops the stats since the signal set changes.
@@ -198,16 +201,11 @@ class SingleSessionDemixingVis:
                 raise ValueError(f"{cell_stats.values.shape[0]} cell stat rows for {num_signals} signals")
             display(f"skipping {cell_stats_path}: {cell_stats.values.shape[0]} rows for {num_signals} signals")
             cell_stats = None
-        if cell_order is not None:
-            if isinstance(cell_order, (str, os.PathLike)):
-                cell_order = np.load(cell_order) if str(cell_order).endswith(".npy") else np.loadtxt(cell_order, dtype=np.int64, ndmin=1)
-            ranks = CellStats.from_order(cell_order, num_signals)
-            cell_stats = ranks if cell_stats is None else cell_stats.join(ranks)
         if cell_stats is not None:
             if set(cell_stats.names) & {"id", "area", "peak", "del"}:
                 raise ValueError(f"cell stat names clash with the table's own columns: {cell_stats.names}")
             display(f"cell stats: {', '.join(cell_stats.names)} from {cell_stats_path if cell_stats_path is not None else 'stats given'}")
-        else:
+        elif cell_order is None:
             display(
                 "no cell stats: cell_stats_path= / cell_stats= / cell_order= adds sortable Signals-table columns; "
                 "roi_stats.npy beside the results is picked up"
@@ -467,6 +465,8 @@ class SingleSessionDemixingVis:
                     tile.material.pick_write = False
                 self._mask_overlays[name] = overlay
             self._make_footprints()
+        if cell_order is not None:
+            self.load_cell_order(cell_order)
 
         self._set_gray_cmaps()
 
@@ -504,6 +504,7 @@ class SingleSessionDemixingVis:
         self._active_roi = None
         self._status = ""
         self._file_dialog = None
+        self._order_dialog = None
         self._press = None  # screen position of the last pointer press on a video panel
         self._armed = None  # "roi" / "cut": the next press on any video panel starts that polygon there
         # the poly-delete polygon, its subplot, and the vertices / side / filter its hits were last computed for
@@ -1304,6 +1305,23 @@ class SingleSessionDemixingVis:
         except (OSError, ValueError) as e:
             self._status = f"export failed: {e}"
 
+    def _browse_order(self):
+        if self._order_dialog is None:
+            self._order_dialog = pfd.open_file("Load cell order", os.getcwd(), _ORDER_FILTERS)
+
+    def _poll_order_dialog(self):
+        if self._order_dialog is None or not self._order_dialog.ready(0):
+            return
+        result = self._order_dialog.result()
+        self._order_dialog = None
+        if not result:
+            return
+        try:
+            self.load_cell_order(result[0])
+            self._status = f"cell order loaded from {os.path.basename(result[0])}"
+        except (OSError, ValueError, TypeError) as e:
+            self._status = f"cell order failed: {e}"
+
     def _handle_keys(self):
         io = imgui.get_io()
         if io.want_text_input:
@@ -1350,6 +1368,7 @@ class SingleSessionDemixingVis:
     def _draw_side_panel(self):
         """Docked at "right" (the NDWidget owns "bottom"): the roi tools and the signal table as tabs."""
         self._poll_file_dialog()
+        self._poll_order_dialog()
         self._poll_worker()
         self._poll_rois()
         self._poll_cut()
@@ -1427,6 +1446,12 @@ class SingleSessionDemixingVis:
         imgui.same_line(0, em(0.8))
         if imgui.small_button("keys"):
             self._keybinds_open = not self._keybinds_open
+        if self._order is not None:
+            imgui.same_line(0, em(0.8))
+            if imgui.small_button("load order"):
+                self._browse_order()
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("a .npy or text file of signal ids in a custom order becomes the 'order' column")
         names = () if self._cell_stats is None else self._cell_stats.names
         if names:
             imgui.same_line(0, em(0.8))
@@ -1679,6 +1704,36 @@ class SingleSessionDemixingVis:
     def cell_stats(self) -> CellStats | None:
         """The per-signal stats behind the extra Signals-table columns, None without any."""
         return self._cell_stats
+
+    def add_cell_stats(self, stats: CellStats | str | os.PathLike):
+        """Join stat columns onto the Signals table, shown and sorted by the first; same-named columns are replaced."""
+        if isinstance(stats, (str, os.PathLike)):
+            stats = CellStats.read(stats)
+        if self._order is None:
+            raise ValueError("cell stats need demixed signals")
+        if stats.values.shape[0] != self._order.n_items:
+            raise ValueError(f"{stats.values.shape[0]} cell stat rows for {self._order.n_items} signals")
+        if set(stats.names) & {"id", "area", "peak", "del"}:
+            raise ValueError(f"cell stat names clash with the table's own columns: {stats.names}")
+        new = stats
+        if self._cell_stats is not None:
+            keep = [i for i, n in enumerate(self._cell_stats.names) if n not in new.names]
+            stats = CellStats(tuple(self._cell_stats.names[i] for i in keep), self._cell_stats.values[:, keep]).join(new)
+        self._cell_stats = stats
+        self._shown_stats |= set(new.names)
+        columns = {"area": self._order.columns["area"], "peak": self._order.columns["peak"]}
+        columns.update(zip(stats.names, stats.values.T))
+        columns["del"] = self._order.columns["del"]
+        self._order.columns = columns
+        self._order.sort_by, self._order.ascending = new.names[0], True
+        self._order.rebuild()
+        display(f"cell stats: {', '.join(new.names)} added; sorted by {new.names[0]}")
+
+    def load_cell_order(self, order, name: str = "order"):
+        """Add a column of ranks from signal ids in a custom order (a sequence, or a .npy / text file of ids)."""
+        if isinstance(order, (str, os.PathLike)):
+            order = np.load(order) if str(order).endswith(".npy") else np.loadtxt(order, dtype=np.int64, ndmin=1)
+        self.add_cell_stats(CellStats.from_order(order, 0 if self._order is None else self._order.n_items, name))
 
     @property
     def reference_index(self) -> fpl.ReferenceIndices:
