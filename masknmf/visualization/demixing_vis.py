@@ -132,7 +132,8 @@ class SingleSessionDemixingVis:
     stat, then step through the top or bottom of the order. ``cell_order`` (signal ids in a custom order, or a
     .npy / text file of them) adds an "order" column of ranks; signals it leaves out sort last. With
     ``results_path`` set and nothing given, a pipeline's ``roi_stats.npy`` beside the results is picked up when
-    its rows match. Marked signals always come first. A Demix pass drops the stats since the signal set changes.
+    its rows match; its columns start hidden, the Signals tab's "columns" button shows them. Marked signals
+    always come first. A Demix pass drops the stats since the signal set changes.
 
     TODO:
     -----
@@ -185,10 +186,13 @@ class SingleSessionDemixingVis:
         num_signals = demixing_results.a.shape[1] if self._has_ac else 0
         # cell stats: given, or the pipeline's roi_stats.npy beside the results; a found mismatch is skipped, a given one raises
         found_stats = False
+        hidden = set()  # found columns start hidden; given ones show
         if cell_stats is None and cell_stats_path is None and folder is not None and (folder / "roi_stats.npy").is_file():
             cell_stats_path, found_stats = folder / "roi_stats.npy", True
         if cell_stats is None and cell_stats_path is not None:
             cell_stats = CellStats.read(cell_stats_path)
+            if found_stats:
+                hidden = set(cell_stats.names)
         if cell_stats is not None and cell_stats.values.shape[0] != num_signals:
             if not found_stats:
                 raise ValueError(f"{cell_stats.values.shape[0]} cell stat rows for {num_signals} signals")
@@ -209,6 +213,7 @@ class SingleSessionDemixingVis:
                 "roi_stats.npy beside the results is picked up"
             )
         self._cell_stats = cell_stats
+        self._shown_stats = set() if cell_stats is None else set(cell_stats.names) - hidden
 
         # raw movie and shifts: data or a path, or found beside the results; a found mismatch is skipped, a given one raises
         found_raw = found_shifts = False
@@ -1422,10 +1427,25 @@ class SingleSessionDemixingVis:
         imgui.same_line(0, em(0.8))
         if imgui.small_button("keys"):
             self._keybinds_open = not self._keybinds_open
+        names = () if self._cell_stats is None else self._cell_stats.names
+        if names:
+            imgui.same_line(0, em(0.8))
+            if imgui.small_button("columns"):
+                imgui.open_popup("##columns")
+            if imgui.begin_popup("##columns"):
+                for name in names:
+                    changed, on = imgui.checkbox(name, name in self._shown_stats)
+                    if changed and on:
+                        self._shown_stats.add(name)
+                    elif changed:
+                        self._shown_stats.discard(name)
+                        if self._order is not None and self._order.sort_by == name:
+                            self._order.sort_by = None
+                            self._order.rebuild()
+                imgui.end_popup()
         footer = imgui.get_frame_height_with_spacing() * 2.5
         if imgui.begin_child("##signal_table", imgui.ImVec2(0, -footer)):
-            names = () if self._cell_stats is None else self._cell_stats.names
-            columns = ("id", "area", "peak", *names, "del")
+            columns = ("id", "area", "peak", *[n for n in names if n in self._shown_stats], "del")
             formatters = {name: partial(self._format_cell, name) for name in columns[1:]}
             colors = self._group_colors()
             self._scroll_to_current = draw_roi_table(

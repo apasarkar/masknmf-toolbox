@@ -122,10 +122,17 @@ def draw_roi_table(
     if not imgui.begin_table(table_id, len(column_names), flags, imgui.ImVec2(0, avail.y)):
         return scroll_to_current
     imgui.table_setup_scroll_freeze(0, 1)
-    imgui.table_setup_column(column_names[0], imgui.TableColumnFlags_.default_sort)
+    # the current sort seeds imgui's default, so it survives a change of columns
+    descending = 0 if order.ascending else imgui.TableColumnFlags_.prefer_sort_descending
+    imgui.table_setup_column(
+        column_names[0], imgui.TableColumnFlags_.default_sort | descending if order.sort_by is None else 0
+    )
     for name in column_names[1:]:
         sortable = name in order.columns
-        imgui.table_setup_column(name, 0 if sortable else imgui.TableColumnFlags_.no_sort)
+        flags = 0 if sortable else imgui.TableColumnFlags_.no_sort
+        if name == order.sort_by:
+            flags |= imgui.TableColumnFlags_.default_sort | descending
+        imgui.table_setup_column(name, flags)
     imgui.table_headers_row()
 
     specs = imgui.table_get_sort_specs()
