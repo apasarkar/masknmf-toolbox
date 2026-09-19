@@ -119,10 +119,11 @@ class SingleSessionDemixingVis:
     confirmation marks every signal in view whose center falls outside it (or inside, per the toggle), as
     Delete does one at a time. Nothing is removed until the next Demix.
 
-    ``raw`` (a movie, or a .tif path) adds the raw movie as a seventh panel and ``shifts`` (an array, or a
-    motion correction hdf5 path) adds the registration shifts as a panel above the traces (piecewise rigid:
-    the largest block shift per frame). With ``results_path`` set, a lone .tif and a motion_correction.hdf5
-    beside the results are picked up when their frames match the results; given ones must match.
+    ``raw`` (a movie, or a .tif path) shows the raw movie in place of the signals panel and ``shifts`` (an
+    array, or a motion correction hdf5 path) adds the registration shifts as a panel above the traces
+    (piecewise rigid: the largest block shift per frame). With ``results_path`` set, a lone .tif and a
+    motion_correction.hdf5 beside the results are picked up when their frames match the results; given ones
+    must match.
 
     TODO:
     -----
@@ -254,33 +255,24 @@ class SingleSessionDemixingVis:
         )
 
         # TODO: make these a variable at the top of the file when the names for these visualizations are set
+        # raw takes the place of the signals panel, so the grid stays three by two
         self._video_panels = (
-            "compressed+denoised",
-            "signals",
+            ("raw", "compressed+denoised")
+            if self._raw is not None
+            else ("compressed+denoised", "signals")
+        ) + (
             "background",
             "residual",
             "colorful_signals",
             "summary img",
-        ) + (("raw",) if self._raw is not None else ())
+        )
 
         self._bind_arrays()
 
-        # two rows; raw takes the first slot when present, which makes it four columns instead of three
-        shown = (("raw",) if self._raw is not None else ()) + self._video_panels[:6]
-        ncols = 4 if len(shown) > 6 else 3
         self._video_extents = {
-            name: (
-                (i % ncols) / ncols,
-                (i % ncols + 1) / ncols,
-                (i // ncols) / 2,
-                (i // ncols) / 2 + 0.5,
-            )
-            for i, name in enumerate(shown)
+            name: ((i % 3) / 3, (i % 3 + 1) / 3, (i // 3) / 2, (i // 3) / 2 + 0.5)
+            for i, name in enumerate(self._video_panels)
         }
-        if len(shown) % ncols:
-            # no hole in the grid: the last panel takes the rest of its row
-            x0, _x1, y0, y1 = self._video_extents[shown[-1]]
-            self._video_extents[shown[-1]] = (x0, 1.0, y0, y1)
 
         self._ndw_fov = fpl.NDWidget(
             ref_range,
@@ -298,14 +290,14 @@ class SingleSessionDemixingVis:
         movie_dims = ["time", "m", "n"]
         movie_display_dims = ["m", "n"]
         movie_index_mapping = {"time": frame_timings}
-        self._pmd_graphic = self._ndw_fov[self._video_panels[0]].add_nd_image(
+        self._pmd_graphic = self._ndw_fov["compressed+denoised"].add_nd_image(
             self._pmd_array,
             movie_dims,
             movie_display_dims,
             slider_maps=movie_index_mapping.copy(),
-            name=self._video_panels[0],
+            name="compressed+denoised",
         )
-        self._panel_graphics[self._video_panels[0]] = self._pmd_graphic
+        self._panel_graphics["compressed+denoised"] = self._pmd_graphic
 
         self._raw_graphic = None
         if self._raw is not None:
@@ -318,50 +310,49 @@ class SingleSessionDemixingVis:
             )
             self._panel_graphics["raw"] = self._raw_graphic
 
+        self._ac_graphic = None
         if self._ac_array is not None:
-            self._ac_graphic = self._ndw_fov[self._video_panels[1]].add_nd_image(
-                self._ac_array,
-                movie_dims,
-                movie_display_dims,
-                slider_maps=movie_index_mapping.copy(),
-                name=self._video_panels[1],
-            )
+            if "signals" in self._video_panels:
+                self._ac_graphic = self._ndw_fov["signals"].add_nd_image(
+                    self._ac_array,
+                    movie_dims,
+                    movie_display_dims,
+                    slider_maps=movie_index_mapping.copy(),
+                    name="signals",
+                )
+                self._panel_graphics["signals"] = self._ac_graphic
 
-            self._background_graphic = self._ndw_fov[
-                self._video_panels[2]
-            ].add_nd_image(
+            self._background_graphic = self._ndw_fov["background"].add_nd_image(
                 self._fluctuating_background_array,
                 movie_dims,
                 movie_display_dims,
                 slider_maps=movie_index_mapping.copy(),
-                name=self._video_panels[2],
+                name="background",
             )
 
-            self._residual_graphic = self._ndw_fov[self._video_panels[3]].add_nd_image(
+            self._residual_graphic = self._ndw_fov["residual"].add_nd_image(
                 self._residual_array,
                 movie_dims,
                 movie_display_dims,
                 slider_maps=movie_index_mapping.copy(),
-                name=self._video_panels[3],
+                name="residual",
             )
 
             movie_dims_rgb = ["time", "m", "n", "c"]
             movie_display_dims_rgb = ["m", "n", "c"]
             self._colorful_signal_graphic = self._ndw_fov[
-                self._video_panels[4]
+                "colorful_signals"
             ].add_nd_image(
                 self._colorful_ac_array,
                 movie_dims_rgb,
                 movie_display_dims_rgb,
                 slider_maps=movie_index_mapping.copy(),
                 rgb_dim="c",
-                name=self._video_panels[4],
+                name="colorful_signals",
             )
-            self._panel_graphics[self._video_panels[1]] = self._ac_graphic
-            self._panel_graphics[self._video_panels[2]] = self._background_graphic
-            self._panel_graphics[self._video_panels[3]] = self._residual_graphic
+            self._panel_graphics["background"] = self._background_graphic
+            self._panel_graphics["residual"] = self._residual_graphic
         else:
-            self._ac_graphic = None
             self._background_graphic = None
             self._residual_graphic = None
             self._colorful_signal_graphic = None
@@ -369,40 +360,40 @@ class SingleSessionDemixingVis:
         self._own_summary = summary_img is None and self._has_ac
         if summary_img is not None:
             dimension_data = ["m", "n"] if summary_img.ndim == 2 else ["time", "m", "n"]
-            self._summary_image = self._ndw_fov[self._video_panels[5]].add_nd_image(
+            self._summary_image = self._ndw_fov["summary img"].add_nd_image(
                 summary_img,
                 dimension_data,
                 ["m", "n"],
-                name=self._video_panels[5],
+                name="summary img",
             )
-            self._ndw_fov.figure[self._video_panels[5]].title = (
+            self._ndw_fov.figure["summary img"].title = (
                 summary_img_name if summary_img_name is not None else "Summary Image"
             )
         elif self._has_ac:
-            self._summary_image = self._ndw_fov[self._video_panels[5]].add_nd_image(
+            self._summary_image = self._ndw_fov["summary img"].add_nd_image(
                 self.demixing_results.global_residual_correlation_image.cpu().numpy(),
                 ["m", "n"],
                 ["m", "n"],
-                name=self._video_panels[5],
+                name="summary img",
             )
-            self._ndw_fov.figure[self._video_panels[5]].title = (
+            self._ndw_fov.figure["summary img"].title = (
                 summary_img_name
                 if summary_img_name is not None
                 else "Residual Correlation Image"
             )
         else:
-            self._summary_image = self._ndw_fov[self._video_panels[5]].add_nd_image(
+            self._summary_image = self._ndw_fov["summary img"].add_nd_image(
                 self._pmd_array.mean_img.cpu().numpy(),
                 ["m", "n"],
                 ["m", "n"],
-                name=self._video_panels[5],
+                name="summary img",
             )
-            self._ndw_fov.figure[self._video_panels[5]].title = (
+            self._ndw_fov.figure["summary img"].title = (
                 summary_img_name if summary_img_name is not None else "Mean Image"
             )
 
-        self._panel_graphics[self._video_panels[5]] = self._summary_image
-        self._fov_subplot = self._ndw_fov.figure[self._video_panels[5]]
+        self._panel_graphics["summary img"] = self._summary_image
+        self._fov_subplot = self._ndw_fov.figure["summary img"]
 
         self._active_component = None
         self._marked = (
@@ -599,7 +590,8 @@ class SingleSessionDemixingVis:
         self._clear_traces()
         self._pixels.clear()
         self._pmd_graphic.data = self._pmd_array
-        self._ac_graphic.data = self._ac_array
+        if self._ac_graphic is not None:
+            self._ac_graphic.data = self._ac_array
         self._background_graphic.data = self._fluctuating_background_array
         self._residual_graphic.data = self._residual_array
         self._colorful_signal_graphic.data = self._colorful_ac_array
