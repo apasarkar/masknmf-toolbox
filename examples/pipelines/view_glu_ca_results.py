@@ -79,7 +79,7 @@ def main():
                 res,
                 frame_timings=demix_timings,
                 device=device,
-                source_path=demix_path,
+                results_path=demix_path,
                 nmf_config=nmf_config,
                 raw=raw,
                 shifts=None if reg is None else reg.shifts,
