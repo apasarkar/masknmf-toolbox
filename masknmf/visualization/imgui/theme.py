@@ -84,6 +84,63 @@ def section(title: str, theme: Theme = THEME):
     imgui.dummy(imgui.ImVec2(0, em(0.2)))
 
 
+@contextmanager
+def settings_table(table_id: str, captions):
+    """
+    A two-column settings table: dim captions in a fixed column as wide as the longest of
+    ``captions``, controls in the stretch column. Yields False when the table is clipped; start
+    each row with :func:`settings_row`.
+    """
+    caption_w = max(imgui.calc_text_size(c).x for c in captions) + em(0.8)
+    flags = imgui.TableFlags_.sizing_stretch_prop | imgui.TableFlags_.no_pad_outer_x
+    if not imgui.begin_table(table_id, 2, flags):
+        yield False
+        return
+    try:
+        imgui.table_setup_column("caption", imgui.TableColumnFlags_.width_fixed, caption_w)
+        imgui.table_setup_column("control", imgui.TableColumnFlags_.width_stretch)
+        yield True
+    finally:
+        imgui.end_table()
+
+
+def settings_row(caption: str):
+    """Start a row of a :func:`settings_table`: the dim caption on its widgets' frame baseline, the cursor in the control cell."""
+    imgui.table_next_row()
+    imgui.table_next_column()
+    imgui.align_text_to_frame_padding()
+    imgui.text_disabled(caption)
+    imgui.table_next_column()
+
+
+def right_aligned_text(text: str):
+    """Dim ``text`` flush with the right edge of the current cell or window, on the next line when this one is full."""
+    room = imgui.get_content_region_avail().x - imgui.calc_text_size(text).x
+    if room < 0:
+        imgui.new_line()
+        room = imgui.get_content_region_avail().x - imgui.calc_text_size(text).x
+    if room > 0:
+        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + room)
+    imgui.align_text_to_frame_padding()
+    imgui.text_disabled(text)
+
+
+@contextmanager
+def button_colors(fill, hover, text=None, on: bool = True):
+    """Fill and hover colors, and optionally the text color, for the buttons drawn inside; a no-op unless ``on``."""
+    if on:
+        imgui.push_style_color(imgui.Col_.button, to_vec4(fill))
+        imgui.push_style_color(imgui.Col_.button_hovered, to_vec4(hover))
+        imgui.push_style_color(imgui.Col_.button_active, to_vec4(hover))
+        if text is not None:
+            imgui.push_style_color(imgui.Col_.text, to_vec4(text))
+    try:
+        yield
+    finally:
+        if on:
+            imgui.pop_style_color(4 if text is not None else 3)
+
+
 def popup(title: str, is_open: bool, theme: Theme = THEME) -> tuple[bool, bool]:
     """
     Begin a centered, auto-sized, closable window.
