@@ -44,7 +44,7 @@ _ROI_COLORS = (
     (0.12, 0.47, 0.71),
 )
 _NPZ_FILTERS = ["NumPy archive", "*.npz", "All files", "*"]
-_ORDER_FILTERS = ["Cell order", "*.npy *.txt", "All files", "*"]
+_STATS_FILTERS = ["Cell stats", "*.npy *.npz *.csv *.tsv *.txt", "All files", "*"]
 _CLICK_SLOP = (
     4  # px the pointer may travel between press and release and still be a click
 )
@@ -145,8 +145,8 @@ class SingleSessionDemixingVis:
     sortable columns to the Signals table: click a header to order the signals by that
     stat, then step through the top or bottom of the order. ``cell_order`` (signal ids in a custom order, or a
     .npy / text file of them) adds an "order" column of ranks and opens the table in that order; signals it
-    leaves out sort last. :meth:`load_cell_order` and :meth:`add_cell_stats` (or the Signals tab's "load order"
-    button) do the same with the results open. With
+    leaves out sort last. :meth:`load_cell_order` and :meth:`add_cell_stats` (or the Signals tab's "load stats"
+    button: a .txt of ids is an order, anything else stats) do the same with the results open. With
     ``results_path`` set and nothing given, a pipeline's ``roi_stats.npy`` beside the results is picked up when
     its rows match; its columns start hidden, the Signals tab's "columns" button shows them. Marked signals
     always come first. A Demix pass drops the stats since the signal set changes.
@@ -968,6 +968,14 @@ class SingleSessionDemixingVis:
                 self._sync_highlight()
                 self._update_traces()
                 return
+            # the cursor moves to another member, so the removed signal loses its highlight too
+            signals = [k for k in self._group if isinstance(k, int)]
+            self._active_component = signals[-1] if signals else None
+            if self._active_component is not None and self._order is not None:
+                self._order.goto(self._active_component)
+            self._sync_highlight()
+            self._update_traces()
+            return
         else:
             self._group.append(
                 int(component)
@@ -998,6 +1006,17 @@ class SingleSessionDemixingVis:
             self._group.clear()
             self._sync_highlight()
             self._update_traces()
+
+    def deselect(self):
+        """Drop the selection, the group and the pixel averages: esc, or the Signals tab's deselect button."""
+        if self._group or self._pixels or self._active_component is not None or self._active_roi is not None:
+            self._snapshot()
+        self._pixels.clear()
+        self.group_clear()
+        self._clear_component()
+        self._active_roi = None
+        self._selected_signals = None
+        self._clear_traces()
 
     def _center_on(self, component: int):
         """
@@ -1416,9 +1435,9 @@ class SingleSessionDemixingVis:
         except (OSError, ValueError) as e:
             self._status = f"export failed: {e}"
 
-    def _browse_order(self):
+    def _browse_stats(self):
         if self._order_dialog is None:
-            self._order_dialog = pfd.open_file("Load cell order", os.getcwd(), _ORDER_FILTERS)
+            self._order_dialog = pfd.open_file("Load cell stats", os.getcwd(), _STATS_FILTERS)
 
     def _poll_order_dialog(self):
         if self._order_dialog is None or not self._order_dialog.ready(0):
@@ -1428,10 +1447,13 @@ class SingleSessionDemixingVis:
         if not result:
             return
         try:
-            self.load_cell_order(result[0])
-            self._status = f"cell order loaded from {os.path.basename(result[0])}"
+            if result[0].lower().endswith(".txt"):
+                self.load_cell_order(result[0])
+            else:
+                self.add_cell_stats(result[0])
+            self._status = f"cell stats loaded from {os.path.basename(result[0])}"
         except (OSError, ValueError, TypeError) as e:
-            self._status = f"cell order failed: {e}"
+            self._status = f"cell stats failed: {e}"
 
     def _handle_keys(self):
         io = imgui.get_io()
@@ -1445,14 +1467,7 @@ class SingleSessionDemixingVis:
             elif self._cut is not None and self._cut._move_info.mode == "create":
                 self._drop_cut()
             else:
-                if self._group or self._pixels or self._active_component is not None or self._active_roi is not None:
-                    self._snapshot()
-                self._pixels.clear()
-                self.group_clear()
-                self._clear_component()
-                self._active_roi = None
-                self._selected_signals = None
-                self._clear_traces()
+                self.deselect()
         if io.key_ctrl and imgui.is_key_pressed(imgui.Key.a, False) and self._order is not None:
             self._group[:] = [int(k) for k in self._order.order]
             self._sync_highlight()
@@ -1579,6 +1594,14 @@ class SingleSessionDemixingVis:
             imgui.end_disabled()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
                 imgui.set_tooltip("not yet implemented")
+            imgui.same_line(0, em(0.6))
+            selected = bool(self._group or self._pixels) or self._active_component is not None or self._active_roi is not None
+            imgui.begin_disabled(not selected)
+            if imgui.button("deselect", imgui.ImVec2(em(6.5), 0)):
+                self.deselect()
+            imgui.end_disabled()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                imgui.set_tooltip("drop the selection, the group and the pixel averages (esc)")
         changed, self._follow = imgui.checkbox("center on selection", self._follow)
         if changed and self._follow and self._active_component is not None:
             self._center_on(self._active_component)
@@ -1588,14 +1611,27 @@ class SingleSessionDemixingVis:
         if imgui.small_button("keys"):
             self._keybinds_open = not self._keybinds_open
         if self._order is not None:
+            # the row wraps in a narrow panel
             imgui.same_line(0, em(0.8))
-            if imgui.small_button("load order"):
-                self._browse_order()
+            if imgui.get_content_region_avail().x < em(8):
+                imgui.new_line()
+            if imgui.small_button("load stats"):
+                self._browse_stats()
+            imgui.same_line(0, em(0.3))
+            imgui.text_disabled("(?)")
             if imgui.is_item_hovered():
-                imgui.set_tooltip("a .npy or text file of signal ids in a custom order becomes the 'order' column")
+                imgui.set_tooltip(
+                    "one row per signal, in signal id order, as sortable table columns:\n"
+                    "- .npy: a (signals,) or (signals, stats) array, or a pipeline's roi_stats.npy\n"
+                    "- .npz: one (signals,) array per stat, named by key\n"
+                    "- .csv / .tsv: a header row of names, then one row per signal\n"
+                    "- .txt: signal ids in a custom order, becomes the 'order' column"
+                )
         names = () if self._cell_stats is None else self._cell_stats.names
         if names:
             imgui.same_line(0, em(0.8))
+            if imgui.get_content_region_avail().x < em(5):
+                imgui.new_line()
             if imgui.small_button("columns"):
                 imgui.open_popup("##columns")
             if imgui.begin_popup("##columns"):
@@ -1638,12 +1674,6 @@ class SingleSessionDemixingVis:
             )
         imgui.end_child()
         imgui.separator()
-        if len(self._group) > 1:
-            if imgui.small_button("ungroup"):
-                self.group_clear()
-            imgui.same_line(0, em(0.3))
-            imgui.text_disabled("(esc)")
-            imgui.same_line(0, em(0.8))
         imgui.push_text_wrap_pos(0)
         imgui.text_disabled(self._selection_status())
         imgui.pop_text_wrap_pos()
