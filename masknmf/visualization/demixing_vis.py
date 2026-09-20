@@ -48,6 +48,7 @@ _ORDER_FILTERS = ["Cell order", "*.npy *.txt", "All files", "*"]
 _CLICK_SLOP = (
     4  # px the pointer may travel between press and release and still be a click
 )
+_UNDO_DEPTH = 50  # ctrl+z snapshots kept
 # signals selected together, in order of mutual contrast on the dark plot; no red, a mask marked for
 # deletion is red
 _GROUP_COLORS = (
@@ -75,7 +76,9 @@ _KEYBINDS = (
         "shift + click",
         "add a signal or drawn roi to the group; in the table, every row up to it",
     ),
-    ("esc", "cancel a new roi or a poly-delete, else empty the group and drop the pixel averages"),
+    ("esc", "cancel a new roi or a poly-delete, else deselect everything and drop the pixel averages"),
+    ("ctrl + a", "group every signal the table shows"),
+    ("ctrl + z", "undo the last mark, drawn roi, pixel average or deselect"),
     ("f", "center the view on the selection and keep following it"),
     (
         "p",
@@ -111,7 +114,11 @@ class SingleSessionDemixingVis:
     further passes chain.
 
     The "Signals" tab lists every demixed signal; ctrl / shift select a group whose traces share the plot.
-    Clicking the selected mask or its trace again deselects it.
+    Clicking the selected mask, its trace or its table row again deselects it; a pan or drag on a panel
+    leaves the selection alone. Esc deselects everything, ctrl+a groups every signal the table shows, and
+    ctrl+z undoes the last mark, drawn roi, pixel average or deselect (a Demix empties the undo stack; roi
+    vertex drags are not undone). The selection's contour always shows; the Overlay "contours" checkbox
+    adds every other footprint's.
     With "pixel traces" on (Curation tab checkbox or the p key, off by default), clicking an empty pixel adds the compressed movie's 5x5
     average there to the plot as if it were a grouped signal, and lists it at the top of the Signals table,
     marked. Pixel averages are diagnostic only: Demix and export ignore them, Delete drops them.
@@ -451,6 +458,7 @@ class SingleSessionDemixingVis:
         )  # signal indices "Delete" has marked; removed on the next "Demix"
         self._cut_hits = []  # the signals the poly-delete polygon has marked
         self._cut_highlight = False  # group the polygon's hits (colored masks, contours, traces) or only mark them
+        self._undo = []  # curation snapshots for ctrl+z, newest last
         self._group: list = []  # signals selected together; their traces share the plot
         self._order = None  # RoiOrder over the signals, built with the footprints
         self._follow = False
@@ -622,9 +630,7 @@ class SingleSessionDemixingVis:
     def _make_selectors(self):
         """(Re)build the footprint selectors over the current signals."""
         show = self._show_contours
-        if self._image_selector is not None:
-            self._set_contours(False)
-        # all known footprints, toggled from the roi panel; also drives the selected and grouped components
+        # the selected and grouped components' contours; the roi panel's "contours" adds every footprint's
         self._image_selector = fpl.ImageHighlightSelector(
             lut="tab10",
             lut_wrap="repeat",
@@ -633,7 +639,6 @@ class SingleSessionDemixingVis:
             options_alpha=self._contour_opacity,
             alpha=0.7,
         )
-        self._show_contours = False
         self._set_contours(show)
 
     def _load_results(self, results: masknmf.DemixingResults):
@@ -669,6 +674,7 @@ class SingleSessionDemixingVis:
         self._set_gray_cmaps()
         self._make_selectors()
         self._make_footprints()
+        self._undo.clear()
 
     def demix(self):
         """
@@ -741,6 +747,7 @@ class SingleSessionDemixingVis:
                 self._select_component(picked)
         elif self._selected_signals is None and self._active_component is not None and not self._group:
             # the single signal's own lines: a second double-click deselects it
+            self._snapshot()
             self._clear_component()
             self._clear_traces()
 
@@ -779,6 +786,7 @@ class SingleSessionDemixingVis:
                 elif "Shift" in mods:
                     self.group_add(component)
                 elif component == self._active_component and not self._group:
+                    self._snapshot()
                     self._clear_component()
                     self._clear_traces()
                 else:
@@ -796,6 +804,7 @@ class SingleSessionDemixingVis:
                 self._group.remove(pixel)
             else:
                 if pixel not in self._pixels:
+                    self._snapshot()
                     rows, cols = np.mgrid[
                         max(pixel[0] - 2, 0) : min(pixel[0] + 3, self._shape[1]),
                         max(pixel[1] - 2, 0) : min(pixel[1] + 3, self._shape[2]),
@@ -814,6 +823,8 @@ class SingleSessionDemixingVis:
             self._update_traces()
             return
 
+        if self._group or self._active_component is not None or self._active_roi is not None:
+            self._snapshot()
         self.group_clear()
         self._clear_component()
         self._active_roi = None
@@ -1033,18 +1044,14 @@ class SingleSessionDemixingVis:
             self._select_component(self._order.current)
 
     def _set_contours(self, show: bool):
+        """The selection's contour is always drawn; ``show`` adds every other footprint's at the contour opacity."""
         self._show_contours = show
         if self._image_selector is None:
             return
+        self._image_selector.options_alpha = self._contour_opacity if show else 0.0
         for g in self._video_graphics():
-            if g is None:
-                continue
-            graphic = g.graphic
-            attached = graphic in self._image_selector.graphics
-            if show and not attached:
-                self._image_selector.add_graphic(graphic)
-            elif not show and attached:
-                self._image_selector.remove_graphic(graphic)
+            if g is not None and g.graphic not in self._image_selector.graphics:
+                self._image_selector.add_graphic(g.graphic)
 
     def _drawing(self) -> bool:
         return self._armed is not None or any(
@@ -1070,6 +1077,7 @@ class SingleSessionDemixingVis:
         vertex: pygfx bubbles it up to the renderer last, where the selector's fresh handlers wait.
         """
         self._armed = None
+        self._snapshot()
         color = _ROI_COLORS[len(self._rois) % len(_ROI_COLORS)]
         selector = self._panel_graphics[name].graphic.add_polygon_selector(
             fill_color=color,
@@ -1081,6 +1089,7 @@ class SingleSessionDemixingVis:
         selector.add_event_handler(partial(self._roi_changed, selector), "selection")
         self._rois[selector] = {
             "color": color,
+            "panel": name,
             "subplot": self._ndw_fov.figure[name],
             "trace": None,
             "area": 0,
@@ -1136,7 +1145,9 @@ class SingleSessionDemixingVis:
                 )
         return trace.cpu().numpy()
 
-    def _delete_roi(self, selector):
+    def _delete_roi(self, selector, record: bool = True):
+        if record:
+            self._snapshot()
         if selector._move_info.mode is not None:
             selector._end_move_mode()
         self._rois.pop(selector)["subplot"].delete_graphic(selector)
@@ -1159,6 +1170,7 @@ class SingleSessionDemixingVis:
     def _begin_cut(self, name: str):
         """Create the armed poly-delete polygon on panel ``name``; the press places its first vertex, as for a roi."""
         self._armed = None
+        self._snapshot()
         self._cut_hits = []  # an earlier polygon keeps its marks; only the newest one is live
         self._drop_cut()
         self._cut = self._panel_graphics[name].graphic.add_polygon_selector(
@@ -1195,9 +1207,9 @@ class SingleSessionDemixingVis:
         before = self._marked - set(self._cut_hits)
         hits = [int(k) for k in hits if int(k) not in before]
         if hits != self._cut_hits:
-            self._mark(set(self._cut_hits) - set(hits), False)
+            self._mark(set(self._cut_hits) - set(hits), False, record=False)
             self._cut_hits = hits
-            self._mark(hits, True)
+            self._mark(hits, True, record=False)
             if self._cut_highlight:
                 self._group[:] = hits
                 self._active_component = hits[-1] if hits else None
@@ -1233,9 +1245,11 @@ class SingleSessionDemixingVis:
         """Mark a signal for deletion on the next demix, or unmark it."""
         self._mark({component}, int(component) not in self._marked)
 
-    def _mark(self, signals, on: bool):
+    def _mark(self, signals, on: bool, record: bool = True):
         """Mark ``signals`` for deletion on the next demix, or unmark them; the masks and the table follow."""
         signals = {int(k) for k in signals}
+        if record and signals:
+            self._snapshot()
         if on:
             self._marked |= signals
         else:
@@ -1244,11 +1258,83 @@ class SingleSessionDemixingVis:
         self._order.rebuild()
         self._refresh_masks()
 
+    def _snapshot(self):
+        """Push the curation state for ctrl+z: the marks, drawn rois, pixel averages and selection."""
+        self._undo.append(
+            {
+                "marked": set(self._marked),
+                "rois": [
+                    (sel, roi["panel"], roi["color"], np.array(sel.selection), roi["trace"], roi["area"])
+                    for sel, roi in self._rois.items()
+                ],
+                "pixels": OrderedDict(self._pixels),
+                "group": list(self._group),
+                "active": self._active_component,
+                "active_roi": self._active_roi,
+                "active_pixel": self._active_pixel,
+            }
+        )
+        del self._undo[:-_UNDO_DEPTH]
+
+    def undo(self):
+        """Ctrl+z: back to the last snapshot; a deleted roi is redrawn, a live poly-delete polygon is dropped."""
+        if not self._undo:
+            return
+        state = self._undo.pop()
+        self._armed = None
+        self._cut_hits = []  # its marks come back from the snapshot, not from _drop_cut
+        self._drop_cut()
+        kept = {sel for sel, *_ in state["rois"]}
+        for sel in list(self._rois):
+            if sel not in kept:
+                self._delete_roi(sel, record=False)
+        swap = {}
+        for sel, panel, color, vertices, trace, area in state["rois"]:
+            if sel in self._rois:
+                continue
+            new = self._panel_graphics[panel].graphic.add_polygon_selector(
+                fill_color=color, edge_color=color, vertex_color=color, edge_thickness=2, vertex_size=8
+            )
+            new.selection = vertices
+            new._end_move_mode()
+            new.add_event_handler(partial(self._roi_changed, new), "selection")
+            self._rois[new] = {
+                "color": color,
+                "panel": panel,
+                "subplot": self._ndw_fov.figure[panel],
+                "trace": trace,
+                "area": area,
+                "dirty": trace is None,
+            }
+            swap[sel] = new
+        rois = OrderedDict((swap.get(sel, sel), self._rois[swap.get(sel, sel)]) for sel, *_ in state["rois"])
+        self._rois.clear()
+        self._rois.update(rois)
+        self._marked.clear()
+        self._marked.update(state["marked"])
+        if self._order is not None:
+            self._order.columns["del"][:] = 0
+            self._order.columns["del"][list(self._marked)] = 1
+            self._order.rebuild()
+        self._pixels.clear()
+        self._pixels.update(state["pixels"])
+        self._group[:] = [swap.get(k, k) for k in state["group"]]
+        self._active_component = state["active"]
+        self._active_roi = swap.get(state["active_roi"], state["active_roi"])
+        self._active_pixel = state["active_pixel"]
+        if self._active_component is not None and self._order is not None:
+            self._order.reveal(self._active_component)
+            self._scroll_to_current = True
+        self._sync_highlight()
+        self._update_traces()
+        self._status = f"undone, {len(self._undo)} more"
+
     def _delete_selected(self):
         """The Delete action: drop an active drawn roi, else the active pixel average, else toggle the active signal's mark."""
         if self._active_roi is not None:
             self._delete_roi(self._active_roi)
         elif self._active_pixel is not None:
+            self._snapshot()
             self._pixels.pop(self._active_pixel, None)
             if self._active_pixel in self._group:
                 self._group.remove(self._active_pixel)
@@ -1359,9 +1445,20 @@ class SingleSessionDemixingVis:
             elif self._cut is not None and self._cut._move_info.mode == "create":
                 self._drop_cut()
             else:
+                if self._group or self._pixels or self._active_component is not None or self._active_roi is not None:
+                    self._snapshot()
                 self._pixels.clear()
-                self._active_pixel = None
                 self.group_clear()
+                self._clear_component()
+                self._active_roi = None
+                self._selected_signals = None
+                self._clear_traces()
+        if io.key_ctrl and imgui.is_key_pressed(imgui.Key.a, False) and self._order is not None:
+            self._group[:] = [int(k) for k in self._order.order]
+            self._sync_highlight()
+            self._update_traces()
+        if io.key_ctrl and imgui.is_key_pressed(imgui.Key.z, False):
+            self.undo()
         stride = 10 if io.key_shift else 1
         if imgui.is_key_pressed(imgui.Key.down_arrow, True):
             self._step(stride)
@@ -1412,6 +1509,11 @@ class SingleSessionDemixingVis:
         self._keybinds_open = draw_keybinds_popup(_KEYBINDS, self._keybinds_open)
 
     def _table_select(self, component):
+        if component == self._active_component and not self._group:
+            self._snapshot()
+            self._clear_component()
+            self._clear_traces()
+            return
         self.group_clear()
         if isinstance(component, tuple):
             self._clear_component()
@@ -1518,6 +1620,7 @@ class SingleSessionDemixingVis:
                 formatters,
                 self._scroll_to_current,
                 table_id="signals",
+                cursor=self._active_component is not None,
                 on_select=self._table_select,
                 is_grouped=self._group.__contains__,
                 on_ctrl_select=self.group_toggle,
@@ -1581,7 +1684,7 @@ class SingleSessionDemixingVis:
         changed, self._contour_opacity = imgui.slider_float(
             "##contour-opacity", self._contour_opacity, 0.05, 1.0, "opacity %.2f"
         )
-        if changed:
+        if changed and self._show_contours:
             self._image_selector.options_alpha = self._contour_opacity
         imgui.end_table()
 
