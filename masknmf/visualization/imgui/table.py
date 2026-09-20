@@ -10,8 +10,8 @@ class RoiOrder:
     """
     Filter and stable sort over per-item columns; yields the visible item order.
 
-    ``columns`` maps a name to one value per item. An integer range over
-    ``range_column`` filters; ``sort_by`` names the sort column (None: id order);
+    ``columns`` maps a name to one value per item. A range over ``range_column``
+    filters (an item without a value never passes); ``sort_by`` names the sort column (None: id order);
     items nonzero in ``pinned`` always come first; ``pos`` is the cursor into ``order``.
     """
 
@@ -30,7 +30,9 @@ class RoiOrder:
     def set_range_column(self, name: str):
         """Filter on ``name``, with the limits reset to its full span."""
         self.range_column = name
-        self.range_span = (0, int(np.max(self.columns[name], initial=0)))
+        values = np.asarray(self.columns[name], dtype=np.float64)
+        values = values[np.isfinite(values)]
+        self.range_span = (float(values.min()), float(values.max())) if values.size else (0.0, 0.0)
         self.range_limits = self.range_span
 
     @property
@@ -191,20 +193,26 @@ def draw_roi_table(
 
 def draw_range_filter(order: RoiOrder, id_suffix: str = "", width: float = -1) -> bool:
     """
-    Range slider for ``order.range_column``, or nothing when no column is set.
+    A column picker and a range slider over ``order.range_column``, or nothing when no column is set.
 
-    Does not rebuild; True when the limits changed.
+    Does not rebuild; True when the column or the limits changed.
     """
     if order.range_column is None:
         return False
-    values = order.columns[order.range_column]
+    names = list(order.columns)
+    imgui.set_next_item_width(imgui.get_font_size() * 5.5)
+    picked, index = imgui.combo(f"##range_column{id_suffix}", names.index(order.range_column), names)
+    if picked:
+        order.set_range_column(names[index])
+    imgui.same_line()
+    fmt = "%.0f" if np.asarray(order.columns[order.range_column]).dtype.kind in "iub" else "%.3g"
+    lo, hi = order.range_span
     imgui.set_next_item_width(width)
-    changed, lo, hi = imgui.drag_int_range2(
+    changed, lo, hi = imgui.drag_float_range2(
         f"##range{id_suffix}",
-        order.range_limits[0], order.range_limits[1], 1, 0,
-        int(np.max(values, initial=0)),
-        f"{order.range_column} >= %d", f"{order.range_column} <= %d",
+        float(order.range_limits[0]), float(order.range_limits[1]), max((hi - lo) / 200, 1e-6), lo, hi,
+        f"{order.range_column} >= {fmt}", f"{order.range_column} <= {fmt}",
     )
     if changed:
         order.range_limits = (lo, hi)
-    return changed
+    return picked or changed

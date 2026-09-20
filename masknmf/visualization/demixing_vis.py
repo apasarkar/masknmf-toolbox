@@ -115,6 +115,8 @@ class SingleSessionDemixingVis:
     marked. Pixel averages are diagnostic only: Demix and export ignore them, Delete drops them.
     A drawn roi gets the same kind of trace once it is closed ("roi n", groupable, in the table too) and,
     unlike a pixel average, is kept: Demix seeds the NMF pass with it and export writes it.
+    The filter above the table takes any column, del included (0 or 1), and "delete in view" marks every
+    signal it shows, as Delete does one at a time.
     poly-delete (the Curation tab's polygon button) draws a red polygon on any panel that marks every signal
     in view whose center falls inside it (or outside, per the toggle), as Delete does one at a time. The marks
     follow the polygon as it is drawn and later dragged, like a drawn roi; its signals form the group, so they
@@ -1417,6 +1419,17 @@ class SingleSessionDemixingVis:
         if draw_range_filter(order, "_signals"):
             order.rebuild()
         imgui.text_disabled(f"{len(order.order)}/{order.n_items} in view")
+        if len(order.order):
+            imgui.same_line(0, em(0.8))
+            on = not all(int(k) in self._marked for k in order.order)
+            imgui.push_style_color(imgui.Col_.button, to_vec4(THEME.danger))
+            imgui.push_style_color(imgui.Col_.button_hovered, to_vec4(THEME.danger_hover))
+            imgui.push_style_color(imgui.Col_.button_active, to_vec4(THEME.danger_hover))
+            if imgui.small_button(f"{'delete' if on else 'unmark'} in view"):
+                self._mark(order.order, on)
+            imgui.pop_style_color(3)
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("mark every signal the filter shows for deletion on the next demix, or unmark them")
         if self._order is not None:
             signals = [k for k in self._group if isinstance(k, int)]
             if not signals and self._active_component is not None:
