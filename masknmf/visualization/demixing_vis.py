@@ -50,6 +50,8 @@ _CLICK_SLOP = (
 )
 # signals selected together, in order of mutual contrast on the dark plot; no red, a mask marked for
 # deletion is red
+# a group larger than this keeps its masks and rows but plots no traces
+_MAX_GROUP_TRACES = 24
 _GROUP_COLORS = (
     (1.00, 0.55, 0.10),
     (0.25, 0.85, 0.35),
@@ -75,7 +77,7 @@ _KEYBINDS = (
         "shift + click",
         "add a signal or drawn roi to the group; in the table, every row up to it",
     ),
-    ("esc", "cancel a new roi or a poly-delete, else empty the group"),
+    ("esc", "cancel a new roi or a poly-delete, else empty the group and drop the pixel averages"),
     ("f", "center the view on the selection and keep following it"),
     (
         "p",
@@ -110,7 +112,8 @@ class SingleSessionDemixingVis:
     marked signals are gone, the new file's description says what was done, and the viewer moves on to it so
     further passes chain.
 
-    The "Signals" tab lists every demixed signal; ctrl / shift select a group whose traces share the plot.
+    The "Signals" tab lists every demixed signal; ctrl / shift select a group whose traces share the plot
+    (a group past 24 signals plots none). Clicking the selected mask or its trace again deselects it.
     With "pixel traces" on (Curation tab checkbox or the p key, off by default), clicking an empty pixel adds the compressed movie's 5x5
     average there to the plot as if it were a grouped signal, and lists it at the top of the Signals table,
     marked. Pixel averages are diagnostic only: Demix and export ignore them, Delete drops them.
@@ -737,6 +740,10 @@ class SingleSessionDemixingVis:
                 self._active_roi = picked
             else:
                 self._select_component(picked)
+        elif self._selected_signals is None and self._active_component is not None and not self._group:
+            # the single signal's own lines: a second double-click deselects it
+            self._clear_component()
+            self._clear_traces()
 
     def _click_update(self, ev: pygfx.PointerEvent):
         """
@@ -772,6 +779,9 @@ class SingleSessionDemixingVis:
                     self.group_toggle(component)
                 elif "Shift" in mods:
                     self.group_add(component)
+                elif component == self._active_component and not self._group:
+                    self._clear_component()
+                    self._clear_traces()
                 else:
                     self.group_clear()
                     self._select_component(component)
@@ -870,6 +880,10 @@ class SingleSessionDemixingVis:
         average or drawn roi: every member's compressed average, colored like its mask or table row.
         """
         results = self.demixing_results
+        if len(self._group) > _MAX_GROUP_TRACES:
+            self._selected_signals = None
+            self._clear_traces()
+            return
         if len(self._group) > 1 or any(not isinstance(k, int) for k in self._group):
             self._selected_signals = []
             lines = []
@@ -1340,6 +1354,8 @@ class SingleSessionDemixingVis:
             elif self._cut is not None and self._cut._move_info.mode == "create":
                 self._drop_cut()
             else:
+                self._pixels.clear()
+                self._active_pixel = None
                 self.group_clear()
         stride = 10 if io.key_shift else 1
         if imgui.is_key_pressed(imgui.Key.down_arrow, True):
@@ -1358,8 +1374,11 @@ class SingleSessionDemixingVis:
         rois = [list(self._rois).index(k) for k in self._group if k in self._rois]
         if len(self._group) > 1 or pixels or rois:
             signals = sorted(k for k in self._group if isinstance(k, int))
+            shown = f"{len(signals)} signals" if len(signals) > 12 else f"signals {signals}"
             note = "; pixel avgs are marked, delete them when done" if pixels else ""
-            return f"{len(self._group)} grouped: signals {signals}, rois {rois}, pixel avgs {pixels}{note}"
+            if len(self._group) > _MAX_GROUP_TRACES:
+                note += f"; more than {_MAX_GROUP_TRACES} grouped, traces not plotted"
+            return f"{len(self._group)} grouped: {shown}, rois {rois}, pixel avgs {pixels}{note}"
         if self._active_component is not None:
             marked = (
                 " (marked for deletion)"
