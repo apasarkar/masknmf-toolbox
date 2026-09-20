@@ -66,6 +66,18 @@ class CellStats:
         return cls(tuple(names), values)
 
     @classmethod
+    def from_results(cls, results) -> "CellStats":
+        """
+        Simple per-signal stats of the temporal traces ``results.c``: mean, std, snr (peak over std)
+        and skew. A starting set; any (num_signals, num_stats) array with names is as good.
+        """
+        c = np.asarray(results.c.detach().cpu(), dtype=np.float32)
+        mean = c.mean(0)
+        std = c.std(0) + 1e-6
+        skew = ((c - mean) ** 3).mean(0) / std**3
+        return cls(("mean", "std", "snr", "skew"), np.column_stack([mean, std, c.max(0) / std, skew]))
+
+    @classmethod
     def from_order(cls, order, num_cells: int, name: str = "order") -> "CellStats":
         """Ranks from a custom cell order: cell ``order[i]`` gets rank ``i``; cells left out get NaN and sort last."""
         order = np.asarray(order)

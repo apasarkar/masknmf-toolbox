@@ -117,7 +117,9 @@ class SingleSessionDemixingVis:
     A drawn roi gets the same kind of trace once it is closed ("roi n", groupable, in the table too) and,
     unlike a pixel average, is kept: Demix seeds the NMF pass with it and export writes it.
     The filter above the table takes any column, del included (0 or 1), and "delete in view" marks every
-    signal it shows, as Delete does one at a time.
+    signal it shows, as Delete does one at a time. The Curation tab's "color by" colors the masks and the
+    table's ids by a column's rank instead of by signal id. :meth:`CellStats.from_results` is a starting set
+    of stats (mean, std, snr, skew of each trace).
     poly-delete (the Curation tab's polygon button) draws a red polygon on any panel that marks every signal
     in view whose center falls inside it (or outside, per the toggle), as Delete does one at a time. The marks
     follow the polygon as it is drawn and later dragged, like a drawn roi; its signals form the group, so they
@@ -540,6 +542,7 @@ class SingleSessionDemixingVis:
         self._order = RoiOrder(columns, len(self._footprints), pinned="del")
         self._order.set_range_column("area")
         self._order.rebuild()
+        self._color_by = "signal id"
         self._refresh_masks()
 
     def _refresh_masks(self):
@@ -1569,6 +1572,17 @@ class SingleSessionDemixingVis:
         section("Overlay")
         if self._image_selector is not None:
             self._draw_overlay_controls()
+        if self._order is not None:
+            names = ["signal id", *[n for n in self._order.columns if n != "del"]]
+            imgui.align_text_to_frame_padding()
+            imgui.text_disabled("color by")
+            imgui.same_line(0, em(0.6))
+            imgui.set_next_item_width(-1)
+            changed, index = imgui.combo("##color_by", names.index(self._color_by) if self._color_by in names else 0, names)
+            if changed:
+                self._color_by = names[index]
+                self._footprints.recolor(None if index == 0 else self._order.columns[self._color_by])
+                self._refresh_masks()
         changed, on = imgui.checkbox("pixel traces", self._pixel_traces)
         if changed:
             self._set_pixel_traces(on)

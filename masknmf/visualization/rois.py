@@ -4,6 +4,7 @@ import colorsys
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Optional, Tuple
 
+import matplotlib
 import numpy as np
 import torch
 
@@ -77,9 +78,10 @@ def feathered_rgba(shape: Tuple[int, int], comps, selected=()) -> np.ndarray:
 
 @dataclass
 class FootprintSet:
-    """Footprints an algorithm produced, as (ypix, xpix, lam) per component."""
+    """Footprints an algorithm produced, as (ypix, xpix, lam) per component; ``colors`` overrides the id palette."""
 
     footprints: list
+    colors: Optional[np.ndarray] = None
 
     @classmethod
     def from_sparse(cls, a: torch.Tensor, shape: Tuple[int, int]) -> "FootprintSet":
@@ -107,7 +109,22 @@ class FootprintSet:
         return len(self.footprints)
 
     def color(self, index: int) -> Tuple[float, float, float]:
+        if self.colors is not None:
+            return tuple(float(v) for v in self.colors[index])
         return tuple(v / 255.0 for v in roi_color(index))
+
+    def recolor(self, values=None, cmap: str = "viridis"):
+        """Color every footprint by its rank in ``values`` (no value: gray), or back to the id palette with None."""
+        if values is None:
+            self.colors = None
+            return
+        values = np.asarray(values, dtype=np.float64)
+        finite = np.isfinite(values)
+        ranks = np.zeros(len(values))
+        ranks[finite] = np.argsort(np.argsort(values[finite])) / max(finite.sum() - 1, 1)
+        colors = np.asarray(matplotlib.colormaps[cmap](ranks))[:, :3]
+        colors[~finite] = 0.5
+        self.colors = colors
 
     @property
     def areas(self) -> np.ndarray:
