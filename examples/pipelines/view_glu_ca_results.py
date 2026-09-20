@@ -85,7 +85,7 @@ def main():
                 nmf_config=nmf_config,
                 raw=raw,
                 shifts=None if reg is None else reg.shifts,
-                cell_stats_path=args.cell_stats,
+                cell_stats=args.cell_stats,
                 cell_order=args.cell_order,
             )
         )

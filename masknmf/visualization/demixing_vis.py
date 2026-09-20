@@ -130,8 +130,8 @@ class SingleSessionDemixingVis:
     motion_correction.hdf5 beside the results are picked up when their frames match the results; given ones
     must match.
 
-    ``cell_stats`` / ``cell_stats_path`` (a :class:`CellStats`, or a .npy / .npz / .csv / .tsv it reads, one
-    row per signal) add sortable columns to the Signals table: click a header to order the signals by that
+    ``cell_stats`` (a :class:`CellStats`, or a .npy / .npz / .csv / .tsv it reads, one row per signal) adds
+    sortable columns to the Signals table: click a header to order the signals by that
     stat, then step through the top or bottom of the order. ``cell_order`` (signal ids in a custom order, or a
     .npy / text file of them) adds an "order" column of ranks and opens the table in that order; signals it
     leaves out sort last. :meth:`load_cell_order` and :meth:`add_cell_stats` (or the Signals tab's "load order"
@@ -163,8 +163,7 @@ class SingleSessionDemixingVis:
         nmf_config: NMFConfig | None = None,
         raw: masknmf.ArrayLike | np.ndarray | str | os.PathLike | None = None,
         shifts: np.ndarray | torch.Tensor | str | os.PathLike | None = None,
-        cell_stats: CellStats | None = None,
-        cell_stats_path: str | os.PathLike | None = None,
+        cell_stats: CellStats | str | os.PathLike | None = None,
         cell_order: Sequence[int] | np.ndarray | str | os.PathLike | None = None,
     ):
         self._results_path = None if results_path is None else str(results_path)
@@ -192,24 +191,25 @@ class SingleSessionDemixingVis:
         # cell stats: given, or the pipeline's roi_stats.npy beside the results; a found mismatch is skipped, a given one raises
         found_stats = False
         hidden = set()  # found columns start hidden; given ones show
-        if cell_stats is None and cell_stats_path is None and folder is not None and (folder / "roi_stats.npy").is_file():
-            cell_stats_path, found_stats = folder / "roi_stats.npy", True
-        if cell_stats is None and cell_stats_path is not None:
-            cell_stats = CellStats.read(cell_stats_path)
+        if cell_stats is None and folder is not None and (folder / "roi_stats.npy").is_file():
+            cell_stats, found_stats = folder / "roi_stats.npy", True
+        source = cell_stats if isinstance(cell_stats, (str, os.PathLike)) else None
+        if source is not None:
+            cell_stats = CellStats.read(source)
             if found_stats:
                 hidden = set(cell_stats.names)
         if cell_stats is not None and cell_stats.values.shape[0] != num_signals:
             if not found_stats:
                 raise ValueError(f"{cell_stats.values.shape[0]} cell stat rows for {num_signals} signals")
-            display(f"skipping {cell_stats_path}: {cell_stats.values.shape[0]} rows for {num_signals} signals")
+            display(f"skipping {source}: {cell_stats.values.shape[0]} rows for {num_signals} signals")
             cell_stats = None
         if cell_stats is not None:
             if set(cell_stats.names) & {"id", "area", "peak", "del"}:
                 raise ValueError(f"cell stat names clash with the table's own columns: {cell_stats.names}")
-            display(f"cell stats: {', '.join(cell_stats.names)} from {cell_stats_path if cell_stats_path is not None else 'stats given'}")
+            display(f"cell stats: {', '.join(cell_stats.names)} from {source if source is not None else 'stats given'}")
         elif cell_order is None:
             display(
-                "no cell stats: cell_stats_path= / cell_stats= / cell_order= adds sortable Signals-table columns; "
+                "no cell stats: cell_stats= (a CellStats or a file) / cell_order= adds sortable Signals-table columns; "
                 "roi_stats.npy beside the results is picked up"
             )
         self._cell_stats = cell_stats
