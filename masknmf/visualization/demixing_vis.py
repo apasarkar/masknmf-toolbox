@@ -22,6 +22,7 @@ from masknmf.visualization.imgui import (
     TracePlot,
     component_at_pixel,
     draw_keybinds_popup,
+    draw_path_popup,
     draw_range_filter,
     draw_roi_table,
     em,
@@ -158,7 +159,9 @@ class SingleSessionDemixingVis:
     stat, then step through the top or bottom of the order. ``cell_order`` (signal ids in a custom order, or a
     .npy / text file of them) adds an "order" column of ranks and opens the table in that order; signals it
     leaves out sort last. :meth:`load_cell_order` and :meth:`add_cell_stats` (or the Signals tab's "load stats"
-    button: a .txt of ids is an order, anything else stats) do the same with the results open. With
+    button: a .txt of ids is an order, anything else stats) do the same with the results open. "load stats"
+    and "Export" open a window with a typed path, so they work on a remote kernel; "browse" there is the
+    native dialog for a local one. With
     ``results_path`` set and nothing given, a pipeline's ``roi_stats.npy`` beside the results is picked up when
     its rows match; its columns start hidden, the Signals tab's "columns" button shows them. Marked signals
     always come first. A Demix pass drops the stats since the signal set changes.
@@ -532,6 +535,10 @@ class SingleSessionDemixingVis:
         self._status = ""
         self._file_dialog = None
         self._order_dialog = None
+        self._export_popup = False
+        self._export_path = os.path.join(os.getcwd(), "rois.npz")
+        self._stats_popup = False
+        self._stats_path = ""
         self._press = None  # screen position of the last pointer press on a video panel
         self._armed = None  # "roi" / "poly": the next press on any video panel starts that polygon there
         # the poly-select polygon, its subplot, and the vertices / side / filter its hits were last computed for
@@ -1433,13 +1440,8 @@ class SingleSessionDemixingVis:
             return
         result = self._file_dialog.result()
         self._file_dialog = None
-        if not result:
-            return
-        try:
-            path = self.export_rois(result)
-            self._status = f"exported {len(self._rois)} roi(s) to {path}"
-        except (OSError, ValueError) as e:
-            self._status = f"export failed: {e}"
+        if result:
+            self._export_path = result
 
     def _browse_stats(self):
         if self._order_dialog is None:
@@ -1450,16 +1452,8 @@ class SingleSessionDemixingVis:
             return
         result = self._order_dialog.result()
         self._order_dialog = None
-        if not result:
-            return
-        try:
-            if result[0].lower().endswith(".txt"):
-                self.load_cell_order(result[0])
-            else:
-                self.add_cell_stats(result[0])
-            self._status = f"cell stats loaded from {os.path.basename(result[0])}"
-        except (OSError, ValueError, TypeError) as e:
-            self._status = f"cell stats failed: {e}"
+        if result:
+            self._stats_path = result[0]
 
     def _handle_keys(self):
         io = imgui.get_io()
@@ -1528,6 +1522,30 @@ class SingleSessionDemixingVis:
                 imgui.end_tab_item()
             imgui.end_tab_bar()
         self._keybinds_open = draw_keybinds_popup(_KEYBINDS, self._keybinds_open)
+        self._export_popup, self._export_path, go = draw_path_popup(
+            "Export ROIs", self._export_popup, self._export_path, "rois.npz", "export", self._browse_export, self._status
+        )
+        if go:
+            try:
+                path = self.export_rois(self._export_path)
+                self._status = f"exported {len(self._rois)} roi(s) to {path}"
+                self._export_popup = False
+            except (OSError, ValueError) as e:
+                self._status = f"export failed: {e}"
+        self._stats_popup, self._stats_path, go = draw_path_popup(
+            "Load cell stats", self._stats_popup, self._stats_path,
+            ".npy / .npz / .csv / .tsv of stats, or a .txt of signal ids in order", "load", self._browse_stats, self._status,
+        )
+        if go:
+            try:
+                if self._stats_path.lower().endswith(".txt"):
+                    self.load_cell_order(self._stats_path)
+                else:
+                    self.add_cell_stats(self._stats_path)
+                self._status = f"cell stats loaded from {os.path.basename(self._stats_path)}"
+                self._stats_popup = False
+            except (OSError, ValueError, TypeError) as e:
+                self._status = f"cell stats failed: {e}"
 
     def _table_select(self, component):
         if component == self._active_component and not self._group:
@@ -1617,7 +1635,7 @@ class SingleSessionDemixingVis:
         if self._order is not None:
             g.row("stats")
             if imgui.button("load stats", imgui.ImVec2(g.w, 0)):
-                self._browse_stats()
+                self._stats_popup = True
             help_mark(
                 "one row per signal, in signal id order, as sortable table columns:\n"
                 "- .npy: a (signals,) or (signals, stats) array, or a pipeline's roi_stats.npy\n"
@@ -1761,7 +1779,7 @@ class SingleSessionDemixingVis:
         g.row("on disk")
         imgui.begin_disabled(not self._rois)
         if imgui.button("Export", imgui.ImVec2(g.w, 0)):
-            self._browse_export()
+            self._export_popup = True
         imgui.end_disabled()
         help_mark("write the drawn rois to a .npz")
         g.cell(1)

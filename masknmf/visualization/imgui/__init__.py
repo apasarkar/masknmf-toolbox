@@ -12,7 +12,7 @@ from masknmf.visualization.imgui.layout import (
 )
 from masknmf.visualization.imgui.trace_plot import TracePlot
 from masknmf.visualization.imgui.table import RoiOrder, draw_range_filter, draw_roi_table
-from masknmf.visualization.imgui.panels import draw_keybinds_popup
+from masknmf.visualization.imgui.panels import draw_keybinds_popup, draw_path_popup
 from masknmf.visualization.imgui.theme import (
     Theme,
     THEME,
@@ -36,6 +36,7 @@ __all__ = [
     "draw_range_filter",
     "draw_roi_table",
     "draw_keybinds_popup",
+    "draw_path_popup",
     "draw_edge_handle",
     "Theme",
     "THEME",
