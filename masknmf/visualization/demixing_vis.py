@@ -50,8 +50,6 @@ _CLICK_SLOP = (
 )
 # signals selected together, in order of mutual contrast on the dark plot; no red, a mask marked for
 # deletion is red
-# a group larger than this keeps its masks and rows but plots no traces
-_MAX_GROUP_TRACES = 24
 _GROUP_COLORS = (
     (1.00, 0.55, 0.10),
     (0.25, 0.85, 0.35),
@@ -112,8 +110,8 @@ class SingleSessionDemixingVis:
     marked signals are gone, the new file's description says what was done, and the viewer moves on to it so
     further passes chain.
 
-    The "Signals" tab lists every demixed signal; ctrl / shift select a group whose traces share the plot
-    (a group past 24 signals plots none). Clicking the selected mask or its trace again deselects it.
+    The "Signals" tab lists every demixed signal; ctrl / shift select a group whose traces share the plot.
+    Clicking the selected mask or its trace again deselects it.
     With "pixel traces" on (Curation tab checkbox or the p key, off by default), clicking an empty pixel adds the compressed movie's 5x5
     average there to the plot as if it were a grouped signal, and lists it at the top of the Signals table,
     marked. Pixel averages are diagnostic only: Demix and export ignore them, Delete drops them.
@@ -126,7 +124,7 @@ class SingleSessionDemixingVis:
     poly-delete (the Curation tab's polygon button) draws a red polygon on any panel that marks every signal
     in view whose center falls inside it (or outside, per the toggle), as Delete does one at a time. The marks
     follow the polygon as it is drawn and later dragged, like a drawn roi; its signals form the group, so they
-    are highlighted in the panels and the table with their traces plotted in matching colors, and sorted to
+    are highlighted in the panels and the table, traces plotted in matching colors once it settles, and sorted to
     the top of the table; "remove poly-delete" unmarks them, and starting another polygon keeps them. Nothing
     is removed until the next Demix.
 
@@ -880,10 +878,6 @@ class SingleSessionDemixingVis:
         average or drawn roi: every member's compressed average, colored like its mask or table row.
         """
         results = self.demixing_results
-        if len(self._group) > _MAX_GROUP_TRACES:
-            self._selected_signals = None
-            self._clear_traces()
-            return
         if len(self._group) > 1 or any(not isinstance(k, int) for k in self._group):
             self._selected_signals = []
             lines = []
@@ -1180,11 +1174,12 @@ class SingleSessionDemixingVis:
         if self._cut is None:
             return
         polygon = self._cut.selection[:, :2]
+        moving = self._cut._move_info.mode is not None
         if polygon.shape[0] < 3:
-            if self._cut._move_info.mode is None:
+            if not moving:
                 self._drop_cut()
             return
-        key = (polygon.tobytes(), self._cut_outside, self._order.range_limits)
+        key = (polygon.tobytes(), self._cut_outside, self._order.range_limits, moving)
         if key == self._cut_key:
             return
         self._cut_key = key
@@ -1205,9 +1200,14 @@ class SingleSessionDemixingVis:
             self._group[:] = hits
             self._active_component = hits[-1] if hits else None
             self._sync_highlight()
-            self._update_traces()
             where = "outside" if self._cut_outside else "inside"
             self._status = f"poly-delete: {len(hits)} signal(s) {where} the polygon marked"
+        # no traces while the polygon is being drawn or dragged; they plot once it settles
+        if moving:
+            self._selected_signals = None
+            self._clear_traces()
+        else:
+            self._update_traces()
 
     def _drop_cut(self):
         if self._cut is None:
@@ -1376,8 +1376,6 @@ class SingleSessionDemixingVis:
             signals = sorted(k for k in self._group if isinstance(k, int))
             shown = f"{len(signals)} signals" if len(signals) > 12 else f"signals {signals}"
             note = "; pixel avgs are marked, delete them when done" if pixels else ""
-            if len(self._group) > _MAX_GROUP_TRACES:
-                note += f"; more than {_MAX_GROUP_TRACES} grouped, traces not plotted"
             return f"{len(self._group)} grouped: {shown}, rois {rois}, pixel avgs {pixels}{note}"
         if self._active_component is not None:
             marked = (
