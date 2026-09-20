@@ -68,7 +68,10 @@ class CellStats:
     @classmethod
     def from_order(cls, order, num_cells: int, name: str = "order") -> "CellStats":
         """Ranks from a custom cell order: cell ``order[i]`` gets rank ``i``; cells left out get NaN and sort last."""
-        order = np.asarray(order, dtype=np.int64).ravel()
+        order = np.asarray(order)
+        if order.dtype.names is not None or order.dtype.kind not in "iuf":
+            raise ValueError("a cell order is a plain array of signal ids; a stats table goes in as cell_stats")
+        order = order.astype(np.int64).ravel()
         if len(np.unique(order)) != len(order) or (len(order) and (order.min() < 0 or order.max() >= num_cells)):
             raise ValueError(f"a cell order lists distinct cell ids below {num_cells}")
         ranks = np.full(num_cells, np.nan, np.float32)
