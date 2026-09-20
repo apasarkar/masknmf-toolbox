@@ -84,33 +84,45 @@ def section(title: str, theme: Theme = THEME):
     imgui.dummy(imgui.ImVec2(0, em(0.2)))
 
 
-@contextmanager
-def settings_table(table_id: str, captions):
-    """
-    A two-column settings table: dim captions in a fixed column as wide as the longest of
-    ``captions``, controls in the stretch column. Yields False when the table is clipped; start
-    each row with :func:`settings_row`.
-    """
-    caption_w = max(imgui.calc_text_size(c).x for c in captions) + em(0.8)
-    flags = imgui.TableFlags_.sizing_stretch_prop | imgui.TableFlags_.no_pad_outer_x
-    if not imgui.begin_table(table_id, 2, flags):
-        yield False
-        return
-    try:
-        imgui.table_setup_column("caption", imgui.TableColumnFlags_.width_fixed, caption_w)
-        imgui.table_setup_column("control", imgui.TableColumnFlags_.width_stretch)
-        yield True
-    finally:
-        imgui.end_table()
+@dataclass(frozen=True)
+class Grid:
+    """Three aligned columns: a caption (dim text, or a checkbox), then two equal cells; ``span`` is both cells' width."""
+
+    cell_x: tuple
+    cell_w: float
+    gap: float
+
+    @property
+    def span(self) -> float:
+        return 2 * self.cell_w + self.gap
+
+    def row(self, caption: str):
+        """Start a row: the dim caption on its widgets' frame baseline, the cursor in the first cell."""
+        imgui.align_text_to_frame_padding()
+        imgui.text_disabled(caption)
+        self.cell(0)
+
+    def cell(self, i: int):
+        """Continue the row in cell ``i``; when the last item already reaches into it, on the next line from the first cell."""
+        x = self.cell_x[i]
+        if imgui.get_item_rect_max().x > imgui.get_window_pos().x - imgui.get_scroll_x() + x - self.gap:
+            imgui.new_line()
+            x = self.cell_x[0]
+        imgui.same_line(x)
 
 
-def settings_row(caption: str):
-    """Start a row of a :func:`settings_table`: the dim caption on its widgets' frame baseline, the cursor in the control cell."""
-    imgui.table_next_row()
-    imgui.table_next_column()
-    imgui.align_text_to_frame_padding()
-    imgui.text_disabled(caption)
-    imgui.table_next_column()
+def grid(captions) -> Grid:
+    """Measure a :class:`Grid` at the cursor: the caption column fits the longest of ``captions`` as a checkbox, the rest splits in two."""
+    gap = em(0.6)
+    x0 = imgui.get_cursor_pos_x()
+    caption_w = (
+        max(imgui.calc_text_size(c).x for c in captions)
+        + imgui.get_frame_height()
+        + imgui.get_style().item_inner_spacing.x
+        + gap
+    )
+    cell_w = (imgui.get_content_region_avail().x - caption_w - gap) / 2
+    return Grid((x0 + caption_w, x0 + caption_w + cell_w + gap), cell_w, gap)
 
 
 def right_aligned_text(text: str):
