@@ -26,6 +26,7 @@ from masknmf.visualization.imgui import (
     draw_roi_table,
     em,
     resolve_time_reference,
+    section,
     to_vec4,
 )
 from masknmf.visualization.rois import MARKED_COLOR, FootprintSet
@@ -1561,17 +1562,13 @@ class SingleSessionDemixingVis:
 
     def _draw_roi_tools(self):
         drawing = self._drawing()
-
         existing = len(self._footprints) if self._footprints is not None else 0
-        imgui.text_disabled(
-            f"{existing + len(self._rois)} roi(s) total"
-            f" ({existing} existing, {len(self._rois)} drawn)"
-        )
-        imgui.separator()
+        # two buttons share a row; the widths follow the panel
+        half = (imgui.get_content_region_avail().x - imgui.get_style().item_spacing.x) / 2
 
+        section("Overlay")
         if self._image_selector is not None:
             self._draw_overlay_controls()
-
         changed, on = imgui.checkbox("pixel traces", self._pixel_traces)
         if changed:
             self._set_pixel_traces(on)
@@ -1584,11 +1581,13 @@ class SingleSessionDemixingVis:
         imgui.same_line(0, em(0.3))
         imgui.text_disabled("(p)")
 
+        section("ROIs")
+        imgui.text_disabled(f"{existing + len(self._rois)} total: {existing} existing, {len(self._rois)} drawn")
         imgui.begin_disabled(drawing)
-        if imgui.button("Add ROI", imgui.ImVec2(-1, 0)):
+        if imgui.button("Add ROI", imgui.ImVec2(half, 0)):
             self._start_roi()
         imgui.end_disabled()
-
+        imgui.same_line()
         imgui.begin_disabled(
             self._active_roi is None
             and self._active_component is None
@@ -1600,7 +1599,7 @@ class SingleSessionDemixingVis:
             and self._active_component in self._marked
             else "Delete"
         )
-        if imgui.button(label, imgui.ImVec2(-1, 0)):
+        if imgui.button(label, imgui.ImVec2(half, 0)):
             self._delete_selected()
         imgui.end_disabled()
         if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
@@ -1608,12 +1607,17 @@ class SingleSessionDemixingVis:
                 "remove the selected drawn roi, drop the active pixel average, or mark the selected "
                 "signal for deletion on the next demix (press again to unmark)"
             )
+        imgui.begin_disabled(not self._rois)
+        if imgui.button("export rois", imgui.ImVec2(-1, 0)):
+            self._browse_export()
+        imgui.end_disabled()
 
+        section("Poly-delete")
         imgui.begin_disabled(drawing or self._order is None)
         imgui.push_style_color(imgui.Col_.button, to_vec4(THEME.danger))
         imgui.push_style_color(imgui.Col_.button_hovered, to_vec4(THEME.danger_hover))
         imgui.push_style_color(imgui.Col_.button_active, to_vec4(THEME.danger_hover))
-        if imgui.button(f"{fa.ICON_FA_TRASH_CAN} poly-delete", imgui.ImVec2(em(7.5), 0)):
+        if imgui.button(f"{fa.ICON_FA_TRASH_CAN} poly-delete", imgui.ImVec2(half, 0)):
             self._start_cut()
         imgui.pop_style_color(3)
         imgui.end_disabled()
@@ -1622,23 +1626,19 @@ class SingleSessionDemixingVis:
                 "draw a polygon on any panel to mark every signal in view whose center is inside (or outside) "
                 "it for deletion on the next demix; the marks follow the polygon as it is drawn and dragged"
             )
-        imgui.same_line(0, em(0.6))
+        imgui.same_line()
         if imgui.radio_button("inside", not self._cut_outside):
             self._cut_outside = False
-        imgui.same_line(0, em(0.4))
+        imgui.same_line(0, em(0.6))
         if imgui.radio_button("outside", self._cut_outside):
             self._cut_outside = True
         if self._cut is not None:
-            if imgui.small_button("remove poly-delete"):
+            if imgui.button("remove poly-delete", imgui.ImVec2(half, 0)):
                 self._drop_cut()
-            imgui.same_line(0, em(0.4))
+            imgui.same_line()
             imgui.text_disabled(f"{len(self._cut_hits)} marked by it")
 
-        imgui.begin_disabled(not self._rois)
-        if imgui.button("export rois", imgui.ImVec2(-1, 0)):
-            self._browse_export()
-        imgui.end_disabled()
-
+        section("Demix")
         imgui.begin_disabled(
             (not self._rois and not self._marked)
             or self._ac_array is None
@@ -1655,7 +1655,6 @@ class SingleSessionDemixingVis:
                 if self._results_path is not None
                 else "open the results with results_path to enable"
             )
-
         changed, filter_dim = imgui.checkbox(
             "filter dim rois", self._nmf_config.min_brightness is not None
         )
@@ -1670,7 +1669,6 @@ class SingleSessionDemixingVis:
                 "delete signals that never get bright enough during the nmf pass. "
                 "turn off if a hand-drawn roi keeps disappearing from add to results."
             )
-
         imgui.push_text_wrap_pos(0)
         if self._armed is not None:
             imgui.text_disabled("click on any panel to start the polygon (esc cancels)")
