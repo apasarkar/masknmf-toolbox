@@ -123,10 +123,10 @@ class SingleSessionDemixingVis:
     of stats (mean, std, snr, skew of each trace).
     poly-delete (the Curation tab's polygon button) draws a red polygon on any panel that marks every signal
     in view whose center falls inside it (or outside, per the toggle), as Delete does one at a time. The marks
-    follow the polygon as it is drawn and later dragged, like a drawn roi; its signals form the group, so they
-    are highlighted in the panels and the table, traces plotted in matching colors once it settles, and sorted to
-    the top of the table; "remove poly-delete" unmarks them, and starting another polygon keeps them. Nothing
-    is removed until the next Demix.
+    follow the polygon as it is drawn and later dragged, like a drawn roi, and sort to the top of the table;
+    "remove poly-delete" unmarks them, and starting another polygon keeps them. With "highlight" on (off by
+    default) its signals also form the group: colored masks and contours in the panels and the table, traces
+    plotted in matching colors once it settles. Nothing is removed until the next Demix.
 
     ``raw`` (a movie, or a .tif path) shows the raw movie in place of the signals panel and ``shifts`` (an
     array, or a motion correction hdf5 path) adds the registration shifts as a panel above the traces
@@ -450,6 +450,7 @@ class SingleSessionDemixingVis:
             set()
         )  # signal indices "Delete" has marked; removed on the next "Demix"
         self._cut_hits = []  # the signals the poly-delete polygon has marked
+        self._cut_highlight = False  # group the polygon's hits (colored masks, contours, traces) or only mark them
         self._group: list = []  # signals selected together; their traces share the plot
         self._order = None  # RoiOrder over the signals, built with the footprints
         self._follow = False
@@ -554,7 +555,7 @@ class SingleSessionDemixingVis:
                 tuple(self._shape[1:3]),
                 self._mask_opacity,
                 self._active_component,
-                self._marked - set(self._cut_hits),
+                self._marked - set(self._cut_hits) if self._cut_highlight else self._marked,
                 {
                     k: rgb
                     for k, rgb in self._group_colors().items()
@@ -1197,11 +1198,14 @@ class SingleSessionDemixingVis:
             self._mark(set(self._cut_hits) - set(hits), False)
             self._cut_hits = hits
             self._mark(hits, True)
-            self._group[:] = hits
-            self._active_component = hits[-1] if hits else None
-            self._sync_highlight()
+            if self._cut_highlight:
+                self._group[:] = hits
+                self._active_component = hits[-1] if hits else None
+                self._sync_highlight()
             where = "outside" if self._cut_outside else "inside"
             self._status = f"poly-delete: {len(hits)} signal(s) {where} the polygon marked"
+        if not self._cut_highlight:
+            return
         # no traces while the polygon is being drawn or dragged; they plot once it settles
         if moving:
             self._selected_signals = None
@@ -1219,8 +1223,9 @@ class SingleSessionDemixingVis:
         self._cut_key = None
         self._mark(self._cut_hits, False)
         self._cut_hits = []
-        self._group.clear()
-        self._active_component = None
+        if self._cut_highlight:
+            self._group.clear()
+            self._active_component = None
         self._sync_highlight()
         self._update_traces()
 
@@ -1655,7 +1660,8 @@ class SingleSessionDemixingVis:
         if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
             imgui.set_tooltip(
                 "draw a polygon on any panel to mark every signal in view whose center is inside (or outside) "
-                "it for deletion on the next demix; the marks follow the polygon as it is drawn and dragged"
+                "it for deletion on the next demix, as Delete does one at a time; the marks follow the polygon "
+                "as it is drawn and dragged"
             )
         imgui.same_line()
         if imgui.radio_button("inside", not self._cut_outside):
@@ -1663,6 +1669,18 @@ class SingleSessionDemixingVis:
         imgui.same_line(0, em(0.6))
         if imgui.radio_button("outside", self._cut_outside):
             self._cut_outside = True
+        changed, self._cut_highlight = imgui.checkbox("highlight", self._cut_highlight)
+        if changed and self._cut is not None:
+            self._group[:] = self._cut_hits if self._cut_highlight else []
+            self._active_component = self._cut_hits[-1] if self._cut_highlight and self._cut_hits else None
+            self._sync_highlight()
+            self._update_traces()
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "also group the polygon's signals: colored masks and contours in the panels and the table, "
+                "their traces plotted once it settles. off, they are only marked red; a big polygon draws "
+                "hundreds of highlights otherwise"
+            )
         if self._cut is not None:
             if imgui.button("remove poly-delete", imgui.ImVec2(half, 0)):
                 self._drop_cut()
