@@ -13,7 +13,19 @@ from masknmf.visualization.imgui.layout import (
 from masknmf.visualization.imgui.trace_plot import TracePlot
 from masknmf.visualization.imgui.table import RoiOrder, draw_range_filter, draw_roi_table
 from masknmf.visualization.imgui.panels import draw_keybinds_popup
-from masknmf.visualization.imgui.theme import Theme, THEME, to_vec4, em, card, section, popup
+from masknmf.visualization.imgui.theme import (
+    Theme,
+    THEME,
+    to_vec4,
+    em,
+    card,
+    section,
+    popup,
+    Grid,
+    grid,
+    right_aligned_text,
+    button_colors,
+)
 
 __all__ = [
     "CheckboxWindow",
@@ -31,6 +43,10 @@ __all__ = [
     "card",
     "section",
     "popup",
+    "Grid",
+    "grid",
+    "right_aligned_text",
+    "button_colors",
     "component_at_pixel",
     "contours_to_bbox",
     "zoom_to_bbox",

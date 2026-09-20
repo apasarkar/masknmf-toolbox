@@ -96,6 +96,7 @@ def draw_roi_table(
     formatters: dict,
     scroll_to_current: bool,
     table_id: str = "rois",
+    cursor: bool = True,
     on_select: Optional[Callable[[int], None]] = None,
     is_grouped: Optional[Callable[[int], bool]] = None,
     on_ctrl_select: Optional[Callable[[int], None]] = None,
@@ -108,7 +109,8 @@ def draw_roi_table(
 
     ``column_names[0]`` is the id column; every other name is rendered by
     ``formatters[name](item)`` and is sortable when it is a key of
-    ``order.columns``. ``is_grouped`` highlights rows beyond the cursor; ctrl and
+    ``order.columns``. ``cursor`` highlights the row under ``order.pos`` (off: nothing is
+    selected, the cursor only seeds up / down); ``is_grouped`` highlights rows beyond it; ctrl and
     shift clicks route to ``on_ctrl_select`` / ``on_shift_select`` when given,
     else to ``on_select``. ``row_color`` tints the id cell (rgb in 0-1).
     ``prefix_rows`` are ``(item, label)`` pairs pinned above the sorted rows, outside
@@ -159,7 +161,7 @@ def draw_roi_table(
             else:
                 item = int(order.order[row - pinned])
                 label = f"{item}"
-                highlighted = row - pinned == order.pos or (is_grouped is not None and is_grouped(item))
+                highlighted = (cursor and row - pinned == order.pos) or (is_grouped is not None and is_grouped(item))
             imgui.table_next_row()
             imgui.table_next_column()
             rgb = row_color(item) if row_color is not None else None

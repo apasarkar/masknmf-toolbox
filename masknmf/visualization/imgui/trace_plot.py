@@ -146,6 +146,10 @@ class TracePlot:
         if implot.get_current_context() is None:
             implot.create_context()
         fit = self._resolve_fit()
+        io = imgui.get_io()
+        # qt on windows reports alt + wheel as a horizontal wheel, which implot ignores
+        if io.key_alt and io.mouse_wheel == 0.0 and io.mouse_wheel_h != 0.0:
+            io.mouse_wheel, io.mouse_wheel_h = -io.mouse_wheel_h, 0.0
         height = max(imgui.get_content_region_avail().y - reserve, em(4))
         flags = implot.SubplotFlags_.link_all_x
         if self._link_y:
