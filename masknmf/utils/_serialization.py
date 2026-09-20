@@ -256,3 +256,24 @@ class Serializer:
         """Load result from an hdf5 file. Any additional kwargs are passed to the constructor"""
         d = load_dict(path, cls.__name__)
         return cls(**d, **kwargs)
+
+
+def has_group(filename, group: str) -> bool:
+    """Whether ``filename`` is an hdf5 file that holds ``group``."""
+    if not os.path.isfile(filename):
+        return False
+    with h5py.File(filename, "r") as f:
+        return group in f
+
+
+def drop_group(filename, group: str):
+    """Remove ``group`` from an hdf5 file by rewriting it without the group, so the space comes back; a no-op when absent."""
+    if not has_group(filename, group):
+        return
+    packed = f"{filename}.repack"
+    with h5py.File(filename, "r") as src, h5py.File(packed, "w") as dst:
+        for name in src:
+            if name != group:
+                src.copy(name, dst)
+        dst.attrs.update(src.attrs)
+    os.replace(packed, filename)

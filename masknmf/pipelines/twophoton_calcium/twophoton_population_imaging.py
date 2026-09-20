@@ -3,7 +3,7 @@ import masknmf
 from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector
-from masknmf.utils import display
+from masknmf.utils import display, has_group, drop_group
 from masknmf.demixing import NoSignalsDetectedError, DemixingError
 
 from masknmf.compression.preprocessing import MaximinSplineDetrend
@@ -135,13 +135,20 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                     outpath_demixing (Optional[str]): Where to write out the demixing results. The three outpaths
                         default to one file holding one hdf5 group per stage; give them different names for one file per stage
                     load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
+                    remove_intermediates (bool): delete the motion correction and compression files once demixing
+                        is done; in one results file, drop its PMDArray group instead (the demixing results carry
+                        the pmd) and keep the registration shifts
                 """
 
+        pmd_source = os.path.abspath(self.outpath_compression)
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
-                if not os.path.exists(self.outpath_compression):
-                    raise ValueError("You specified that compression should be skipped but did not specify a valid location for the "
-                                     "compression hdf5 file")
+                # a previous run's compression: at outpath_compression, else an old compression.hdf5 beside it
+                if not has_group(pmd_source, "PMDArray"):
+                    pmd_source = os.path.join(os.path.dirname(pmd_source), "compression.hdf5")
+                if not has_group(pmd_source, "PMDArray"):
+                    raise ValueError("You specified that compression should be skipped but there is no compression at "
+                                     "outpath_compression or in a compression.hdf5 beside it")
             else:
                 raise ValueError(f"If compress_config is a string, it can only be `skip`")
         else:
@@ -239,7 +246,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             device = self.device
         display("Running demixing analysis")
 
-        pmd_denoise = masknmf.PMDArray.from_hdf5(self.outpath_compression)
+        pmd_denoise = masknmf.PMDArray.from_hdf5(pmd_source)
         if self.spatial_highpass_config is None:
             spatial_highpass_config = SpatialHighpassConfig()
         spatial_filt_pmd = masknmf.demixing.filters.spatial_filter_pmd(pmd_denoise,
@@ -351,16 +358,16 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 else:
                     break
 
-        # removed before the final export so a shared results file is rewritten with only the demixing results
+        final = os.path.abspath(self.outpath_demixing)
         if remove_intermediates:
             display("Removing intermediates")
-            moco_path = os.path.abspath(self.outpath_motion_correction)
-            if os.path.exists(moco_path):
-                os.remove(moco_path)
-            pmd_path = os.path.abspath(self.outpath_compression)
-            if os.path.exists(pmd_path):
-                os.remove(pmd_path)
-        latest_demix_results.export(os.path.abspath(self.outpath_demixing))
+            for path in (os.path.abspath(self.outpath_motion_correction), os.path.abspath(self.outpath_compression)):
+                if path != final and os.path.exists(path):
+                    os.remove(path)
+        latest_demix_results.export(final)
+        if remove_intermediates:
+            # in one results file the pmd group only duplicates what the demixing results carry; the shifts stay
+            drop_group(final, "PMDArray")
         return latest_demix_results
 
 

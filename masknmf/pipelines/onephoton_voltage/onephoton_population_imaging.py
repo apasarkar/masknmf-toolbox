@@ -3,7 +3,7 @@ import masknmf
 from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector, GradientMotionCorrector, GradientRegistrationArray
-from masknmf.utils import display
+from masknmf.utils import display, has_group, drop_group
 from masknmf.demixing import NoSignalsDetectedError, DemixingError
 import torch
 import math
@@ -390,6 +390,8 @@ class OnePhotonCulturePipeline(BasePipeline):
                     outpath_demixing (Optional[str]): Where to write out the demixing results. The two outpaths
                         default to one file holding one hdf5 group per stage; give them different names for one file per stage
                     load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
+                    remove_intermediates (bool): delete the compression file once demixing is done; in one results
+                        file, drop its PMDArray group instead (the demixing results carry the pmd)
                 """
 
         device = torch_select_device()
@@ -416,11 +418,15 @@ class OnePhotonCulturePipeline(BasePipeline):
             moco_array = corrector.motion_correct(mov)
             moco_array.output_device=device
 
+        pmd_source = os.path.abspath(self.outpath_compression)
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
-                if not os.path.exists(self.outpath_compression):
-                    raise ValueError("You specified that compression should be skipped but did not specify a valid location for the "
-                                     "compression hdf5 file")
+                # a previous run's compression: at outpath_compression, else an old compression.hdf5 beside it
+                if not has_group(pmd_source, "PMDArray"):
+                    pmd_source = os.path.join(os.path.dirname(pmd_source), "compression.hdf5")
+                if not has_group(pmd_source, "PMDArray"):
+                    raise ValueError("You specified that compression should be skipped but there is no compression at "
+                                     "outpath_compression or in a compression.hdf5 beside it")
             else:
                 raise ValueError(f"If compress_config is a string, it can only be `skip`")
         else:
@@ -473,7 +479,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             device = self.device
         display("Running demixing analysis")
 
-        pmd_denoise = masknmf.PMDArray.from_hdf5(self.outpath_compression)
+        pmd_denoise = masknmf.PMDArray.from_hdf5(pmd_source)
 
         v = pmd_denoise.v[:, active_frames.astype('bool')]
         new_shape = (v.shape[1], pmd_denoise.shape[1], pmd_denoise.shape[2])
@@ -530,13 +536,15 @@ class OnePhotonCulturePipeline(BasePipeline):
 
 
 
-        # removed before the final export so a shared results file is rewritten with only the demixing results
-        if remove_intermediates:
+        final = os.path.abspath(self.outpath_demixing)
+        if remove_intermediates and os.path.abspath(self.outpath_compression) != final:
             display("Removing intermediates")
-            compression_path = os.path.abspath(self.outpath_compression)
-            if os.path.exists(compression_path):
-                os.remove(compression_path)
-        curr_demix_results.export(os.path.abspath(self.outpath_demixing))
+            if os.path.exists(os.path.abspath(self.outpath_compression)):
+                os.remove(os.path.abspath(self.outpath_compression))
+        curr_demix_results.export(final)
+        if remove_intermediates:
+            # in one results file the pmd group only duplicates what the demixing results carry
+            drop_group(final, "PMDArray")
 
         return curr_demix_results, a_rawdata_scale, full_c_estimate_denoised, c_regressed_on_raw
 
