@@ -139,8 +139,7 @@ class SingleSessionDemixingVis:
     unlike a pixel average, is kept: Demix seeds the NMF pass with it and export writes it.
     The filter above the table takes any column, del included (0 or 1), and "delete in view" marks every
     signal it shows, as Delete does one at a time. The Curation tab's "color by" colors the masks and the
-    table's ids by a column's rank instead of by signal id. :meth:`CellStats.from_results` is a starting set
-    of stats (mean, std, snr, skew of each trace).
+    table's ids by a column's rank instead of by signal id.
     poly-select (the Curation tab's polygon button) draws a polygon on any panel that selects every signal in
     view whose center falls inside it (or outside, per the toggle): they form the group, highlighted in the
     panels and the table, and the selection follows the polygon as it is drawn and later dragged (its traces,
@@ -154,17 +153,18 @@ class SingleSessionDemixingVis:
     results, and the registration shifts from the results file itself or from a motion_correction.hdf5 beside
     it, are picked up when their frames match the results; given ones must match.
 
-    ``cell_stats`` (a :class:`CellStats`, or a .npy / .npz / .csv / .tsv it reads, one row per signal) adds
-    sortable columns to the Signals table: click a header to order the signals by that
-    stat, then step through the top or bottom of the order. ``cell_order`` (signal ids in a custom order, or a
+    The Signals table always carries the results' own stats (:meth:`CellStats.from_results`: mean, std, snr
+    and skew of each demixed trace; fit, resid and bkgd from the roi averages the results hold), hidden until
+    the Signals tab's "columns" button shows them; click a header to order the signals by a stat, then step
+    through the top or bottom of the order. ``cell_stats`` (a :class:`CellStats`, or a .npy / .npz / .csv /
+    .tsv it reads, one row per signal) joins more columns, shown, replacing same-named ones. ``cell_order``
+    (signal ids in a custom order, or a
     .npy / text file of them) adds an "order" column of ranks and opens the table in that order; signals it
     leaves out sort last. :meth:`load_cell_order` and :meth:`add_cell_stats` (or the Signals tab's "load stats"
     button: a .txt of ids is an order, anything else stats) do the same with the results open. "load stats"
     and "Export" open a window with a typed path, so they work on a remote kernel; "browse" there is the
-    native dialog for a local one. With
-    ``results_path`` set and nothing given, a pipeline's ``roi_stats.npy`` beside the results is picked up when
-    its rows match; its columns start hidden, the Signals tab's "columns" button shows them. Marked signals
-    always come first. A Demix pass drops the stats since the signal set changes.
+    native dialog for a local one. Marked signals always come first. A Demix pass recomputes the results'
+    stats for the new signals and drops given ones.
 
     TODO:
     -----
@@ -214,32 +214,20 @@ class SingleSessionDemixingVis:
 
         folder = None if self._results_path is None else Path(self._results_path).parent
         num_signals = demixing_results.a.shape[1] if self._has_ac else 0
-        # cell stats: given, or the pipeline's roi_stats.npy beside the results; a found mismatch is skipped, a given one raises
-        found_stats = False
-        hidden = set()  # found columns start hidden; given ones show
-        if cell_stats is None and folder is not None and (folder / "roi_stats.npy").is_file():
-            cell_stats, found_stats = folder / "roi_stats.npy", True
-        source = cell_stats if isinstance(cell_stats, (str, os.PathLike)) else None
-        if source is not None:
-            cell_stats = CellStats.read(source)
-            if found_stats:
-                hidden = set(cell_stats.names)
-        if cell_stats is not None and cell_stats.values.shape[0] != num_signals:
-            if not found_stats:
-                raise ValueError(f"{cell_stats.values.shape[0]} cell stat rows for {num_signals} signals")
-            display(f"skipping {source}: {cell_stats.values.shape[0]} rows for {num_signals} signals")
-            cell_stats = None
+        # the results' own stats, hidden; given stats join them, shown, replacing same-named columns
+        self._cell_stats = CellStats.from_results(demixing_results) if self._has_ac else None
+        self._shown_stats = set()
+        if isinstance(cell_stats, (str, os.PathLike)):
+            cell_stats = CellStats.read(cell_stats)
         if cell_stats is not None:
+            if cell_stats.values.shape[0] != num_signals:
+                raise ValueError(f"{cell_stats.values.shape[0]} cell stat rows for {num_signals} signals")
             if set(cell_stats.names) & {"id", "area", "peak", "del"}:
                 raise ValueError(f"cell stat names clash with the table's own columns: {cell_stats.names}")
-            display(f"cell stats: {', '.join(cell_stats.names)} from {source if source is not None else 'stats given'}")
-        elif cell_order is None:
-            display(
-                "no cell stats: cell_stats= (a CellStats or a file) / cell_order= adds sortable Signals-table columns; "
-                "roi_stats.npy beside the results is picked up"
-            )
-        self._cell_stats = cell_stats
-        self._shown_stats = set() if cell_stats is None else set(cell_stats.names) - hidden
+            self._cell_stats = cell_stats if self._cell_stats is None else self._cell_stats.join(cell_stats)
+            self._shown_stats = set(cell_stats.names)
+        if self._cell_stats is not None:
+            display(f"cell stats: {', '.join(self._cell_stats.names)}; the Signals tab's columns button shows them")
 
         # raw movie and shifts: data or a path, or found beside the results; a found mismatch is skipped, a given one raises
         found_raw = found_shifts = False
@@ -669,9 +657,8 @@ class SingleSessionDemixingVis:
         """Swap in re-demixed results: every movie panel, the selectors and the summary image follow."""
         results.to(self.device)
         self._demixing_results = results
-        if self._cell_stats is not None:
-            display("cell stats dropped: the signal set changed")
-            self._cell_stats = None
+        self._cell_stats = CellStats.from_results(results)
+        self._shown_stats.clear()
         self._bind_arrays()
         self._clear_rois()
         self._drop_poly()
@@ -1643,7 +1630,7 @@ class SingleSessionDemixingVis:
                 self._stats_popup = True
             help_mark(
                 "one row per signal, in signal id order, as sortable table columns:\n"
-                "- .npy: a (signals,) or (signals, stats) array, or a pipeline's roi_stats.npy\n"
+                "- .npy: a (signals,) or (signals, stats) array, or a structured array of stats\n"
                 "- .npz: one (signals,) array per stat, named by key\n"
                 "- .csv / .tsv: a header row of names, then one row per signal\n"
                 "- .txt: signal ids in a custom order, becomes the 'order' column"
@@ -1907,10 +1894,7 @@ class SingleSessionDemixingVis:
         if set(stats.names) & {"id", "area", "peak", "del"}:
             raise ValueError(f"cell stat names clash with the table's own columns: {stats.names}")
         new = stats
-        if self._cell_stats is not None:
-            keep = [i for i, n in enumerate(self._cell_stats.names) if n not in new.names]
-            stats = CellStats(tuple(self._cell_stats.names[i] for i in keep), self._cell_stats.values[:, keep]).join(new)
-        self._cell_stats = stats
+        self._cell_stats = new if self._cell_stats is None else self._cell_stats.join(new)
         self._shown_stats |= set(new.names)
         columns = {"area": self._order.columns["area"], "peak": self._order.columns["peak"]}
         columns.update(zip(stats.names, stats.values.T))

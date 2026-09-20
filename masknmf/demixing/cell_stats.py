@@ -39,8 +39,8 @@ class CellStats:
         Load stats from a file, by suffix:
 
         - ``.npy``: a (num_cells,) array named after the file, a (num_cells, num_stats) array whose
-          columns are named ``<file> 0``, ``<file> 1``, ..., or a structured array (a pipeline's
-          ``roi_stats.npy``) whose numeric fields are the stats
+          columns are named ``<file> 0``, ``<file> 1``, ..., or a structured array whose numeric fields
+          are the stats
         - ``.npz``: one (num_cells,) array per stat, named by key
         - ``.csv`` / ``.tsv``: a header row of names, then one row per cell
         """
@@ -68,14 +68,24 @@ class CellStats:
     @classmethod
     def from_results(cls, results) -> "CellStats":
         """
-        Simple per-signal stats of the temporal traces ``results.c``: mean, std, snr (peak over std)
-        and skew. A starting set; any (num_signals, num_stats) array with names is as good.
+        Per-signal stats from what the results already hold. Of the demixed trace ``c``: mean, std, snr
+        (peak over std) and skew. Against the compressed movie averaged over the footprint
+        (``pmd_roi_averages``): fit, the trace's correlation with it; resid and bkgd, the residual's and the
+        fluctuating background's std over that average's.
         """
         c = np.asarray(results.c.detach().cpu(), dtype=np.float32)
         mean = c.mean(0)
         std = c.std(0) + 1e-6
         skew = ((c - mean) ** 3).mean(0) / std**3
-        return cls(("mean", "std", "snr", "skew"), np.column_stack([mean, std, c.max(0) / std, skew]))
+        pmd = np.asarray(results.pmd_roi_averages.detach().cpu(), dtype=np.float32)
+        resid = np.asarray(results.residual_roi_averages.detach().cpu(), dtype=np.float32)
+        bkgd = np.asarray(results.fluctuating_background_roi_averages.detach().cpu(), dtype=np.float32)
+        pmd_std = pmd.std(1) + 1e-6
+        fit = ((c.T - mean[:, None]) * (pmd - pmd.mean(1, keepdims=True))).mean(1) / (std * pmd_std)
+        return cls(
+            ("mean", "std", "snr", "skew", "fit", "resid", "bkgd"),
+            np.column_stack([mean, std, c.max(0) / std, skew, fit, resid.std(1) / pmd_std, bkgd.std(1) / pmd_std]),
+        )
 
     @classmethod
     def from_order(cls, order, num_cells: int, name: str = "order") -> "CellStats":
@@ -91,7 +101,8 @@ class CellStats:
         return cls((name,), ranks)
 
     def join(self, other: "CellStats") -> "CellStats":
-        """Both sets of columns over the same cells."""
+        """Both sets of columns over the same cells; ``other``'s replace same-named ones."""
         if other.values.shape[0] != self.values.shape[0]:
             raise ValueError(f"{other.values.shape[0]} rows joined onto {self.values.shape[0]}")
-        return CellStats(self.names + other.names, np.column_stack([self.values, other.values]))
+        keep = [i for i, n in enumerate(self.names) if n not in other.names]
+        return CellStats(tuple(self.names[i] for i in keep) + other.names, np.column_stack([self.values[:, keep], other.values]))
