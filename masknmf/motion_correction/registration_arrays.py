@@ -51,7 +51,7 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
     def export(self, path: str | Path):
         d_array = self._to_dict()
         d_strategy = self.strategy._to_dict()
-        save_dict(d_array, filename=path, group=self.__class__.__name__)
+        save_dict(d_array, filename=path, exists_ok=True, group=self.__class__.__name__)
         save_dict(d_strategy, filename=path, exists_ok=True, group=self._strategy_cls.__name__)
 
     @classmethod

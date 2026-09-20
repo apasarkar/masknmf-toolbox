@@ -42,9 +42,9 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                  spatial_highpass_config: SpatialHighpassConfig | None = None,
                  filtered_demixing_config: MultipassDemixingConfig | None = None,
                  unfiltered_demixing_config: MultipassDemixingConfig | None = None,
-                 outpath_motion_correction: Optional[str] = "motion_correction.hdf5",
-                 outpath_compression: Optional[str] = "compression.hdf5",
-                 outpath_demixing: Optional[str] = "demixing_results.hdf5",
+                 outpath_motion_correction: Optional[str] = "results.hdf5",
+                 outpath_compression: Optional[str] = "results.hdf5",
+                 outpath_demixing: Optional[str] = "results.hdf5",
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"
                  ):
@@ -132,6 +132,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                     DemixConfig: Config object specifying parameters for demixing the data
                     outpath_motion_correction (Optional[str]): Where to write out the motion corrected stack
                     outpath_compression (Optional[str]): Where to write out the compression + results
+                    outpath_demixing (Optional[str]): Where to write out the demixing results. The three outpaths
+                        default to one file holding one hdf5 group per stage; give them different names for one file per stage
                     load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
                 """
 
@@ -349,10 +351,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 else:
                     break
 
-        if os.path.exists(os.path.abspath(self.outpath_demixing)):
-            os.remove(os.path.abspath(self.outpath_demixing))
-        latest_demix_results.export(os.path.abspath(self.outpath_demixing))
-
+        # removed before the final export so a shared results file is rewritten with only the demixing results
         if remove_intermediates:
             display("Removing intermediates")
             moco_path = os.path.abspath(self.outpath_motion_correction)
@@ -361,6 +360,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             pmd_path = os.path.abspath(self.outpath_compression)
             if os.path.exists(pmd_path):
                 os.remove(pmd_path)
+        latest_demix_results.export(os.path.abspath(self.outpath_demixing))
         return latest_demix_results
 
 

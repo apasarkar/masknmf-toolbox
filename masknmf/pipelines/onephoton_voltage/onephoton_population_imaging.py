@@ -285,8 +285,8 @@ class OnePhotonCulturePipeline(BasePipeline):
                  motion_correct_config: Literal["skip"] | None = None,
                  compress_config: CompressConfig | CompressDenoiseConfig | Literal["skip"] | None = None,
                  demixing_config: MultipassDemixingConfig | None = None,
-                 outpath_compression: Optional[str] = "compression.hdf5",
-                 outpath_demixing: Optional[str] = "demixing_results.hdf5",
+                 outpath_compression: Optional[str] = "results.hdf5",
+                 outpath_demixing: Optional[str] = "results.hdf5",
                  load_into_ram: bool = False,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"
@@ -387,6 +387,8 @@ class OnePhotonCulturePipeline(BasePipeline):
                     DemixConfig: Config object specifying parameters for demixing the data
                     outpath_motion_correction (Optional[str]): Where to write out the motion corrected stack
                     outpath_compression (Optional[str]): Where to write out the compression + results
+                    outpath_demixing (Optional[str]): Where to write out the demixing results. The two outpaths
+                        default to one file holding one hdf5 group per stage; give them different names for one file per stage
                     load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
                 """
 
@@ -528,15 +530,13 @@ class OnePhotonCulturePipeline(BasePipeline):
 
 
 
-        if os.path.exists(os.path.abspath(self.outpath_demixing)):
-            os.remove(os.path.abspath(self.outpath_demixing))
-        curr_demix_results.export(os.path.abspath(self.outpath_demixing))
-
+        # removed before the final export so a shared results file is rewritten with only the demixing results
         if remove_intermediates:
             display("Removing intermediates")
             compression_path = os.path.abspath(self.outpath_compression)
             if os.path.exists(compression_path):
                 os.remove(compression_path)
+        curr_demix_results.export(os.path.abspath(self.outpath_demixing))
 
         return curr_demix_results, a_rawdata_scale, full_c_estimate_denoised, c_regressed_on_raw
 

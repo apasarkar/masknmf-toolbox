@@ -150,9 +150,9 @@ class SingleSessionDemixingVis:
 
     ``raw`` (a movie, or a .tif path) shows the raw movie in place of the signals panel and ``shifts`` (an
     array, or a motion correction hdf5 path) adds the registration shifts as a panel above the traces
-    (piecewise rigid: the largest block shift per frame). With ``results_path`` set, a lone .tif and a
-    motion_correction.hdf5 beside the results are picked up when their frames match the results; given ones
-    must match.
+    (piecewise rigid: the largest block shift per frame). With ``results_path`` set, a lone .tif beside the
+    results, and the registration shifts from the results file itself or from a motion_correction.hdf5 beside
+    it, are picked up when their frames match the results; given ones must match.
 
     ``cell_stats`` (a :class:`CellStats`, or a .npy / .npz / .csv / .tsv it reads, one row per signal) adds
     sortable columns to the Signals table: click a header to order the signals by that
@@ -263,9 +263,14 @@ class SingleSessionDemixingVis:
             )
             raw = None
         if shifts is None and folder is not None:
-            candidate = folder / "motion_correction.hdf5"
-            if candidate.is_file():
-                shifts, found_shifts = candidate, True
+            # the results file itself when the pipeline wrote every stage to it, else the old separate file
+            for candidate in (Path(self._results_path), folder / "motion_correction.hdf5"):
+                if candidate.is_file():
+                    with h5py.File(candidate, "r") as f:
+                        found_shifts = "PiecewiseRigidRegistrationArray" in f or "RigidRegistrationArray" in f
+                    if found_shifts:
+                        shifts = candidate
+                        break
         shifts_src = shifts if isinstance(shifts, (str, os.PathLike)) else None
         if shifts_src is not None:
             with h5py.File(shifts_src, "r") as f:
@@ -307,7 +312,7 @@ class SingleSessionDemixingVis:
         else:
             display(
                 "no motion shifts: shifts= (an array or a motion correction hdf5) adds shift traces; "
-                "motion_correction.hdf5 beside the results is picked up"
+                "shifts in the results file or a motion_correction.hdf5 beside it are picked up"
             )
         self._raw = raw
         self._shifts = shifts
