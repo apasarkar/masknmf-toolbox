@@ -29,6 +29,7 @@ from masknmf.visualization.imgui import (
     section,
     to_vec4,
     grid,
+    help_mark,
     right_aligned_text,
     button_colors,
 )
@@ -123,6 +124,8 @@ class SingleSessionDemixingVis:
     further passes chain.
 
     The "Signals" tab lists every demixed signal; ctrl / shift select a group whose traces share the plot.
+    Traces plot only with the Curation tab's "show selected traces" on (off by default): selecting then only
+    highlights, however big the selection.
     Clicking the selected mask, its trace or its table row again deselects it; a pan or drag on a panel
     leaves the selection alone. Esc deselects everything, ctrl+a groups every signal the table shows, and
     ctrl+z undoes the last mark, drawn roi, pixel average or deselect (a Demix empties the undo stack; roi
@@ -139,9 +142,8 @@ class SingleSessionDemixingVis:
     of stats (mean, std, snr, skew of each trace).
     poly-select (the Curation tab's polygon button) draws a polygon on any panel that selects every signal in
     view whose center falls inside it (or outside, per the toggle): they form the group, highlighted in the
-    panels and the table, and the selection follows the polygon as it is drawn and later dragged; its traces
-    plot once the polygon settles only with "show selected traces" on (off by default, a big polygon would
-    plot hundreds). Clicking the button again or esc leaves the mode and keeps the selection, so
+    panels and the table, and the selection follows the polygon as it is drawn and later dragged (its traces,
+    when shown, plot once it settles). Clicking the button again or esc leaves the mode and keeps the selection, so
     Delete (or the Signals tab's delete button) marks it like any other selection. Nothing is removed until the
     next Demix. line-select is a placeholder, not implemented yet.
 
@@ -467,7 +469,7 @@ class SingleSessionDemixingVis:
             set()
         )  # signal indices "Delete" has marked; removed on the next "Demix"
         self._poly_hits = []  # the signals the poly-select polygon holds
-        self._poly_traces = False  # plot the polygon's selection once it settles, or only highlight it
+        self._show_traces = False  # plot the selection's traces; off, selecting only highlights
         self._undo = []  # curation snapshots for ctrl+z, newest last
         self._group: list = []  # signals selected together; their traces share the plot
         self._order = None  # RoiOrder over the signals, built with the footprints
@@ -898,7 +900,12 @@ class SingleSessionDemixingVis:
         """
         One signal: its compressed / signal / background / residual roi averages. A group, or any pixel
         average or drawn roi: every member's compressed average, colored like its mask or table row.
+        Nothing unless "show selected traces" is on.
         """
+        if not self._show_traces:
+            self._selected_signals = None
+            self._traces.set("traces", [])
+            return
         results = self.demixing_results
         if len(self._group) > 1 or any(not isinstance(k, int) for k in self._group):
             self._selected_signals = []
@@ -1245,8 +1252,8 @@ class SingleSessionDemixingVis:
             self._sync_highlight()
             where = "outside" if self._poly_outside else "inside"
             self._status = f"poly-select: {len(hits)} signal(s) {where} the polygon"
-        # no traces while the polygon is being drawn or dragged, nor unless asked; they plot once it settles
-        if moving or not self._poly_traces:
+        # no traces while the polygon is being drawn or dragged; they plot once it settles
+        if moving:
             self._selected_signals = None
             self._clear_traces()
         else:
@@ -1261,10 +1268,7 @@ class SingleSessionDemixingVis:
         self._poly = None
         self._poly_key = None
         self._poly_hits = []
-        if self._poly_traces:
-            self._update_traces()
-        else:
-            self._clear_traces()
+        self._update_traces()
 
     def _mark(self, signals, on: bool, record: bool = True):
         """Mark ``signals`` for deletion on the next demix, or unmark them; the masks and the table follow."""
@@ -1571,11 +1575,10 @@ class SingleSessionDemixingVis:
         on = not all(int(k) in self._marked for k in order.order)
         imgui.begin_disabled(not len(order.order))
         with button_colors(THEME.danger, THEME.danger_hover):
-            if imgui.button(f"{'delete' if on else 'unmark'} in view", imgui.ImVec2(g.cell_w, 0)):
+            if imgui.button(f"{'delete' if on else 'unmark'} in view", imgui.ImVec2(g.w, 0)):
                 self._mark(order.order, on)
         imgui.end_disabled()
-        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-            imgui.set_tooltip("mark every signal the filter shows for deletion on the next demix, or unmark them")
+        help_mark("mark every signal the filter shows for deletion on the next demix, or unmark them")
         g.cell(1)
         right_aligned_text(f"{len(order.order)} / {order.n_items}")
         if self._order is not None:
@@ -1586,54 +1589,47 @@ class SingleSessionDemixingVis:
             on = not signals or not all(k in self._marked for k in signals)
             imgui.begin_disabled(not signals or self._worker is not None)
             with button_colors(THEME.danger, THEME.danger_hover):
-                if imgui.button(f"{'delete' if on else 'unmark'} {len(signals)}", imgui.ImVec2(g.cell_w, 0)):
+                if imgui.button(f"{'delete' if on else 'unmark'} {len(signals)}", imgui.ImVec2(g.w, 0)):
                     self._mark(signals, on)
             imgui.end_disabled()
-            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-                imgui.set_tooltip("mark the selected signals for deletion on the next demix, or unmark them (delete)")
+            help_mark("mark the selected signals for deletion on the next demix, or unmark them (delete)")
             g.cell(1)
             selected = bool(self._group or self._pixels) or self._active_component is not None or self._active_roi is not None
             imgui.begin_disabled(not selected)
-            if imgui.button("deselect", imgui.ImVec2(g.cell_w, 0)):
+            if imgui.button("deselect", imgui.ImVec2(g.w, 0)):
                 self.deselect()
             imgui.end_disabled()
-            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-                imgui.set_tooltip("drop the selection, the group and the pixel averages (esc)")
+            help_mark("drop the selection, the group and the pixel averages (esc)")
             g.row("merge")
             imgui.begin_disabled(True)
-            imgui.button("merge", imgui.ImVec2(g.cell_w, 0))
+            imgui.button("merge", imgui.ImVec2(g.w, 0))
             imgui.end_disabled()
-            g.cell(1)
-            right_aligned_text("not yet implemented")
+            help_mark("not yet implemented")
         g.row("view")
         changed, self._follow = imgui.checkbox("center on selection", self._follow)
         if changed and self._follow and self._active_component is not None:
             self._center_on(self._active_component)
-        if imgui.is_item_hovered():
-            imgui.set_tooltip("pan every panel to the selected signal, and keep following it (f)")
+        help_mark("pan every panel to the selected signal, and keep following it (f)")
         g.cell(1)
-        if imgui.button("keys", imgui.ImVec2(g.cell_w, 0)):
+        if imgui.button("keys", imgui.ImVec2(g.w, 0)):
             self._keybinds_open = not self._keybinds_open
-        if imgui.is_item_hovered():
-            imgui.set_tooltip("the keybinds (k)")
+        help_mark("the keybinds (k)")
         if self._order is not None:
             g.row("stats")
-            if imgui.button("load stats", imgui.ImVec2(g.cell_w, 0)):
+            if imgui.button("load stats", imgui.ImVec2(g.w, 0)):
                 self._browse_stats()
-            if imgui.is_item_hovered():
-                imgui.set_tooltip(
-                    "one row per signal, in signal id order, as sortable table columns:\n"
-                    "- .npy: a (signals,) or (signals, stats) array, or a pipeline's roi_stats.npy\n"
-                    "- .npz: one (signals,) array per stat, named by key\n"
-                    "- .csv / .tsv: a header row of names, then one row per signal\n"
-                    "- .txt: signal ids in a custom order, becomes the 'order' column"
-                )
-            g.cell(1)
+            help_mark(
+                "one row per signal, in signal id order, as sortable table columns:\n"
+                "- .npy: a (signals,) or (signals, stats) array, or a pipeline's roi_stats.npy\n"
+                "- .npz: one (signals,) array per stat, named by key\n"
+                "- .csv / .tsv: a header row of names, then one row per signal\n"
+                "- .txt: signal ids in a custom order, becomes the 'order' column"
+            )
             if names:
-                if imgui.button("columns", imgui.ImVec2(g.cell_w, 0)):
+                g.cell(1)
+                if imgui.button("columns", imgui.ImVec2(g.w, 0)):
                     imgui.open_popup("##columns")
-                if imgui.is_item_hovered():
-                    imgui.set_tooltip("which stat columns the table shows")
+                help_mark("which stat columns the table shows")
                 if imgui.begin_popup("##columns"):
                     for name in names:
                         changed, on = imgui.checkbox(name, name in self._shown_stats)
@@ -1645,10 +1641,6 @@ class SingleSessionDemixingVis:
                                 self._order.sort_by = None
                                 self._order.rebuild()
                     imgui.end_popup()
-            else:
-                right_aligned_text("(?)")
-                if imgui.is_item_hovered():
-                    imgui.set_tooltip("hover load stats for the file formats it reads")
         footer = imgui.get_frame_height_with_spacing() * 2.5
         if imgui.begin_child("##signal_table", imgui.ImVec2(0, -footer)):
             columns = ("id", "area", "peak", *[n for n in names if n in self._shown_stats], "del")
@@ -1703,8 +1695,6 @@ class SingleSessionDemixingVis:
             changed, show = imgui.checkbox("contours", self._show_contours)
             if changed:
                 self._set_contours(show)
-            if imgui.is_item_hovered():
-                imgui.set_tooltip("every footprint's contour; the selection's always shows")
             g.cell(0)
             imgui.set_next_item_width(g.span)
             changed, self._contour_opacity = imgui.slider_float(
@@ -1712,6 +1702,7 @@ class SingleSessionDemixingVis:
             )
             if changed and self._show_contours:
                 self._image_selector.options_alpha = self._contour_opacity
+            help_mark("every footprint's contour at this opacity; the selection's contour always shows")
         if self._order is not None:
             g.row("color by")
             names = ["signal id", *[n for n in self._order.columns if n != "del"]]
@@ -1721,39 +1712,32 @@ class SingleSessionDemixingVis:
                 self._color_by = names[index]
                 self._footprints.recolor(None if index == 0 else self._order.columns[self._color_by])
                 self._refresh_masks()
-            if imgui.is_item_hovered():
-                imgui.set_tooltip("color the masks and the table's ids by a column's rank instead of by signal id")
+            help_mark("color the masks and the table's ids by a column's rank instead of by signal id")
         g.row("traces")
         changed, on = imgui.checkbox("quick pixel trace", self._pixel_traces)
         if changed:
             self._set_pixel_traces(on)
-        if imgui.is_item_hovered():
-            imgui.set_tooltip(
-                "click an empty pixel to add the compressed movie's 5x5 average there to the plot, grouped "
-                "with whatever is shown, and to the top of the signals table, marked. demix and export "
-                "ignore it; delete drops it (p)"
-            )
+        help_mark(
+            "click an empty pixel to add the compressed movie's 5x5 average there to the plot, grouped "
+            "with whatever is shown, and to the top of the signals table, marked. demix and export "
+            "ignore it; delete drops it (p)"
+        )
         g.cell(1)
-        changed, self._poly_traces = imgui.checkbox("show selected traces", self._poly_traces)
-        if changed and self._poly is not None:
-            if self._poly_traces:
-                self._update_traces()
-            else:
-                self._clear_traces()
-        if imgui.is_item_hovered():
-            imgui.set_tooltip(
-                "plot the traces of a poly-selection once the polygon settles; off, the polygon only "
-                "highlights (a big one would plot hundreds). clicks and the table always plot"
-            )
+        changed, self._show_traces = imgui.checkbox("show selected traces", self._show_traces)
+        if changed:
+            self._update_traces()
+        help_mark(
+            "plot whatever is selected: a signal's four averages, or one compressed average per grouped "
+            "signal, pixel average and drawn roi. off, selecting only highlights, however big the selection"
+        )
 
         section("ROIS")
         g.row("rois")
         imgui.begin_disabled(drawing)
-        if imgui.button("Add ROI", imgui.ImVec2(g.cell_w, 0)):
+        if imgui.button("Add ROI", imgui.ImVec2(g.w, 0)):
             self._start_roi()
         imgui.end_disabled()
-        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-            imgui.set_tooltip("draw a polygon roi on any panel; its average joins the plot and Demix seeds the nmf pass with it")
+        help_mark("draw a polygon roi on any panel; its average joins the plot and Demix seeds the nmf pass with it")
         g.cell(1)
         signals = [k for k in self._group if isinstance(k, int)]
         if not signals and self._active_component is not None:
@@ -1767,21 +1751,19 @@ class SingleSessionDemixingVis:
         )
         imgui.begin_disabled(nothing)
         with button_colors(THEME.danger, THEME.danger_hover, on=not unmark):
-            if imgui.button("Unmark" if unmark else "Delete", imgui.ImVec2(g.cell_w, 0)):
+            if imgui.button("Unmark" if unmark else "Delete", imgui.ImVec2(g.w, 0)):
                 self._delete_selected()
         imgui.end_disabled()
-        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-            imgui.set_tooltip(
-                "remove the selected drawn roi, drop the active pixel average, or mark the selected "
-                "signals for deletion on the next demix; again to unmark (delete)"
-            )
+        help_mark(
+            "remove the selected drawn roi, drop the active pixel average, or mark the selected "
+            "signals for deletion on the next demix; again to unmark (delete)"
+        )
         g.row("on disk")
         imgui.begin_disabled(not self._rois)
-        if imgui.button("Export", imgui.ImVec2(g.cell_w, 0)):
+        if imgui.button("Export", imgui.ImVec2(g.w, 0)):
             self._browse_export()
         imgui.end_disabled()
-        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-            imgui.set_tooltip("write the drawn rois to a .npz")
+        help_mark("write the drawn rois to a .npz")
         g.cell(1)
         right_aligned_text(f"{existing} existing, {len(self._rois)} drawn")
 
@@ -1790,28 +1772,27 @@ class SingleSessionDemixingVis:
         g.row("polygon")
         imgui.begin_disabled(self._order is None or (drawing and not selecting))
         with button_colors(THEME.accent, THEME.accent, (0.05, 0.05, 0.05), on=selecting):
-            if imgui.button(f"{fa.ICON_FA_DRAW_POLYGON} {'stop' if selecting else 'poly-select'}", imgui.ImVec2(g.cell_w, 0)):
+            if imgui.button(f"{fa.ICON_FA_DRAW_POLYGON} {'stop' if selecting else 'poly-select'}", imgui.ImVec2(g.w, 0)):
                 self._start_poly()
         imgui.end_disabled()
-        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-            imgui.set_tooltip(
-                "click again or esc to leave poly-select; the selection stays"
-                if selecting
-                else "draw a polygon on any panel to select every signal in view whose center is inside (or outside) "
-                "it; the selection follows the polygon as it is drawn and dragged, and Delete marks it"
-            )
+        help_mark(
+            "click again or esc to leave poly-select; the selection stays"
+            if selecting
+            else "draw a polygon on any panel to select every signal in view whose center is inside (or outside) "
+            "it; the selection follows the polygon as it is drawn and dragged, and Delete marks it"
+        )
         g.cell(1)
         imgui.begin_disabled(True)
-        imgui.button(f"{fa.ICON_FA_PEN_RULER} line-select", imgui.ImVec2(g.cell_w, 0))
+        imgui.button(f"{fa.ICON_FA_PEN_RULER} line-select", imgui.ImVec2(g.w, 0))
         imgui.end_disabled()
-        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-            imgui.set_tooltip("not yet implemented")
+        help_mark("not yet implemented")
         g.row("side")
         if imgui.radio_button("inside", not self._poly_outside):
             self._poly_outside = False
         g.cell(1)
         if imgui.radio_button("outside", self._poly_outside):
             self._poly_outside = True
+        help_mark("which side of the polygon poly-select takes")
 
         section("DEMIX")
         g.row("run")
@@ -1821,16 +1802,15 @@ class SingleSessionDemixingVis:
             or self._results_path is None
             or self._worker is not None
         )
-        if imgui.button("Demix", imgui.ImVec2(g.cell_w, 0)):
+        if imgui.button("Demix", imgui.ImVec2(g.w, 0)):
             self.demix()
         imgui.end_disabled()
-        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-            imgui.set_tooltip(
-                "re-demix: add the drawn rois, remove the marked signals, write a new curated results file "
-                "beside the original (kept)"
-                if self._results_path is not None
-                else "open the results with results_path to enable"
-            )
+        help_mark(
+            "re-demix: add the drawn rois, remove the marked signals, write a new curated results file "
+            "beside the original (kept)"
+            if self._results_path is not None
+            else "open the results with results_path to enable"
+        )
         g.cell(1)
         right_aligned_text(f"{len(self._rois)} roi(s), {len(self._marked)} marked")
         g.row("options")
@@ -1843,11 +1823,10 @@ class SingleSessionDemixingVis:
             else:
                 self._min_brightness_cache = self._nmf_config.min_brightness
                 self._nmf_config.min_brightness = None
-        if imgui.is_item_hovered():
-            imgui.set_tooltip(
-                "delete signals that never get bright enough during the nmf pass. "
-                "turn off if a hand-drawn roi keeps disappearing from add to results."
-            )
+        help_mark(
+            "delete signals that never get bright enough during the nmf pass. "
+            "turn off if a hand-drawn roi keeps disappearing from add to results."
+        )
 
         imgui.spacing()
         imgui.push_text_wrap_pos(0)

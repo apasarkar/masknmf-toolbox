@@ -23,6 +23,7 @@ from masknmf.visualization.imgui.theme import (
     popup,
     Grid,
     grid,
+    help_mark,
     right_aligned_text,
     button_colors,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "popup",
     "Grid",
     "grid",
+    "help_mark",
     "right_aligned_text",
     "button_colors",
     "component_at_pixel",

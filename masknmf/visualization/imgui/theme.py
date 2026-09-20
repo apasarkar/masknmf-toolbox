@@ -86,15 +86,24 @@ def section(title: str, theme: Theme = THEME):
 
 @dataclass(frozen=True)
 class Grid:
-    """Three aligned columns: a caption (dim text, or a checkbox), then two equal cells; ``span`` is both cells' width."""
+    """
+    Three aligned columns: a caption (dim text, or a checkbox), then two equal cells. A cell holds a
+    ``w``-wide control and its :func:`help_mark`; ``span`` is a control across both cells, its mark in line
+    with the second cell's.
+    """
 
     cell_x: tuple
     cell_w: float
     gap: float
+    mark_w: float
+
+    @property
+    def w(self) -> float:
+        return self.cell_w - self.mark_w
 
     @property
     def span(self) -> float:
-        return 2 * self.cell_w + self.gap
+        return 2 * self.cell_w + self.gap - self.mark_w
 
     def row(self, caption: str):
         """Start a row: the dim caption on its widgets' frame baseline, the cursor in the first cell."""
@@ -122,7 +131,15 @@ def grid(captions) -> Grid:
         + gap
     )
     cell_w = (imgui.get_content_region_avail().x - caption_w - gap) / 2
-    return Grid((x0 + caption_w, x0 + caption_w + cell_w + gap), cell_w, gap)
+    return Grid((x0 + caption_w, x0 + caption_w + cell_w + gap), cell_w, gap, imgui.calc_text_size("(?)").x + em(0.3))
+
+
+def help_mark(text: str):
+    """A dim (?) after the last item, on its line, with ``text`` as its tooltip."""
+    imgui.same_line(0, em(0.3))
+    imgui.text_disabled("(?)")
+    if imgui.is_item_hovered():
+        imgui.set_tooltip(text)
 
 
 def right_aligned_text(text: str):
