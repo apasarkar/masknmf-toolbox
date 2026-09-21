@@ -418,41 +418,42 @@ def extract_patches(
         images (torch.Tensor): Shape (num_frames, height, width).
         start_points_height_dim (torch.Tensor): A 1D torch Tensor specifying at which height indices the piecewise rigid patches start
         start_points_width_dim (torch.Tensor): A 1D torch Tensor specifying at which width indices the piecewise rigid patches start
-        patch_dims (tuple[int, int]): The heigth, width dimensions of a single patch
+        patch_dims (tuple[int, int]): The height, width dimensions of a single patch
 
     Returns:
-        patches (torch.Tensor): Extracted patches with shape (num_frames, patch_grid_dim1, patch_grid_dim2, patch_height, patch_width).
-            patch_grid_dim1, patch_grid_dim2 gives the dimensions of the grid of overlapping patches (in the way they tile the actual FOV).
+        patches (torch.Tensor): Extracted patches with shape (num_frames, num_patches_height, num_patches_width, patch_height, patch_width).
+            num_patches_height, num_patches_width gives the dimensions of the grid of overlapping patches (in the way they tile the actual FOV).
     """
-    num_frames, height, width = images.shape
+    num_frames = images.shape[0]
     device = images.device
-    patch_h, patch_w = patch_dims
-    first_dim, second_dim = start_points_height_dim, start_points_width_dim
+    patch_height, patch_width = patch_dims
 
     # Create all start positions using meshgrid
-    grid_x, grid_y = torch.meshgrid(first_dim, second_dim, indexing="ij")
-    patch_grid_dimensions = grid_x.shape
+    grid_height, grid_width = torch.meshgrid(start_points_height_dim.to(device),
+                                             start_points_width_dim.to(device),
+                                             indexing="ij")
+    patch_grid_dimensions = grid_height.shape
 
-    start_positions = torch.stack([grid_x.flatten(), grid_y.flatten()], dim=1)
+    start_positions = torch.stack([grid_height.flatten(), grid_width.flatten()], dim=1)
 
     # Generate patch indices
-    patch_dim1 = torch.arange(patch_h, device=device).view(-1, 1) + start_positions[:, 0].view(
+    patch_row_indices = torch.arange(patch_height, device=device).view(-1, 1) + start_positions[:, 0].view(
         -1, 1, 1
-    ) # (num_patches, patch_h, 1)
-    patch_dim2 = torch.arange(patch_w, device=device).view(1, -1) + start_positions[:, 1].view(
+    ) # (num_patches, patch_height, 1)
+    patch_column_indices = torch.arange(patch_width, device=device).view(1, -1) + start_positions[:, 1].view(
         -1, 1, 1
-    )  # (num_patches, 1, patch_w)
+    )  # (num_patches, 1, patch_width)
 
     patches = images[
-        :, patch_dim1.long(), patch_dim2.long()
-              ]  # (num_frames, num_patches, patch_h, patch_w)
+        :, patch_row_indices.long(), patch_column_indices.long()
+              ]  # (num_frames, num_patches, patch_height, patch_width)
     return patches.reshape(
         (
             num_frames,
             patch_grid_dimensions[0],
             patch_grid_dimensions[1],
-            patch_h,
-            patch_w,
+            patch_height,
+            patch_width,
         )
     )
 
