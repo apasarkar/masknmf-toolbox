@@ -898,7 +898,8 @@ class SingleSessionDemixingVis:
     def _update_traces(self):
         """
         One signal: its compressed / signal / background / residual roi averages. A group, or any pixel
-        average or drawn roi: every member's compressed average, colored like its mask or table row.
+        average or drawn roi: one line per member, colored like its mask or table row - a signal's
+        demixed trace, a pixel average or drawn roi's compressed average.
         Nothing unless "show selected traces" is on.
         """
         if not self._show_traces:
@@ -926,9 +927,10 @@ class SingleSessionDemixingVis:
                         )
                     )
                 else:
-                    lines.append(
-                        (f"signal {k}", results.compression_array_roi_averages[k].cpu().numpy(), rgb)
-                    )
+                    # lam to scale
+                    _y, _x, lam = self._footprints.footprints[k]
+                    trace = float(lam.mean()) * results.temporal_demixed[:, k]
+                    lines.append((f"signal {k}", trace.cpu().numpy(), rgb))
                 self._selected_signals.append(k)
         elif self._active_component is not None:
             k = self._active_component
@@ -1737,8 +1739,9 @@ class SingleSessionDemixingVis:
         if changed:
             self._update_traces()
         help_mark(
-            "plot whatever is selected: a signal's four averages, or one compressed average per grouped "
-            "signal, pixel average and drawn roi. off, selecting only highlights, however big the selection"
+            "plot whatever is selected: a signal's four averages, or one line per group member - a "
+            "grouped signal's demixed trace, a pixel average's or drawn roi's compressed average. "
+            "off, selecting only highlights, however big the selection"
         )
 
         section("ROIS")
