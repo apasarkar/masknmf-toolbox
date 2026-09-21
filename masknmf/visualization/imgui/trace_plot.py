@@ -146,6 +146,10 @@ class TracePlot:
         if implot.get_current_context() is None:
             implot.create_context()
         fit = self._resolve_fit()
+        io = imgui.get_io()
+        # qt on windows reports alt + wheel as a horizontal wheel, which implot ignores
+        if io.key_alt and io.mouse_wheel == 0.0 and io.mouse_wheel_h != 0.0:
+            io.mouse_wheel, io.mouse_wheel_h = -io.mouse_wheel_h, 0.0
         height = max(imgui.get_content_region_avail().y - reserve, em(4))
         flags = implot.SubplotFlags_.link_all_x
         if self._link_y:
@@ -298,8 +302,12 @@ class TracePlot:
                 self._draw_trace(label, xs, trace, rgb, (span.min, span.max), columns)
             self._draw_marks(xs)
             if implot.is_plot_hovered():
-                if self.on_pick is not None and lines and imgui.is_mouse_double_clicked(0):
-                    self.on_pick(name, self._nearest_line(lines, xs))
+                if imgui.is_mouse_double_clicked(0):
+                    # implot just fit this plot to its lines, which collapses the linked x axis to half a
+                    # frame when it holds none; refit every panel to the frame range instead
+                    self._force_fit = True
+                    if self.on_pick is not None and lines:
+                        self.on_pick(name, self._nearest_line(lines, xs))
                 if imgui.is_mouse_clicked(1):
                     imgui.open_popup(self._popup_id)
             moved, at = implot.drag_line_x(0, float(xs[self.frame]), _CURSOR_COLOR, 1.5)[:2]

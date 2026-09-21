@@ -84,6 +84,92 @@ def section(title: str, theme: Theme = THEME):
     imgui.dummy(imgui.ImVec2(0, em(0.2)))
 
 
+@dataclass(frozen=True)
+class Grid:
+    """
+    Three aligned columns: a caption (dim text, or a checkbox), then two equal cells. A cell holds a
+    ``w``-wide control and its :func:`help_mark`; ``span`` is a control across both cells, its mark in line
+    with the second cell's.
+    """
+
+    cell_x: tuple
+    cell_w: float
+    gap: float
+    mark_w: float
+
+    @property
+    def w(self) -> float:
+        return self.cell_w - self.mark_w
+
+    @property
+    def span(self) -> float:
+        return 2 * self.cell_w + self.gap - self.mark_w
+
+    def row(self, caption: str):
+        """Start a row: the dim caption on its widgets' frame baseline, the cursor in the first cell."""
+        imgui.align_text_to_frame_padding()
+        imgui.text_disabled(caption)
+        self.cell(0)
+
+    def cell(self, i: int):
+        """Continue the row in cell ``i``; when the last item already reaches into it, on the next line from the first cell."""
+        x = self.cell_x[i]
+        if imgui.get_item_rect_max().x > imgui.get_window_pos().x - imgui.get_scroll_x() + x - self.gap:
+            imgui.new_line()
+            x = self.cell_x[0]
+        imgui.same_line(x)
+
+
+def grid(captions) -> Grid:
+    """Measure a :class:`Grid` at the cursor: the caption column fits the longest of ``captions`` as a checkbox, the rest splits in two."""
+    gap = em(0.6)
+    x0 = imgui.get_cursor_pos_x()
+    caption_w = (
+        max(imgui.calc_text_size(c).x for c in captions)
+        + imgui.get_frame_height()
+        + imgui.get_style().item_inner_spacing.x
+        + gap
+    )
+    cell_w = (imgui.get_content_region_avail().x - caption_w - gap) / 2
+    return Grid((x0 + caption_w, x0 + caption_w + cell_w + gap), cell_w, gap, imgui.calc_text_size("(?)").x + em(0.3))
+
+
+def help_mark(text: str):
+    """A dim (?) after the last item, on its line, with ``text`` as its tooltip."""
+    imgui.same_line(0, em(0.3))
+    imgui.text_disabled("(?)")
+    if imgui.is_item_hovered():
+        imgui.set_tooltip(text)
+
+
+def right_aligned_text(text: str):
+    """Dim ``text`` flush with the right edge of the current cell or window, on the next line when this one is full."""
+    room = imgui.get_content_region_avail().x - imgui.calc_text_size(text).x
+    if room < 0:
+        imgui.new_line()
+        room = imgui.get_content_region_avail().x - imgui.calc_text_size(text).x
+    if room > 0:
+        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + room)
+    imgui.align_text_to_frame_padding()
+    imgui.text_disabled(text)
+
+
+@contextmanager
+def button_colors(fill, hover, text=None, on: bool = True):
+    """Fill and hover colors, and optionally the text color, for the buttons drawn inside; a no-op unless ``on``."""
+    if on:
+        imgui.push_style_color(imgui.Col_.button, to_vec4(fill))
+        imgui.push_style_color(imgui.Col_.button_hovered, to_vec4(hover))
+        imgui.push_style_color(imgui.Col_.button_active, to_vec4(hover))
+        if text is not None:
+            imgui.push_style_color(imgui.Col_.text, to_vec4(text))
+    try:
+        yield
+    finally:
+        if on:
+            imgui.pop_style_color(4 if text is not None else 3)
+
+
 def popup(title: str, is_open: bool, theme: Theme = THEME) -> tuple[bool, bool]:
     """
     Begin a centered, auto-sized, closable window.
