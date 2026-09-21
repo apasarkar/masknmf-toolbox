@@ -126,7 +126,7 @@ class SplineDetrend(SplineDetrenderBase):
             device='cuda',
         )
 
-        detrended, coeffs = detrend(data)  # (num_frames, num_pixels) -> (num_frames, pixels), (spline_rank, num_pixels)
+        detrended, coeffs = detrend(data)  # (num_frames, num_pixels) -> (num_frames, num_pixels), (spline_rank, num_pixels)
     """
 
     def __init__(
@@ -141,7 +141,7 @@ class SplineDetrend(SplineDetrenderBase):
         Args:
             num_frames: Length of the time axis.
             num_knots: Number of interior knot points. Total basis dimension
-                will be `num_knots + degree - 1`.
+                will be `num_knots + degree + 1`.
             knot_positions: Optional explicit interior knot positions as
                 fractions in (0, 1), strictly increasing. If provided, length
                 must equal `num_knots`. If omitted, knots are placed uniformly.
@@ -202,7 +202,7 @@ class SplineDetrend(SplineDetrenderBase):
         degree: int,
     ) -> np.ndarray:
         """
-        Construct B-spline basis matrix of shape (num_frames, spline_ranks).
+        Construct B-spline basis matrix of shape (num_frames, spline_rank).
         """
         t = np.linspace(0, 1, num_frames)
         knots = np.concatenate(
@@ -297,7 +297,7 @@ class MaximinSplineDetrend(SplineDetrenderBase):
         Args:
             num_frames: Length of the time axis.
             num_knots: Number of interior knot points. Total basis dimension
-                will be `num_knots + degree - 1`.
+                will be `num_knots + degree + 1`.
             knot_positions: Optional explicit interior knot positions as
                 fractions in (0, 1), strictly increasing. If provided, length
                 must equal `num_knots`. If omitted, knots are placed uniformly.
@@ -335,7 +335,7 @@ class MaximinSplineDetrend(SplineDetrenderBase):
         basis = self._build_basis(num_frames, interior_knots, degree)
         basis_torch = torch.tensor(basis, dtype=torch.float32, device=device)
 
-        # Precomputed solve matrix: (B^T B)^{-1} B^T  of shape (d, T)
+        # Precomputed solve matrix: (B^T B)^{-1} B^T  of shape (spline rank, num_frames)
         solve_matrix = torch.linalg.solve(basis_torch.T @ basis_torch, basis_torch.T)
 
         self.register_buffer("basis", basis_torch)              # (num_frames, spline_rank)
