@@ -91,17 +91,23 @@ def _compute_hals_schedule(mask_tensor: torch.sparse_coo_tensor,
                                    frame_batch_size)
     return blocks
 
+def _v_new_mm(x: torch.Tensor,
+              v: torch.Tensor,
+              ring_left: torch.Tensor,
+              ring_right: torch.Tensor) -> torch.Tensor:
+    """Utility function for computing residual correlation images"""
+    return v @ x - ring_left @ (ring_right @ x)
+
 def _compute_residual_correlation_image(
         u_sparse: torch.sparse_coo_tensor,
-        v: torch.tensor,
-        factorized_ring_term: Tuple[torch.tensor, torch.tensor],
+        v: torch.Tensor,
+        factorized_ring_term: Tuple[torch.Tensor, torch.Tensor],
         spatial_comps: torch.sparse_coo_tensor,
-        temporal_comps: torch.tensor,
+        temporal_comps: torch.Tensor,
         fov_dims: Tuple[int, int],
         uv_norms: torch.Tensor | None = None,
-        blocks: Optional[Union[torch.tensor, list]] = None,
+        blocks: Optional[Union[torch.Tensor, list]] = None,
         noise_std: Optional[torch.Tensor] = None,
-        data_order: str = "F",
         batch_size: int = 1000,
         device: str = "cpu",
 ) -> tuple[ResidualCorrelationImages, torch.Tensor]:
@@ -111,13 +117,23 @@ def _compute_residual_correlation_image(
     if noise_std is None:
         noise_std = torch.zeros(fov_dims[0], fov_dims[1], device=device, dtype=u_sparse.dtype).flatten()
     num_frames = v.shape[1]
-    v_new = v - (factorized_ring_term[0] @ factorized_ring_term[1])
+
+    if (factorized_ring_term is None or factorized_ring_term[0] is None or factorized_ring_term[1] is None):
+        ring_left = torch.zeros((v.shape[0], 1), device=v.device, dtype=v.dtype)
+        ring_right = torch.zeros((1, v.shape[1]), device=v.device, dtype=v.dtype)
+    else:
+        ring_left, ring_right = factorized_ring_term[0], factorized_ring_term[1]
+
+    # Row sums / means of v_new, shape (pmd_rank, 1)
+    v_new_sum = torch.sum(v, dim=1, keepdim=True) - ring_left @ torch.sum(
+        ring_right, dim=1, keepdim=True
+    )
+    v_new_mean = v_new_sum / num_frames
 
     residual_movie_norms = torch.zeros(
         (u_sparse.shape[0], 1), device=device, dtype=torch.float32
     )
 
-    # c = temporal_comps - torch.mean(temporal_comps, dim=0, keepdim=True)
     c_meanzero = temporal_comps - torch.mean(temporal_comps, dim=0, keepdim=True)
     c_meanzero_norms = torch.linalg.norm(
         c_meanzero, dim=0, keepdim=True
@@ -126,28 +142,30 @@ def _compute_residual_correlation_image(
     c = torch.nan_to_num(c, nan=0, posinf=0, neginf=0)
 
     ## Step 1: Compute the mean and pixelwise normalizer for (U(I - Q)V - ac)
-    residual_mean = torch.sparse.mm(u_sparse, torch.mean(v_new, dim=1, keepdim=True))
+    residual_mean = torch.sparse.mm(u_sparse, v_new_mean)
     residual_mean -= torch.sparse.mm(
         spatial_comps, torch.mean(temporal_comps.T, dim=1, keepdim=True)
     )
 
     num_neural_signals = c.shape[1]
-    pmd_rank = v_new.shape[0]
+    pmd_rank = v.shape[0]
     max_value = max(num_neural_signals, pmd_rank)
     num_batches = math.ceil(max_value / batch_size)
 
     residual_movie_norms += -2 * (
-            torch.sparse.mm(u_sparse, torch.sum(v_new, dim=1, keepdim=True)) * residual_mean
+            torch.sparse.mm(u_sparse, v_new_sum) * residual_mean
     )
     residual_movie_norms += 2 * (
             torch.sparse.mm(spatial_comps, torch.sum(temporal_comps.T, dim=1, keepdim=True))
             * residual_mean
     )
-    residual_movie_norms += v_new.shape[1] * torch.square(residual_mean)
+    residual_movie_norms += num_frames * torch.square(residual_mean)
 
     if uv_norms is None:
         compute_uv_norm = True
         uv_norms = torch.zeros(u_sparse.shape[0], 1, device=u_sparse.device)
+        v_ring_right_t = v @ ring_right.T  # (pmd_rank, k)
+        ring_right_gram = ring_right @ ring_right.T  # (k, k)
     else:
         compute_uv_norm = False
 
@@ -158,7 +176,15 @@ def _compute_residual_correlation_image(
 
         if start < pmd_rank and compute_uv_norm:
             pmd_end = min(end, pmd_rank)
-            curr_vvt = v_new @ v_new.T[:, start:pmd_end]
+            # (v - LR)(v_s - L_s R)^T = v v_s^T - (v R^T) L_s^T - L (v R^T)_s^T + L (R R^T) L_s^T
+            # Every term is (pmd_rank, batch); no copy of v or of a block of v's rows is made.
+            ring_left_batch_t = ring_left[start:pmd_end].T  # (k, batch)
+            curr_vvt = (
+                    v @ v[start:pmd_end].T
+                    - v_ring_right_t @ ring_left_batch_t
+                    - ring_left @ v_ring_right_t[start:pmd_end].T
+                    + ring_left @ (ring_right_gram @ ring_left_batch_t)
+            )
             curr_uvvt = torch.sparse.mm(u_sparse, curr_vvt)
             inds = torch.arange(start, pmd_end, device=device, dtype=torch.long)
             curr_u_dense = torch.index_select(u_sparse, 1, inds).to_dense()
@@ -168,7 +194,7 @@ def _compute_residual_correlation_image(
 
         if start < num_neural_signals:
             c_end = min(end, num_neural_signals)
-            curr_vc = v_new @ temporal_comps[:, start:c_end]
+            curr_vc = _v_new_mm(temporal_comps[:, start:c_end], v, ring_left, ring_right)
             curr_ctc = temporal_comps.T @ temporal_comps[:, start:c_end]
             inds = torch.arange(start, c_end, device=device, dtype=torch.long)
 
@@ -221,7 +247,7 @@ def _compute_residual_correlation_image(
         curr_c = (
                 c[:, index_select_tensor_net] * c_meanzero_norms[:, index_select_tensor_net]
         )
-        resid_image_cumulator = torch.sparse.mm(u_sparse, v_new @ curr_c)
+        resid_image_cumulator = torch.sparse.mm(u_sparse, _v_new_mm(curr_c, v, ring_left, ring_right))
         resid_image_cumulator -= torch.sparse.mm(
             spatial_comps, temporal_comps.T @ curr_c
         )
@@ -259,8 +285,8 @@ def _compute_residual_correlation_image(
     residual_array = ResidualCorrelationImages.from_tensors(
         u_sparse,
         v,
-        factorized_ring_term[0],
-        factorized_ring_term[1],
+        ring_left,
+        ring_right,
         spatial_comps,
         temporal_comps,
         resid_corr_on_support,
@@ -270,7 +296,6 @@ def _compute_residual_correlation_image(
         mode=ResidCorrMode.DEFAULT,
     )
     return residual_array, uv_norms
-
 
 def _compute_standard_correlation_image(
         u_sparse: torch.sparse_coo_tensor,
@@ -604,7 +629,7 @@ def sparse_dilation_routine(fov_height: int,
 
 def get_local_correlation_structure(
         u_sparse: torch.sparse_coo_tensor,
-        v: torch.tensor,
+        v: torch.Tensor,
         dims: Tuple[int, int, int],
         th: int,
         noise_std: torch.Tensor,
@@ -612,11 +637,14 @@ def get_local_correlation_structure(
         tol: float = 0.000001,
         a: Optional[torch.sparse_coo_tensor] = None,
         c: torch.tensor = None,
+        fluctuating_background_term1: torch.Tensor | None = None,
+        fluctuating_background_term2: torch.Tensor | None = None,
         detrender: torch.nn.Module | None = None,
         sign: Literal["positive", "negative", "unconstrained"] = "unconstrained"
 ):
     """
     Computes a local correlation data structure, which describes the correlations between all neighboring pairs of pixels
+    This computation is done after subtracting all existing signals and background from the compressed + denoised movie (given by u_sparse @ v)
 
     Context: here,
     d1, d2 are the fov dimensions of the original data (i.e. 512 x 512 pixels or the like)
@@ -638,6 +666,7 @@ def get_local_correlation_structure(
         a Optional[torch.sparse_coo_tensor]: A (d1*d2, K)-shaped ndarray whose columns describe the correlation structure of the data.
         c Optional[torch.tensor]: A (T, K)-shaped array whose columns describe the estimated fluorescence time course of each signal.
 
+
     Returns:
     The following correlation Data Structure:
     To understand this, recall that we flatten the 2D field of view into a 1 dimensional column vector
@@ -654,6 +683,11 @@ def get_local_correlation_structure(
         resid_flag = True
     else:
         resid_flag = False
+
+    if fluctuating_background_term1 is not None and fluctuating_background_term2 is not None:
+        background_flag = True
+    else:
+        background_flag = False
 
     dims = (dims[0], dims[1], v.shape[1])
 
@@ -688,13 +722,18 @@ def get_local_correlation_structure(
 
             indices_curr = indices_curr_2d.reshape(x_interval * y_interval,)
 
-            U_sparse_crop = torch.index_select(u_sparse, 0, indices_curr)
-            Yd = torch.sparse.mm(U_sparse_crop, v).reshape(x_interval, y_interval, -1)
+            u_sparse_crop = torch.index_select(u_sparse, 0, indices_curr)
+            Yd = torch.sparse.mm(u_sparse_crop, v).reshape(x_interval, y_interval, -1)
             if resid_flag:
                 a_sparse_crop = torch.index_select(a, 0, indices_curr)
 
                 ac_mov = torch.sparse.mm(a_sparse_crop, c.T).reshape(x_interval, y_interval, -1)
-                Yd = torch.sub(Yd, ac_mov)
+                Yd -= ac_mov
+
+            if background_flag:
+                background_subset = torch.sparse.mm(u_sparse_crop, fluctuating_background_term1) @ fluctuating_background_term2
+                background_subset = background_subset.reshape(x_interval, y_interval, -1)
+                Yd -= background_subset
 
             if detrender is not None:
                 curr_height, curr_width, curr_frames = Yd.shape
@@ -2446,24 +2485,20 @@ class InitializingState(SignalProcessingState):
             print(
                 f"Computing correlation data structure with MAD threshold  {mad_threshold}"
             )
-            # This indicates that it is the first time we are running the superpixel init with this set of
-            # pre-existing self.a and self.c values, so we need to compute the local correlation data
-            if self.factorized_ring_term is not None:
-                bg_subtract_temporal_basis = self.v - (self.factorized_ring_term[0] @ self.factorized_ring_term[1])
-            else:
-                bg_subtract_temporal_basis = self.v
 
             (
                 self._curr_corr_image
             ) = get_local_correlation_structure(
                 self.u_sparse,
-                bg_subtract_temporal_basis,
+                self.v,
                 self.shape,
                 mad_threshold,
                 self.robust_noise_term,
                 batch_size=self.pixel_batch_size,
                 a=self.a,
                 c=self.c,
+                fluctuating_background_term1=self.factorized_ring_term[0] if self.factorized_ring_term is not None else None,
+                fluctuating_background_term2=self.factorized_ring_term[1] if self.factorized_ring_term is not None else None,
                 detrender=detrender,
                 sign = sign
             )
@@ -2843,7 +2878,6 @@ class DemixingState(SignalProcessingState):
             uv_norms = self._uv_norms,
             blocks=self.blocks,
             noise_std=self.robust_noise_term.flatten(),
-            data_order=self.data_order,
             batch_size=self.frame_batch_size,
             device=self.device,
         )
@@ -3511,21 +3545,19 @@ class DemixingState(SignalProcessingState):
                                                                                      frame_batch_size=self.frame_batch_size,
                                                                                      device=self.device)
 
-        if self.factorized_ring_term is not None:
-            bg_subtract_temporal_basis = self.v - (self.factorized_ring_term[0] @ self.factorized_ring_term[1])
-        else:
-            bg_subtract_temporal_basis = self.v
         (
             self._curr_corr_image
         ) = get_local_correlation_structure(
             self.u_sparse,
-            bg_subtract_temporal_basis,
+            self.v,
             self.shape,
             1,
             self.robust_noise_term,
             batch_size=self.pixel_batch_size,
             a=self.a,
             c=self.c,
+            fluctuating_background_term1=self.factorized_ring_term[0] if self.factorized_ring_term is not None else None,
+            fluctuating_background_term2=self.factorized_ring_term[1] if self.factorized_ring_term is not None else None,
             detrender=self.detrender,
             sign=sign
         )

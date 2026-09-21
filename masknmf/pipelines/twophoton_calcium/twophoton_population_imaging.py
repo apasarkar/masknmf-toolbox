@@ -114,7 +114,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 'device': self.device}
 
     def run(self,
-            data: np.ndarray | ArrayLike,
+            data: np.ndarray | ArrayLike | None,
             frame_rate: float,
             exclude_border_radius: int = 0,
             remove_intermediates: bool = True):
@@ -153,6 +153,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 raise ValueError(f"If compress_config is a string, it can only be `skip`")
         else:
             ## Decide whether to motion correct data or not
+            if data is None:
+                raise ValueError("data is None starting from the motion correction step. Specify a dataset")
             if self.motion_correct_config is None:
                 moco_strategy = RigidMotionCorrector(**asdict(RigidMotionCorrectionConfig()), device=self.device,
                                                      batch_size=self.frame_batch_size)
@@ -262,7 +264,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                                                                              device=device,
                                                                              frame_batch_size=self.frame_batch_size)
 
-        num_frames = data.shape[0]
+        num_frames = pmd_denoise.shape[0]
         recording_seconds = num_frames / frame_rate
         window = int(20 * frame_rate)  # 20s rolling window
         sigma = max(2.0, 0.3 * frame_rate)  # 0.3s smoothing
