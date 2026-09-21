@@ -171,19 +171,29 @@ class SummaryImageViewer:
         self._show_pixel_values = False
         self._highlight: Optional[tuple] = None  # (y0, x0, h, w) in image coords
         self._overlay: Optional[np.ndarray] = None  # float (H, W, 4) drawn over the image
+        self._index: Optional[int] = None  # which plane of a stacked image to show
+        self._planes: dict = {}  # (stack, index, plane) last read for each source
+        self._auto_cache: dict = {}
         self._gpu: dict = {}
         self._manual_lo: dict = {}
         self._manual_hi: dict = {}
         self._hist_cache: dict = {}
 
-    def set_images(self, images: dict, selected: Optional[str] = None):
-        """Replace the image set; caches are dropped for images that changed"""
+    def set_images(self, images: dict, selected: Optional[str] = None, index: Optional[int] = None):
+        """
+        Replace the image set; caches are dropped for images that changed.
+
+        A value may be a (N, H, W) stack instead of an image, in which case
+        ``index`` picks the plane. Only the plane actually on screen is read, so
+        a stack that computes its planes on demand costs nothing until shown.
+        """
         for key, gpu in list(self._gpu.items()):
             if images.get(key) is not gpu.arr:
                 gpu.destroy()
                 del self._gpu[key]
                 self._hist_cache.pop(key, None)
         self._images = dict(images)
+        self._index = index
         keys = list(self._images) + list(self._movies)
         if selected in keys:
             self._selected = keys.index(selected)
@@ -204,6 +214,18 @@ class SummaryImageViewer:
     @property
     def is_open(self) -> bool:
         return self._popup_open
+
+    def _image(self, key: str) -> np.ndarray:
+        """The image for a source, reading the plane out of a stack the first time it is shown"""
+        arr = self._images[key]
+        if getattr(arr, "ndim", 2) != 3:
+            return arr
+        i = 0 if self._index is None else int(self._index)
+        cached = self._planes.get(key)
+        if cached is None or cached[0] is not arr or cached[1] != i:
+            cached = (arr, i, np.asarray(arr[i], dtype=np.float32).reshape(arr.shape[1:]))
+            self._planes[key] = cached
+        return cached[2]
 
     def set_overlay(self, overlay: Optional[np.ndarray]):
         """Composite a float (H, W, 4) RGBA layer over the image, e.g. ROI masks"""
@@ -232,7 +254,11 @@ class SummaryImageViewer:
                 if key not in self._movie_range:
                     self._movie_range[key] = _auto_range(arr)
                 return self._movie_range[key]
-            return _auto_range(arr)
+            cached = self._auto_cache.get(key)
+            if cached is None or cached[0] is not arr:
+                cached = (arr, _auto_range(arr))
+                self._auto_cache[key] = cached
+            return cached[1]
         if self._contrast_mode == _CONTRAST_MANUAL:
             lo = self._manual_lo.get(key)
             hi = self._manual_hi.get(key)
@@ -390,7 +416,7 @@ class SummaryImageViewer:
                 self._movie_key = key
             arr = self._movie_frame
         else:
-            arr = self._images[key]
+            arr = self._image(key)
         self._draw_contrast_panel(key, arr)
 
         gpu = self._ensure_gpu(key, arr)

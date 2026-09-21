@@ -37,6 +37,8 @@ _COLUMNS = ("id", "sess", "label", "pred", "area", "peak", "f", "skew")
 _UNLABELED = ""  # key for unlabeled ROIs in _hidden_classes; no class can be named it
 _UNLABELED_COLOR = (0.78, 0.78, 0.78)
 _MIN_PER_CLASS = 2  # labeled ROIs a class needs before training
+_PREFETCH = 3  # ROIs ahead whose background image is computed in the background
+_PLANE_CACHE = 24  # background images kept in memory
 _CLF_FILTERS = ["ROICaT classifier", f"*{CLASSIFIER_SUFFIX}", "All files", "*"]
 _HDF5_FILTERS = ["masknmf demixing results", "*.hdf5 *.h5", "All files", "*"]
 
@@ -130,6 +132,11 @@ class ClassificationVis:
         self._show_mask = True
         self._show_class_masks = True  # draw every ROI on the full FOV, colored by class
         self._hidden_classes: set[str] = set()
+        self._overlay_cache: Optional[tuple] = None
+        self._plane_cache: dict = {}  # (source, roi) -> its background image
+        self._prefetch_queue: list = []
+        self._prefetch_lock = threading.Lock()
+        self._prefetch_thread: Optional[threading.Thread] = None
         self._bg_alpha = 0.5
         self._roi_alpha = 1.0
         self._advance_on_label = True
@@ -335,6 +342,8 @@ class ClassificationVis:
 
         self._mip = roi_images.max(axis=0)
 
+        self._overlay_cache = None
+        self._plane_cache = {}
         self._filter_label = -2  # -2 all, -1 unlabeled, >=0 label index
         self._area_range = (0, int(self._area.max(initial=0)))
         self._sort_column = 0
@@ -750,24 +759,92 @@ class ClassificationVis:
         cy, cx = self._centroids[roi]
         return int(cy) - int(np.ceil(h / 2)), int(cx) - int(np.ceil(w / 2))
 
-    def _bg_image(self, imgs, sess: int, roi: Optional[int]) -> np.ndarray:
-        """A session's background image; a per-ROI stack gives the ROI's own image"""
-        img = imgs[sess]
-        if getattr(img, "ndim", 2) == 3:
-            i = int(roi - self._session_starts[sess]) if roi is not None else 0
-            img = np.asarray(img[i], dtype=np.float32).reshape(img.shape[1:])
-        return img
+    def _plane(self, roi: int, wait: bool = False) -> Optional[np.ndarray]:
+        """The current source's image for one ROI, once it has been computed"""
+        if self._bg_sources is None:
+            return None
+        name = self._bg_source_names[self._bg_source_idx]
+        imgs = self._fov_images[int(self._session_of[roi])]
+        if getattr(imgs, "ndim", 2) != 3:
+            return imgs
+        plane = self._plane_cache.get((name, roi))
+        if plane is None and wait:
+            i = int(roi - self._session_starts[int(self._session_of[roi])])
+            plane = np.asarray(imgs[i], dtype=np.float32).reshape(imgs.shape[1:])
+            with self._prefetch_lock:
+                self._plane_cache[(name, roi)] = plane
+        return plane
+
+    def _prefetch(self):
+        """
+        Compute the next ROIs' background images off the draw thread.
+
+        A per-ROI source (the correlation images) computes each image on demand and
+        that takes a moment, so stepping waits on it unless the image is ready.
+        """
+        roi = self.current
+        if self._bg_sources is None or roi is None:
+            return
+        if getattr(self._fov_images[int(self._session_of[roi])], "ndim", 2) != 3:
+            return  # a plain image is already in memory
+        name = self._bg_source_names[self._bg_source_idx]
+        rois = [int(self._order[i]) for i in range(self._pos, min(self._pos + _PREFETCH + 1, len(self._order)))]
+        with self._prefetch_lock:
+            self._prefetch_queue = [r for r in rois if (name, r) not in self._plane_cache]
+            if not self._prefetch_queue:
+                return
+        if self._prefetch_thread is None or not self._prefetch_thread.is_alive():
+            self._prefetch_thread = threading.Thread(target=self._prefetch_worker, args=(name,), daemon=True)
+            self._prefetch_thread.start()
+
+    def _prefetch_worker(self, name: str):
+        while True:
+            with self._prefetch_lock:
+                if not self._prefetch_queue or name != self._bg_source_names[self._bg_source_idx]:
+                    return
+                roi = self._prefetch_queue.pop(0)
+            sess = int(self._session_of[roi])
+            imgs = self._bg_sources[name][sess]
+            if getattr(imgs, "ndim", 2) != 3:
+                return
+            try:
+                plane = np.asarray(
+                    imgs[int(roi - self._session_starts[sess])], dtype=np.float32
+                ).reshape(imgs.shape[1:])
+            except Exception:  # a source that cannot be read is simply not cached
+                return
+            with self._prefetch_lock:
+                self._plane_cache[(name, roi)] = plane
+                while len(self._plane_cache) > _PLANE_CACHE:
+                    self._plane_cache.pop(next(iter(self._plane_cache)))
 
     def _context_crop(self, roi: int) -> np.ndarray:
-        """FOV image cropped around the ROI, aligned with roicat's centered ROI images"""
-        fov = self._bg_image(self._fov_images, int(self._session_of[roi]), roi)
+        """
+        FOV image cropped around the ROI, aligned with roicat's centered ROI images.
+
+        Only the crop window is read: a per-ROI source computes each image on
+        demand, so reading the whole field of view costs a second per step.
+        """
+        sess = int(self._session_of[roi])
+        imgs = self._fov_images[sess]
+        stack = getattr(imgs, "ndim", 2) == 3
+        ready = self._plane(roi)
+        height, width = imgs.shape[1:] if stack else imgs.shape
         h, w = self._roi_images.shape[1:]
         top, left = self._crop_origin(roi)
         crop = np.zeros((h, w), dtype=np.float32)
-        y0, y1 = max(top, 0), min(top + h, fov.shape[0])
-        x0, x1 = max(left, 0), min(left + w, fov.shape[1])
+        y0, y1 = max(top, 0), min(top + h, height)
+        x0, x1 = max(left, 0), min(left + w, width)
         if y1 > y0 and x1 > x0:
-            crop[y0 - top : y1 - top, x0 - left : x1 - left] = fov[y0:y1, x0:x1]
+            if ready is not None:
+                window = ready[y0:y1, x0:x1]
+            elif stack:
+                window = imgs[int(roi - self._session_starts[sess]), y0:y1, x0:x1]
+            else:
+                window = imgs[y0:y1, x0:x1]
+            crop[y0 - top : y1 - top, x0 - left : x1 - left] = np.asarray(
+                window, dtype=np.float32
+            ).reshape(y1 - y0, x1 - x0)
         return crop
 
     def _class_overlay(self, sess: int) -> Optional[np.ndarray]:
@@ -778,13 +855,24 @@ class ClassificationVis:
         """
         if not self._show_class_masks or self._fov_images is None:
             return None
+        sizes = self._session_sizes or (len(self._roi_images),)
+        start = int(self._session_starts[sess])
+        stop = start + int(sizes[sess])
+        # the masks only move when the labels, their colors or the session do
+        key = (
+            sess,
+            self._bg_source_idx,
+            tuple(sorted(self._hidden_classes)),
+            tuple(self._label_colors),
+            self._class_labels[start:stop].tobytes(),
+        )
+        if self._overlay_cache is not None and self._overlay_cache[0] == key:
+            return self._overlay_cache[1]
         imgs = self._fov_images[sess]
         shape = imgs.shape[1:] if getattr(imgs, "ndim", 2) == 3 else imgs.shape
         overlay = np.zeros((*shape[:2], 4), dtype=np.float32)
         h, w = self._roi_images.shape[1:]
-        sizes = self._session_sizes or (len(self._roi_images),)
-        start = int(self._session_starts[sess])
-        for roi in range(start, start + int(sizes[sess])):
+        for roi in range(start, stop):
             label = int(self._class_labels[roi])
             if (self._label_names[label] if label >= 0 else _UNLABELED) in self._hidden_classes:
                 continue
@@ -800,6 +888,7 @@ class ClassificationVis:
             color = self._label_color(label) if label >= 0 else _UNLABELED_COLOR
             region[..., :3] = np.where((alpha > region[..., 3])[..., None], color, region[..., :3])
             region[..., 3] = np.maximum(region[..., 3], alpha)
+        self._overlay_cache = (key, overlay)
         return overlay
 
     def _update_movie_bg(self):
@@ -823,7 +912,7 @@ class ClassificationVis:
             color = self._label_color(label) if label >= 0 else (1.0, 1.0, 1.0)
             rgba[..., :3] = color
             rgba[..., 3] = self._roi_images[roi] / (self._peak[roi] or 1.0)
-            name = self._label_names[label] if label >= 0 else "unlabeled"
+            name = self._label_names[label] if 0 <= label < len(self._label_names) else "unlabeled"
             title = f"ROI {roi}  [{name}]  ({self._pos + 1}/{len(self._order)})"
             if self._fov_images is not None:
                 if self._bg_movie and self._dmrs is not None:
@@ -842,8 +931,13 @@ class ClassificationVis:
                 self._summary.set_highlight((top, left, *self._roi_images.shape[1:]))
                 if self._summary.is_open and self._bg_sources is not None:
                     sess = int(self._session_of[roi])
+                    # a source whose image is already computed goes in as that image
                     self._summary.set_images(
-                        {name: self._bg_image(imgs, sess, roi) for name, imgs in self._bg_sources.items()}
+                        {
+                            name: self._plane_cache.get((name, roi), imgs[sess])
+                            for name, imgs in self._bg_sources.items()
+                        },
+                        index=int(roi - self._session_starts[sess]),
                     )
                     self._summary.set_overlay(self._class_overlay(sess))
                     if self._dmrs is not None:
@@ -855,6 +949,7 @@ class ClassificationVis:
         self._fg.data = rgba
         self._figure[0, 0].title = title
         self._scroll_to_current = True
+        self._prefetch()
 
     def _apply_overlay(self):
         self._bg.visible = self._show_bg
@@ -944,12 +1039,16 @@ class ClassificationVis:
                 if roi is not None and self._session_of is not None
                 else 0
             )
-            images = {name: self._bg_image(imgs, sess, roi) for name, imgs in self._bg_sources.items()}
+            images = {
+                name: self._plane_cache.get((name, roi), imgs[sess])
+                for name, imgs in self._bg_sources.items()
+            }
             selected = self._bg_source_names[self._bg_source_idx]
+            index = 0 if roi is None else int(roi - self._session_starts[sess])
         else:
             images = {"mask MIP": self._mip}
-            selected = "mask MIP"
-        self._summary.set_images(images, selected=selected)
+            selected, index = "mask MIP", None
+        self._summary.set_images(images, selected=selected, index=index)
         if self._dmrs is not None and self._session_of is not None and self.current is not None:
             sess = int(self._session_of[self.current])
             self._summary.set_movies({"demixed movie": self._dmrs[sess].ac_array})
