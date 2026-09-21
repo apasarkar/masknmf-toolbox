@@ -42,7 +42,7 @@ def _rim(mask: np.ndarray) -> np.ndarray:
     return mask & ~core
 
 
-def feathered_rgba(shape: Tuple[int, int], comps, selected=()) -> np.ndarray:
+def feathered_rgba(shape: Tuple[int, int], comps, selected=(), selected_alpha: float = SELECTED_ALPHA) -> np.ndarray:
     """
     Compose an (ny, nx, 4) uint8 overlay from footprints.
 
@@ -50,8 +50,9 @@ def feathered_rgba(shape: Tuple[int, int], comps, selected=()) -> np.ndarray:
         shape (tuple): (ny, nx) of the FOV
         comps: iterable of (ypix, xpix, lam, rgb, fill); each pixel takes lam / lam.max() * fill
             as its alpha, and where footprints overlap the higher alpha wins color and coverage
-        selected: iterable of (ypix, xpix, rgb), each filled at SELECTED_ALPHA with a white rim and
+        selected: iterable of (ypix, xpix, rgb), each filled at ``selected_alpha`` with a white rim and
             drawn over everything else, in order
+        selected_alpha (float): opacity the selected footprints are filled at
     """
     ny, nx = shape
     rgba = np.zeros((ny, nx, 4), np.uint8)
@@ -69,7 +70,7 @@ def feathered_rgba(shape: Tuple[int, int], comps, selected=()) -> np.ndarray:
     for ypix, xpix, rgb in selected:
         mask = np.zeros((ny, nx), bool)
         mask[ypix, xpix] = True
-        fill = np.uint8(round(SELECTED_ALPHA * 255))
+        fill = np.uint8(round(selected_alpha * 255))
         rgba[mask, :3] = np.rint(np.asarray(rgb, np.float32) * 255).astype(np.uint8)
         rgba[mask, 3] = fill
         rgba[_rim(mask)] = (255, 255, 255, fill)
@@ -138,10 +139,11 @@ class FootprintSet:
         selected: Optional[int] = None,
         marked: Iterable[int] = (),
         grouped: Optional[Mapping[int, Tuple[float, float, float]]] = None,
+        selected_opacity: float = SELECTED_ALPHA,
     ) -> np.ndarray:
         """
         (ny, nx, 4) uint8 overlay; ``grouped`` (index -> rgb) and then ``selected`` are filled at
-        SELECTED_ALPHA with a white rim, and ``marked`` footprints are drawn in MARKED_COLOR.
+        ``selected_opacity`` with a white rim, and ``marked`` footprints are drawn in MARKED_COLOR.
         """
         marked = set(marked)
         grouped = dict(grouped or {})
@@ -156,4 +158,4 @@ class FootprintSet:
             (*self.footprints[k][:2], MARKED_COLOR if k in marked else grouped.get(k, self.color(k)))
             for k in picks
         ]
-        return feathered_rgba(shape, comps, highlighted)
+        return feathered_rgba(shape, comps, highlighted, selected_opacity)
