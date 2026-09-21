@@ -405,19 +405,19 @@ class MaximinSplineDetrend(SplineDetrenderBase):
 
         # Gaussian smooth along time
         traces_smoothed = torch.nn.functional.conv1d(
-            torch.nn.functional.window_padding(input_traces, (self.gaussian_padding, self.gaussian_padding), mode="reflect"),
+            torch.nn.functional.pad(input_traces, (self.gaussian_padding, self.gaussian_padding), mode="reflect"),
             self.gaussian_kernel,
         )
 
         # Rolling min: negate, max-pool, negate
         traces_min = -torch.nn.functional.max_pool1d(
-            torch.nn.functional.window_padding(-traces_smoothed, (self.window_padding, self.window_padding), mode="reflect"),
+            torch.nn.functional.pad(-traces_smoothed, (self.window_padding, self.window_padding), mode="reflect"),
             kernel_size=self.window,
             stride=1,
         )
         # Rolling max of the rolling min
         traces_max_min = torch.nn.functional.max_pool1d(
-            torch.nn.functional.window_padding(traces_min, (self.window_padding, self.window_padding), mode="reflect"),
+            torch.nn.functional.pad(traces_min, (self.window_padding, self.window_padding), mode="reflect"),
             kernel_size=self.window,
             stride=1,
         )
