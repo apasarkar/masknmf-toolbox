@@ -817,7 +817,7 @@ wheels = [
 [[package]]
 name = "fastplotlib"
 version = "0.6.1"
-source = { git = "https://github.com/fastplotlib/fastplotlib?rev=b2132e3d11b9e2bd641e0bbfc0bbee3d413d1d88#b2132e3d11b9e2bd641e0bbfc0bbee3d413d1d88" }
+source = { git = "https://github.com/fastplotlib/fastplotlib?rev=2fb2b84fd7e305fe2955951c15cef450f78c7dc5#2fb2b84fd7e305fe2955951c15cef450f78c7dc5" }
 dependencies = [
     { name = "cmap" },
     { name = "numpy" },
@@ -2195,7 +2195,7 @@ multisession = [
 [package.metadata]
 requires-dist = [
     { name = "cvxpy", specifier = ">=1.6.5" },
-    { name = "fastplotlib", extras = ["imgui", "notebook"], git = "https://github.com/fastplotlib/fastplotlib?rev=b2132e3d11b9e2bd641e0bbfc0bbee3d413d1d88" },
+    { name = "fastplotlib", extras = ["imgui", "notebook"], git = "https://github.com/fastplotlib/fastplotlib?rev=2fb2b84fd7e305fe2955951c15cef450f78c7dc5" },
     { name = "glfw" },
     { name = "h5py" },
     { name = "imageio", extras = ["ffmpeg"], marker = "extra == 'docs'" },

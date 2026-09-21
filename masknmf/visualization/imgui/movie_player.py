@@ -1,5 +1,5 @@
 import time
-from typing import *
+from typing import Optional
 import numpy as np
 from imgui_bundle import imgui
 
@@ -72,7 +72,7 @@ class MoviePlayer:
         imgui.same_line(0, 8)
         imgui.set_next_item_width(slider_width)
         slid, t = imgui.slider_int(
-            f"##movie-frame", self._t, 0, max(self.n_frames - 1, 0)
+            "##movie-frame", self._t, 0, max(self.n_frames - 1, 0)
         )
         if slid:
             self._t = t

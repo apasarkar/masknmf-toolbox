@@ -1,0 +1,319 @@
+"""Stacked implot trace panels with a shared time axis and a draggable playhead."""
+
+from typing import Callable, Optional, Sequence
+
+import numpy as np
+from fastplotlib.ui import ImguiWindow
+from imgui_bundle import imgui, implot
+
+from masknmf.visualization.imgui.layout import HANDLE_THICKNESS, draw_edge_handle
+from masknmf.visualization.imgui.theme import em
+
+_CURSOR_COLOR = imgui.ImVec4(1.0, 1.0, 1.0, 0.7)
+
+
+class TracePlot:
+    """
+    One panel per name, stacked with a linked time axis. A panel holds lines of
+    ``(label, trace, rgb)`` with rgb in 0-1 or None for the default color.
+    """
+
+    def __init__(
+        self,
+        panels: Sequence[str],
+        num_frames: int,
+        frame_timings=None,
+        link_y: bool = False,
+        autofit: bool = True,
+        decimate: bool = True,
+    ):
+        """
+        Args:
+            autofit (bool): refit the axes whenever the lines change. False keeps the zoom the user
+                set; the first data and "fit now" still fit. Toggled from the right-click popup too.
+            decimate (bool): draw a trace with more samples than the panel has pixel columns as a
+                min/max band under its mean, rather than a polyline that smears into a solid block.
+        """
+        self._panels = tuple(panels)
+        self._lines = {name: [] for name in self._panels}
+        self._frames = np.arange(num_frames, dtype=np.float32)
+        # timings kept as given so frame lookups agree with the NDWidget's own searchsorted mapping
+        self._timings = None
+        self._time = None
+        if frame_timings is not None and not np.array_equal(frame_timings, self._frames):
+            self._timings = np.asarray(frame_timings)
+            if self._timings.shape != self._frames.shape:
+                raise ValueError(f"{len(self._timings)} frame timings for {num_frames} frames")
+            self._time = self._timings.astype(np.float32)
+        self._link_y = link_y
+        self._use_time = False
+        self._autofit = autofit
+        self._decimate = decimate
+        self._fit = False
+        self._fitted = set()  # panels whose axes have been fit to data at least once
+        self._force_fit = False  # one-shot "fit now", requested from the right-click settings popup
+        self._popup_id = f"##trace_settings_{id(self)}"
+        self._window = None
+        self._frame = 0
+        # called with the frame the playhead was dragged to
+        self.on_frame: Optional[Callable] = None
+        # called with (panel, line index) when a panel is double-clicked
+        self.on_pick: Optional[Callable] = None
+        self._marks: list = []  # (label, frames, rgb): vertical lines in every panel
+        self._spans: list = []  # (label, starts, stops, rgb): shaded epochs in every panel
+
+    @property
+    def panels(self) -> tuple:
+        return self._panels
+
+    @property
+    def frame(self) -> int:
+        return self._frame
+
+    @frame.setter
+    def frame(self, value: int):
+        self._frame = int(np.clip(value, 0, len(self._frames) - 1))
+
+    @property
+    def x(self) -> np.ndarray:
+        """Sample positions on the axis currently shown: frames, or timings when selected."""
+        return self._time if self._use_time and self._time is not None else self._frames
+
+    def set(self, panel: str, lines: Sequence[tuple], fit: Optional[bool] = None):
+        """
+        Replace a panel's lines. The axes refit on the next draw when ``fit`` is True, the first
+        time the plot gets data, or when autofit is on; otherwise the current zoom stays.
+        """
+        stored = []
+        for label, trace, rgb in lines:
+            trace = np.ascontiguousarray(trace, np.float32)
+            if trace.shape != self._frames.shape:
+                raise ValueError(f"trace has {trace.shape[0]} samples, the plot has {len(self._frames)} frames")
+            stored.append((str(label), trace, rgb))
+        self._lines[panel] = stored
+        if fit if fit is not None else (panel not in self._fitted or self._autofit):
+            self._fit = True
+
+    def clear(self):
+        for name in self._panels:
+            self._lines[name] = []
+
+    def mark(self, label: str, frames, rgb=None):
+        """A vertical line at each of ``frames`` in every panel, e.g. stimulus onsets."""
+        frames = np.clip(np.asarray(frames, np.int64), 0, len(self._frames) - 1)
+        self._marks.append((str(label), frames, rgb))
+        self._fit = True
+
+    def span(self, label: str, starts, stops, rgb=None):
+        """A shaded band from each start to its stop (frames) in every panel, e.g. stimulus epochs."""
+        last = len(self._frames) - 1
+        starts = np.clip(np.asarray(starts, np.int64), 0, last)
+        stops = np.clip(np.asarray(stops, np.int64), 0, last)
+        self._spans.append((str(label), starts, stops, rgb))
+        self._fit = True
+
+    def clear_events(self):
+        self._marks.clear()
+        self._spans.clear()
+
+    def dock(self, figure, size: int = 320, title: str = "traces") -> ImguiWindow:
+        """A resizable window along the top of ``figure``."""
+        self._window = ImguiWindow(update_call=self._draw_dock)
+        figure.add_imgui_window(self._window, location="top", size=size, title=title)
+        return self._window
+
+    def link(self, indices, dim: str = "time"):
+        """Follow and drive a fastplotlib ReferenceIndices (``ndw.indices``) on ``dim``, in its reference units."""
+        ref = self._timings if self._timings is not None else self._frames
+
+        def follow(current):
+            self.frame = np.searchsorted(ref, current[dim])
+
+        indices.add_event_handler(follow)
+        # cancel_awaiting: a drag only fetches the latest frame, like the widget's own slider
+        self.on_frame = lambda k: indices.set_dim_index(dim, float(ref[k]), cancel_awaiting=True)
+
+    def _draw_dock(self):
+        moved = self.draw(reserve=HANDLE_THICKNESS)
+        draw_edge_handle(self._window)
+        if moved is not None and self.on_frame is not None:
+            self.on_frame(moved)
+
+    def draw(self, reserve: float = 0.0) -> Optional[int]:
+        """The stacked panels filling the window but ``reserve`` px; returns the frame when the
+        playhead was dragged. Right-click any panel for autofit/fit/x-axis settings; shift or alt while
+        scrolling zooms x only or y only."""
+        if implot.get_current_context() is None:
+            implot.create_context()
+        fit = self._resolve_fit()
+        io = imgui.get_io()
+        # qt on windows reports alt + wheel as a horizontal wheel, which implot ignores
+        if io.key_alt and io.mouse_wheel == 0.0 and io.mouse_wheel_h != 0.0:
+            io.mouse_wheel, io.mouse_wheel_h = -io.mouse_wheel_h, 0.0
+        height = max(imgui.get_content_region_avail().y - reserve, em(4))
+        flags = implot.SubplotFlags_.link_all_x
+        if self._link_y:
+            flags |= implot.SubplotFlags_.link_all_y
+        if not implot.begin_subplots("##traces", len(self._panels), 1, imgui.ImVec2(-1, height), flags):
+            return None
+        shared = self._y_limits(self._panels) if fit and self._link_y else None
+        moved = None
+        try:
+            for i, name in enumerate(self._panels):
+                limits = None
+                if fit:
+                    limits = shared if self._link_y else self._y_limits((name,))
+                got = self._draw_panel(name, fit, limits, last=i == len(self._panels) - 1)
+                moved = got if got is not None else moved
+        finally:
+            implot.end_subplots()
+        self._draw_settings_popup()
+        return moved
+
+    def _resolve_fit(self) -> bool:
+        force, self._force_fit = self._force_fit, False
+        fit = force or self._fit
+        self._fit = False
+        if fit:
+            self._fitted.update(name for name, lines in self._lines.items() if lines)
+        return fit
+
+    def _draw_settings_popup(self):
+        """Right-click context menu (opened from a panel in ``_draw_panel``) for autofit/fit/x-axis."""
+        if not imgui.begin_popup(self._popup_id):
+            return
+        imgui.text_disabled(f"frame {self.frame}")
+        imgui.separator()
+        changed, self._autofit = imgui.checkbox("autofit", self._autofit)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("refit the axes whenever the lines change; off keeps your zoom")
+        if changed and self._autofit:
+            self._force_fit = True
+        if imgui.button("fit now"):
+            self._force_fit = True
+        if self._time is not None:
+            imgui.same_line(0, em(0.6))
+            imgui.set_next_item_width(em(6))
+            changed, index = imgui.combo("##x_unit", int(self._use_time), ["frames", "time"])
+            if changed:
+                self._use_time = bool(index)
+                self._force_fit = True
+        imgui.end_popup()
+
+    @staticmethod
+    def _spec(rgb, fill: bool = False, alpha: float = 1.0) -> implot.Spec:
+        """Item styling for one plot call: a line or fill color when given, else implot's next default."""
+        spec = implot.Spec()
+        if rgb is not None:
+            color = imgui.ImVec4(float(rgb[0]), float(rgb[1]), float(rgb[2]), 1.0)
+            if fill:
+                spec.fill_color = color
+            else:
+                spec.line_color = color
+        spec.fill_alpha = alpha
+        return spec
+
+    def _draw_trace(self, label, xs, trace, rgb, span, columns: int):
+        """One line: a plain polyline while it fits the panel, else a min/max band under its mean."""
+        # only the samples currently on screen matter, so zooming in re-bins and eventually plots raw
+        lo = int(np.searchsorted(xs, span[0], "left"))
+        hi = int(np.searchsorted(xs, span[1], "right"))
+        visible = hi - lo
+        if not self._decimate or columns < 2 or visible <= 2 * columns:
+            # one sample of margin each side keeps the line joined to its off-screen neighbours
+            a, b = max(lo - 1, 0), min(hi + 1, len(xs))
+            implot.plot_line(label, xs[a:b], trace[a:b], self._spec(rgb))
+            return
+        # one bin per pixel column: drawing more points than that packs each column with vertical strokes
+        window = trace[lo:hi]
+        edges = np.linspace(0, visible, columns + 1).astype(np.int64)
+        starts = edges[:-1]
+        counts = np.diff(edges).astype(np.float32)
+        lows = np.minimum.reduceat(window, starts)
+        highs = np.maximum.reduceat(window, starts)
+        means = np.add.reduceat(window, starts) / counts
+        centers = starts + counts.astype(np.int64) // 2
+        x = np.ascontiguousarray(xs[lo:hi][centers], np.float32)
+        # same label for both, so the legend keeps one entry and they toggle together
+        implot.plot_shaded(label, x, highs, lows, self._spec(rgb, fill=True, alpha=0.35))
+        implot.plot_line(label, x, np.ascontiguousarray(means, np.float32), self._spec(rgb))
+
+    def _draw_spans(self, xs):
+        """Shaded epochs across the panel's full height; drawn first so the lines sit on top."""
+        if not self._spans:
+            return
+        limits = implot.get_plot_limits()
+        lo, hi = float(limits.y.min), float(limits.y.max)
+        top, bottom = np.array([hi, hi], np.float32), np.array([lo, lo], np.float32)
+        for label, starts, stops, rgb in self._spans:
+            spec = self._spec(rgb, fill=True, alpha=0.15)
+            for start, stop in zip(starts, stops):
+                implot.plot_shaded(label, np.array([xs[start], xs[stop]], np.float32), top, bottom, spec)
+
+    def _draw_marks(self, xs):
+        for label, frames, rgb in self._marks:
+            implot.plot_inf_lines(label, xs[frames].astype(np.float32), self._spec(rgb))
+
+    @staticmethod
+    def _nearest_line(lines, xs) -> int:
+        """Index of the line closest to the mouse at the mouse's x."""
+        mouse = implot.get_plot_mouse_pos()
+        i = int(np.clip(np.searchsorted(xs, mouse.x), 0, len(xs) - 1))
+        return int(np.argmin([abs(float(trace[i]) - mouse.y) for _, trace, _ in lines]))
+
+    def _y_limits(self, panels) -> Optional[tuple]:
+        """Padded data range over the lines of ``panels``."""
+        traces = [trace for p in panels for _, trace, _ in self._lines[p]]
+        if not traces:
+            return None
+        lo = min(float(t.min()) for t in traces)
+        hi = max(float(t.max()) for t in traces)
+        pad = (hi - lo) * 0.05 or 1.0
+        return lo - pad, hi + pad
+
+    def _draw_panel(self, name: str, fit: bool, limits: Optional[tuple], last: bool) -> Optional[int]:
+        lines = self._lines[name]
+        flags = implot.Flags_.no_title
+        # a legend only where a label adds something the panel name does not
+        if not lines or (len(lines) == 1 and lines[0][0] == name):
+            flags |= implot.Flags_.no_legend
+        if not implot.begin_plot(name, imgui.ImVec2(0, 0), flags):
+            return None
+        try:
+            # shift: scroll zooms x only; alt: y only
+            io = imgui.get_io()
+            x_flags = implot.AxisFlags_.none if last else implot.AxisFlags_.no_tick_labels
+            if io.key_alt:
+                x_flags |= implot.AxisFlags_.lock
+            y_flags = implot.AxisFlags_.lock if io.key_shift else implot.AxisFlags_.none
+            x_label = ("time" if self._use_time else "frame") if last else ""
+            implot.setup_axes(x_label, name, x_flags, y_flags)
+            # above the plot, so a panel with a legend keeps the same width as the others
+            implot.setup_legend(implot.Location_.north, implot.LegendFlags_.outside | implot.LegendFlags_.horizontal)
+            xs = self.x
+            if fit:
+                implot.setup_axis_limits(implot.ImAxis_.x1, float(xs[0]), float(xs[-1]), implot.Cond_.always)
+            if limits is not None:
+                implot.setup_axis_limits(implot.ImAxis_.y1, *limits, implot.Cond_.always)
+            self._draw_spans(xs)
+            columns = int(implot.get_plot_size().x)
+            span = implot.get_plot_limits().x
+            for label, trace, rgb in lines:
+                self._draw_trace(label, xs, trace, rgb, (span.min, span.max), columns)
+            self._draw_marks(xs)
+            if implot.is_plot_hovered():
+                if imgui.is_mouse_double_clicked(0):
+                    # implot just fit this plot to its lines, which collapses the linked x axis to half a
+                    # frame when it holds none; refit every panel to the frame range instead
+                    self._force_fit = True
+                    if self.on_pick is not None and lines:
+                        self.on_pick(name, self._nearest_line(lines, xs))
+                if imgui.is_mouse_clicked(1):
+                    imgui.open_popup(self._popup_id)
+            moved, at = implot.drag_line_x(0, float(xs[self.frame]), _CURSOR_COLOR, 1.5)[:2]
+            if moved:
+                self.frame = np.searchsorted(xs, at)
+                return self.frame
+        finally:
+            implot.end_plot()
+        return None

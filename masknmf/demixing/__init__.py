@@ -6,6 +6,8 @@ from masknmf.demixing.background_estimation import RingModel
 from masknmf.demixing.demixing_utils import torch_sparse_to_scipy_coo, ndarray_to_torch_sparse_coo
 from masknmf.demixing.filters import high_pass_filter_batch
 from masknmf.demixing.initialization_results import InitializationResults
+from masknmf.demixing.curation import update_signals, write_curated
+from masknmf.demixing.cell_stats import CellStats
 
 __all__ = [
     "ACArray",
@@ -21,6 +23,9 @@ __all__ = [
     "DemixingState",
     "InitializationResults",
     "DemixingError",
-    "NoSignalsDetectedError"
+    "NoSignalsDetectedError",
+    "update_signals",
+    "write_curated",
+    "CellStats",
 ]
 

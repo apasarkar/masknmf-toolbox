@@ -10,7 +10,6 @@ import masknmf.arrays
 from masknmf.utils import display
 from functools import partial
 import h5py
-from fastplotlib.widgets.nd_widget._index import ReferenceIndex
 from masknmf.multisession import RoicatTrackingResults
 from masknmf.visualization.imgui import (
     component_at_pixel,
@@ -197,10 +196,10 @@ class MultiSessionDemixingVis:
         for k in range(self.num_sessions_displayed):
             curr_data = self.colorful_ac_arrays[k].compute_mip().cpu().numpy()
             dims = ("m", "n", "c")
-            spatial_dims = ("m", "n", "c")
+            display_dims = ("m", "n", "c")
             curr_graphic = self._ndw_mip[self.mip_session_names[k]].add_nd_image(curr_data,
                                                                                  dims,
-                                                                                 spatial_dims,
+                                                                                 display_dims,
                                                                                  rgb_dim="c",
                                                                                  name=self.mip_session_names)
             self._nd_mip_graphics.append(curr_graphic)
@@ -208,12 +207,12 @@ class MultiSessionDemixingVis:
         for k in range(self.num_sessions_displayed):
             curr_data = self.colorful_ac_arrays[k]
             dims = (self.reference_range_timeaxis, "m", "n", "c")
-            spatial_dims = ("m", "n", "c")
+            display_dims = ("m", "n", "c")
             curr_graphic = self._ndw_videos[self.session_names[k]].add_nd_image(curr_data,
                                                                                 dims,
-                                                                                spatial_dims,
+                                                                                display_dims,
                                                                                 rgb_dim="c",
-                                                                                slider_dim_transforms=
+                                                                                slider_maps=
                                                                                 self.session_frame_timings[k],
                                                                                 name=self.session_names[k])
             self._nd_image_graphics.append(curr_graphic)
@@ -412,7 +411,7 @@ class MultiSessionDemixingVis:
         return self._reference_ranges
 
     @property
-    def reference_index(self):
+    def reference_index(self) -> fpl.ReferenceIndices:
         return self.ndw_videos.indices
 
     @property
