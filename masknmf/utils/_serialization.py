@@ -262,8 +262,11 @@ def has_group(filename, group: str) -> bool:
     """Whether ``filename`` is an hdf5 file that holds ``group``."""
     if not os.path.isfile(filename):
         return False
-    with h5py.File(filename, "r") as f:
-        return group in f
+    try:
+        with h5py.File(filename, "r") as f:
+            return group in f
+    except OSError:
+        return False
 
 
 def drop_group(filename, group: str):
