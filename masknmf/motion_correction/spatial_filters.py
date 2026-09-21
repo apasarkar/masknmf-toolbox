@@ -1,6 +1,5 @@
 import torch
 import numpy as np
-from typing import *
 import math
 import cv2
 

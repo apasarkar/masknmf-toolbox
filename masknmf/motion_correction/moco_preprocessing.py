@@ -1,7 +1,5 @@
-
 import torch
 import numpy as np
-from typing import *
 import scipy.ndimage as ndi
 import skimage
 import math
@@ -35,7 +33,7 @@ def construct_moco_template(full_moco_shifts: np.ndarray,
     return pixel_weighting
 
 def compute_saturation_mask(data: np.ndarray,
-                            saturation_limit: Union[float, int]) -> np.ndarray:
+                            saturation_limit: float | int) -> np.ndarray:
     """
     Identifies pixels that become saturated at any point of the movie
     Args:
@@ -59,15 +57,15 @@ def dilate_saturation_mask(mask: np.ndarray,
     mask_dilated = skimage.morphology.dilation(mask, skimage.morphology.disk(expansion_value))
     return mask_dilated
 
-def _fast_inpaint_conv_routine(movie: torch.tensor,
-                              num_iters: int) -> torch.tensor:
+def _fast_inpaint_conv_routine(movie: torch.Tensor,
+                              num_iters: int) -> torch.Tensor:
     """
     Batch inpaint using iterative diffusion.
     Args:
-        movie (torch.tensor): Shape (frames, fov_dim1, fov_dim2)
+        movie (torch.Tensor): Shape (frames, fov_dim1, fov_dim2)
         num_iters (int): The number of convolutions we do to fill in "zero" values
     Returns:
-        torch.tensor: The inpainted data
+        torch.Tensor: The inpainted data
     """
     device = movie.device
 

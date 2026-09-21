@@ -1,7 +1,6 @@
 import torch
 import numpy as np
 import math
-from typing import *
 from masknmf.arrays.array_interfaces import ArrayLike
 
 def register_frames_rigid(
@@ -19,13 +18,13 @@ def register_frames_rigid(
         reference_frames (torch.Tensor): Shape (num_frames, fov_height, fov_width)
         template (torch.Tensor): Shape either (fov_height, fov_width) or (num_frames, fov_height, fov_width). The template(s) to which we align the images
         max_shifts (tuple[int, int]): The max shift in the spatial height and width dimensions respectively.
-        target_frames (Optional[torch.Tensor]): If specified, we learn the shifts to optimally align reference frames to the template(s) and
+        target_frames (torch.Tensor | None): If specified, we learn the shifts to optimally align reference frames to the template(s) and
             apply those shifts to this set of target frames. Useful for dual-color imaging settings.
-        pixel_weighting (Optional[torch.Tensor]): Shape (fov_dim1, fov_dim2). If specified, the weight (importance) of
+        pixel_weighting (torch.Tensor | None): Shape (fov_dim1, fov_dim2). If specified, the weight (importance) of
             each pixel in the rigid shift estimation.
     Returns:
         registered_images (torch.Tensor): Shape (num_frames, fov_dim1, fov_dim2).
-        estimated_shifts (torch.Tensor): Shape (num_frames, fov_dim1, fov_dim2).
+        estimated_shifts (torch.Tensor): Shape (num_frames, 2).
     """
     if target_frames is None:
         target_frames = reference_frames

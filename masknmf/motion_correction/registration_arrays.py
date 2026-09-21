@@ -1,5 +1,5 @@
 import math
-from typing import Callable, Union
+from collections.abc import Callable
 import numpy as np
 
 import torch
