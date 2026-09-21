@@ -410,7 +410,6 @@ class RigidRegistrationArray(BaseRegistrationArray):
         ## Greedy batch size computation -- this logic allows us to load more data for smaller spatial crops
         batch = math.floor(self.shape[1] * self.shape[2] * self._strategy.batch_size / ((row_stop - row_start) * (col_stop - col_start)))
         batch = max(batch, 1)
-        # batch = max(1, int(self._strategy.batch_size))
         chunks = []
         for start in range(0, frames.size, batch):
             frame_chunk = frames[start:min(frames.size, start + batch)]

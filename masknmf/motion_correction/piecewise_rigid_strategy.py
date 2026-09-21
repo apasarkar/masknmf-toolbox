@@ -337,7 +337,6 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
                        frames,
                        row_slice,
                        col_slice):
-        # num_batches = math.ceil(frames.shape[0] / self.strategy.batch_size)
 
         ## Greedy batch size computation so we load as much data as possible for smaller spatial crops
         row_indices = row_slice.indices(self.shape[1])

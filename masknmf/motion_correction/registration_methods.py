@@ -20,10 +20,10 @@ def register_frames_rigid(
         max_shifts (tuple[int, int]): The max shift in the spatial height and width dimensions respectively.
         target_frames (torch.Tensor | None): If specified, we learn the shifts to optimally align reference frames to the template(s) and
             apply those shifts to this set of target frames. Useful for dual-color imaging settings.
-        pixel_weighting (torch.Tensor | None): Shape (fov_dim1, fov_dim2). If specified, the weight (importance) of
+        pixel_weighting (torch.Tensor | None): Shape (fov_height, fov_width). If specified, the weight (importance) of
             each pixel in the rigid shift estimation.
     Returns:
-        registered_images (torch.Tensor): Shape (num_frames, fov_dim1, fov_dim2).
+        registered_images (torch.Tensor): Shape (num_frames, fov_height, fov_width).
         estimated_shifts (torch.Tensor): Shape (num_frames, 2).
     """
     if target_frames is None:
@@ -66,30 +66,30 @@ def apply_rigid_shifts(images: torch.Tensor, shifts: torch.Tensor) -> torch.Tens
         )
 
     device = images.device
-    H, W = images.shape[1], images.shape[2]
+    fov_height, fov_width = images.shape[1], images.shape[2]
 
     # Compute FFT of images
-    freq_imgs = torch.fft.fft2(images, norm="ortho")
+    frequency_images = torch.fft.fft2(images, norm="ortho")
 
     # Compute frequency grids using fftfreq
-    dim1_frequency = (-1j * 2 * torch.pi * torch.fft.fftfreq(H, d=1, device=device))[
+    dim1_frequency = (-1j * 2 * torch.pi * torch.fft.fftfreq(fov_height, d=1, device=device))[
         None, :
     ].to(torch.complex128)
-    dim2_frequency = (-1j * 2 * torch.pi * torch.fft.fftfreq(W, d=1, device=device))[
+    dim2_frequency = (-1j * 2 * torch.pi * torch.fft.fftfreq(fov_width, d=1, device=device))[
         None, :
     ].to(torch.complex128)
 
     # Compute phase shift multipliers
     shift_dim1_terms = shifts[:, [0]].to(torch.complex128)
     term_dim1 = torch.exp(shift_dim1_terms @ dim1_frequency)
-    freq_imgs *= term_dim1[:, :, None]
+    frequency_images *= term_dim1[:, :, None]
 
     shift_dim2_terms = shifts[:, [1]].to(torch.complex128)
     term_dim2 = torch.exp(shift_dim2_terms @ dim2_frequency)
-    freq_imgs *= term_dim2[:, None, :]
+    frequency_images *= term_dim2[:, None, :]
 
     # Inverse FFT
-    shifted_images = torch.fft.ifft2(freq_imgs, norm="ortho")
+    shifted_images = torch.fft.ifft2(frequency_images, norm="ortho")
 
     return torch.real(shifted_images)
 
@@ -477,9 +477,9 @@ def _valid_pixel_identifier(
         fov_width (int): The width of the field of view (FOV).
 
     Returns:
-        - valid_rows (torch.Tensor): Shape (num_frames, fov_dim1).
+        - valid_rows (torch.Tensor): Shape (num_frames, fov_height).
                                      Indicates valid row indices for each frame.
-        - valid_cols (torch.Tensor): Shape (num_frames, fov_dim2).
+        - valid_cols (torch.Tensor): Shape (num_frames, fov_width).
                                      Indicates valid column indices for each frame.
     """
     device = shift_lower_bounds.device
@@ -492,7 +492,7 @@ def _valid_pixel_identifier(
     # Convert negative indices to valid positive indices using modular wrapping
     # If the interval is (a, b) with a < 0, then the new interval should be
     shift_lower_bounds_adj[:, 0] += fov_height
-    shift_upper_bounds_adj[:, 0] += fov_height  # The interval is now [0, 2*fov_dim1)
+    shift_upper_bounds_adj[:, 0] += fov_height  # The interval is now [0, 2*fov_height)
 
     shift_lower_bounds_adj[:, 1] += fov_width
     shift_upper_bounds_adj[:, 1] += fov_width
@@ -949,9 +949,9 @@ def register_frames_pwrigid(
     references frames relative to template, and applies relevant transform to correct the motion.
 
     Args:
-        reference_frames (torch.Tensor): Shape (num_frames, fov_dim1, fov_dim2). We estimate shifts that optimally align reference_frames to
+        reference_frames (torch.Tensor): Shape (num_frames, fov_height, fov_width). We estimate shifts that optimally align reference_frames to
             the template
-        template (torch.Tensor): Shape (fov_dim1, fov_dim2)  or (num_frames, fov_dim1, fov_dim2). The template(s) used for alignment.
+        template (torch.Tensor): Shape (fov_height, fov_width)  or (num_frames, fov_height, fov_width). The template(s) used for alignment.
         num_blocks (tuple[int, int]): The number of patches in both the height and width dimensions that we partition the FOV into
         overlaps (tuple[int, int]): Two integers, used to specify the degree of overlap between patches.
             Together, (strides[0] + overlaps[0], strides[1] + overlaps[1]) defines the patch size for pw rigid registration.

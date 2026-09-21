@@ -38,7 +38,7 @@ def compute_saturation_mask(data: np.ndarray,
     Identifies pixels that become saturated at any point of the movie
     Args:
         data (np.ndarray): Shape (num_frames, fov_dim1, fov_dim2)
-        saturation_limit (Union[float, int]): The minimum pixel value that qualifies as saturation
+        saturation_limit (float | int): The minimum pixel value that qualifies as saturation
     Returns:
         mask (np.ndarray): Shape (fov_dim1, fov_dim2). Boolean pixel mask indicating whether a pixel becomes saturated (True) or not (False).
     """
