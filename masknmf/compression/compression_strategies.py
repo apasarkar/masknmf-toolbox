@@ -1,6 +1,6 @@
 from typing import Optional, Literal, Union
 import masknmf
-from masknmf.compression import PMDArray
+from masknmf.compression import CompressionArray
 from masknmf.compression.denoising import train_total_variance_denoiser
 from masknmf.compression.decomposition import pmd_decomposition
 from masknmf import ArrayLike
@@ -126,10 +126,10 @@ class CompressStrategy:
         self._device = new_device
 
     @property
-    def results(self) -> PMDArray | None:
+    def results(self) -> CompressionArray | None:
         return self._results
 
-    def compress(self, dataset: Union[masknmf.ArrayLike, np.ndarray]) -> PMDArray:
+    def compress(self, dataset: Union[masknmf.ArrayLike, np.ndarray]) -> CompressionArray:
         self._results = pmd_decomposition(dataset,
                                           self.block_sizes,
                                           frame_range=self.frame_range,

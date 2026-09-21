@@ -1,7 +1,7 @@
 from typing import *
 import numpy as np
 from masknmf import display
-from masknmf.compression import PMDArray, TrendArray
+from masknmf.compression import CompressionArray, TrendArray
 from masknmf.demixing.demixing_arrays import ACArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulACArray, StaticBackgroundArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode, MultiunitBackgroundArray
 import torch
 from masknmf.utils import Serializer
@@ -555,12 +555,12 @@ class DemixingResults(Serializer):
         return self._ac_array
 
     @property
-    def pmd_array(self) -> PMDArray:
+    def pmd_array(self) -> CompressionArray:
         """
         Returns a PMDArray using the tensors stored in this object
         """
         if self._pmd_array is None:
-            self._pmd_array = PMDArray.from_flyweight(
+            self._pmd_array = CompressionArray.from_flyweight(
                 self.shape,
                 self.flyweight,
                 device=self.device,

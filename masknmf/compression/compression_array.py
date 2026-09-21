@@ -74,7 +74,7 @@ def test_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
                 return True
     return False
 
-class PMDArray(ArrayLike, Serializer):
+class CompressionArray(ArrayLike, Serializer):
     """
     Factorized demixing array for PMD movie
     """
@@ -413,12 +413,12 @@ class PMDResidualArray(ArrayLike):
     def __init__(
         self,
         raw_arr: ArrayLike,
-        pmd_arr: PMDArray,
+        pmd_arr: CompressionArray,
     ):
         """
         Args:
             raw_arr (LazyFrameLoader): Any object that supports LazyFrameLoder functionality
-            pmd_arr (PMDArray)
+            pmd_arr (CompressionArray)
         """
         self.pmd_arr = pmd_arr
         self.raw_arr = raw_arr

@@ -10,7 +10,7 @@ from collections import OrderedDict
 import masknmf.arrays
 from masknmf.utils import display
 from masknmf.demixing import DemixingResults
-from masknmf.compression import PMDArray
+from masknmf.compression import CompressionArray
 from masknmf.demixing import InitializationResults
 from masknmf.demixing.demixing_arrays import ACArray, ColorfulACArray
 from masknmf.demixing.demixing_utils import brightness_order
@@ -112,8 +112,8 @@ def signal_space_demixing(demixing_results: masknmf.DemixingResults,
     return VBox([iw.show(), line_fig.show()])
 
 def stack_comparison_interface(
-    stack_1: Union[np.ndarray, PMDArray],
-    stack_2: Union[np.ndarray, PMDArray],
+    stack_1: Union[np.ndarray, CompressionArray],
+    stack_2: Union[np.ndarray, CompressionArray],
     summary_img: np.ndarray,
     names: Optional[List] = ["Stack 1", "Stack 2", "Summary Img"],
 ):

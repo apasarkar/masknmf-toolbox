@@ -32,7 +32,7 @@ from .demixing_utils import (
 )
 from masknmf.demixing import regression_update
 from masknmf.demixing.background_estimation import RingModel
-from masknmf.compression import PMDArray
+from masknmf.compression import CompressionArray
 from masknmf.compression.preprocessing import SplineDetrend
 from masknmf import display
 
@@ -2310,7 +2310,7 @@ class SignalDemixer:
 class InitializingState(SignalProcessingState):
     def __init__(
             self,
-            pmd_arr: PMDArray,
+            pmd_arr: CompressionArray,
             device: str = "cpu",
             a: Optional[torch.sparse_coo_tensor] = None,
             c: Optional[torch.tensor] = None,
@@ -2672,7 +2672,7 @@ class InitializingState(SignalProcessingState):
 class DemixingState(SignalProcessingState):
     def __init__(
             self,
-            pmd_arr: PMDArray,
+            pmd_arr: CompressionArray,
             init_results: InitializationResults,
             factorized_ring_term: Optional[Tuple[torch.tensor, torch.tensor]] = None,
             data_order: str = "C",

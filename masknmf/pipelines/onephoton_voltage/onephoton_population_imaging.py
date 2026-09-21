@@ -222,7 +222,7 @@ def hals_multi_iter_raw(block: list[torch.Tensor],
     return c
 
 
-def compute_final_denoised_c_estimates(pmd_arr: masknmf.PMDArray,
+def compute_final_denoised_c_estimates(pmd_arr: masknmf.CompressionArray,
                                        dmr: masknmf.DemixingResults,
                                        c: torch.Tensor):
     """
@@ -230,7 +230,7 @@ def compute_final_denoised_c_estimates(pmd_arr: masknmf.PMDArray,
     This workflow performs the steps needed to re-incorporate subthreshold trends back into this "c" matrix and rescale
     the estimates back to the raw data space, so that we can revisit the raw data and get any missed signal
     Args:
-        pmd_arr (masknmf.PMDArray)
+        pmd_arr (masknmf.CompressionArray)
         dmr (masknmf.DemixingResults)
         c (torch.Tensor): Shape (num_frames, num_neurons). Initial temporal estimates of the spiking activity
     """
@@ -479,19 +479,19 @@ class OnePhotonCulturePipeline(BasePipeline):
             device = self.device
         display("Running demixing analysis")
 
-        pmd_denoise = masknmf.PMDArray.from_hdf5(pmd_source)
+        pmd_denoise = masknmf.CompressionArray.from_hdf5(pmd_source)
 
         v = pmd_denoise.v[:, active_frames.astype('bool')]
         new_shape = (v.shape[1], pmd_denoise.shape[1], pmd_denoise.shape[2])
 
-        pmd_arr_truncated = masknmf.PMDArray.from_tensors(new_shape,  # fov shape
-                                                          pmd_denoise.u,
-                                                          v,
-                                                          pmd_denoise.mean_img,
-                                                          pmd_denoise.var_img,
-                                                          pmd_denoise.u_local_projector,
-                                                          pmd_denoise.spatial_trend_basis,
-                                                          pmd_denoise.temporal_trend_basis)
+        pmd_arr_truncated = masknmf.CompressionArray.from_tensors(new_shape,  # fov shape
+                                                                  pmd_denoise.u,
+                                                                  v,
+                                                                  pmd_denoise.mean_img,
+                                                                  pmd_denoise.var_img,
+                                                                  pmd_denoise.u_local_projector,
+                                                                  pmd_denoise.spatial_trend_basis,
+                                                                  pmd_denoise.temporal_trend_basis)
 
 
 

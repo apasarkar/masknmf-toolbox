@@ -248,7 +248,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             device = self.device
         display("Running demixing analysis")
 
-        pmd_denoise = masknmf.PMDArray.from_hdf5(pmd_source)
+        pmd_denoise = masknmf.CompressionArray.from_hdf5(pmd_source)
         if self.spatial_highpass_config is None:
             spatial_highpass_config = SpatialHighpassConfig()
         spatial_filt_pmd = masknmf.demixing.filters.spatial_filter_pmd(pmd_denoise,

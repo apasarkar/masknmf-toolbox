@@ -42,11 +42,11 @@ def construct_gaussian_highpass_filter_kernel(gaussian_sigma: List[float]) -> to
 
     return kernel
 
-def spatial_filter_pmd(pmd_obj: masknmf.PMDArray,
+def spatial_filter_pmd(pmd_obj: masknmf.CompressionArray,
                        batch_size: int = 200,
                        filter_sigma: int = 3,
                        device: str = 'cpu',
-                       target_device: str = 'cpu') -> masknmf.PMDArray:
+                       target_device: str = 'cpu') -> masknmf.CompressionArray:
     if pmd_obj.rescale is False:
         switch = True
         pmd_obj.rescale = True
@@ -78,13 +78,13 @@ def spatial_filter_pmd(pmd_obj: masknmf.PMDArray,
     new_mean = new_mean.reshape(d1, d2)
     final_v -= torch.mean(final_v, dim=1, keepdim=True)
 
-    final_arr = masknmf.PMDArray.from_tensors(pmd_obj.shape,
-                                 pmd_obj.u,
-                                 final_v,
-                                 new_mean,
-                                 torch.ones_like(new_mean),
-                                 u_local_projector=pmd_obj.u_local_projector,
-                                 device=target_device)
+    final_arr = masknmf.CompressionArray.from_tensors(pmd_obj.shape,
+                                                      pmd_obj.u,
+                                                      final_v,
+                                                      new_mean,
+                                                      torch.ones_like(new_mean),
+                                                      u_local_projector=pmd_obj.u_local_projector,
+                                                      device=target_device)
 
     if switch:
         pmd_obj.rescale = False
@@ -126,11 +126,11 @@ def truncated_random_svd_pmd(
 
 
 def filter_global_signal_pmd(
-    pmd_obj: masknmf.PMDArray,
+    pmd_obj: masknmf.CompressionArray,
     rank: int = 3,
     num_oversamples: int = 5,
     device: str = "cpu",
-) -> tuple[masknmf.PMDArray, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[masknmf.CompressionArray, torch.Tensor, torch.Tensor, torch.Tensor]:
 
     pmd_obj.to(device)
     U_pmd = pmd_obj.u.to(device)          # (n_pixels, r), sparse
@@ -155,7 +155,7 @@ def filter_global_signal_pmd(
     # --- Build residual PMDArray (U unchanged, V replaced) ---
     T, H, W = pmd_obj.shape
     new_mean = torch.zeros(H, W, device=device)
-    residual_pmd = masknmf.PMDArray.from_tensors(
+    residual_pmd = masknmf.CompressionArray.from_tensors(
         pmd_obj.shape,
         U_pmd,
         V_residual,
@@ -239,11 +239,11 @@ def bandstop_filter_batch(temporal_matrix: np.ndarray,
         temporal_filtered[k, :] = bandstop_filter(temporal_matrix[k, :], low_cutoff, high_cutoff, sampling_rate, order)
     return temporal_filtered
 
-def bandstop_filter_pmd(pmd_obj: masknmf.PMDArray,
+def bandstop_filter_pmd(pmd_obj: masknmf.CompressionArray,
                         low_cutoff: float,
                         high_cutoff: float,
                         sampling_rate: float,
-                        order: int = 5) -> masknmf.PMDArray:
+                        order: int = 5) -> masknmf.CompressionArray:
     """
     Apply a bandstop filter to the temporal components of a PMD object.
 
@@ -255,7 +255,7 @@ def bandstop_filter_pmd(pmd_obj: masknmf.PMDArray,
         order (int): Order of the Butterworth filter
 
     Returns:
-        masknmf.PMDArray: Updated PMD object with bandstop-filtered temporal components
+        masknmf.CompressionArray: Updated PMD object with bandstop-filtered temporal components
     """
     V = pmd_obj.v  # (rank, T)
 
@@ -270,11 +270,11 @@ def bandstop_filter_pmd(pmd_obj: masknmf.PMDArray,
     final_v -= torch.mean(final_v, dim=1, keepdim=True)
 
     device = pmd_obj.device
-    return masknmf.PMDArray.from_tensors(pmd_obj.shape,
-                                         pmd_obj.u.to(device),
-                                         final_v.to(device),
-                                         new_mean.to(device),
-                                         torch.ones_like(new_mean),
-                                         u_local_projector=pmd_obj.u_local_projector,
-                                         device=device)
+    return masknmf.CompressionArray.from_tensors(pmd_obj.shape,
+                                                 pmd_obj.u.to(device),
+                                                 final_v.to(device),
+                                                 new_mean.to(device),
+                                                 torch.ones_like(new_mean),
+                                                 u_local_projector=pmd_obj.u_local_projector,
+                                                 device=device)
 

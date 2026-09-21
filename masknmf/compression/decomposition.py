@@ -1,7 +1,7 @@
 import torch
 
 import masknmf
-from masknmf.compression.compression_array import PMDArray
+from masknmf.compression.compression_array import CompressionArray
 import math
 import numpy as np
 
@@ -1112,7 +1112,7 @@ def pmd_decomposition(
         temporal_denoiser: Optional[torch.nn.Module] = None,
         detrender: Optional[SplineDetrenderBase] = None,
         device: Literal["auto", "cuda", "cpu"] = "auto",
-) -> PMDArray:
+) -> CompressionArray:
     """
     General PMD Compression method
     Args:
@@ -1423,7 +1423,7 @@ def pmd_decomposition(
         temporal_preprocess_basis = temporal_preprocess_basis - temporal_basis_mean
         spatial_preprocess_basis = spatial_preprocess_basis.reshape(-1, spatial_preprocess_basis.shape[2])
 
-    final_pmd_arr = PMDArray.from_tensors(
+    final_pmd_arr = CompressionArray.from_tensors(
         (num_frames, fov_dim1, fov_dim2),
         u_aggregated.cpu(),
         v_aggregated.cpu(),

@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import masknmf
-from masknmf.compression import PMDArray
+from masknmf.compression import CompressionArray
 from typing import *
 import math
 from tqdm import tqdm
@@ -108,7 +108,7 @@ def compute_general_spatial_correlation_map(
 
 
 def compute_pmd_spatial_correlation_maps(raw_stack: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
-                                         pmd_stack: masknmf.PMDArray,
+                                         pmd_stack: masknmf.CompressionArray,
                                          device='cpu',
                                          batch_size: int = 200) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
@@ -121,7 +121,7 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[masknmf.ArrayLike, mas
     Args:
         raw_stack (Union[masknmf.ArrayLike, masknmf.FactorizedVideo]):
             The raw video stack with shape (frames, height, width).
-        pmd_stack (masknmf.PMDArray):
+        pmd_stack (masknmf.CompressionArray):
             The PMD reconstruction object, which includes factorized temporal and spatial components.
         device (str):
             The device on which computations will be performed ('cpu' or 'cuda').
@@ -256,14 +256,14 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[masknmf.ArrayLike, mas
 
 
 def pmd_autocovariance_diagnostics(raw_movie: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
-                                   pmd_movie: PMDArray,
+                                   pmd_movie: CompressionArray,
                                    batch_size: int = 200,
                                    device: str = 'cpu') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Computes a normalized version of the lag-1 autocovariance for the raw, pmd, and residual stacks.
     Args:
         raw_movie (masknmf.LazyFrameLoader or ArrayLike): Any array object returning numpy ndarray data which can be indexed in time
-        pmd_movie (masknmf.PMDArray)
+        pmd_movie (masknmf.CompressionArray)
         batch_size (int): Number of frames we process at a time
         device (str): 'cpu' or 'cuda' depending on where computations occur
 

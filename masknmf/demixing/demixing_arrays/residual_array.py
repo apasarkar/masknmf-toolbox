@@ -1,7 +1,7 @@
 from typing import *
 import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike
-from masknmf.compression.compression_array import PMDArray
+from masknmf.compression.compression_array import CompressionArray
 from masknmf.demixing.demixing_arrays.ac_array import ACArray
 from masknmf.demixing.demixing_arrays.fluctuating_background_array import FluctuatingBackgroundArray
 from masknmf.demixing.demixing_arrays.static_baseline import StaticBackgroundArray
@@ -14,14 +14,14 @@ class ResidualArray(ArrayLike):
 
     def __init__(
         self,
-        pmd_array: PMDArray,
+        pmd_array: CompressionArray,
         ac_array: ACArray,
         fluctuating_background_array: FluctuatingBackgroundArray,
         static_baseline_array: StaticBackgroundArray,
     ):
         """
         Args:
-            pmd_array (PMDArray)
+            pmd_array (CompressionArray)
             ac_array (ACArray)
             fluctuating_array (FluctuatingBackgroundArray)
             baseline (StaticBackgroundArray): Shape (height, width)
@@ -49,7 +49,7 @@ class ResidualArray(ArrayLike):
         return self.pmd_array.dtype
 
     @property
-    def pmd_array(self) -> PMDArray:
+    def pmd_array(self) -> CompressionArray:
         return self._pmd_array
 
     @property

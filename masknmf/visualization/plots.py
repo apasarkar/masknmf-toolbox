@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import plotly.subplots as sp
 import matplotlib.pyplot as plt
 
-from masknmf.compression import PMDArray
+from masknmf.compression import CompressionArray
 from masknmf.arrays import ArrayLike, LazyFrameLoader
 from masknmf.demixing.demixing_arrays import ResidCorrMode
 
@@ -425,13 +425,13 @@ def plot_pmd_vs_raw_stack_diagnostic(raw_trace: np.ndarray,
     return fig
 
 def roi_compare_pmd_raw(raw_stack: ArrayLike,
-                        pmd_movie: PMDArray,
+                        pmd_movie: CompressionArray,
                         spatial_footprint: np.ndarray):
     """
     Args:
         raw_stack (np.ndarray): shape (num_frames, fov_dim1, fov_dim2)
         raw_mean (np.ndarray): shape (fov_dim1, fov_dim2)
-        pmd_movie (masknmf.PMDArray): The pmd object
+        pmd_movie (masknmf.CompressionArray): The pmd object
         spatial_footprint (np.ndarray): A single spatial footprint (fov_dim1, fov_dim2)
     """
 
@@ -494,7 +494,7 @@ def generate_raw_vs_resid_plot_folder(raw_stack: LazyFrameLoader,
                     index_name="index.html")
 
 def pmd_spike_diagnostic(moco_stack: np.ndarray,
-                         pmd_object: PMDArray,
+                         pmd_object: CompressionArray,
                          roi_footprint: np.ndarray,
                          raw_autocorr: np.ndarray,
                          pmd_autocorr: np.ndarray,

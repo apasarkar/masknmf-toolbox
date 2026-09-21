@@ -57,7 +57,7 @@ masknmf.MotionCorrectionVis(reg, frame_timings=timings, mean_subtract=True).show
 | `pmd_calcium.hdf5`, `pmd_glutamate.hdf5` | `PMDArray` (u, v, mean_img, var_img, u_local_projector, shape) |
 
 ```python
-pmd = masknmf.PMDArray.from_hdf5(run / "pmd_calcium.hdf5")
+pmd = masknmf.CompressionArray.from_hdf5(run / "pmd_calcium.hdf5")
 ```
 
 | attribute | shape / type |

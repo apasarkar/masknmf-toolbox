@@ -61,7 +61,7 @@ def main():
             open_.append(MotionCorrectionVis(reg, frame_timings=timings, mean_subtract=True))
 
         if args.viz in ("compression", "all"):
-            pmd = masknmf.PMDArray.from_hdf5(run / f"pmd_{args.channel}.hdf5")
+            pmd = masknmf.CompressionArray.from_hdf5(run / f"pmd_{args.channel}.hdf5")
             # dense numpy, as in the notebook; the pipeline compressed the masked movie so masked-out pixels show in the residual
             moco = reg[:].cpu().numpy()
             open_.append(CompressionVis(moco, pmd, frame_timings=timings, device=device))
@@ -91,7 +91,7 @@ def main():
         )
 
     if args.viz == "signals":
-        pmd = masknmf.PMDArray.from_hdf5(run / f"pmd_{args.channel}.hdf5", device=device)
+        pmd = masknmf.CompressionArray.from_hdf5(run / f"pmd_{args.channel}.hdf5", device=device)
         signal_timings = np.arange(pmd.shape[0]) / args.fps
         open_.append(SingleSessionDemixingVis(pmd, frame_timings=signal_timings, device=device))
 

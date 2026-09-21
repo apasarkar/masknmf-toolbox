@@ -175,7 +175,7 @@ class SingleSessionDemixingVis:
     def __init__(
         self,
         demixing_results: masknmf.DemixingResults
-        | masknmf.PMDArray
+        | masknmf.CompressionArray
         | List[masknmf.DemixingResults],
         frame_timings: Optional[np.ndarray | List[np.ndarray]] = None,
         ref_range: Optional[dict] = None,
@@ -1857,7 +1857,7 @@ class SingleSessionDemixingVis:
         return self._device
 
     @property
-    def demixing_results(self) -> masknmf.DemixingResults | masknmf.PMDArray:
+    def demixing_results(self) -> masknmf.DemixingResults | masknmf.CompressionArray:
         return self._demixing_results
 
     @property

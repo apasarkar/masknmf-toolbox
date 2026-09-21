@@ -1,7 +1,7 @@
 from masknmf.arrays.array_interfaces import ArrayLike
 from typing import *
 import numpy as np
-from masknmf.compression import PMDArray, PMDResidualArray
+from masknmf.compression import CompressionArray, PMDResidualArray
 from masknmf.utils import display
 from masknmf.visualization.imgui import TracePlot, resolve_time_reference, is_notebook_canvas
 from masknmf.diagnostics import pmd_autocovariance_diagnostics
@@ -16,7 +16,7 @@ from masknmf.visualization.motion_vis import compute_mean_subtract
 class CompressionVis:
     def __init__(self,
                  moco_stack: ArrayLike,
-                 pmd_stack: PMDArray,
+                 pmd_stack: CompressionArray,
                  frame_batch_size: int = 200,
                  mean_subtract: bool = False,
                  include_trend: bool = True,
@@ -28,7 +28,7 @@ class CompressionVis:
 
         Args:
             moco_stack (ArrayLike): Shape (frames, height, width) movie, the motion corrected dataset
-            pmd_stack (PMDArray): Shape (frames, height, width) movie, the compressed + denoised dataset
+            pmd_stack (CompressionArray): Shape (frames, height, width) movie, the compressed + denoised dataset
             frame_batch_size (int): Used to accelerate the diagnostic computations. How many frames we can load onto GPU at a time
             mean_subtract (int): Whether to display the mean subtracted raw and pmd movies. This often helps expose signals when the indicator
                 baseline is large relative to the signal amplitude (dF/F is small) or the SNR is very low
@@ -43,7 +43,7 @@ class CompressionVis:
         """
 
         self._mean_subtract = mean_subtract
-        self._pmd_stack = PMDArray.from_flyweight(pmd_stack.shape,
+        self._pmd_stack = CompressionArray.from_flyweight(pmd_stack.shape,
                                                           pmd_stack.flyweight,
                                                           device=device,
                                                           rescale=True,
