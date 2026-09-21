@@ -1,7 +1,7 @@
 import torch
 
 import masknmf
-from masknmf.compression.pmd_array import PMDArray
+from masknmf.compression.compression_array import PMDArray
 import math
 import numpy as np
 
