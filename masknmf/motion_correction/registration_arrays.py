@@ -1,5 +1,5 @@
 import math
-from typing import Optional, Callable, Union, Tuple
+from typing import Callable, Union
 import numpy as np
 
 import torch
@@ -152,7 +152,7 @@ class FilteredArray(LazyFrameLoader):
 
         Parameters
         ----------
-        indices: Union[list, int, slice]
+        indices: list | int | slice
             the user's desired way of picking frames, either an int, list of ints, or slice
              i.e. slice object or int passed from `__getitem__()`
 
@@ -257,7 +257,7 @@ class OphysArray(ArrayLike):
         return torch.float32
 
     @property
-    def shape(self) -> Tuple[int, int, int]:
+    def shape(self) -> tuple[int, int, int]:
         return self._dataset.shape
 
     @property
@@ -265,11 +265,11 @@ class OphysArray(ArrayLike):
         return math.prod(self.shape) * self.dtype.itemsize
 
     def __getitem__(self,
-                    item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> torch.Tensor:
+                    item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range]) -> torch.Tensor:
         return self._get(item, include_mean=self.include_mean)
 
     def _get(self,
-             item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+             item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
              include_mean: bool | None = None) -> torch.Tensor:
         ## Private helper method designed to avoid race conditions associated with state variables like include_mean
         if include_mean is None:

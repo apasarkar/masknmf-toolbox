@@ -1,7 +1,7 @@
 import copy
 import math
 from pathlib import Path
-from typing import Optional, Union, Sequence
+from typing import Sequence
 
 import numpy as np
 import torch
@@ -101,8 +101,8 @@ class RigidMotionCorrector(MotionCorrectionStrategy, Serializer):
     def __init__(
         self,
         max_shifts: tuple[int, int] = (15, 15),
-        template: Optional[np.ndarray] = None,
-        pixel_weighting: Optional[np.ndarray] = None,
+        template: np.ndarray | None = None,
+        pixel_weighting: np.ndarray | None = None,
         batch_size: int = 200,
         device: str = "auto",
     ):
@@ -126,10 +126,10 @@ class RigidMotionCorrector(MotionCorrectionStrategy, Serializer):
         return torch.float32
 
     @property
-    def pixel_weighting(self) -> Optional[np.ndarray]:
+    def pixel_weighting(self) -> np.ndarray | None:
         return self._pixel_weighting
 
-    def _pixel_weighting_tensor(self) -> Optional[torch.Tensor]:
+    def _pixel_weighting_tensor(self) -> torch.Tensor | None:
         if self.pixel_weighting is None:
             return None
         return torch.as_tensor(
@@ -139,7 +139,7 @@ class RigidMotionCorrector(MotionCorrectionStrategy, Serializer):
     def _correct_singlebatch(
         self,
         reference_frames: np.ndarray,
-        target_frames: Optional[np.ndarray],
+        target_frames: np.ndarray | None,
     ) -> tuple[np.ndarray, np.ndarray]:
         if self.template is None:
             raise ValueError("Template is uninitialized")
@@ -203,7 +203,7 @@ class RigidMotionCorrector(MotionCorrectionStrategy, Serializer):
     def motion_correct(
         self,
         reference_movie: ArrayLike,
-        target_movie: Optional[ArrayLike] = None,
+        target_movie: ArrayLike | None = None,
     ) -> ArrayLike:
 
         all_shifts = self._compute_all_shifts(reference_movie)
