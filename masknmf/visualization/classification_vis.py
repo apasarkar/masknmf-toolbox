@@ -433,15 +433,8 @@ class ClassificationVis:
                     if std_imgs is not None:
                         bg_sources.setdefault("corr img (roi)", []).append(std_imgs)
                     add_bg(
-                        "corr img (global)",
-                        get_local_correlation_structure(
-                            dmr.u,
-                            dmr.v,
-                            (dmr.shape[1], dmr.shape[2], dmr.shape[0]),
-                            0,
-                            torch.zeros(dmr.shape[1], dmr.shape[2], device=dmr.v.device),
-                            batch_size=2500,
-                        ),
+                        "mean img (global)",
+                        mean_img,
                     )
                     if dmr.global_residual_correlation_image is not None:
                         add_bg(
