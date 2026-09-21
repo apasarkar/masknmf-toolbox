@@ -13,6 +13,7 @@ from masknmf.compression.preprocessing import MaximinSplineDetrend
 
 from masknmf.motion_correction.registration_arrays import OphysArray
 from masknmf.pipelines._base import BasePipeline
+from masknmf.pipelines.stages import run_singlepass_demixing
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig
 
@@ -266,18 +267,6 @@ def expand_traces_to_all_frames(c: torch.Tensor,
     return updated_c
 
 
-def run_singlepass_demixing(demixing_obj: masknmf.SignalDemixer,
-                            singlepass_config: SinglepassDemixingConfig) -> None | masknmf.SignalDemixer:
-    init_config = singlepass_config.InitConfig
-    nmf_config = singlepass_config.NMFConfig
-
-    try:
-        demixing_obj.initialize_signals(**asdict(init_config))
-    except NoSignalsDetectedError:
-        return None
-    else:
-        demixing_obj.demix(**asdict(nmf_config))
-        return demixing_obj
 
 
 class OnePhotonCulturePipeline(BasePipeline):

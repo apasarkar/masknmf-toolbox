@@ -9,6 +9,7 @@ from masknmf.demixing import NoSignalsDetectedError, DemixingError
 from masknmf.compression.preprocessing import MaximinSplineDetrend
 
 from masknmf.pipelines._base import BasePipeline
+from masknmf.pipelines.stages import run_singlepass_demixing
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import SuperpixelInitConfig, SinglepassDemixingConfig, NMFConfig
@@ -64,17 +65,6 @@ def get_std_based_mask(stack):
     mask = otsu_threshold(std_img)
     return mask
 
-def run_singlepass_demixing(demixing_obj: masknmf.SignalDemixer,
-                            singlepass_config: SinglepassDemixingConfig) -> None | masknmf.SignalDemixer:
-    init_config = singlepass_config.InitConfig
-    nmf_config = singlepass_config.NMFConfig
-    try:
-        demixing_obj.initialize_signals(**asdict(init_config))
-    except NoSignalsDetectedError:
-        return None
-    else:
-        demixing_obj.demix(**asdict(nmf_config))
-        return demixing_obj
 
 class GlutamateCalciumSpinePipeline(BasePipeline):
 

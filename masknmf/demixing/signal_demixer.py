@@ -1613,7 +1613,7 @@ def superpixel_init(
     else:
         raise ValueError("Invalid configuration of c and a values were provided")
 
-    peaks, total_peaks = find_local_peaks_2d(torch.from_numpy(corr_image).to('cuda'),
+    peaks, total_peaks = find_local_peaks_2d(torch.from_numpy(corr_image).to(device),
                                              kernel_radius=min_peak_distance,
                                              correlation_cutoff=cut_off_point,
                                              exclude_border=True)
