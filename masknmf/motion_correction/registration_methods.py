@@ -124,7 +124,7 @@ def estimate_rigid_shifts(
                 f"The number of templates {template.shape[0]} does not match number of frames {image_stack.shape[0]}"
             )
 
-    num_frames, d1, d2 = image_stack.shape
+    num_frames, fov_height, fov_width = image_stack.shape
     device = image_stack.device
 
     if pixel_weighting is None:
@@ -155,15 +155,15 @@ def estimate_rigid_shifts(
         )
 
     max_shifts = torch.abs(torch.tensor(max_shifts).to(device))
-    dim1_valid_shifts = torch.arange(d1, device=device)
+    dim1_valid_shifts = torch.arange(fov_height, device=device)
     dim1_valid_locations = torch.logical_or(
-        dim1_valid_shifts >= d1 - 1 - torch.abs(max_shifts[0]),
+        dim1_valid_shifts >= fov_height - 1 - torch.abs(max_shifts[0]),
         dim1_valid_shifts <= torch.abs(max_shifts[0]),
     ).float()
 
-    dim2_valid_shifts = torch.arange(d2, device=device)
+    dim2_valid_shifts = torch.arange(fov_width, device=device)
     dim2_valid_locations = torch.logical_or(
-        dim2_valid_shifts >= d2 - 1 - torch.abs(max_shifts[1]),
+        dim2_valid_shifts >= fov_width - 1 - torch.abs(max_shifts[1]),
         dim2_valid_shifts <= torch.abs(max_shifts[1]),
     ).float()
 
@@ -182,7 +182,7 @@ def estimate_rigid_shifts(
     max_indices = torch.argmax(
         cross_correlation_values.reshape((num_frames, -1)), dim=1
     )
-    shifts_dim1, shifts_dim2 = torch.unravel_index(max_indices, (d1, d2))
+    shifts_dim1, shifts_dim2 = torch.unravel_index(max_indices, (fov_height, fov_width))
     shifts = torch.stack([shifts_dim1, shifts_dim2], dim=1)
 
     for precision in [0.1, 0.01, 0.001]:
@@ -191,14 +191,14 @@ def estimate_rigid_shifts(
     shifts_dim1, shifts_dim2 = shifts[:, 0], shifts[:, 1]
 
     values_to_subtract_dim1 = (
-        torch.abs(d1 - shifts_dim1) <= torch.abs(shifts_dim1)
+        torch.abs(fov_height - shifts_dim1) <= torch.abs(shifts_dim1)
     ).long()
-    shifts_dim1 -= values_to_subtract_dim1 * d1
+    shifts_dim1 -= values_to_subtract_dim1 * fov_height
 
     values_to_subtract_dim2 = (
-        torch.abs(d2 - shifts_dim2) <= torch.abs(shifts_dim2)
+        torch.abs(fov_width - shifts_dim2) <= torch.abs(shifts_dim2)
     ).long()
-    shifts_dim2 -= values_to_subtract_dim2 * d2
+    shifts_dim2 -= values_to_subtract_dim2 * fov_width
 
     # Make sure the final shifts are strictly within the max_shifts interval (we allow the superpixel estimator
     torch.clip_(shifts_dim1, -1 * max_shifts[0], max_shifts[0])
@@ -233,7 +233,7 @@ def subpixel_shift_method(
             f"Precision can only be 0.1, 0.01, 0.001. Input was {precision}"
         )
 
-    num_frames, d1, d2 = fft_l2_objective.shape
+    num_frames, fov_height, fov_width = fft_l2_objective.shape
     division_rate = precision
     offset_value = (
         6 * precision
@@ -248,14 +248,14 @@ def subpixel_shift_method(
     dim1_subpixel_indices = (
         opt_shifts[:, [0]].float() + dim_spread[None, :]
     )  # Shape (num_frames, spread_dim1)
-    # dim1_subpixel_indices = upsample_factor
+
     dim1_multiplier_vector = (
         2
         * 1j
         * torch.pi
-        * torch.fft.fftfreq(d1, d=1.0, device=device).to(torch.complex128)
+        * torch.fft.fftfreq(fov_height, d=1.0, device=device).to(torch.complex128)
     )
-    # Shape (num_frames, spread_dim1, d1)
+    # Shape (num_frames, spread_dim1, fov_height)
     dim1_multiplier_matrix = (
         dim1_subpixel_indices.to(torch.complex128).unsqueeze(2)
         @ dim1_multiplier_vector[None, :]
@@ -269,7 +269,7 @@ def subpixel_shift_method(
         2
         * 1j
         * torch.pi
-        * torch.fft.fftfreq(d2, d=1.0, device=device).to(torch.complex128)
+        * torch.fft.fftfreq(fov_width, d=1.0, device=device).to(torch.complex128)
     )
     dim2_multiplier_matrix = (
         dim2_subpixel_indices.to(torch.complex128).unsqueeze(2)
@@ -277,7 +277,7 @@ def subpixel_shift_method(
     )
     dim2_multiplier_matrix = dim2_multiplier_matrix.permute(
         0, 2, 1
-    )  # Shape (num_frames, d2, spread_dim2)
+    )  # Shape (num_frames, fov_width, spread_dim2)
     torch.exp_(dim2_multiplier_matrix)
 
     local_cross_corr = torch.bmm(
@@ -285,7 +285,7 @@ def subpixel_shift_method(
     )
     local_cross_corr = torch.bmm(local_cross_corr, dim2_multiplier_matrix)
     local_cross_corr = torch.real(local_cross_corr)
-    local_cross_corr /= d1 * d2 * upsample_factor**2
+    local_cross_corr /= fov_height * fov_width * upsample_factor**2
 
     max_corr_values, max_indices = torch.max(
         local_cross_corr.reshape(num_frames, -1), dim=1
@@ -295,13 +295,13 @@ def subpixel_shift_method(
     )
 
     frame_indexer = torch.arange(local_cross_corr.shape[0], device=device)
-    # Decide whether the subpixel shift in dim1 (keeping dim2 fixed at its original integer shift value) improves things
+    # Decide whether the subpixel shift in height dim (keeping width dim fixed at its original integer shift value) improves things
     dim1_subpixel_improvement_indicator = (
         local_cross_corr[frame_indexer, integer_pixel_indices, max_indices_dim2]
         >= max_corr_values
     )
     max_indices_dim1[dim1_subpixel_improvement_indicator] = integer_pixel_indices
-    # Decide whether the subpixel shift in dim2 (keeping dim1 fixed at its original integer shift value) improves things
+    # Decide whether the subpixel shift in width dim (keeping height dim fixed at its original integer shift value) improves things
     dim2_subpixel_improvement_indicator = (
         local_cross_corr[frame_indexer, max_indices_dim1, integer_pixel_indices]
         >= max_corr_values
@@ -434,7 +434,6 @@ def extract_patches(
     patch_grid_dimensions = grid_x.shape
 
     start_positions = torch.stack([grid_x.flatten(), grid_y.flatten()], dim=1)
-    num_patches = start_positions.shape[0]
 
     # Generate patch indices
     patch_dim1 = torch.arange(patch_h, device=device).view(-1, 1) + start_positions[:, 0].view(
@@ -669,16 +668,15 @@ def scatter_patches_to_fov(
     data_to_reformat: torch.Tensor,
     start_points_height_dim: torch.Tensor,
     start_points_width_dim: torch.Tensor,
-    fov_dims: tuple,
+    fov_dims: tuple[int, int],
 ):
     """
     Efficiently scatter patches into a full FOV tensor.
 
     Args:
-        X: Tensor of shape (num_frames, num_patches_dim0, num_patches_dim1, patch_length_dim0, patch_length_dim1)
-        start_points_height_dim: LongTensor of shape (num_patches_dim0,) - start indices for patches along dim 0
-        start_points_width_dim: LongTensor of shape (num_patches_dim1,) - start indices for patches along dim 1
-        patch_dims: Tuple (patch_length_dim0, patch_length_dim1)
+        data_to_reformat (torch.Tensor): (num_frames, num_patches_height, num_patches_width, 2)
+        start_points_height_dim (torch.Tensor): LongTensor of shape (num_patches_height,) - start indices for patches along dim 0
+        start_points_width_dim (torch.Tensor): LongTensor of shape (num_patches_width,) - start indices for patches along dim 1
         fov_dims: Tuple (fov_height, fov_width) - output FOV size
 
     Returns:
@@ -927,8 +925,7 @@ def apply_pwrigid_shifts(data: ArrayLike,
     else:
         data_subset = torch.as_tensor(data[:, height_range[0]:height_range[1], width_range[0]:width_range[1]],
                                       device=device, dtype=torch.float32)
-    # data_subset = torch.as_tensor(data[:, height_range[0]:height_range[1], width_range[0]:width_range[1]],
-    #                               device=device, dtype=torch.float32)
+
     corrected_data = compute_pixel_to_pixel_resample(data_subset,
                                                      height_range,
                                                      width_range,
