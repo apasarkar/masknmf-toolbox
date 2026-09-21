@@ -13,6 +13,7 @@ from roicat.data_importing import Data_roicat
 
 from masknmf.demixing.labels import (
     CLASSIFIER_SUFFIX,
+    TRAINING_SUFFIX,
     read_labels,
     write_labels,
     write_predictions,
@@ -20,7 +21,6 @@ from masknmf.demixing.labels import (
 from masknmf.multisession.roicat_tracking import RoicatDataAdapter
 from masknmf.utils import torch_select_device, display
 
-TRAINING_SUFFIX = ".training.json"
 _ROINET_URL = "https://osf.io/c8m3b/download"
 _ROINET_HASH = "357a8d9b630ec79f3e015d0056a4c2d5"
 _UNCLASSIFIED_FLAG = -1

@@ -27,7 +27,7 @@ class RoicatDataAdapter(Data_roicat):
                  mean_img_list: List[np.ndarray],
                  spatial_fp_list: List[scipy.sparse.coo_matrix],
                  session_files: tuple[str | tuple[str, ...]],
-                 um_per_pixel: float = 1.2,
+                 um_per_pixel: float | Sequence[float] = 1.2,
                  roi_image_dims: tuple[int, int] = (36, 36),
                  highpass_sigma: Optional[int] = 3,
                  ):
@@ -35,22 +35,44 @@ class RoicatDataAdapter(Data_roicat):
         Notes: um_per_pixel is by default set to 1.2 since this is what is used for IBL 2p mesoscope recordings
         Generic interface for doing multi-session tracking with any analysis pipeline
         Args:
-            mean_img_list (List[np.ndarray]): List of mean images from each imaging session. Each image should have same dimensions.
+            mean_img_list (List[np.ndarray]): List of mean images from each imaging session. Sessions with smaller
+                images are zero-padded (bottom/right) to the largest one, since ROICat needs a single FOV size.
             spatial_fp_list (List[np.ndarray]): List of spatial footprint arrays, one for each session. Each individual array has shape (num_rois, num_pixels).
                 Each spatial footprint is flattened into a row of this array in "C" order.
             session_files (tuple[str] | tuple[tuple[str, ...]]): A tuple whose length is equal to the number of sessions. Each element contains filepath data for one session.
-            um_per_pixel (float): Describes the resolution of the imaging
+            um_per_pixel (float | Sequence[float]): Describes the resolution of the imaging; one value, or one per session
             roi_image_dims (tuple[int, int]): Each ROI is spatially cropped for purposes of feature extraction in the ROICat pipeline. This specifies the crop dimensions.
             highpass_sigma (int): We highpass filter the mean image to define an "enhanced" mean image (this is what s2p does) for use in the tracking pipeline.
         """
 
         super().__init__()
+        if isinstance(um_per_pixel, (list, tuple, np.ndarray)):
+            um_per_pixel = [float(u) for u in um_per_pixel]
+        else:
+            um_per_pixel = float(um_per_pixel)
         self.um_per_pixel = um_per_pixel
         self._highpass_sigma = highpass_sigma
-        self._mean_img_list = mean_img_list
-        self.set_FOVHeightWidth(int(mean_img_list[0].shape[0]), int(mean_img_list[0].shape[1]))
+        self._mean_img_list = [np.asarray(img) for img in mean_img_list]
+        self._spatial_fp_list = [fp.tocsr() for fp in spatial_fp_list]
+        self.set_FOVHeightWidth(max(int(img.shape[0]) for img in self._mean_img_list),
+                                max(int(img.shape[1]) for img in self._mean_img_list))
         self.set_fov_imgs_from_mean_imgs()
-        self.set_spatialFootprints(spatial_fp_list, self.um_per_pixel)
+
+        padded_fp_list = []
+        for footprint, mean_img in zip(self._spatial_fp_list, self._mean_img_list):
+            width = int(mean_img.shape[1])
+            if width == self.FOV_width and int(mean_img.shape[0]) == self.FOV_height:
+                padded_fp_list.append(footprint)
+                continue
+            # flat pixel indices are (y * width + x) at the session's own width
+            entries = footprint.tocoo()
+            y, x = np.divmod(entries.col, width)
+            padded_fp_list.append(scipy.sparse.coo_matrix(
+                (entries.data, (entries.row, y * self.FOV_width + x)),
+                shape=(footprint.shape[0], self.FOV_height * self.FOV_width),
+            ).tocsr())
+
+        self.set_spatialFootprints(padded_fp_list, self.um_per_pixel)
         self.transform_spatialFootprints_to_ROIImages(out_height_width=roi_image_dims)
         if session_files is not None:
             if len(self._mean_img_list) != len(session_files):
@@ -67,8 +89,24 @@ class RoicatDataAdapter(Data_roicat):
         """
         return self._session_files
 
+    @property
+    def mean_image_list(self) -> list[np.ndarray]:
+        """The unprocessed mean image of each session, at its own FOV size"""
+        return self._mean_img_list
+
+    @property
+    def spatial_footprint_list(self) -> list[scipy.sparse.csr_matrix]:
+        """Each session's (num_rois, num_pixels) footprints, flattened at its own FOV size"""
+        return self._spatial_fp_list
+
     def set_fov_imgs_from_mean_imgs(self):
         fov_list = self._filter_and_normalize_mean_img()
+        # filter first: padded zeros would dominate the 1-99% normalization
+        fov_list = [
+            img if img.shape == (self.FOV_height, self.FOV_width)
+            else np.pad(img, ((0, self.FOV_height - img.shape[0]), (0, self.FOV_width - img.shape[1])))
+            for img in fov_list
+        ]
         return self.set_FOV_images(fov_list)
 
     def _filter_and_normalize_mean_img(self):

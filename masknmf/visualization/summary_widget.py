@@ -48,6 +48,16 @@ def _to_rgba(arr: np.ndarray, cmap_name: str, lo: float, hi: float) -> np.ndarra
     return np.ascontiguousarray(rgba)
 
 
+def _blend(rgba: np.ndarray, overlay: Optional[np.ndarray]) -> np.ndarray:
+    """Alpha-composite a float (H, W, 4) overlay onto a uint8 RGBA image"""
+    if overlay is None or overlay.shape[:2] != rgba.shape[:2]:
+        return rgba
+    alpha = overlay[..., 3:4]
+    base = rgba[..., :3].astype(np.float32) / 255.0
+    rgba[..., :3] = ((base * (1.0 - alpha) + overlay[..., :3] * alpha) * 255).astype(np.uint8)
+    return rgba
+
+
 def _format_value(v: float, dtype) -> str:
     if np.issubdtype(dtype, np.integer):
         return f"{int(v)}"
@@ -60,12 +70,13 @@ def _format_value(v: float, dtype) -> str:
 class _GpuImage:
     """Owns one wgpu texture + its imgui registration for a single image."""
 
-    def __init__(self, backend, arr: np.ndarray, cmap: str, lo: float, hi: float):
+    def __init__(self, backend, arr: np.ndarray, cmap: str, lo: float, hi: float, overlay=None):
         self.backend = backend
         self.arr = arr
         self.cmap = cmap
         self.lo = lo
         self.hi = hi
+        self.overlay = overlay
         self.h, self.w = arr.shape[:2]
         self._texture = None
         self._view = None
@@ -74,7 +85,7 @@ class _GpuImage:
         self._upload()
 
     def _upload(self):
-        self.rgba = _to_rgba(self.arr, self.cmap, self.lo, self.hi)
+        self.rgba = _blend(_to_rgba(self.arr, self.cmap, self.lo, self.hi), self.overlay)
         device = self.backend._device
         self._texture = device.create_texture(
             size=(self.w, self.h, 1),
@@ -90,17 +101,24 @@ class _GpuImage:
         self._view = self._texture.create_view()
         self.ref = self.backend.register_texture(self._view)
 
-    def ensure(self, arr: np.ndarray, cmap: str, lo: float, hi: float):
-        if arr is self.arr and cmap == self.cmap and lo == self.lo and hi == self.hi:
+    def ensure(self, arr: np.ndarray, cmap: str, lo: float, hi: float, overlay=None):
+        if (
+            arr is self.arr
+            and cmap == self.cmap
+            and lo == self.lo
+            and hi == self.hi
+            and overlay is self.overlay
+        ):
             return
         same_shape = arr.shape[:2] == (self.h, self.w)
         self.arr = arr
         self.cmap = cmap
         self.lo = lo
         self.hi = hi
+        self.overlay = overlay
         if same_shape and self._texture is not None:
             # rewrite pixels in place (movie frames, contrast changes)
-            self.rgba = _to_rgba(arr, cmap, lo, hi)
+            self.rgba = _blend(_to_rgba(arr, cmap, lo, hi), overlay)
             self.backend._device.queue.write_texture(
                 {"texture": self._texture, "mip_level": 0, "origin": (0, 0, 0)},
                 self.rgba.tobytes(),
@@ -152,6 +170,7 @@ class SummaryImageViewer:
         self._needs_fit = True
         self._show_pixel_values = False
         self._highlight: Optional[tuple] = None  # (y0, x0, h, w) in image coords
+        self._overlay: Optional[np.ndarray] = None  # float (H, W, 4) drawn over the image
         self._gpu: dict = {}
         self._manual_lo: dict = {}
         self._manual_hi: dict = {}
@@ -185,6 +204,10 @@ class SummaryImageViewer:
     @property
     def is_open(self) -> bool:
         return self._popup_open
+
+    def set_overlay(self, overlay: Optional[np.ndarray]):
+        """Composite a float (H, W, 4) RGBA layer over the image, e.g. ROI masks"""
+        self._overlay = overlay
 
     def set_highlight(self, rect: Optional[tuple]):
         """Outline a region of the image: (y0, x0, height, width), or None"""
@@ -230,10 +253,10 @@ class SummaryImageViewer:
         lo, hi = self._get_range(key, arr)
         gpu = self._gpu.get(key)
         if gpu is None:
-            gpu = _GpuImage(backend, arr, cmap, lo, hi)
+            gpu = _GpuImage(backend, arr, cmap, lo, hi, self._overlay)
             self._gpu[key] = gpu
         else:
-            gpu.ensure(arr, cmap, lo, hi)
+            gpu.ensure(arr, cmap, lo, hi, self._overlay)
         return gpu
 
     def _get_histogram(self, key: str, arr: np.ndarray) -> np.ndarray:

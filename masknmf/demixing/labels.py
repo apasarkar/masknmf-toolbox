@@ -18,6 +18,7 @@ import numpy as np
 
 SIDECAR_SUFFIX = ".labels.hdf5"
 CLASSIFIER_SUFFIX = ".roicat_classifier"
+TRAINING_SUFFIX = ".training.json"  # labels and session files a classifier was trained on
 _LEGACY_GROUP = "DemixingResults"  # early files carried the labels inside the results
 
 
@@ -63,6 +64,34 @@ def read_labels(path) -> tuple[Optional[np.ndarray], Optional[list[str]]]:
             if g is not None:
                 return _read_pair(g)
     return None, None
+
+
+def read_session_labels(paths: Sequence, sizes: Sequence[int], names: Sequence[str] = ()):
+    """
+    Labels for several sessions, remapped onto one shared name list.
+
+    Each session stores its own ``label_names`` order, so a session labeled on its
+    own would otherwise be read against another session's names. Returns the
+    concatenated ``(sum(sizes),)`` labels and the shared names: ``names`` first,
+    then every stored name not already in it. A session with no sidecar, or whose
+    stored labels do not match its size, comes back unlabeled.
+    """
+    shared = list(names)
+    labels = []
+    for path, size in zip(paths, sizes):
+        stored, stored_names = read_labels(path)
+        session = np.full(int(size), -1, dtype=np.int64)
+        if stored is not None and len(stored) == int(size):
+            stored_names = list(stored_names) if stored_names else list(shared)
+            for name in stored_names:
+                if name not in shared:
+                    shared.append(name)
+            remap = np.array([shared.index(n) for n in stored_names], dtype=np.int64)
+            valid = (stored >= 0) & (stored < len(remap))
+            session[valid] = remap[stored[valid]]
+        labels.append(session)
+    concatenated = np.concatenate(labels) if labels else np.zeros(0, dtype=np.int64)
+    return concatenated, shared
 
 
 def _read_pair(g):

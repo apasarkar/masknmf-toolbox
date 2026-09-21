@@ -1,4 +1,5 @@
 from typing import *
+import json
 import os
 import textwrap
 import threading
@@ -14,7 +15,8 @@ from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section,
 from masknmf.demixing.labels import (
     CLASSIFIER_SUFFIX,
     SIDECAR_SUFFIX,
-    read_labels,
+    TRAINING_SUFFIX,
+    read_session_labels,
     record_classifier,
     write_labels,
     write_masks,
@@ -31,7 +33,9 @@ _LABEL_KEYS = (
     imgui.Key._1, imgui.Key._2, imgui.Key._3, imgui.Key._4, imgui.Key._5,
     imgui.Key._6, imgui.Key._7, imgui.Key._8, imgui.Key._9,
 )
-_COLUMNS = ("id", "label", "pred", "area", "peak", "f", "skew")
+_COLUMNS = ("id", "sess", "label", "pred", "area", "peak", "f", "skew")
+_UNLABELED = ""  # key for unlabeled ROIs in _hidden_classes; no class can be named it
+_UNLABELED_COLOR = (0.78, 0.78, 0.78)
 _MIN_PER_CLASS = 2  # labeled ROIs a class needs before training
 _CLF_FILTERS = ["ROICaT classifier", f"*{CLASSIFIER_SUFFIX}", "All files", "*"]
 _HDF5_FILTERS = ["masknmf demixing results", "*.hdf5 *.h5", "All files", "*"]
@@ -90,6 +94,8 @@ class ClassificationVis:
         self._roicat_input = None
         self._session_sizes: Optional[tuple[int, ...]] = None
         self._save_files: Optional[list[str]] = None  # hdf5 mode: labels live in-file
+        self._adapter_kwargs: dict = {}  # reused so appended sessions get the same crops
+        self._before_load: Optional[tuple] = None  # (adapter, files) restored if a load fails
         self._classifier = None
         self._classifier_path = ""
         self._clf_status: Optional[str] = None
@@ -117,10 +123,13 @@ class ClassificationVis:
         self._placeholder = False
         self._clf_source: Optional[tuple[str, str]] = None  # ('trained' | 'file', path)
         self._classified_with = ""
+        self._auto_classify = False  # classify each session as it loads
         self._slider_w = 0.0
 
         self._show_bg = True
         self._show_mask = True
+        self._show_class_masks = True  # draw every ROI on the full FOV, colored by class
+        self._hidden_classes: set[str] = set()
         self._bg_alpha = 0.5
         self._roi_alpha = 1.0
         self._advance_on_label = True
@@ -149,7 +158,7 @@ class ClassificationVis:
 
     @classmethod
     def empty(cls, label_names: Sequence[str] = (), roi_image_dims: tuple[int, int] = (36, 36)) -> "ClassificationVis":
-        """A GUI with no data: pick sessions with open file / open folder (or open_paths)"""
+        """A GUI with no data: pick sessions with load demixing result / load folder (or open_paths)"""
         vis = cls(np.zeros((1, *roi_image_dims), dtype=np.float32), label_names=label_names)
         vis._placeholder = True
         return vis
@@ -202,9 +211,10 @@ class ClassificationVis:
         ]
         if len(files) != len(sizes):
             files = None
-        saved_labels, saved_names = cls._read_saved_labels(files) if files else (None, None)
-        if not label_names and saved_names:
-            label_names = saved_names
+        saved_labels, saved_names = (
+            read_session_labels(files, sizes, label_names) if files else (None, list(label_names))
+        )
+        label_names = saved_names
         if classifier.labels is not None:
             flat = [str(l) for s in classifier.labels for l in s]
             label_names = list(dict.fromkeys([*label_names, *flat]))
@@ -351,15 +361,31 @@ class ClassificationVis:
         self._apply_overlay()
         self._show_current()
 
-    def load_masknmf(self, demixing_result_files: Sequence[str], **adapter_kwargs):
-        """Build a RoicatDataAdapter from demixing .hdf5 files in a background thread"""
+    def load_masknmf(self, demixing_result_files: Sequence[str], append: bool = False, **adapter_kwargs):
+        """
+        Build a RoicatDataAdapter from demixing .hdf5 files in a background thread.
+
+        append keeps the sessions already loaded: the adapter is rebuilt over their
+        raw mean images and footprints plus the new ones, so ROI crops and centroids
+        are unchanged and the labels you already assigned stay with their ROIs.
+        """
         files = [str(f) for f in demixing_result_files]
+        previous = self._roicat_input if append else None
         if self._clf_source is not None and self._clf_source[0] == "trained":
+            # the trained instance is dropped with the adapter; keep the saved file
             path = self._clf_source[1]
             self._clf_source = ("file", path) if os.path.isfile(path) else None
         self._classifier = None
         self._roicat_input = None
-        self._save_files = files
+        if previous is None:
+            self._adapter_kwargs = dict(adapter_kwargs)
+        else:
+            self._adapter_kwargs.update(adapter_kwargs)
+        adapter_kwargs = self._adapter_kwargs
+        self._before_load = (previous, self._save_files)
+        self._save_files = [*self._save_files, *files] if previous is not None else files
+        all_files = self._save_files
+        label_names = self._label_names
         self._loading = f"ROICaT: building ROI images from {len(files)} session(s)..."
         self._load_result = None
         self._load_error = None
@@ -422,15 +448,19 @@ class ClassificationVis:
                     peak_frames.append(c.argmax(axis=0))
 
                 adapter = RoicatDataAdapter(
-                    mean_imgs,
-                    footprints,
-                    tuple(os.path.abspath(f) for f in files),
+                    [*(previous.mean_image_list if previous is not None else ()), *mean_imgs],
+                    [*(previous.spatial_footprint_list if previous is not None else ()), *footprints],
+                    tuple(os.path.abspath(f) for f in all_files),
                     **adapter_kwargs,
                 )
-                saved_labels, saved_names = self._read_saved_labels(files)
+                # only the new sessions' labels are read; the loaded ones are already in memory
+                saved_labels, saved_names = read_session_labels(
+                    files, [fp.shape[0] for fp in footprints], label_names
+                )
 
                 self._load_result = {
                     "adapter": adapter,
+                    "append": previous is not None,
                     # only offer a source if every session's file has it
                     "bg_sources": {
                         k: v for k, v in bg_sources.items() if len(v) == len(files)
@@ -455,35 +485,89 @@ class ClassificationVis:
         if self._load_error is not None:
             self._error = self._load_error
             self._loading = None
+            # the sessions already loaded keep their ROIs and labels
+            self._roicat_input, self._save_files = self._before_load
+            self._before_load = None
         elif self._load_result is not None:
             result = self._load_result
             adapter = result["adapter"]
             self._load_result = None
+            append = result["append"]
             imgs = np.concatenate([np.asarray(s) for s in adapter.ROI_images], axis=0)
             sizes = [len(s) for s in adapter.ROI_images]
-            labels = result["saved_labels"]
-            if labels is not None and labels.shape[0] != imgs.shape[0]:
+            labels, stats = result["saved_labels"], result["stats"]
+            bg_sources, dmrs = result["bg_sources"], result["dmrs"]
+            peak_frames = result["peak_frames"]
+            pred, probs = self._pred, self._probs
+            if append:
+                labels = np.concatenate([self._class_labels, labels])
+                stats = {
+                    "f": np.concatenate([self._f, stats["f"]]),
+                    "skew": np.concatenate([self._skew, stats["skew"]]),
+                }
+                loaded = self._bg_sources or {}
+                bg_sources = {k: [*loaded[k], *v] for k, v in bg_sources.items() if k in loaded}
+                dmrs = [*(self._dmrs or ()), *dmrs]
+                peak_frames = np.concatenate([self._peak_frames, peak_frames])
+            if labels.shape[0] != imgs.shape[0]:
                 labels = None
-            if not self._label_names and result["saved_names"]:
-                self._set_label_names(result["saved_names"])
+            self._set_label_names(
+                [*result["saved_names"], *(n for n in self._label_names if n not in result["saved_names"])]
+            )
             self.set_roi_images(
                 imgs,
                 labels,
                 session_sizes=sizes,
                 fov_images=adapter.FOV_images,
                 centroids=adapter.centroids,
-                bg_sources=result["bg_sources"],
-                roi_stats=result["stats"],
+                bg_sources=bg_sources,
+                roi_stats=stats,
             )
+            if append:
+                self._pred[: len(pred)] = pred
+                self._probs[: len(probs)] = probs
             self._roicat_input = adapter
+            self._before_load = None
             self._placeholder = False
-            self._dmrs = result["dmrs"]
-            self._peak_frames = result["peak_frames"]
+            self._dmrs = dmrs
+            self._peak_frames = peak_frames
             self._loading = None
             try:
                 self._save_masks_to_hdf5()
             except OSError as e:
                 self._error = f"mask save failed: {e}"
+            if self._auto_classify and self._clf_source is not None:
+                self.classify()
+
+    def clear(self):
+        """
+        Drop every loaded session and its ROI labels, back to the empty window.
+
+        The class names you defined and the selected classifier are kept, so the
+        next set of sessions can be labeled with the same classes. Labels already
+        written to a session's sidecar stay on disk.
+        """
+        if self._loading is not None or self._clf_busy:
+            return
+        if self._clf_source is not None and self._clf_source[0] == "trained":
+            path = self._clf_source[1]
+            self._clf_source = ("file", path) if os.path.isfile(path) else None
+        self._save_files = None
+        self._adapter_kwargs = {}
+        self._before_load = None
+        self._roicat_input = None
+        self._classifier = None
+        self._dmrs = None
+        self._peak_frames = None
+        self._bg_movie = False
+        self._movie_player.set_movie(None)
+        self._summary.set_images({})
+        self._summary.set_movies({})
+        self._error = None
+        self._clf_done = None
+        self._classified_with = ""
+        self.set_roi_images(np.zeros((1, *self._roi_images.shape[1:]), dtype=np.float32))
+        self._placeholder = True
 
     @property
     def current(self) -> Optional[int]:
@@ -533,6 +617,7 @@ class ClassificationVis:
         """Delete a class: its ROIs become unlabeled, higher labels shift down"""
         if not 0 <= index < len(self._label_names):
             return
+        self._hidden_classes.discard(self._label_names[index])
         for arr in (self._class_labels, self._pred):
             arr[arr == index] = -1
             arr[arr > index] -= 1
@@ -561,17 +646,6 @@ class ClassificationVis:
         if self._session_sizes is not None:
             data["session_sizes"] = np.array(self._session_sizes)
         np.savez(path, **data)
-
-    @staticmethod
-    def _read_saved_labels(files: Sequence[str]):
-        """(concatenated class_labels or None, label_names or None) stored in the session hdf5s"""
-        labels, names = [], None
-        for fname in files:
-            stored, stored_names = read_labels(fname)
-            if stored is not None:
-                labels.append(stored)
-            names = names or stored_names
-        return (np.concatenate(labels) if len(labels) == len(files) else None), names
 
     def _save_labels_to_hdf5(self):
         cuts = np.cumsum(self._session_sizes)[:-1] if self._session_sizes else []
@@ -640,7 +714,8 @@ class ClassificationVis:
             mask &= self._class_labels == self._filter_label
         idx = np.flatnonzero(mask)
         if self._sort_column:
-            keys = (self._class_labels, self._probs, self._area, self._peak, self._f, self._skew)
+            session = self._session_of if self._session_of is not None else np.zeros_like(self._area)
+            keys = (session, self._class_labels, self._probs, self._area, self._peak, self._f, self._skew)
             idx = idx[np.argsort(keys[self._sort_column - 1][idx], kind="stable")]
         if not self._sort_ascending:
             idx = idx[::-1]
@@ -695,6 +770,38 @@ class ClassificationVis:
             crop[y0 - top : y1 - top, x0 - left : x1 - left] = fov[y0:y1, x0:x1]
         return crop
 
+    def _class_overlay(self, sess: int) -> Optional[np.ndarray]:
+        """
+        RGBA of one session's ROI masks in their class colors, shaped like the
+        background it is drawn over in the full-FOV view. Hidden classes are left
+        out; where masks overlap the stronger pixel wins.
+        """
+        if not self._show_class_masks or self._fov_images is None:
+            return None
+        imgs = self._fov_images[sess]
+        shape = imgs.shape[1:] if getattr(imgs, "ndim", 2) == 3 else imgs.shape
+        overlay = np.zeros((*shape[:2], 4), dtype=np.float32)
+        h, w = self._roi_images.shape[1:]
+        sizes = self._session_sizes or (len(self._roi_images),)
+        start = int(self._session_starts[sess])
+        for roi in range(start, start + int(sizes[sess])):
+            label = int(self._class_labels[roi])
+            if (self._label_names[label] if label >= 0 else _UNLABELED) in self._hidden_classes:
+                continue
+            top, left = self._crop_origin(roi)
+            y0, y1 = max(top, 0), min(top + h, overlay.shape[0])
+            x0, x1 = max(left, 0), min(left + w, overlay.shape[1])
+            if y1 <= y0 or x1 <= x0:
+                continue
+            alpha = self._roi_images[roi][y0 - top : y1 - top, x0 - left : x1 - left] / (
+                self._peak[roi] or 1.0
+            )
+            region = overlay[y0:y1, x0:x1]
+            color = self._label_color(label) if label >= 0 else _UNLABELED_COLOR
+            region[..., :3] = np.where((alpha > region[..., 3])[..., None], color, region[..., :3])
+            region[..., 3] = np.maximum(region[..., 3], alpha)
+        return overlay
+
     def _update_movie_bg(self):
         roi = self.current
         if roi is None or self._movie_player.movie is None:
@@ -738,6 +845,7 @@ class ClassificationVis:
                     self._summary.set_images(
                         {name: self._bg_image(imgs, sess, roi) for name, imgs in self._bg_sources.items()}
                     )
+                    self._summary.set_overlay(self._class_overlay(sess))
                     if self._dmrs is not None:
                         self._summary.set_movies(
                             {"demixed movie": self._dmrs[sess].ac_array}
@@ -854,6 +962,7 @@ class ClassificationVis:
             self._summary.set_highlight((top, left, *self._roi_images.shape[1:]))
         else:
             self._summary.set_highlight(None)
+        self._summary.set_overlay(self._class_overlay(sess) if self._bg_sources is not None else None)
         self._summary.open()
 
     @property
@@ -887,7 +996,7 @@ class ClassificationVis:
             return None
         if self._loading is not None:
             return "ROI images are still loading"
-        return "no ROICaT data: open a demixing_results.hdf5 (open file / open folder)"
+        return "no ROICaT data: load a demixing_results.hdf5 (load demixing result / load folder)"
 
     @property
     def _clf_busy(self) -> bool:
@@ -1119,6 +1228,16 @@ class ClassificationVis:
             )
             if changed_bg or changed_bga or changed_mask or changed_fga:
                 self._apply_overlay()
+            changed_classes, self._show_class_masks = imgui.checkbox(
+                "class masks on FOV", self._show_class_masks
+            )
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "draw every ROI of the session on the full FOV in its class color\n"
+                    "hide a class with the eye next to it in the label list"
+                )
+            if changed_classes:
+                self._show_current()
             if self._bg_movie and self._movie_player.draw(slider_width=self._slider_w):
                 self._update_movie_bg()
 
@@ -1151,8 +1270,9 @@ class ClassificationVis:
         current = self.current
         current_label = int(self._class_labels[current]) if current is not None else -1
         flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.scroll_y
-        if not imgui.begin_table("##label-list", 5, flags, imgui.ImVec2(em(22), em(rows * 1.55))):
+        if not imgui.begin_table("##label-list", 6, flags, imgui.ImVec2(em(22), em(rows * 1.55))):
             return
+        imgui.table_setup_column("##eye", imgui.TableColumnFlags_.width_fixed, em(1.8))
         imgui.table_setup_column("##swatch", imgui.TableColumnFlags_.width_fixed, em(1.3))
         imgui.table_setup_column("##name", imgui.TableColumnFlags_.width_stretch)
         imgui.table_setup_column("##warn", imgui.TableColumnFlags_.width_fixed, em(1.4))
@@ -1162,6 +1282,13 @@ class ClassificationVis:
         for i, name in enumerate(self._label_names):
             imgui.push_id(i)
             imgui.table_next_row()
+            imgui.table_next_column()
+            hidden = name in self._hidden_classes
+            if imgui.small_button(fa.ICON_FA_EYE_SLASH if hidden else fa.ICON_FA_EYE):
+                self._hidden_classes.symmetric_difference_update((name,))
+                self._show_current()
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(f"show or hide '{name}' on the full FOV")
             imgui.table_next_column()
             if imgui.color_button(
                 "##swatch",
@@ -1191,34 +1318,89 @@ class ClassificationVis:
             if imgui.is_item_hovered():
                 imgui.set_tooltip(f"delete '{name}': its ROIs become unlabeled")
             imgui.pop_id()
+        imgui.table_next_row()
+        imgui.table_next_column()
+        hidden = _UNLABELED in self._hidden_classes
+        if imgui.small_button(f"{fa.ICON_FA_EYE_SLASH if hidden else fa.ICON_FA_EYE}##eye-none"):
+            self._hidden_classes.symmetric_difference_update((_UNLABELED,))
+            self._show_current()
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("show or hide the unlabeled ROIs on the full FOV")
+        imgui.table_next_column()
+        imgui.color_button(
+            "##swatch-none",
+            to_vec4(_UNLABELED_COLOR),
+            imgui.ColorEditFlags_.no_tooltip,
+            imgui.ImVec2(em(1.1), em(1.1)),
+        )
+        imgui.table_next_column()
+        unlabeled = int((self._class_labels < 0).sum())
+        clicked, _ = imgui.selectable(f"unlabeled  ({unlabeled})", current_label < 0)
+        if clicked:
+            self.label_current(-1)
+        imgui.table_next_column()
+        imgui.table_next_column()
+        imgui.text_disabled("(0)")
         if not self._label_names:
             imgui.table_next_row()
             imgui.table_next_column()
             imgui.table_next_column()
+            imgui.table_next_column()  # the name column, past the eye and the swatch
             imgui.text_disabled("no labels yet: add one below")
         imgui.end_table()
         if remove is not None:
             self.remove_label(remove)
 
     def select_classifier(self, path: str):
-        """Use a saved .roicat_classifier file for classify."""
+        """
+        Use a saved .roicat_classifier file for classify.
+
+        Its classes join the label set straight away, read from the .training.json
+        written beside it, and every session loaded from now on is classified as it
+        arrives (the classify on load checkbox turns that off).
+        """
         path = str(path)
         if not os.path.isfile(path):
             self._error = f"classifier file not found: {path}"
             return
         self._clf_source = ("file", path)
         self._clf_done = None
+        self._auto_classify = True
+        meta = path[: -len(CLASSIFIER_SUFFIX)] + TRAINING_SUFFIX if path.endswith(CLASSIFIER_SUFFIX) else ""
+        if not os.path.isfile(meta):
+            return
+        try:
+            with open(meta, encoding="utf-8") as f:
+                stored = json.load(f).get("label_names") or ()
+        except (OSError, ValueError) as e:
+            self._error = f"could not read the classifier's classes: {e}"
+            return
+        new = [str(n) for n in stored if str(n) not in self._label_names]
+        if new:
+            self._set_label_names((*self._label_names, *new))
 
-    def open_paths(self, paths: Sequence[str]):
-        """Load demixing_results .hdf5 files and/or folders of them as sessions"""
+    def open_paths(self, paths: Sequence[str], append: Optional[bool] = None):
+        """
+        Load demixing_results .hdf5 files and/or folders of them as sessions.
+
+        append defaults to True once sessions are loaded, so loading again adds to
+        the set instead of replacing it; files already loaded are skipped.
+        """
         if self._loading is not None:
             return
         files = _hdf5_paths(paths)
         if not files:
             self._error = "no .hdf5 files found"
             return
+        append = self._roicat_input is not None if append is None else append
+        if append:
+            loaded = {os.path.normcase(os.path.abspath(f)) for f in self._save_files or ()}
+            files = [f for f in files if os.path.normcase(os.path.abspath(f)) not in loaded]
+            if not files:
+                self._error = "already loaded"
+                return
         self._error = None
-        self.load_masknmf(files)
+        self.load_masknmf(files, append=append)
 
     def open_file(self):
         """Native picker for one or more demixing_results .hdf5 files; loaded when the dialog returns."""
@@ -1333,10 +1515,16 @@ class ClassificationVis:
                     "predict every ROI with the selected classifier: unlabeled ROIs take the "
                     "prediction, existing labels are kept"
                 )
+            _, self._auto_classify = imgui.checkbox("classify on load", self._auto_classify)
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "run the selected classifier on every session as soon as it is loaded\n"
+                    "(turned on when you select a classifier file)"
+                )
 
     def _autosave_note(self) -> str:
         if self._placeholder:
-            return "open a demixing_results.hdf5 (open file) or a folder of sessions (open folder)"
+            return "load a demixing_results.hdf5 (load demixing result) or a folder of sessions (load folder)"
         if self._save_files is not None:
             return "labels autosave to <results>.labels.hdf5 next to each session file"
         if self._save_path is not None:
@@ -1357,11 +1545,31 @@ class ClassificationVis:
     def _draw_status(self):
         """open / help / keybinds buttons followed by the current info message."""
         imgui.begin_disabled(self._loading is not None)
-        if imgui.button("open file"):
+        if imgui.button("load demixing result"):
             self.open_file()
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "pick one or more demixing_results.hdf5 files\n"
+                "loading again adds those sessions to the ones already here"
+            )
         imgui.same_line(0, em(0.4))
-        if imgui.button("open folder"):
+        if imgui.button("load folder"):
             self.open_folder()
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("load every demixing result in a folder as a session")
+        imgui.same_line(0, em(0.4))
+        imgui.begin_disabled(self._roicat_input is None or self._clf_busy)
+        imgui.push_style_color(imgui.Col_.button, to_vec4(THEME.danger))
+        imgui.push_style_color(imgui.Col_.button_hovered, to_vec4(THEME.danger_hover))
+        if imgui.button("clear all"):
+            self.clear()
+        imgui.pop_style_color(2)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "start over: every session and its ROI labels are dropped\n"
+                "class names and the selected classifier are kept, sidecar files stay on disk"
+            )
+        imgui.end_disabled()
         imgui.end_disabled()
         imgui.same_line(0, em(1.0))
         if imgui.button("help"):
@@ -1374,6 +1582,10 @@ class ClassificationVis:
         imgui.same_line(0, em(0.4))
         imgui.text_disabled("(k)")
         imgui.same_line(0, em(1.0))
+        if self._loading is not None or self._clf_busy:
+            # negative fraction is imgui's indeterminate bar: it keeps moving while we work
+            imgui.progress_bar(-1.0 * imgui.get_time(), imgui.ImVec2(em(5), em(0.9)), "")
+            imgui.same_line(0, em(0.6))
         color, text = self._status_message()
         imgui.align_text_to_frame_padding()
         imgui.push_font(imgui.get_font(), em(0.85))
@@ -1386,7 +1598,10 @@ class ClassificationVis:
         imgui.text_colored(
             to_vec4(THEME.ok if done == total else THEME.warn), f"labeled {done}/{total}"
         )
-        if self._session_sizes is not None and len(self._session_sizes) > 1:
+        if self._session_sizes is not None and len(self._session_sizes) > 6:
+            imgui.same_line(0, em(0.6))
+            imgui.text_disabled(f"{len(self._session_sizes)} sessions")
+        elif self._session_sizes is not None and len(self._session_sizes) > 1:
             start = 0
             for k, n in enumerate(self._session_sizes):
                 session_done = int(labeled[start : start + n].sum())
@@ -1404,17 +1619,21 @@ class ClassificationVis:
             imgui.text_disabled("(u)")
 
     _HELP_STEPS = (
-        "Open file picks one or more demixing_results.hdf5 sessions, open folder loads every .hdf5 in a folder.",
+        "Load demixing result picks one or more demixing_results.hdf5 sessions, load folder takes every .hdf5 "
+        "in a folder. Loading again appends more sessions; clear all starts over.",
         "Label each mask: click a label in the list or press its number key (0 clears). "
         "Up/down moves through the ROIs, u jumps to the next unlabeled one.",
         "Use VIEW to overlay the mask on a background image or the demixed movie; "
         "Open full FOV shows where the ROI sits in the field of view.",
         "When every ROI is labeled (at least 2 per class), click train: a ROICaT classifier is fit on the "
         "labels and saved to the classifier path.",
-        "On a new session, pick a saved classifier with Select classifier (or train one), "
-        "then click classify: unlabeled ROIs take the prediction and the "
+        "On a new session, pick a saved classifier with Select classifier: its classes join the "
+        "label list and every session you load is classified as it arrives (turn that off with "
+        "classify on load). Unlabeled ROIs take the prediction and the "
         "pred column shows its confidence (red where it disagrees with your label). "
         "Fix what is wrong, then train again to improve the classifier.",
+        "Open full FOV with class masks on shows every ROI of the session in its class color; "
+        "the eye next to a class hides it.",
         "Labels are saved automatically as you go.",
     )
     _HELP_HDF5 = (
@@ -1509,9 +1728,11 @@ class ClassificationVis:
         imgui.table_setup_scroll_freeze(0, 1)
         imgui.table_setup_column(_COLUMNS[0], imgui.TableColumnFlags_.default_sort)
         for name in _COLUMNS[1:]:
-            if name == "pred":
+            if name in ("pred", "sess"):
                 imgui.table_setup_column(
-                    name, imgui.TableColumnFlags_.width_fixed, 7.5 * imgui.get_font_size()
+                    name,
+                    imgui.TableColumnFlags_.width_fixed,
+                    (7.5 if name == "pred" else 2.5) * imgui.get_font_size(),
                 )
             else:
                 imgui.table_setup_column(name)
@@ -1548,6 +1769,8 @@ class ClassificationVis:
                 if row == self._pos and self._scroll_to_current:
                     imgui.set_scroll_here_y(0.5)
                     self._scroll_to_current = False
+                imgui.table_next_column()
+                imgui.text("-" if self._session_of is None else f"{int(self._session_of[roi])}")
                 imgui.table_next_column()
                 if label >= 0:
                     imgui.text_colored(
@@ -1623,7 +1846,7 @@ def main(argv=None):
         nargs="*",
         help=".npy file with a (num_rois, Y, X) array, or masknmf demixing_results .hdf5 "
         "files / folders of them (ROI images are built with ROICaT in the background); "
-        "with no paths the window opens empty: use open file / open folder",
+        "with no paths the window opens empty: use load demixing result / load folder",
     )
     parser.add_argument(
         "--labels",
