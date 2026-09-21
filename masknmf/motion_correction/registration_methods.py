@@ -245,74 +245,74 @@ def subpixel_shift_method(
         -1 * offset_value, offset_value, step=division_rate, device=device
     )
     integer_pixel_indices = torch.argmin(torch.abs(dim_spread))
-    dim1_subpixel_indices = (
+    height_dim_subpixel_indices = (
         opt_shifts[:, [0]].float() + dim_spread[None, :]
-    )  # Shape (num_frames, spread_dim1)
+    )  # Shape (num_frames, spread_height_dim)
 
-    dim1_multiplier_vector = (
+    height_dim_multiplier_vector = (
         2
         * 1j
         * torch.pi
         * torch.fft.fftfreq(fov_height, d=1.0, device=device).to(torch.complex128)
     )
     # Shape (num_frames, spread_dim1, fov_height)
-    dim1_multiplier_matrix = (
-        dim1_subpixel_indices.to(torch.complex128).unsqueeze(2)
-        @ dim1_multiplier_vector[None, :]
+    height_dim_multiplier_matrix = (
+        height_dim_subpixel_indices.to(torch.complex128).unsqueeze(2)
+        @ height_dim_multiplier_vector[None, :]
     )
-    torch.exp_(dim1_multiplier_matrix)
+    torch.exp_(height_dim_multiplier_matrix)
 
-    dim2_subpixel_indices = (
+    width_dim_subpixel_indices = (
         opt_shifts[:, [1]].float() + dim_spread[None, :]
     )  # Shape (num_frames, spread_dim2)
-    dim2_multiplier_vector = (
+    width_dim_multiplier_vector = (
         2
         * 1j
         * torch.pi
         * torch.fft.fftfreq(fov_width, d=1.0, device=device).to(torch.complex128)
     )
-    dim2_multiplier_matrix = (
-        dim2_subpixel_indices.to(torch.complex128).unsqueeze(2)
-        @ dim2_multiplier_vector[None, :]
+    width_dim_multiplier_matrix = (
+        width_dim_subpixel_indices.to(torch.complex128).unsqueeze(2)
+        @ width_dim_multiplier_vector[None, :]
     )
-    dim2_multiplier_matrix = dim2_multiplier_matrix.permute(
+    width_dim_multiplier_matrix = width_dim_multiplier_matrix.permute(
         0, 2, 1
     )  # Shape (num_frames, fov_width, spread_dim2)
-    torch.exp_(dim2_multiplier_matrix)
+    torch.exp_(width_dim_multiplier_matrix)
 
     local_cross_corr = torch.bmm(
-        dim1_multiplier_matrix, fft_l2_objective.to(torch.complex128)
+        height_dim_multiplier_matrix, fft_l2_objective.to(torch.complex128)
     )
-    local_cross_corr = torch.bmm(local_cross_corr, dim2_multiplier_matrix)
+    local_cross_corr = torch.bmm(local_cross_corr, width_dim_multiplier_matrix)
     local_cross_corr = torch.real(local_cross_corr)
     local_cross_corr /= fov_height * fov_width * upsample_factor**2
 
     max_corr_values, max_indices = torch.max(
         local_cross_corr.reshape(num_frames, -1), dim=1
     )
-    max_indices_dim1, max_indices_dim2 = torch.unravel_index(
+    max_indices_height_dim, max_indices_width_dim = torch.unravel_index(
         max_indices, (local_cross_corr.shape[1], local_cross_corr.shape[2])
     )
 
     frame_indexer = torch.arange(local_cross_corr.shape[0], device=device)
     # Decide whether the subpixel shift in height dim (keeping width dim fixed at its original integer shift value) improves things
-    dim1_subpixel_improvement_indicator = (
-        local_cross_corr[frame_indexer, integer_pixel_indices, max_indices_dim2]
+    height_dim_subpixel_improvement_indicator = (
+        local_cross_corr[frame_indexer, integer_pixel_indices, max_indices_width_dim]
         >= max_corr_values
     )
-    max_indices_dim1[dim1_subpixel_improvement_indicator] = integer_pixel_indices
+    max_indices_height_dim[height_dim_subpixel_improvement_indicator] = integer_pixel_indices
     # Decide whether the subpixel shift in width dim (keeping height dim fixed at its original integer shift value) improves things
-    dim2_subpixel_improvement_indicator = (
-        local_cross_corr[frame_indexer, max_indices_dim1, integer_pixel_indices]
+    width_dim_subpixel_improvement_indicator = (
+        local_cross_corr[frame_indexer, max_indices_height_dim, integer_pixel_indices]
         >= max_corr_values
     )
-    max_indices_dim2[dim2_subpixel_improvement_indicator] = integer_pixel_indices
+    max_indices_width_dim[width_dim_subpixel_improvement_indicator] = integer_pixel_indices
 
     # Only incorporate subpixel shifts in each dimension if it actually improves the results
-    shifts_dim1 = opt_shifts[:, 0] + dim_spread[max_indices_dim1]
-    shifts_dim2 = opt_shifts[:, 1] + dim_spread[max_indices_dim2]
+    shifts_height_dim = opt_shifts[:, 0] + dim_spread[max_indices_height_dim]
+    shifts_width_dim = opt_shifts[:, 1] + dim_spread[max_indices_width_dim]
 
-    return torch.stack([shifts_dim1, shifts_dim2], dim=1)
+    return torch.stack([shifts_height_dim, shifts_width_dim], dim=1)
 
 
 def interpolate_to_border(shifted_images: torch.Tensor, shifts: torch.Tensor):
