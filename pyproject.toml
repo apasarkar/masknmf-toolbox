@@ -33,6 +33,7 @@ dependencies = [
     "imgui-bundle==1.92.801",  # wgpu<=0.32 needs cmd_lists_count (gone in 1.92.900), fastplotlib needs the newer add_polyline
     "simplejpeg",
     "glfw",
+    "click",
     "oasis-deconv"
 ]
 
@@ -66,6 +67,7 @@ dev = [
 
 
 [project.scripts]
+masknmf = "masknmf.cli:main"
 classification = "masknmf.visualization.classification_vis:main"
 
 [project.urls]
