@@ -5,11 +5,10 @@ green = glutamate, red = calcium
 
 The pipeline drops the first --exclude-initial-frames frames.
 
-    python examples/pipelines/run_glu_ca_pipeline.py --glutamate glu.tif --calcium ca.tif --output ./test_outputs
+    python examples/pipelines/run_glu_ca_pipeline.py --glutamate glu.tif --calcium ca.tif --output ./test_outputs/results.hdf5
 """
 
 import argparse
-from pathlib import Path
 
 import tifffile
 
@@ -31,13 +30,21 @@ def main():
     parser.add_argument(
         "--output",
         required=True,
-        help="parent folder; a timestamped run folder is created inside",
+        help="results .hdf5 file every stage writes into",
     )
     parser.add_argument(
         "--exclude-initial-frames",
         type=int,
         default=200,
         help="passed through to pipe.run",
+    )
+    parser.add_argument(
+        "--glutamate-sign", default="positive", choices=["positive", "negative"],
+        help="'negative' for an indicator that dims with activity",
+    )
+    parser.add_argument(
+        "--calcium-sign", default="positive", choices=["positive", "negative"],
+        help="'negative' for an indicator that dims with activity",
     )
     parser.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     args = parser.parse_args()
@@ -57,14 +64,15 @@ def main():
     if calcium is not None:
         print(f"calcium {calcium.shape} {calcium.dtype}")
 
-    Path(args.output).mkdir(exist_ok=True)
-    pipe = GlutamateCalciumSpinePipeline(output_folder=args.output, device=args.device)
-    pipe.run(
+    pipe = GlutamateCalciumSpinePipeline(outpath=args.output, device=args.device)
+    out = pipe.run(
         glutamate_channel=glu,
         calcium_channel=calcium,
         exclude_initial_frames=args.exclude_initial_frames,
+        glutamate_indicator_sign=args.glutamate_sign,
+        calcium_indicator_sign=args.calcium_sign,
     )
-    print(f"done, results under {args.output}")
+    print(f"done, results in {out}")
 
 
 if __name__ == "__main__":

@@ -2,8 +2,9 @@ from dataclasses import asdict
 import masknmf
 from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
 from masknmf.arrays import LazyFrameLoader, ArrayLike
-from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector
-from masknmf.utils import display
+from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector, OphysArray
+from masknmf.utils import display, drop_group
+from masknmf.utils._serialization import save_dict
 from masknmf.demixing import NoSignalsDetectedError, DemixingError
 
 from masknmf.compression.preprocessing import MaximinSplineDetrend
@@ -22,7 +23,6 @@ import os
 from numbers import Integral
 import torch
 import cv2
-from datetime import datetime
 
 DEFAULT_MOTION_CORRECTION_CONFIG = RigidMotionCorrectionConfig(max_shifts=(40, 40))
 DEFAULT_COMPRESSION_CONFIG = CompressDenoiseConfig(block_sizes=(10, 10),
@@ -53,6 +53,11 @@ NMF_JUST_HALS = {'maxiter': 40,
                 'update_frequency': 41,
                 'c_nonneg': True}
 
+RUN_GROUP = "SpinePipelineRun"
+CALCIUM_PREFIX = "calcium/"
+GLOBAL_PREFIX = "global/"
+INDICATOR_SIGNS = ("positive", "negative")
+
 def otsu_threshold(image):
     norm_image = (image - image.min()) / (image.max() - image.min()) * 255
     norm_image = norm_image.astype(np.uint8)
@@ -66,25 +71,42 @@ def get_std_based_mask(stack):
     return mask
 
 
+def _load_channel(channel: np.ndarray | ArrayLike | None,
+                  exclude_initial_frames: int,
+                  indicator_sign: Literal["positive", "negative"]) -> np.ndarray | None:
+    """The kept frames of one channel in RAM, flipped about the mean image for a negative indicator."""
+    if channel is None:
+        return None
+    movie = np.from_dlpack(channel[exclude_initial_frames:], device='cpu')
+    if movie.ndim != 3:
+        raise ValueError(f"Each channel should be (frames, height, width), got shape {movie.shape}")
+    if indicator_sign == "negative":
+        movie = OphysArray(movie, negative_indicator=True, include_mean=True, device="cpu")[:].numpy()
+    return movie
+
+
 class GlutamateCalciumSpinePipeline(BasePipeline):
 
     def __init__(self,
-                 output_folder: str | Path | None = None,
+                 outpath: str | Path = "results.hdf5",
                  motion_correct_config: RigidMotionCorrectionConfig | None = None,
                  compress_config: CompressDenoiseConfig | None = None,
                  demixing_config: MultipassDemixingConfig | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"):
-
-        if output_folder is None:
-            self._output_folder = None
-        else:
-            output_folder = Path(output_folder).expanduser().resolve()
-            if output_folder.exists() and not output_folder.is_dir():
-                raise NotADirectoryError(
-                    f"output_folder exists and is not a directory: {output_folder}"
-                )
-            self._output_folder = output_folder
+        """
+        Args:
+            outpath (str | Path): The one results file every stage writes into. The primary channel (glutamate
+                when given, else calcium) takes the plain group names (``RigidRegistrationArray``, ``PMDArray``,
+                ``DemixingResults``), so the viewers and ``masknmf view`` open it directly. Its whole-dendrite
+                fit goes under ``global/``; in a two-channel run the calcium channel's groups go under
+                ``calcium/`` and ``calcium/global/``. ``SpinePipelineRun`` records the kept frames, the mask
+                and the indicator signs.
+        """
+        outpath = Path(outpath).expanduser().resolve()
+        if outpath.is_dir():
+            raise IsADirectoryError(f"outpath is a directory, expected an .hdf5 file path: {outpath}")
+        self._outpath = outpath
 
         self.motion_correct_config = motion_correct_config
         self.compress_config = compress_config
@@ -132,8 +154,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             self._demixing_config = updated_config
 
     @property
-    def output_folder(self) -> Path | None:
-        return self._output_folder
+    def outpath(self) -> Path:
+        return self._outpath
 
     @property
     def frame_batch_size(self) -> int:
@@ -145,31 +167,20 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
     @property
     def config(self):
-        return {'motion_correct_config': self.motion_correct_config,
+        return {'outpath': self.outpath,
+                'motion_correct_config': self.motion_correct_config,
                 'compress_config': self.compress_config,
                 'demixing_config': self.demixing_config,
                 'frame_batch_size': self.frame_batch_size,
                 'device': self.device}
 
-    def create_run_folder(self) -> Path:
-        base = Path.cwd() if self._output_folder is None else self._output_folder
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        candidate = base / f"{stamp}_glutamate_calcium_spine_results"
-        suffix = 0
-        while True:
-            try:
-                candidate.mkdir(parents=True, exist_ok=False)
-                break
-            except FileExistsError:
-                suffix += 1
-                candidate = base / f"{stamp}_glutamate_calcium_spine_results_{suffix}"
-        return candidate
-
 
     def run(self,
             glutamate_channel: np.ndarray | ArrayLike | None,
             calcium_channel: np.ndarray | ArrayLike | None,
-            exclude_initial_frames: int = 200):
+            exclude_initial_frames: int = 200,
+            glutamate_indicator_sign: Literal["positive", "negative"] = "positive",
+            calcium_indicator_sign: Literal["positive", "negative"] = "positive"):
         """
         This routine runs the pipeline for processing single-plane glutamate and calcium imaging videos.
         It can analyze joint calcium/glutamate recordings or just process a single channel of either glutamate or calcium data
@@ -178,11 +189,23 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             - All datasets fully fit into the RAM of the computer (eventually can generalize)
             - The number of frames in both channels is the same (otherwise the joint registration is not as meaningful)
         Args:
-            glutamate_channel (np.ndarray | ArrayLike | None):
-            calcium_channel (np.ndarray | ArrayLike | None):
+            glutamate_channel (np.ndarray | ArrayLike | None): (frames, height, width)
+            calcium_channel (np.ndarray | ArrayLike | None): (frames, height, width)
+            exclude_initial_frames (int): Leading frames to drop before any processing.
+            glutamate_indicator_sign (str): "negative" for an indicator that dims with activity (e.g. ASAP-family
+                voltage sensors). That channel is flipped about its mean image before registration, as
+                :class:`OphysArray` does, so activity reads as positive deflections everywhere downstream and the
+                positive-signed detection and nonnegative traces apply unchanged.
+            calcium_indicator_sign (str): The same, for the calcium channel.
+
+        Returns:
+            Path: The results file.
         """
         device = torch_select_device(self.device)
-        final_output_folder = self.create_run_folder()
+        for name, sign in (("glutamate_indicator_sign", glutamate_indicator_sign),
+                           ("calcium_indicator_sign", calcium_indicator_sign)):
+            if sign not in INDICATOR_SIGNS:
+                raise ValueError(f"{name} must be one of {INDICATOR_SIGNS}, got {sign!r}")
         if not isinstance(exclude_initial_frames, Integral):
             raise ValueError("exclude_initial_frames should be a positive integer, 200 is likely to be a good default.")
         else:
@@ -193,14 +216,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         if glutamate_channel is None and calcium_channel is None:
             raise ValueError("No functional data was provided, both channels are None")
 
-        if glutamate_channel is not None:
-            glu = np.from_dlpack(glutamate_channel[exclude_initial_frames:], device='cpu') ##
-        else:
-            glu = None
-        if calcium_channel is not None:
-            calcium = np.from_dlpack(calcium_channel[exclude_initial_frames:], device='cpu')
-        else:
-            calcium = None
+        glu = _load_channel(glutamate_channel, exclude_initial_frames, glutamate_indicator_sign)
+        calcium = _load_channel(calcium_channel, exclude_initial_frames, calcium_indicator_sign)
 
         if glu is not None and calcium is not None:
             if glu.shape != calcium.shape:
@@ -210,8 +227,14 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             reference_input = calcium
         else:
             reference_input = glu
-        np.save(os.path.join(final_output_folder, "retained_frames.npy"),
-                np.arange(exclude_initial_frames, exclude_initial_frames + reference_input.shape[0]))
+
+        # glutamate, when present, owns the plain group names; calcium moves under calcium/ beside it
+        glu_prefix = ""
+        calcium_prefix = CALCIUM_PREFIX if glu is not None else ""
+        self.outpath.parent.mkdir(parents=True, exist_ok=True)
+        for stale in (CALCIUM_PREFIX.rstrip("/"), GLOBAL_PREFIX.rstrip("/"), RUN_GROUP):
+            drop_group(str(self.outpath), stale)
+        outpath = str(self.outpath)
 
         pre_moco_strategy = masknmf.CompressStrategy(block_sizes=self.compress_config.block_sizes,
                                                max_components=self.compress_config.max_components,
@@ -232,7 +255,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         if glu is not None:
             glu_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
                                                   target_movie=glu)
-            glu_moco_array.export(os.path.join(final_output_folder, "glutamate_moco.hdf5"))
+            glu_moco_array.export(outpath, prefix=glu_prefix)
             glu_moco_array_dense = glu_moco_array[:].cpu().numpy() #Loads it all into RAM
         else:
             glu_moco_array = None
@@ -241,7 +264,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         if calcium is not None:
             calcium_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
                                                       target_movie=calcium)
-            calcium_moco_array.export(os.path.join(final_output_folder, "calcium_moco.hdf5"))
+            calcium_moco_array.export(outpath, prefix=calcium_prefix)
             calcium_moco_array_dense = calcium_moco_array[:].cpu().numpy() #Loads it all into RAM
         else:
             calcium_moco_array = None
@@ -266,13 +289,13 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
         if glu_video is not None:
             pmd_glu = compress_strat.compress(glu_video)
-            pmd_glu.export(os.path.join(final_output_folder, "pmd_glutamate.hdf5"))
+            pmd_glu.export(outpath, prefix=glu_prefix)
         else:
             pmd_glu = None
 
         if calcium_video is not None:
             pmd_ca = compress_strat.compress(calcium_video)
-            pmd_ca.export(os.path.join(final_output_folder, "pmd_calcium.hdf5"))
+            pmd_ca.export(outpath, prefix=calcium_prefix)
         else:
             pmd_ca = None
 
@@ -309,8 +332,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
             glu_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
-            glu_pmd_demixer_results.export(os.path.join(final_output_folder, "glutamate_spine_demixing.hdf5"))
-            glu_pmd_demixer_global.results.export(os.path.join(final_output_folder, "glutamate_global_activity_demixing.hdf5"))
+            glu_pmd_demixer_results.export(outpath, prefix=glu_prefix)
+            glu_pmd_demixer_global.results.export(outpath, prefix=glu_prefix + GLOBAL_PREFIX)
 
             if pmd_ca is not None:
                 ## Pull out the spatial/temporal footprints from the glutamate movie
@@ -336,9 +359,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
                 ca_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
-                ca_pmd_demixer.results.export(os.path.join(final_output_folder, "calcium_spine_demixing.hdf5"))
-                ca_pmd_demixer_global.results.export(
-                    os.path.join(final_output_folder, "calcium_global_activity_demixing.hdf5"))
+                ca_pmd_demixer.results.export(outpath, prefix=calcium_prefix)
+                ca_pmd_demixer_global.results.export(outpath, prefix=calcium_prefix + GLOBAL_PREFIX)
 
 
         else: #In this case there is only a calcium channel
@@ -373,9 +395,21 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
             ca_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
-            ca_pmd_demixer_results.export(os.path.join(final_output_folder, "calcium_spine_demixing.hdf5"))
-            ca_pmd_demixer_global.results.export(
-                os.path.join(final_output_folder, "calcium_global_activity_demixing.hdf5"))
+            ca_pmd_demixer_results.export(outpath, prefix=calcium_prefix)
+            ca_pmd_demixer_global.results.export(outpath, prefix=calcium_prefix + GLOBAL_PREFIX)
+
+        save_dict({"retained_frames": np.arange(exclude_initial_frames,
+                                                exclude_initial_frames + reference_input.shape[0]),
+                   "exclude_initial_frames": exclude_initial_frames,
+                   "primary_channel": "glutamate" if glu is not None else "calcium",
+                   "channels": np.array([name for name, movie in (("glutamate", glu), ("calcium", calcium))
+                                         if movie is not None]),
+                   "glutamate_indicator_sign": glutamate_indicator_sign,
+                   "calcium_indicator_sign": calcium_indicator_sign,
+                   "cross_channel_mask": cross_channel_mask.astype(np.uint8)},
+                  filename=outpath, group=RUN_GROUP, exists_ok=True)
+        display(f"Wrote {outpath}")
+        return self.outpath
 
 
 

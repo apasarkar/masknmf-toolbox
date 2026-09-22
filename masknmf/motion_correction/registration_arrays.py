@@ -48,23 +48,24 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
         including empty selections.
         """
 
-    def export(self, path: str | Path):
+    def export(self, path: str | Path, prefix: str = ""):
         d_array = self._to_dict()
         d_strategy = self.strategy._to_dict()
-        save_dict(d_array, filename=path, exists_ok=True, group=self.__class__.__name__)
-        save_dict(d_strategy, filename=path, exists_ok=True, group=self._strategy_cls.__name__)
+        save_dict(d_array, filename=path, exists_ok=True, group=f"{prefix}{self.__class__.__name__}")
+        save_dict(d_strategy, filename=path, exists_ok=True, group=f"{prefix}{self._strategy_cls.__name__}")
 
     @classmethod
     def from_hdf5(cls,
                   path,
                   input_movie: ArrayLike,
+                  prefix: str = "",
                   **kwargs):
         if cls._strategy_cls is None:
             raise NotImplementedError(
                 f"{cls.__name__} must set `_strategy_cls` to enable from_hdf5"
             )
-        strat = cls._strategy_cls(**load_dict(path, cls._strategy_cls.__name__))
-        reg_arr_dict = load_dict(path, cls.__name__)
+        strat = cls._strategy_cls(**load_dict(path, f"{prefix}{cls._strategy_cls.__name__}"))
+        reg_arr_dict = load_dict(path, f"{prefix}{cls.__name__}")
         return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict, **kwargs)
 
 
@@ -287,17 +288,17 @@ class OphysArray(ArrayLike):
         if data_subset.ndim > mean_crop.ndim: #This means that there is a temporal dimension, which means we need to broadcast
             mean_crop = mean_crop[None, ...]
 
+        # out of place: on cpu, as_tensor shares memory with a float32 numpy dataset, so in-place ops would rewrite it
         if self.negative_indicator:
-            data_subset *= -1
             if include_mean:
-                data_subset += 2 * mean_crop
+                data_subset = 2 * mean_crop - data_subset
             else:
-                data_subset += mean_crop
+                data_subset = mean_crop - data_subset
         else:
             if include_mean:
                 pass
             else:
-                data_subset -= mean_crop
+                data_subset = data_subset - mean_crop
         return data_subset
 
 
