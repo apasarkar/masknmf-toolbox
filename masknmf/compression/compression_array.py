@@ -132,7 +132,7 @@ class CompressionArray(ArrayLike, Serializer):
                      include_trend: bool = False):
 
         """
-            Key assumption: the spatial basis matrix U has n + k columns; the first n columns is blocksparse (this serves
+            Key assumption: the spatial basis matrix spatial_compressed has n + k columns; the first n columns is blocksparse (this serves
             as a local spatial basis for the data) and the last k columns can have unconstrained spatial support (these serve
             as a global spatial basis for the data).
 
@@ -169,7 +169,6 @@ class CompressionArray(ArrayLike, Serializer):
     def from_flyweight(cls,
                        shape: tuple[int, int, int] | np.ndarray,
                        flyweight: TensorFlyWeight,
-                       device: str = "cpu",
                        rescale: bool = True,
                        include_trend: bool = True
                        ):
@@ -178,7 +177,7 @@ class CompressionArray(ArrayLike, Serializer):
         """
         return cls(shape,
                    flyweight,
-                   device=device,
+                   device=flyweight.device,
                    rescale=rescale,
                    include_trend=include_trend)
 
@@ -278,7 +277,7 @@ class CompressionArray(ArrayLike, Serializer):
     
     def calculate_rank_heatmap(self) -> torch.Tensor:
         """
-        Generates rank heatmap image based on U. Equal to row summation of binarized U matrix.
+        Generates rank heatmap image based on spatial_compressed. Equal to row summation of binarized spatial_compressed matrix.
         Returns:
             rank_heatmap (torch.Tensor). Shape (fov_height, fov_width).
         """
@@ -422,7 +421,8 @@ class CompressionResidualArray(ArrayLike):
         """
 
         ## This object has its own CompressionArray, so we can set its state without affecting any other workflows
-        self.compression_array = CompressionArray.from_flyweight(compression_array.flyweight)
+        self.compression_array = CompressionArray.from_flyweight(compression_array.shape,
+                                                                 compression_array.flyweight)
         self.compression_array.rescale = True
         self.raw_array = raw_array
         self._shape = self.compression_array.shape

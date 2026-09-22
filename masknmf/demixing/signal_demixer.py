@@ -141,7 +141,7 @@ def _compute_residual_correlation_image(
     c = c_meanzero / c_meanzero_norms
     c = torch.nan_to_num(c, nan=0, posinf=0, neginf=0)
 
-    ## Step 1: Compute the mean and pixelwise normalizer for (U(I - Q)V - ac)
+    ## Step 1: Compute the mean and pixelwise normalizer for (spatial_compressed(I - Q)temporal_compressed - ac)
     residual_mean = torch.sparse.mm(u_sparse, v_new_mean)
     residual_mean -= torch.sparse.mm(
         spatial_comps, torch.mean(temporal_comps.T, dim=1, keepdim=True)
@@ -335,7 +335,7 @@ def _compute_standard_correlation_image(
 
     """
     Step 3: Compute the pixelwise norm of the mean-subtracted PMD data. Exploit low-rank of PMD here.
-    We want to find diag([UV - m1^T][V^TU^T - 1m^T]) here.
+    We want to find diag([UV - m1^T][temporal_compressed^TU^T - 1m^T]) here.
     """
     uv_meanzero_norm = torch.zeros(
         (u_sparse.shape[0], 1), device=device, dtype=u_sparse.dtype
@@ -345,7 +345,7 @@ def _compute_standard_correlation_image(
     uv_meanzero_norm += (-2) * uv_sum * uv_mean
     uv_meanzero_norm += uv_mean * uv_mean * num_frames
 
-    # To finish norm computation, need to compute diag(UVV^TU). This is rowsum(UVV^T (hadamard) U).
+    # To finish norm computation, need to compute diag(UVV^TU). This is rowsum(UVV^T (hadamard) spatial_compressed).
     batch_iters = math.ceil(u_sparse.shape[1] / frame_batch_size)
     for k in range(batch_iters):
         start = frame_batch_size * k
@@ -396,7 +396,7 @@ def process_custom_signals(
     Params:
         a (torch.sparse_coo_tensor): (shape (fov_height*fov_width, K) where K is number of neural signals
         spatial_compressed (torch.sparse_coo_tensor): shape (fov_height*fov_width, rank 1) where rank 1 is larger PMD rank
-        V (torch.tensor): shape (rank 2, num_frames).
+        temporal_compressed (torch.tensor): shape (rank 2, num_frames).
         device (str): either 'cpu' or 'cuda'. Passed directly to pytorch "to" function for tensors to place data
             on the correct device.
         order (str): order in which 3d data is reshaped to 2d
@@ -649,12 +649,12 @@ def get_local_correlation_structure(
     Context: here,
     fov_height, fov_width are the fov dimensions of the original data (i.e. 512 x 512 pixels or the like)
     T is the number of frames in the video
-    R is the rank of the PMD decomposition (so U_sparse has shape (fov_height*fov_width, R) and V has shape (R, T))
+    R is the rank of the PMD decomposition (so U_sparse has shape (fov_height*fov_width, R) and temporal_compressed has shape (R, T))
     K is the number of neural signals identified (in "a" and "c", if they are provided)
 
     Inputs:
         U_sparse: torch.sparse_coo_tensor object, shape (fov_height*fov_width, T)
-        V: torch.Tensor, shape (R, T)
+        temporal_compressed: torch.Tensor, shape (R, T)
         dims: (fov_height, fov_width, T)
         th: int (positive integer), describes the MAD threshold. We use this to threshold the pixels for when we compute correlations.
             We compute the median and median absolute deviation (MAD), then zero all bins (x,t) such that Yd(x,t) < med(x) + th * MAD(x).
@@ -855,7 +855,7 @@ def find_superpixel_UV(
     Parameters:
     ----------------
     U_sparse: torch.sparse_coo_tensor object, shape (fov_height*fov_width, T)
-    V: torch.Tensor, shape (R, T)
+    temporal_compressed: torch.Tensor, shape (R, T)
     dims: (fov_height, fov_width, T)
     cut_off_point: float between 0 and 1. Correlation threshold which we use to determine whether two neighboring pixels are "highly correlated"
     length_cut: int. Minimum size of a connected component required for us to call it a superpixel
@@ -1217,11 +1217,11 @@ def successive_projection(
 
 def get_mean(U, R, V, a=None, X=None):
     """
-    Routine for calculating the mean of the movie in question in terms of the V basis
+    Routine for calculating the mean of the movie in question in terms of the temporal_compressed basis
     Inputs:
-        U: torch.sparse_coo_tensor. Dimensions (fov_height*fov_width, R) where fov_height, fov_width are the FOV dimensions
+        spatial_compressed: torch.sparse_coo_tensor. Dimensions (fov_height*fov_width, R) where fov_height, fov_width are the FOV dimensions
         R: torch.Tensor. Dimensions (R, R)
-        V: torch.Tensor: Dimensions (R, T), where R is the rank of the matrix
+        temporal_compressed: torch.Tensor: Dimensions (R, T), where R is the rank of the matrix
 
     Returns:
         m: torch.Tensor. Shape (fov_height*fov_width, 1)
@@ -1302,7 +1302,7 @@ def compute_correlation(I, U, R, m, s, norm, a=None, X=None, batch_size=200):
     Computes local correlation matrix given pre-computed quantities:
     Inputs:
         I: torch.sparse_coo_tensor, shape (fov_height*fov_width, fov_height*fov_width). Extremely sparse (<5 elts per row)
-        U: torch.sparse_coo_tensor. Shape (fov_height*fov_width, R).
+        spatial_compressed: torch.sparse_coo_tensor. Shape (fov_height*fov_width, R).
         m: torch.Tensor. Shape (fov_height*fov_width, 1)
         s: torch.Tensor. Shape (1, R)
         norm: torch.Tensor. Shape (fov_height*fov_width,1)
@@ -2972,7 +2972,7 @@ class DemixingState(SignalProcessingState):
                                                     resid_projection.shape[2])
         orth_qr, tri_qr = torch.linalg.qr(resid_projection, mode="reduced")
 
-        # Downsample U, A and B
+        # Downsample spatial_compressed, A and B
         u_downsample = masknmf.compression.decomposition.downsample_sparse(self.u_sparse,
                                                                            (self.d1, self.d2),
                                                                            downsampling_factor)
@@ -3009,8 +3009,8 @@ class DemixingState(SignalProcessingState):
     def lowrank_ring_update(self,
                             x: torch.tensor):
         """
-        Given: a factorization xy^t where x is in the U basis, y is orthogonal, this fits an unconstrained ring model
-        and projects the result onto the U spatial basis
+        Given: a factorization xy^t where x is in the spatial_compressed basis, y is orthogonal, this fits an unconstrained ring model
+        and projects the result onto the spatial_compressed spatial basis
         """
         self.W.weights = torch.ones(
             (self.shape[0] * self.shape[1]), device=self.device
@@ -3127,13 +3127,13 @@ class DemixingState(SignalProcessingState):
                                       c_nonneg: bool = True):
         """
         TODO: Add documentation explaining what this is doing
-        V* = (a^T L a)^{-1} (a^T @ L @ U @ factorized_ring_term1 @ factorized_ring_term2)
+        temporal_compressed* = (a^T L a)^{-1} (a^T @ L @ spatial_compressed @ factorized_ring_term1 @ factorized_ring_term2)
 
         Updates the temporal component so that it contains the signals
 
         """
 
-        # Compute U @ factorized_ring_term1 to collapse rank
+        # Compute spatial_compressed @ factorized_ring_term1 to collapse rank
         u_term1 = torch.sparse.mm(self.u_sparse, self.factorized_ring_term[0])
         lu_term1 = torch.sparse.mm(graph_laplacian, u_term1)
         alu_term1 = torch.sparse.mm(self.a.t(), lu_term1)  # Shape (num_neurons, background_rank)

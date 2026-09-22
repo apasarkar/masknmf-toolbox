@@ -69,7 +69,7 @@ class ResidualCorrelationImages(ArrayLike):
         Each neuron has a spatial support (pixels on which its spatial footprint is nonzero). Its residual correlation
         -- for those pixels ONLY -- is stored in support_correlation_values. That has the same level of sparsity as
         "a". For all other pixels in the residual correlation image data are given by the correlation image between
-        (URs - AX)V and c.T. This gives us a very memory efficient way to generate corr images without storing the full
+        (URs - AX)temporal_compressed and c.T. This gives us a very memory efficient way to generate corr images without storing the full
         pixels x number of neural signals data.
 
         Args:

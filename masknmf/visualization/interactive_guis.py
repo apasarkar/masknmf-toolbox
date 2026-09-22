@@ -198,7 +198,7 @@ def make_demixing_video(
     fluctuating_arr = results.fluctuating_background_array
     pmd_arr = results.compression_array
 
-    # Demixing is run on the U/V representation, without rescaling, so we set rescale = False here to make sure scales match
+    # Demixing is run on the spatial_compressed/temporal_compressed representation, without rescaling, so we set rescale = False here to make sure scales match
     pmd_arr.rescale = False
     residual_arr = results.residual_array
     colorful_arr = results.colorful_ac_array

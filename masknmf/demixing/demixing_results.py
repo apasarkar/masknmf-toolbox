@@ -167,7 +167,7 @@ class DemixingResults(Serializer):
             c (torch.Tensor): shape (number of frames, number of neural signals)
             mean_image (torch.Tensor | None): The mean image of the imaging data, used for reconstructing PMD Arrays
             noise_variance_image (torch.Tensor | None): The pixelwise noise variance image of the data, used for reconstructing PMD Arrays
-            spatial_compressed_local_projector (SparseCOOTensor | None): A projection matrix used to project frames of data onto the PMD U subspace
+            spatial_compressed_local_projector (SparseCOOTensor | None): A projection matrix used to project frames of data onto the PMD spatial_compressed subspace
             spatial_trend_basis (torch.Tensor | None): Shape (num_pixels, basis_rank). The spatial trend basis identified by PMD
             temporal_trend_basis (torch.Tensor | None): Shape (basis_rank, num_frames). The temporal trend basis identified by PMD
             factorized_bkgd_term1 (torch.Tensor | None): tensor used to express low-rank background estimate
@@ -563,7 +563,6 @@ class DemixingResults(Serializer):
             self._compression_array = CompressionArray.from_flyweight(
                 self.shape,
                 self.flyweight,
-                device=self.device,
                 rescale=self.rescale,
             )
         return self._compression_array

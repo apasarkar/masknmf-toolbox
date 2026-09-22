@@ -4,9 +4,8 @@ import masknmf
 import math
 import torch
 from tqdm import tqdm
-from typing import *
 
-def construct_gaussian_highpass_filter_kernel(gaussian_sigma: List[float]) -> torch.Tensor:
+def construct_gaussian_highpass_filter_kernel(gaussian_sigma: list[float]) -> torch.Tensor:
     """
     Computes a high-pass filter kernel using a Gaussian filter. The Kernel is I - Gauss(sigma)
 
@@ -42,134 +41,123 @@ def construct_gaussian_highpass_filter_kernel(gaussian_sigma: List[float]) -> to
 
     return kernel
 
-def spatial_filter_pmd(pmd_obj: masknmf.CompressionArray,
-                       batch_size: int = 200,
-                       filter_sigma: int = 3,
-                       device: str = 'cpu',
-                       target_device: str = 'cpu') -> masknmf.CompressionArray:
-    if pmd_obj.rescale is False:
-        switch = True
-        pmd_obj.rescale = True
-    else:
-        switch = False
-    t, d1, d2 = pmd_obj.shape
+def spatial_filter_compressed_array(compression_array: masknmf.CompressionArray,
+                                    batch_size: int = 200,
+                                    filter_sigma: int = 3,
+                                    target_device: torch.device | str = 'cpu') -> masknmf.CompressionArray:
+
+    #We can change the state of the below compression array without any issue
+    compression_array = masknmf.CompressionArray.from_flyweight(compression_array.shape,
+                                                                compression_array.flyweight,
+                                                                rescale = True)
+    device = compression_array.device
+    num_frames, fov_height, fov_width = compression_array.shape
     hp_filter_kernel = construct_gaussian_highpass_filter_kernel(
         [filter_sigma, filter_sigma]).to(device)
-    num_batches = math.ceil(pmd_obj.shape[0] / batch_size)
-    pmd_obj.to(device)
+    num_batches = math.ceil(compression_array.shape[0] / batch_size)
     relu_obj = torch.nn.ReLU()
     results = []
     for k in tqdm(range(num_batches)):
         start = k * batch_size
-        end = min(start + batch_size, pmd_obj.shape[0])
-        curr_frames = pmd_obj.getitem_tensor(slice(start, end))
+        end = min(start + batch_size, compression_array.shape[0])
+        curr_frames = compression_array.getitem_tensor(slice(start, end))
         if curr_frames.ndim == 2:
             curr_frames = curr_frames[None, ...]
 
         filtered_frames = masknmf.motion_correction.spatial_filters.image_filter(curr_frames, hp_filter_kernel)
         filtered_frames = relu_obj(filtered_frames)
         filtered_frames = filtered_frames.permute(1, 2, 0)
-        projection = pmd_obj.project_frames(filtered_frames, standardize=False)
+        projection = compression_array.project_frames(filtered_frames, standardize=False)
         results.append(projection.to(target_device))
-    pmd_obj.to(target_device)
-    final_v = torch.cat(results, dim=1).to(target_device)
+    compression_array.to(target_device)
+    final_temporal_compressed = torch.cat(results, dim=1).to(target_device)
 
-    new_mean = torch.sparse.mm(pmd_obj.spatial_compressed, torch.mean(final_v.to(target_device), dim=1, keepdim = True))
-    new_mean = new_mean.reshape(d1, d2)
-    final_v -= torch.mean(final_v, dim=1, keepdim=True)
+    new_mean = torch.sparse.mm(compression_array.spatial_compressed, torch.mean(final_temporal_compressed.to(target_device), dim=1, keepdim = True))
+    new_mean = new_mean.reshape(fov_height, fov_width)
+    final_temporal_compressed -= torch.mean(final_temporal_compressed, dim=1, keepdim=True)
 
-    final_arr = masknmf.CompressionArray.from_tensors(pmd_obj.shape,
-                                                      pmd_obj.spatial_compressed,
-                                                      final_v,
+    final_arr = masknmf.CompressionArray.from_tensors(compression_array.shape,
+                                                      compression_array.spatial_compressed,
+                                                      final_temporal_compressed,
                                                       new_mean,
                                                       torch.ones_like(new_mean),
-                                                      spatial_compressed_local_projector=pmd_obj.spatial_compressed_local_projector,
+                                                      spatial_compressed_local_projector=compression_array.spatial_compressed_local_projector,
                                                       device=target_device)
-
-    if switch:
-        pmd_obj.rescale = False
 
     return final_arr
 
 
-def truncated_random_svd_pmd(
-    U: torch.Tensor,      # (n_pixels, r), sparse — U_pmd
-    V: torch.Tensor,      # (r, T),        dense  — V_pmd
+def truncated_random_svd_compressed_array(
+    spatial_compressed: torch.Tensor,
+    temporal_compressed: torch.Tensor,
     rank: int,
     num_oversamples: int = 5,
     device: str = "cpu",
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Randomized SVD of F = U @ V without materializing (n_pixels, T).
+    Randomized SVD of F = spatial_compressed @ temporal_compressed without materializing the full dataset.
 
-    The random projection must act on F, not just V, so we thread U
+    The random projection must act on F, not just temporal_compressed, so we thread spatial_compressed
     through both the forward and adjoint passes.
 
-    Returns U_svd (r, rank), S (rank,), Vt (rank, T)
-    where F ≈ (U @ U_svd) @ diag(S) @ Vt
+    Returns spatial_mixing_matrix (compression_rank, rank), singular_values (rank,), right_singular_vectors (rank, num_frames)
+    where F ≈ (spatial_compressed @ spatial_mixing_matrix) @ diag(singular_values) @ right_singular_vectors
     """
-    r, T = V.shape
+    compression_rank, num_frames = temporal_compressed.shape
 
-    Omega = torch.randn(T, rank + num_oversamples, device=device)
-    Y = torch.sparse.mm(U, V @ Omega)          # (n_pixels, rank+os) — only dense op
+    omega = torch.randn(num_frames, rank + num_oversamples, device=device)
+    y = torch.sparse.mm(spatial_compressed, temporal_compressed @ omega)
 
-    Q, _ = torch.linalg.qr(Y, mode="reduced")  # (n_pixels, rank+os)
+    q, _ = torch.linalg.qr(y, mode="reduced")  # (num_pixels, compression_rank + oversamples)
 
-    QtU = torch.sparse.mm(U.T, Q).T            # (rank+os, r)
-    B = QtU @ V                                 # (rank+os, T)
+    qt_spatial_compressed = torch.sparse.mm(spatial_compressed.T, q).T            # (rank+os, compression_rank)
+    b = qt_spatial_compressed @ temporal_compressed                                 # (rank+os, num_frames)
 
-    U_b, S, Vt = torch.linalg.svd(B, full_matrices=False)
+    left_singular_vectors, singular_values, right_singular_vectors = torch.linalg.svd(b, full_matrices=False)
 
-    U_svd = Q @ U_b                        # (r, rank+os) — in PMD basis
+    spatial_mixing_matrix = q @ left_singular_vectors                        # (compression_rank, rank+os) — in compression basis
 
-    return U_svd[:, :rank], S[:rank], Vt[:rank, :]
+    return spatial_mixing_matrix[:, :rank], singular_values[:rank], right_singular_vectors[:rank, :]
 
 
-def filter_global_signal_pmd(
-    pmd_obj: masknmf.CompressionArray,
+def filter_global_signal_compression_array(
+    compression_array: masknmf.CompressionArray,
     rank: int = 3,
     num_oversamples: int = 5,
-    device: str = "cpu",
 ) -> tuple[masknmf.CompressionArray, torch.Tensor, torch.Tensor, torch.Tensor]:
 
-    pmd_obj.to(device)
-    U_pmd = pmd_obj.spatial_compressed.to(device)          # (n_pixels, r), sparse
-    V_pmd = pmd_obj.temporal_compressed.to(device)          # (r, T), dense
+    device = compression_array.device
+    spatial_compressed = compression_array.spatial_compressed         # (num_pixels, compression_rank)
+    temporal_compressed = compression_array.temporal_compressed          # (compression_rank, num_frames), dense
 
-    U_svd, S, Vt = truncated_random_svd_pmd(U_pmd, V_pmd, rank, num_oversamples, device)
+    spatial_mixing_matrix, singular_values, right_singular_vectors = truncated_random_svd_compressed_array(spatial_compressed, temporal_compressed, rank, num_oversamples, device)
 
-    # --- Global signal in pixel space (never densified to n_pixels x T) ---
-    # pixel_global = U_pmd @ U_svd @ diag(S)   shape: (n_pixels, rank)
-    U_global_pixels = U_svd * S[None, :]  # (n_pixels, rank)
+    # --- Global signal in pixel space (never densified to n_pixels x num_frames) ---
+    temporal_compressed_global = (spatial_mixing_matrix * singular_values[None, :]) @ right_singular_vectors  #(compression_rank, num_frames)
 
-    # --- Project back into PMD basis using spatial_compressed_local_projector ---
-    # This is exactly what project_frames does, without standardization
-    V_global = torch.sparse.mm(
-        pmd_obj.spatial_compressed_local_projector.T, U_global_pixels
-    ) @ Vt                                 # (r, rank) @ (rank, T) -> (r, T)
+    temporal_compressed_global_subtracted = temporal_compressed - temporal_compressed_global
 
-    V_residual = V_pmd - V_global          # (r, T)
+    temporal_compressed_global_subtracted -= torch.mean(temporal_compressed_global_subtracted, dim = 1, keepdims=True)
 
-    V_residual -= torch.mean(V_residual, dim = 1, keepdims=True)
-
-    # --- Build residual PMDArray (U unchanged, V replaced) ---
-    T, H, W = pmd_obj.shape
-    new_mean = torch.zeros(H, W, device=device)
-    residual_pmd = masknmf.CompressionArray.from_tensors(
-        pmd_obj.shape,
-        U_pmd,
-        V_residual,
+    # --- Build residual CompressionArray (spatial_compressed unchanged, temporal_compressed replaced) ---
+    num_frames, fov_height, fov_width = compression_array.shape
+    new_mean = torch.zeros(fov_height, fov_width, device=device)
+    residual_compression_array = masknmf.CompressionArray.from_tensors(
+        compression_array.shape,
+        spatial_compressed,
+        temporal_compressed_global_subtracted,
         new_mean,
         torch.ones_like(new_mean),
-        spatial_compressed_local_projector=pmd_obj.spatial_compressed_local_projector,
+        spatial_compressed_local_projector=compression_array.spatial_compressed_local_projector,
         device="cpu",
     )
-    return residual_pmd
+    return residual_compression_array
 
 ##Define the filtering operation
 def high_pass_filter(data: np.ndarray,
                      cutoff: float,
-                     sampling_rate: float, order=5):
+                     sampling_rate: float,
+                     order=5) -> np.ndarray:
     """
     data (np.ndarray): 1D time series
     cutoff (float): The frequency cutoff in hertz
@@ -187,18 +175,18 @@ def high_pass_filter(data: np.ndarray,
 
 
 def high_pass_filter_batch(temporal_matrix: np.ndarray,
-                       cutoff: float,
-                       sampling_rate: float):
+                           cutoff: float,
+                           sampling_rate: float) -> np.ndarray:
     """
     Runs a high pass filter on all rows of a matrix
 
     Args:
-        temporal_matrix (np.ndarray): Shape (PMD Rank, Number of Frames). PMD temporal basis
+        temporal_matrix (np.ndarray): Shape (Compression Rank, Number of Frames). Compression temporal basis
         cutoff (float): The frequency cutoff in hertz
         sampling_rate (float): The sampling rate of the data
 
     Returns:
-        temporal_hp (np.ndarray): Shape (PMD Rank, Number of Frames). High-pass filtered matrix
+        temporal_hp (np.ndarray): Shape (Compression Rank, Number of Frames). High-pass filtered matrix
     """
     temporal_hp = np.zeros_like(temporal_matrix)
 
@@ -239,42 +227,42 @@ def bandstop_filter_batch(temporal_matrix: np.ndarray,
         temporal_filtered[k, :] = bandstop_filter(temporal_matrix[k, :], low_cutoff, high_cutoff, sampling_rate, order)
     return temporal_filtered
 
-def bandstop_filter_pmd(pmd_obj: masknmf.CompressionArray,
-                        low_cutoff: float,
-                        high_cutoff: float,
-                        sampling_rate: float,
-                        order: int = 5) -> masknmf.CompressionArray:
+def bandstop_filter_compression_array(compression_array: masknmf.CompressionArray,
+                                      low_cutoff: float,
+                                      high_cutoff: float,
+                                      sampling_rate: float,
+                                      order: int = 5) -> masknmf.CompressionArray:
     """
-    Apply a bandstop filter to the temporal components of a PMD object.
+    Apply a bandstop filter to the temporal components of a CompressionArray object.
 
     Args:
-        pmd_obj (masknmf.PMDArray): Input PMD object
+        compression_array (masknmf.CompressionArray): Input CompressionArray object
         low_cutoff (float): Lower bound of the stop band in hertz
         high_cutoff (float): Upper bound of the stop band in hertz
         sampling_rate (float): The sampling rate of the data in hertz
         order (int): Order of the Butterworth filter
 
     Returns:
-        masknmf.CompressionArray: Updated PMD object with bandstop-filtered temporal components
+        masknmf.CompressionArray: Updated CompressionArray object with bandstop-filtered temporal components
     """
-    V = pmd_obj.temporal_compressed  # (rank, T)
+    temporal_compressed = compression_array.temporal_compressed  # (compression_rank, num_frames)
 
     # Filter on CPU as numpy
-    V_np = V.cpu().numpy()
-    V_filtered = bandstop_filter_batch(V_np, low_cutoff, high_cutoff, sampling_rate, order)
-    final_v = torch.tensor(V_filtered, device=V.device, dtype=V.dtype)
+    temporal_compressed_numpy = temporal_compressed.cpu().numpy()
+    temporal_compressed_filtered = bandstop_filter_batch(temporal_compressed_numpy, low_cutoff, high_cutoff, sampling_rate, order)
+    final_temporal_compressed = torch.as_tensor(temporal_compressed_filtered, device=temporal_compressed.device, dtype=temporal_compressed.dtype)
 
-    # Recompute mean image from filtered V, then zero-mean V
-    mean = torch.sparse.mm(pmd_obj.spatial_compressed, torch.mean(final_v, dim=1, keepdim=True))
-    new_mean = mean.reshape(pmd_obj.shape[1], pmd_obj.shape[2])
-    final_v -= torch.mean(final_v, dim=1, keepdim=True)
+    # Recompute mean image from filtered temporal_compressed, then zero-mean temporal_compressed
+    mean = torch.sparse.mm(compression_array.spatial_compressed, torch.mean(final_temporal_compressed, dim=1, keepdim=True))
+    new_mean = mean.reshape(compression_array.shape[1], compression_array.shape[2])
+    final_temporal_compressed -= torch.mean(final_temporal_compressed, dim=1, keepdim=True)
 
-    device = pmd_obj.device
-    return masknmf.CompressionArray.from_tensors(pmd_obj.shape,
-                                                 pmd_obj.spatial_compressed.to(device),
-                                                 final_v.to(device),
+    device = compression_array.device
+    return masknmf.CompressionArray.from_tensors(compression_array.shape,
+                                                 compression_array.spatial_compressed.to(device),
+                                                 final_temporal_compressed.to(device),
                                                  new_mean.to(device),
                                                  torch.ones_like(new_mean),
-                                                 spatial_compressed_local_projector=pmd_obj.spatial_compressed_local_projector,
+                                                 spatial_compressed_local_projector=compression_array.spatial_compressed_local_projector,
                                                  device=device)
 

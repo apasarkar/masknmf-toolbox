@@ -251,10 +251,9 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         pmd_denoise = masknmf.CompressionArray.from_hdf5(pmd_source)
         if self.spatial_highpass_config is None:
             spatial_highpass_config = SpatialHighpassConfig()
-        spatial_filt_pmd = masknmf.demixing.filters.spatial_filter_pmd(pmd_denoise,
-                                                                       batch_size=self.frame_batch_size,
-                                                                       filter_sigma=spatial_highpass_config.filter_sigma,
-                                                                       device=device)
+        spatial_filt_pmd = masknmf.demixing.filters.spatial_filter_compressed_array(pmd_denoise,
+                                                                                    batch_size=self.frame_batch_size,
+                                                                                    filter_sigma=spatial_highpass_config.filter_sigma)
 
         torch.cuda.empty_cache()
 

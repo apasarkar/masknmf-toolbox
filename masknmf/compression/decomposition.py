@@ -460,7 +460,7 @@ def compute_factorized_svd_with_leftbasis(
         p: SparseCOOTensor, v: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Use case: you have a factorized movie, UPV where U is sparse (and you don't want to change that), and
+    Use case: you have a factorized movie, UPV where spatial_compressed is sparse (and you don't want to change that), and
     UP has orthonormal columns. This function reformats the factorization into UPV = (UR)sV_{new} where (UR) are left
     singular vecotrs, s describes singular values, V_new describes right singular vectors.
 
@@ -1373,7 +1373,7 @@ def compression_routine(
             )
             column_number += local_spatial_basis.shape[2]
 
-    # Construct the U matrix up to this point
+    # Construct the spatial_compressed matrix up to this point
     final_row_indices = torch.concatenate(final_row_indices, dim=0)
     final_column_indices = torch.concatenate(final_column_indices, dim=0)
     spatial_overall_values = torch.concatenate(spatial_overall_values, dim=0)
@@ -1409,7 +1409,7 @@ def compression_routine(
     u_aggregated = torch.sparse_coo_tensor(
         final_indices, spatial_overall_values, (num_rows, num_cols)
     ).coalesce()
-    display(f"Constructed U matrix. Rank of U is {u_aggregated.shape[1]}")
+    display(f"Constructed spatial_compressed matrix. Rank of spatial_compressed is {u_aggregated.shape[1]}")
 
 
     ## If the preprocessing basis was used, re-assign the mean of that decomposition to the compression array
