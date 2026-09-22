@@ -1024,7 +1024,6 @@ def delete_comp(
         components_to_delete,
         reasoning_message,
         plot_en,
-        order="C",
 ):
     """
     General routine to delete components in the demixing procedure
@@ -1038,7 +1037,6 @@ def delete_comp(
         components_to_delete (torch.tensor): 1D tensor indicating which components to delete
         reasoning_message (str): An option to provide a reason for why deletion is happening
         plot_en (bool): Indicates whether plotting is enabled
-        order (str): "C" or "F" depending on how we flatten 2D spatial data into 1D vectors (and vice versa)
     Returns:
         tuple: A tuple containing the following elements:
             - spatial_components (torch.sparse_coo_tensor): Updated sparse tensor of dimensions (d, K')
@@ -1613,7 +1611,6 @@ def superpixel_init(
         v (torch.Tensor): dims (R2, T). PMD temporal basis.
         corr_image (torch.Tensor): dims (fov_height, fov_width)
         patch_size (tuple): Patch size that we use to partition the FOV when computing pure superpixels
-        data_order (str): "F" or "C" depending on how the field of view "collapsed" into 1D vectors
         dims (tuple): containing (fov_height, fov_width, T), the dimensions of the data
         cut_off_point (float): between 0 and 1. Correlation thresholds used in superpixel calculations
         residual_cut (float): between 0 and 1. Threshold used in successive projection to find pure superpixels
@@ -1728,14 +1725,6 @@ def superpixel_init(
     peaks = peaks.cpu().numpy()
     total_peaks = total_peaks.cpu().numpy()
 
-    # superpixel_dict = {
-    #     "nmf_seed_map": connectivity_mat,
-    #     "pure_nmf_seed_map": pure_superpixel_img_1d.cpu().numpy().reshape((dims[0], dims[1]), order=data_order),
-    #     "seed_coords": unique_pix,
-    #     "selected_peaks": peaks,
-    #     "total_peaks": total_peaks,
-    #     "correlation_image": corr_image
-    # }
     display(f'initialized {a.shape[1]} signals')
 
     init_res = InitializationResults(a,
@@ -1843,7 +1832,6 @@ def merge_components(
         merge_overlap_thr (float): :scalar between 0 and 1
             overlap ratio threshold for two corr images (default 0.6)
         plot_en (bool) Whether or not to plot the results. This is useful for development, not production (TODO: Check what things need to be moved to CPU for this)
-        data_order: string. Either "C" or "F".
     Returns:
         a (torch.sparse_coo_tensor). Shape (pixels, number of signals). New spatial components for demixing
         c (torch.tensor): Shape (frames, number of signals). New temporal components for demixing
@@ -2209,7 +2197,6 @@ class SignalDemixer:
         self.device = device
         self.pmd_obj = pmd_array
         self.pmd_obj.to(device)
-        self.data_order = "C"
         self.shape = self.pmd_obj.shape
 
         self.u_sparse = self.pmd_obj.spatial_compressed.float().to(self.device).coalesce()
@@ -2312,7 +2299,6 @@ class InitializingState(SignalProcessingState):
         """
 
         self.pmd_obj = pmd_arr
-        self.data_order = "C"
         self.device = device
         self.pmd_obj.to(self.device)
 
@@ -2428,7 +2414,6 @@ class InitializingState(SignalProcessingState):
                 self.pmd_obj,
                 self.results,
                 factorized_ring_term=background_term,
-                data_order=self.data_order,
                 device=self.device,
                 frame_batch_size=self.frame_batch_size,
                 robust_noise_term=self.robust_noise_term
@@ -2528,7 +2513,7 @@ class InitializingState(SignalProcessingState):
             if spatial_footprints.ndim == 3:
                 # Shape is (fov dim 1, fov dim 2, number of neurons)
                 spatial_2d = spatial_footprints.reshape(
-                    (self.d1 * self.d2, -1), order=self.data_order
+                    (self.d1 * self.d2, -1)
                 )
 
             elif spatial_footprints.ndim == 2:
@@ -2556,7 +2541,7 @@ class InitializingState(SignalProcessingState):
                     )
                     spatial_2d = spatial_footprints.cpu().detach().numpy()
                     spatial_2d = spatial_2d.reshape(
-                        (self.d1 * self.d2, -1), order=self.data_order
+                        (self.d1 * self.d2, -1)
                     )
                     processed_spatial_tensor = ndarray_to_torch_sparse_coo(
                         spatial_2d
@@ -2660,7 +2645,6 @@ class DemixingState(SignalProcessingState):
             pmd_arr: CompressionArray,
             init_results: InitializationResults,
             factorized_ring_term: tuple[torch.Tensor, torch.Tensor] = None,
-            data_order: str = "C",
             device: str = "cpu",
             frame_batch_size: int = 10000,
             robust_noise_term: float | None = None
@@ -2670,7 +2654,6 @@ class DemixingState(SignalProcessingState):
         super().__init__(pixel_batch_size, frame_batch_size)
         # Define the data dimensions, data ordering scheme, and device
 
-        self.data_order = data_order
         self.device = device
         self._results = None
         self.pmd_obj = pmd_arr
@@ -3065,7 +3048,6 @@ class DemixingState(SignalProcessingState):
                 temp,
                 "zero a!",
                 plot_en,
-                order=self.data_order,
             )
             print(f"new shape of a is {self.a.shape}")
             self.update_hals_scheduler()
@@ -3102,7 +3084,6 @@ class DemixingState(SignalProcessingState):
                 temp,
                 "zero c!",
                 plot_en,
-                order=self.data_order,
             )
             self.update_hals_scheduler()
 
