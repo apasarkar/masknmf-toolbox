@@ -2656,7 +2656,7 @@ class DemixingState(SignalProcessingState):
 
         self.device = device
         self._results = None
-        self.pmd_obj = compression_array
+        self.compression_array = compression_array
 
         self.spatial_compressed = compression_array.spatial_compressed.to(device)
         self.temporal_compressed = compression_array.temporal_compressed.to(device)
@@ -2745,7 +2745,7 @@ class DemixingState(SignalProcessingState):
         display(f"baseline is {baseline}")
 
         output = torch.ones_like(variance_cumulator) * baseline
-        return output.reshape(self.pmd_obj.shape[1], self.pmd_obj.shape[2])
+        return output.reshape(self.compression_array.shape[1], self.compression_array.shape[2])
 
     @property
     def state_description(self):
@@ -2777,7 +2777,7 @@ class DemixingState(SignalProcessingState):
             else:
                 background_term = None
             context.state = InitializingState(
-                self.pmd_obj,
+                self.compression_array,
                 self.device,
                 self.a,
                 self.c,
@@ -2872,7 +2872,7 @@ class DemixingState(SignalProcessingState):
         effective_rank = min_rank + 1  ## This is the new estimate
 
         left_svd = left_svd[:, :effective_rank]
-        left_svd = self.pmd_obj.project_frames(left_svd, standardize=False)
+        left_svd = self.compression_array.project_frames(left_svd, standardize=False)
         sing_svd = sing[:effective_rank]
         right_svd = right_sing[:effective_rank, :]
 
@@ -2987,7 +2987,7 @@ class DemixingState(SignalProcessingState):
         denominator = torch.sum(wx * wx, dim=1)
         weights = torch.nan_to_num(numerator / denominator, nan=0.0)
         wx *= weights[:, None]
-        projection = self.pmd_obj.project_frames(wx, standardize=False)
+        projection = self.compression_array.project_frames(wx, standardize=False)
         return projection
 
     def fluctuating_baseline_update(self,
@@ -3011,7 +3011,7 @@ class DemixingState(SignalProcessingState):
 
         u_bkgd, s_bkgd, v_bkgd = self.lowrank_background_svd(downsampling_factor,
                                                              self.background_rank)
-        new_left_term = self.pmd_obj.project_frames(u_bkgd, standardize=False)
+        new_left_term = self.compression_array.project_frames(u_bkgd, standardize=False)
         new_left_term = torch.sparse.mm(self.spatial_compressed, new_left_term)
         new_left_term *= s_bkgd[None, :]
         ring_weighted_left_term = self.lowrank_ring_update(new_left_term)
@@ -3530,15 +3530,15 @@ class DemixingState(SignalProcessingState):
 
         self._results = DemixingResults(
             (self.T, self.d1, self.d2),
-            self.pmd_obj.spatial_compressed,
-            self.pmd_obj.temporal_compressed,
+            self.compression_array.spatial_compressed,
+            self.compression_array.temporal_compressed,
             self.a,
             self.c,
-            mean_image=self.pmd_obj.mean_image,
-            noise_variance_image=self.pmd_obj.noise_variance_image,
-            spatial_compressed_local_projector=self.pmd_obj.spatial_compressed_local_projector,
-            spatial_trend_basis=self.pmd_obj.spatial_trend_basis,
-            temporal_trend_basis=self.pmd_obj.temporal_trend_basis,
+            mean_image=self.compression_array.mean_image,
+            noise_variance_image=self.compression_array.noise_variance_image,
+            spatial_compressed_local_projector=self.compression_array.spatial_compressed_local_projector,
+            spatial_trend_basis=self.compression_array.spatial_trend_basis,
+            temporal_trend_basis=self.compression_array.temporal_trend_basis,
             factorized_bkgd_term1 = self.factorized_ring_term[0],
             factorized_bkgd_term2 = self.factorized_ring_term[1],
             b = self.b.squeeze(),
