@@ -1094,7 +1094,7 @@ def construct_weighting_scheme(dim1, dim2) -> torch.tensor:
     return block_weights
 
 
-def pmd_decomposition(
+def compression_routine(
         dataset: Union[np.ndarray, masknmf.ArrayLike],
         block_sizes: Tuple[int, int],
         frame_range: int | None = None,
