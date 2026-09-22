@@ -1,6 +1,6 @@
 from dataclasses import asdict
 import masknmf
-from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
+from masknmf.compression import CompressStrategy, CompressDenoiseStrategy, CompressionArray
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.utils import display, has_group, drop_group
@@ -144,9 +144,9 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
                 # a previous run's compression: at outpath_compression, else an old compression.hdf5 beside it
-                if not has_group(pmd_source, "PMDArray"):
+                if not has_group(pmd_source, CompressionArray.__name__):
                     pmd_source = os.path.join(os.path.dirname(pmd_source), "compression.hdf5")
-                if not has_group(pmd_source, "PMDArray"):
+                if not has_group(pmd_source, CompressionArray.__name__):
                     raise ValueError("You specified that compression should be skipped but there is no compression at "
                                      "outpath_compression or in a compression.hdf5 beside it")
             else:
@@ -369,7 +369,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         latest_demix_results.export(final)
         if remove_intermediates:
             # in one results file the pmd group only duplicates what the demixing results carry; the shifts stay
-            drop_group(final, "PMDArray")
+            drop_group(final, CompressionArray.__name__)
         return latest_demix_results
 
 

@@ -4,12 +4,12 @@ import masknmf
 from masknmf.compression.compression_array import CompressionArray
 import math
 import numpy as np
-
+from collections.abc import Callable
+from typing import Literal
 from tqdm import tqdm
 
 from masknmf import display
 from masknmf.utils import torch_select_device, SparseCOOTensor
-from typing import *
 from masknmf.compression.preprocessing import SplineDetrend, SplineDetrenderBase
 
 
@@ -18,7 +18,7 @@ def truncated_random_svd(
         rank: int,
         num_oversamples: int = 5,
         device: str = "cpu"
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Assumptions:
     (1) input_matrix has been adequately mean-subtracted (so every column has mean 0, at least over the full dataset)
@@ -131,7 +131,7 @@ def evaluate_fitness(
 def filter_by_failures(
         decisions: torch.Tensor,
         max_consecutive_failures: int
-) -> torch.tensor:
+) -> torch.Tensor:
     """
     Filters decisions based on maximum consecutive failures.
 
@@ -284,11 +284,11 @@ def compute_mean_and_normalizer_dataset(
         pixel_batch_size: int,
         device: str,
         dtype: torch.dtype,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Computes a pixelwise mean and a noise variance estimate. For now, the noise var estimate is turned off
     Args:
-        dataset (Union[masknmf.ArrayLike, masknmf.LazyFrameLoader]): The dataloader object we use to access the dataset. Anything that supports
+        dataset (masknmf.ArrayLike | masknmf.LazyFrameLoader): The dataloader object we use to access the dataset. Anything that supports
             numpy-like __getitem__ indexing can be used here.
         compute_normalizer (bool): Whether or not we compute the noise normalizer; for now this variable has no effect.
         pixel_batch_size (int): The number of pixels in each dimension to load at a time
@@ -498,7 +498,7 @@ def compute_factorized_svd_with_leftbasis(
 
 def compute_lowrank_factorized_svd(
         spatial_compressed: SparseCOOTensor,
-        v: torch.Tensor,
+        temporal_compressed: torch.Tensor,
 ):
     """
     Compute the factorized Singular Value Decomposition (SVD) of a low-rank matrix factorization.
@@ -511,22 +511,17 @@ def compute_lowrank_factorized_svd(
     Args:
         spatial_compressed (torch.sparse_coo_tensor):
             Sparse left matrix of the factorization with shape `(pixels, low_rank)`.
-        v (torch.Tensor):
+        temporal_compressed (torch.Tensor):
             Dense right matrix of the factorization with shape `(low_rank, frames)`.
-        only_left (bool, optional):
-            If `True`, only the left singular vectors (spatial mixing matrix) are returned. If we return a tensor, P,
-            with the property that U@P has orthonormal columns. Defaults to `False`.
 
     Returns:
-        np.ndarray:
+        torch.Tensor:
             `spatial_mixing_matrix`: An orthonormal column basis for the factorization `spatial_compressed @ temporal_compressed`.
             This matrix represents the spatial components of the original data.
-
-        If `only_left` is False, it also returns:
-        np.ndarray:
+        torch.Tensor:
             `singular_values`: 1D vector of singular values, representing the scaling factors
             for the corresponding orthonormal directions.
-        np.ndarray:
+        torch.Tensor:
             `right_singular_vectors`: Orthonormal column vectors representing the temporal
             components of the matrix `temporal_compressed`.
 
@@ -535,12 +530,12 @@ def compute_lowrank_factorized_svd(
         for large matrices. The orthogonality of the left singular vectors holds within the
         reduced space of the factorization.
         - This routine uses eigh on the spatial basis to exploit the low rank of the decomposition. This will lead to bad results if the matrix is ill-conditioned.
-        PMD gives us a reasonable guarantee that this is not true (due to the blockwise decompositions).
+        compression gives us a reasonable guarantee that this is not true (due to the blockwise decompositions).
     """
     q, p = [
-        i.float().T for i in torch.linalg.qr(v.T, mode="reduced")
+        i.float().T for i in torch.linalg.qr(temporal_compressed.T, mode="reduced")
     ]  # Here, temporal_compressed = pq, with q having orth rows
-    ut_u = torch.sparse.mm(u.T, u).to_dense()
+    ut_u = torch.sparse.mm(spatial_compressed.T, spatial_compressed).to_dense()
 
     ptut_up = (p.T @ ut_u) @ p
 
@@ -568,7 +563,7 @@ def regress_onto_spatial_basis(
         dataset_noise_variance: torch.Tensor,
         dtype: torch.dtype,
         device: str = "cpu",
-) -> torch.tensor:
+) -> torch.Tensor:
     """
     We have a spatial basis from blockwise decompositions. This function will do two things, in a single pass through the
     data:
@@ -760,7 +755,7 @@ def blockwise_decomposition(
         device: str = "cpu",
         subset_mean: torch.Tensor | None = None,
         subset_noise_std: torch.Tensor | None = None
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
 
     first_spatial, first_temporal, subset_mean, subset_noise_std = blockwise_decomposition_singlepass(video_subset,
                                                                        subset_pixel_weighting,
@@ -830,7 +825,7 @@ def blockwise_decomposition_singlepass(
         device: str = "cpu",
         subset_mean: torch.Tensor | None= None,
         subset_noise_std: torch.Tensor | None = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
 
     num_frames, fov_height, fov_width = video_subset.shape
     empty_values = torch.zeros((fov_height, fov_width, 1), device=device, dtype=dtype), torch.zeros((1, num_frames),
@@ -1022,7 +1017,7 @@ def threshold_heuristic(
 
     Args:
         dimensions (tuple): Tuple describing the dimensions of the blocks which we will
-            decompose. Contains (fov_height, fov_width, T), the two spatial field of view dimensions and the number of frames
+            decompose. Contains (fov_height, fov_width, num_frames), the two spatial field of view dimensions and the number of frames
         spatial_avg_factor (int): The factor (in both spatial dimensions) by which we downsample the data to get higher SNR estimates
         temporal_avg_factor (int): The factor (in time dimension) by which we downsample the data to get higher SNR estimates
         spatial_denoiser (torch.nn.Module | None): A spatial denoiser module for denoising spatial basis vectors
@@ -1139,8 +1134,8 @@ def compression_routine(
          pixel_weighting (np.ndarray | None): Shape (fov_height, fov_width). We weight the data by this value to estimate a cleaner spatial basis. The pixel_weighting
             should intuitively boost the relative variance of pixels containing signal to those that do not contain signal.
         frame_Weighting (np.ndarray | torch.Tensor | None): Shape (num_frames,). Weight certain frames of data as being "more important" in learning the low-rank data subspace
-        spatial_denoiser (Optional[torch.nn.Module]): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
-        temporal_denoiser (Optional[torch.nn.Module]): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
+        spatial_denoiser (torch.nn.Module | None): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
+        temporal_denoiser (torch.nn.Module | None): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
         device ("auto" | "cuda" | "cpu"): Which device the computations should be performed on.
 
     Returns:
@@ -1160,7 +1155,7 @@ def compression_routine(
     if spatial_denoiser is not None:
         spatial_denoiser.to(device)
 
-    # Decide which chunks of the data you will use for the spatial PMD blockwise fits
+    # Decide which chunks of the data you will use for the spatial compression blockwise fits
     if frame_range is None:
         frame_range = dataset.shape[0]
 
@@ -1417,7 +1412,7 @@ def compression_routine(
     display(f"Constructed U matrix. Rank of U is {u_aggregated.shape[1]}")
 
 
-    ## If the preprocessing basis was used, re-assign the mean of that decomposition to the PMD Array
+    ## If the preprocessing basis was used, re-assign the mean of that decomposition to the compression array
     ## Also re-shape the spatial preprocess basis
     if spatial_preprocess_basis is not None and temporal_preprocess_basis is not None:
         temporal_basis_mean = torch.mean(temporal_preprocess_basis, dim = 1, keepdims = True)
@@ -1427,7 +1422,7 @@ def compression_routine(
         temporal_preprocess_basis = temporal_preprocess_basis - temporal_basis_mean
         spatial_preprocess_basis = spatial_preprocess_basis.reshape(-1, spatial_preprocess_basis.shape[2])
 
-    final_pmd_arr = CompressionArray.from_tensors(
+    final_compression_arr = CompressionArray.from_tensors(
         (num_frames, fov_height, fov_width),
         u_aggregated.cpu(),
         v_aggregated.cpu(),
@@ -1440,5 +1435,5 @@ def compression_routine(
         temporal_trend_basis = temporal_preprocess_basis.cpu() if temporal_preprocess_basis is not None else None,
         device="cpu",
     )
-    display("PMD Object constructed")
-    return final_pmd_arr
+    display("Compression Object constructed")
+    return final_compression_arr
