@@ -484,8 +484,8 @@ class CompressionResidualArray(ArrayLike):
 
 class TrendArray(ArrayLike):
     """
-    Utility class that exposes the trend estimates in PMD as an array-like object.
-    We don't support serialization or any other things here to keep it simple -- all of that is in the PMD class
+    Utility class that exposes the trend estimates in CompressionArray as an array-like object.
+    We don't support serialization or any other things here to keep it simple -- all of that is in the CompressionArray class
     """
     def __init__(self,
                  shape: tuple[int, int, int] | np.ndarray,
@@ -505,14 +505,13 @@ class TrendArray(ArrayLike):
     def from_flyweight(cls,
                        shape: tuple[int, int, int] | np.ndarray,
                        flyweight: TensorFlyWeight,
-                       device: str = "cpu",
                        ):
         """
         Memory efficient way to construct PMD Array from a flyweight tensor manager. See from_tensors for parameter documentation
         """
         return cls(shape,
                    flyweight,
-                   device=device)
+                   device=flyweight.device)
 
     @classmethod
     def from_tensors(cls,
