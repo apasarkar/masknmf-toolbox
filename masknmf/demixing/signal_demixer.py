@@ -2202,9 +2202,9 @@ class SignalDemixer:
         self.u_sparse = self.pmd_obj.spatial_compressed.float().to(self.device).coalesce()
         self.v = self.pmd_obj.temporal_compressed.float().to(self.device)
 
-        self.d1 = self.shape[1]
-        self.d2 = self.shape[2]
-        self.T = self.shape[0]
+        self.fov_height = self.shape[1]
+        self.fov_width = self.shape[2]
+        self.num_frames = self.shape[0]
 
         # Start with an initialization state
         self._state = InitializingState(
@@ -2292,7 +2292,7 @@ class InitializingState(SignalProcessingState):
             robust_noise_term: float = None,
     ):
         self.shape = pmd_arr.shape[1], pmd_arr.shape[2], pmd_arr.shape[0] #height, width, frames
-        pixel_batch_size = pixel_batch_size_from_frame_batch_size(self.d1, self.d2, self.T, frame_batch_size)
+        pixel_batch_size = pixel_batch_size_from_frame_batch_size(self.fov_height, self.fov_width, self.num_frames, frame_batch_size)
         super().__init__(pixel_batch_size, frame_batch_size)
         """
         Class for initializing the signals
@@ -2368,15 +2368,15 @@ class InitializingState(SignalProcessingState):
 
 
     @property
-    def d1(self) -> int:
+    def fov_height(self) -> int:
         return self.shape[0]
 
     @property
-    def d2(self) -> int:
+    def fov_width(self) -> int:
         return self.shape[1]
 
     @property
-    def T(self) -> int:
+    def num_frames(self) -> int:
         return self.shape[2]
 
 
@@ -2513,7 +2513,7 @@ class InitializingState(SignalProcessingState):
             if spatial_footprints.ndim == 3:
                 # Shape is (fov dim 1, fov dim 2, number of neurons)
                 spatial_2d = spatial_footprints.reshape(
-                    (self.d1 * self.d2, -1)
+                    (self.fov_height * self.fov_width, -1)
                 )
 
             elif spatial_footprints.ndim == 2:
@@ -2541,7 +2541,7 @@ class InitializingState(SignalProcessingState):
                     )
                     spatial_2d = spatial_footprints.cpu().detach().numpy()
                     spatial_2d = spatial_2d.reshape(
-                        (self.d1 * self.d2, -1)
+                        (self.fov_height * self.fov_width, -1)
                     )
                     processed_spatial_tensor = ndarray_to_torch_sparse_coo(
                         spatial_2d
@@ -2650,7 +2650,7 @@ class DemixingState(SignalProcessingState):
             robust_noise_term: float | None = None
     ):
         self._shape = compression_array.shape[1], compression_array.shape[2], compression_array.shape[0] #height, width, frames
-        pixel_batch_size = pixel_batch_size_from_frame_batch_size(self.d1, self.d2, self.T, frame_batch_size)
+        pixel_batch_size = pixel_batch_size_from_frame_batch_size(self.fov_height, self.fov_width, self.num_frames, frame_batch_size)
         super().__init__(pixel_batch_size, frame_batch_size)
         # Define the data dimensions, data ordering scheme, and device
 
@@ -2692,7 +2692,7 @@ class DemixingState(SignalProcessingState):
 
         self.W = None
 
-        self.a_summand = torch.ones((self.d1 * self.d2, 1)).to(self.device)
+        self.a_summand = torch.ones((self.fov_height * self.fov_width, 1)).to(self.device)
         self.blocks = None
 
     @property
@@ -2700,15 +2700,15 @@ class DemixingState(SignalProcessingState):
         return self._shape
 
     @property
-    def d1(self) -> int:
+    def fov_height(self) -> int:
         return self.shape[0]
 
     @property
-    def d2(self) -> int:
+    def fov_width(self) -> int:
         return self.shape[1]
 
     @property
-    def T(self) -> int:
+    def num_frames(self) -> int:
         return self.shape[2]
 
     def _sketch_robust_variance_term(self, num_frames: int = 5000):
@@ -2933,7 +2933,7 @@ class DemixingState(SignalProcessingState):
         resid_projection = (torch.sparse.mm(self.spatial_compressed, self.temporal_compressed @ random_data) -
                             torch.sparse.mm(self.a, self.c.T @ random_data) -
                             self.b @ torch.sum(random_data, dim=0, keepdim=True))
-        resid_projection = resid_projection.reshape(self.d1, self.d2, resid_projection.shape[1])
+        resid_projection = resid_projection.reshape(self.fov_height, self.fov_width, resid_projection.shape[1])
         resid_projection = masknmf.compression.decomposition.spatial_downsample(resid_projection, downsampling_factor)
         resid_projection = resid_projection.reshape(resid_projection.shape[0] * resid_projection.shape[1],
                                                     resid_projection.shape[2])
@@ -2941,12 +2941,12 @@ class DemixingState(SignalProcessingState):
 
         # Downsample spatial_compressed, A and B
         u_downsample = masknmf.compression.decomposition.downsample_sparse(self.spatial_compressed,
-                                                                           (self.d1, self.d2),
+                                                                           (self.fov_height, self.fov_width),
                                                                            downsampling_factor)
         a_downsample = masknmf.compression.decomposition.downsample_sparse(self.a,
-                                                                           (self.d1, self.d2),
+                                                                           (self.fov_height, self.fov_width),
                                                                            downsampling_factor)
-        b_downsample = masknmf.compression.decomposition.spatial_downsample(self.b.reshape(self.d1, self.d2, 1),
+        b_downsample = masknmf.compression.decomposition.spatial_downsample(self.b.reshape(self.fov_height, self.fov_width, 1),
                                                                             downsampling_factor).squeeze()
         b_downsample = b_downsample.reshape(b_downsample.shape[0] * b_downsample.shape[1], 1)
 
@@ -3505,7 +3505,7 @@ class DemixingState(SignalProcessingState):
                                                                                      self.factorized_ring_term[0] @
                                                                                      self.factorized_ring_term[1],
                                                                                      self.c,
-                                                                                     (self.d1, self.d2),
+                                                                                     (self.fov_height, self.fov_width),
                                                                                      frame_batch_size=self.frame_batch_size,
                                                                                      device=self.device)
 
@@ -3529,7 +3529,7 @@ class DemixingState(SignalProcessingState):
         multiunit_basis_term1, multiunit_basis_term2 = self.extract_multiunit_factorization()
 
         self._results = DemixingResults(
-            (self.T, self.d1, self.d2),
+            (self.num_frames, self.fov_height, self.fov_width),
             self.compression_array.spatial_compressed,
             self.compression_array.temporal_compressed,
             self.a,
