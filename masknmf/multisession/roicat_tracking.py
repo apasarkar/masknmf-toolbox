@@ -231,7 +231,7 @@ def extract_masknmf_spatial_footprints(dr: DemixingResults):
 
 
 def extract_masknmf_mean_img(dr: DemixingResults):
-    return dr.pmd_array.mean_img.cpu().numpy()
+    return dr.compression_array.mean_image.cpu().numpy()
 
 
 def extract_suite2p_spatial_footprints(

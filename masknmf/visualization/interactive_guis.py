@@ -19,7 +19,7 @@ def signal_space_demixing(demixing_results: masknmf.DemixingResults,
                           v_range: tuple,
                           device: str = 'cpu'):
     demixing_results.to(device)
-    pmd_arr = demixing_results.pmd_array
+    pmd_arr = demixing_results.compression_array
     pmd_arr.rescale = False
     ac_arr = demixing_results.ac_array
     num_frames, fov_dim1, fov_dim2 = pmd_arr.shape
@@ -196,7 +196,7 @@ def make_demixing_video(
 
     ac_arr = results.ac_array
     fluctuating_arr = results.fluctuating_background_array
-    pmd_arr = results.pmd_array
+    pmd_arr = results.compression_array
 
     # Demixing is run on the U/V representation, without rescaling, so we set rescale = False here to make sure scales match
     pmd_arr.rescale = False
@@ -253,7 +253,7 @@ def brightness_demix_init(curr_dr, splits=4, device='cpu'):
     subset_indices = [matched_ordered[points[i]:points[i + 1]] for i in range(splits)]
 
     curr_dr.to(device)
-    pmd_arr = curr_dr.pmd_array
+    pmd_arr = curr_dr.compression_array
     pmd_arr.rescale = False
 
     pseudo_residuals = []

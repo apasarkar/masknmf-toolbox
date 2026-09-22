@@ -74,16 +74,16 @@ def spatial_filter_pmd(pmd_obj: masknmf.CompressionArray,
     pmd_obj.to(target_device)
     final_v = torch.cat(results, dim=1).to(target_device)
 
-    new_mean = torch.sparse.mm(pmd_obj.u, torch.mean(final_v.to(target_device), dim=1, keepdim = True))
+    new_mean = torch.sparse.mm(pmd_obj.spatial_compressed, torch.mean(final_v.to(target_device), dim=1, keepdim = True))
     new_mean = new_mean.reshape(d1, d2)
     final_v -= torch.mean(final_v, dim=1, keepdim=True)
 
     final_arr = masknmf.CompressionArray.from_tensors(pmd_obj.shape,
-                                                      pmd_obj.u,
+                                                      pmd_obj.spatial_compressed,
                                                       final_v,
                                                       new_mean,
                                                       torch.ones_like(new_mean),
-                                                      u_local_projector=pmd_obj.u_local_projector,
+                                                      spatial_compressed_local_projector=pmd_obj.spatial_compressed_local_projector,
                                                       device=target_device)
 
     if switch:
@@ -133,8 +133,8 @@ def filter_global_signal_pmd(
 ) -> tuple[masknmf.CompressionArray, torch.Tensor, torch.Tensor, torch.Tensor]:
 
     pmd_obj.to(device)
-    U_pmd = pmd_obj.u.to(device)          # (n_pixels, r), sparse
-    V_pmd = pmd_obj.v.to(device)          # (r, T), dense
+    U_pmd = pmd_obj.spatial_compressed.to(device)          # (n_pixels, r), sparse
+    V_pmd = pmd_obj.temporal_compressed.to(device)          # (r, T), dense
 
     U_svd, S, Vt = truncated_random_svd_pmd(U_pmd, V_pmd, rank, num_oversamples, device)
 
@@ -142,10 +142,10 @@ def filter_global_signal_pmd(
     # pixel_global = U_pmd @ U_svd @ diag(S)   shape: (n_pixels, rank)
     U_global_pixels = U_svd * S[None, :]  # (n_pixels, rank)
 
-    # --- Project back into PMD basis using u_local_projector ---
+    # --- Project back into PMD basis using spatial_compressed_local_projector ---
     # This is exactly what project_frames does, without standardization
     V_global = torch.sparse.mm(
-        pmd_obj.u_local_projector.T, U_global_pixels
+        pmd_obj.spatial_compressed_local_projector.T, U_global_pixels
     ) @ Vt                                 # (r, rank) @ (rank, T) -> (r, T)
 
     V_residual = V_pmd - V_global          # (r, T)
@@ -161,7 +161,7 @@ def filter_global_signal_pmd(
         V_residual,
         new_mean,
         torch.ones_like(new_mean),
-        u_local_projector=pmd_obj.u_local_projector,
+        spatial_compressed_local_projector=pmd_obj.spatial_compressed_local_projector,
         device="cpu",
     )
     return residual_pmd
@@ -257,7 +257,7 @@ def bandstop_filter_pmd(pmd_obj: masknmf.CompressionArray,
     Returns:
         masknmf.CompressionArray: Updated PMD object with bandstop-filtered temporal components
     """
-    V = pmd_obj.v  # (rank, T)
+    V = pmd_obj.temporal_compressed  # (rank, T)
 
     # Filter on CPU as numpy
     V_np = V.cpu().numpy()
@@ -265,16 +265,16 @@ def bandstop_filter_pmd(pmd_obj: masknmf.CompressionArray,
     final_v = torch.tensor(V_filtered, device=V.device, dtype=V.dtype)
 
     # Recompute mean image from filtered V, then zero-mean V
-    mean = torch.sparse.mm(pmd_obj.u, torch.mean(final_v, dim=1, keepdim=True))
+    mean = torch.sparse.mm(pmd_obj.spatial_compressed, torch.mean(final_v, dim=1, keepdim=True))
     new_mean = mean.reshape(pmd_obj.shape[1], pmd_obj.shape[2])
     final_v -= torch.mean(final_v, dim=1, keepdim=True)
 
     device = pmd_obj.device
     return masknmf.CompressionArray.from_tensors(pmd_obj.shape,
-                                                 pmd_obj.u.to(device),
+                                                 pmd_obj.spatial_compressed.to(device),
                                                  final_v.to(device),
                                                  new_mean.to(device),
                                                  torch.ones_like(new_mean),
-                                                 u_local_projector=pmd_obj.u_local_projector,
+                                                 spatial_compressed_local_projector=pmd_obj.spatial_compressed_local_projector,
                                                  device=device)
 

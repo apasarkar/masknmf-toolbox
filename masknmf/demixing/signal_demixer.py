@@ -176,8 +176,8 @@ def _compute_residual_correlation_image(
 
         if start < pmd_rank and compute_uv_norm:
             pmd_end = min(end, pmd_rank)
-            # (v - LR)(v_s - L_s R)^T = v v_s^T - (v R^T) L_s^T - L (v R^T)_s^T + L (R R^T) L_s^T
-            # Every term is (pmd_rank, batch); no copy of v or of a block of v's rows is made.
+            # (temporal_compressed - LR)(v_s - L_s R)^T = temporal_compressed v_s^T - (temporal_compressed R^T) L_s^T - L (temporal_compressed R^T)_s^T + L (R R^T) L_s^T
+            # Every term is (pmd_rank, batch); no copy of temporal_compressed or of a block of temporal_compressed's rows is made.
             ring_left_batch_t = ring_left[start:pmd_end].T  # (k, batch)
             curr_vvt = (
                     v @ v[start:pmd_end].T
@@ -308,7 +308,7 @@ def _compute_standard_correlation_image(
         device: str = "cpu",
 ) -> StandardCorrelationImages:
     """
-    Correlation image calculation using u, r, s, v
+    Correlation image calculation using spatial_compressed, r, s, temporal_compressed
 
     Args:
         u_sparse (torch.sparse_coo_tensor): dims (d x r), where the FOV has d pixels
@@ -395,7 +395,7 @@ def process_custom_signals(
 
     Params:
         a (torch.sparse_coo_tensor): (shape (d1*d2, K) where K is number of neural signals
-        u_sparse (torch.sparse_coo_tensor): shape (d1*d2, rank 1) where rank 1 is larger PMD rank
+        spatial_compressed (torch.sparse_coo_tensor): shape (d1*d2, rank 1) where rank 1 is larger PMD rank
         V (torch.tensor): shape (rank 2, num_frames).
         device (str): either 'cpu' or 'cuda'. Passed directly to pytorch "to" function for tensors to place data
             on the correct device.
@@ -469,7 +469,7 @@ def append_signals(
         a (torch.sparse_coo_tensor): shape (d1*d2, K), the existing spatial footprints
         c (torch.tensor): shape (T, K), the existing temporal footprints
         init_res (InitializationResults): the new signals
-        u_sparse, v: the PMD factors, used for the baseline
+        spatial_compressed, temporal_compressed: the PMD factors, used for the baseline
     """
     a = a.coalesce()
     a_new = init_res.a.coalesce().to(a.device)
@@ -644,7 +644,7 @@ def get_local_correlation_structure(
 ):
     """
     Computes a local correlation data structure, which describes the correlations between all neighboring pairs of pixels
-    This computation is done after subtracting all existing signals and background from the compressed + denoised movie (given by u_sparse @ v)
+    This computation is done after subtracting all existing signals and background from the compressed + denoised movie (given by spatial_compressed @ temporal_compressed)
 
     Context: here,
     d1, d2 are the fov dimensions of the original data (i.e. 512 x 512 pixels or the like)
@@ -2226,8 +2226,8 @@ class SignalDemixer:
         self.data_order = "C"
         self.shape = self.pmd_obj.shape
 
-        self.u_sparse = self.pmd_obj.u.float().to(self.device).coalesce()
-        self.v = self.pmd_obj.v.float().to(self.device)
+        self.u_sparse = self.pmd_obj.spatial_compressed.float().to(self.device).coalesce()
+        self.v = self.pmd_obj.temporal_compressed.float().to(self.device)
 
         self.d1 = self.shape[1]
         self.d2 = self.shape[2]
@@ -2271,7 +2271,7 @@ class SignalDemixer:
             a = a.index_select(1, keep).coalesce()
             c = c[:, keep.to(c.device)]
         return cls(
-            results.pmd_array,
+            results.compression_array,
             device=device,
             frame_batch_size=frame_batch_size,
             a=a,
@@ -2330,8 +2330,8 @@ class InitializingState(SignalProcessingState):
         self.device = device
         self.pmd_obj.to(self.device)
 
-        self.u_sparse = self.pmd_obj.u
-        self.v = self.pmd_obj.v
+        self.u_sparse = self.pmd_obj.spatial_compressed
+        self.v = self.pmd_obj.temporal_compressed
 
         self.factorized_ring_term = factorized_ring_term
 
@@ -2690,8 +2690,8 @@ class DemixingState(SignalProcessingState):
         self._results = None
         self.pmd_obj = pmd_arr
 
-        self.u_sparse = pmd_arr.u.to(device)
-        self.v = pmd_arr.v.to(device)
+        self.u_sparse = pmd_arr.spatial_compressed.to(device)
+        self.v = pmd_arr.temporal_compressed.to(device)
 
         self._mask_a_init = init_results.mask_a.to(device).coalesce()
         self._a_init = init_results.a.to(device).coalesce()
@@ -3566,13 +3566,13 @@ class DemixingState(SignalProcessingState):
 
         self._results = DemixingResults(
             (self.T, self.d1, self.d2),
-            self.pmd_obj.u,
-            self.pmd_obj.v,
+            self.pmd_obj.spatial_compressed,
+            self.pmd_obj.temporal_compressed,
             self.a,
             self.c,
-            mean_img=self.pmd_obj.mean_img,
-            var_img=self.pmd_obj.var_img,
-            u_local_projector=self.pmd_obj.u_local_projector,
+            mean_image=self.pmd_obj.mean_image,
+            noise_variance_image=self.pmd_obj.noise_variance_image,
+            spatial_compressed_local_projector=self.pmd_obj.spatial_compressed_local_projector,
             spatial_trend_basis=self.pmd_obj.spatial_trend_basis,
             temporal_trend_basis=self.pmd_obj.temporal_trend_basis,
             factorized_bkgd_term1 = self.factorized_ring_term[0],

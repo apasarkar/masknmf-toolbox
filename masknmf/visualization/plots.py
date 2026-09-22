@@ -168,8 +168,8 @@ def plot_ith_roi(
     a = current_a.reshape((results.shape[1], results.shape[2]), order=order)
 
     p1, p2 = a.nonzero()
-    T, d1, d2 = results.pmd_array.shape
-    pmd_roi_avg = get_roi_avg(results.pmd_array, p1, p2, normalize=False)
+    T, d1, d2 = results.compression_array.shape
+    pmd_roi_avg = get_roi_avg(results.compression_array, p1, p2, normalize=False)
     fluctuating_bg_roi_avg = get_roi_avg(
         results.fluctuating_background_array, p1, p2, normalize=False
     )
@@ -186,7 +186,7 @@ def plot_ith_roi(
     residual_img = np.std(residual_data, axis=0)
 
     mean_pmd_img = np.std(
-        results.pmd_array[:, lb_dim1:ub_dim1, lb_dim2:ub_dim2], axis=0
+        results.compression_array[:, lb_dim1:ub_dim1, lb_dim2:ub_dim2], axis=0
     )
 
     if residual_mode is None:

@@ -153,9 +153,9 @@ def hals_on_rawdata(moco_data: np.ndarray,
     device = a.device
     num_batches = math.ceil(moco_data.shape[0] / batch_size)
     frames, height, width = moco_data.shape
-    # mean_img = dmr.mean_img
-    # var_img = dmr.var_img
-    # var_img[var_img == 0] = 1.0 #Avoids divide by 0 issues
+    # mean_image = dmr.mean_image
+    # noise_variance_image = dmr.noise_variance_image
+    # noise_variance_image[noise_variance_image == 0] = 1.0 #Avoids divide by 0 issues
     # fluctuating_background_array = dmr.fluctuating_background_array
     # baseline = dmr.baseline
     blocks = masknmf.demixing.signal_demixer._compute_hals_schedule(a,
@@ -167,8 +167,8 @@ def hals_on_rawdata(moco_data: np.ndarray,
         end_pt = min(moco_data.shape[0], start_pt + batch_size)
         data = torch.as_tensor(moco_data[start_pt:end_pt, :, :], device=device,
                                dtype=torch.float32)  # frames, height, width
-        # data -= mean_img[None, ...]
-        # data /= var_img[None, ...]
+        # data -= mean_image[None, ...]
+        # data /= noise_variance_image[None, ...]
         # data -= fluctuating_background_array.getitem_tensor(slice(start_pt, end_pt))
         # data -= baseline[None, ...]
 
@@ -235,13 +235,13 @@ def compute_final_denoised_c_estimates(pmd_arr: masknmf.CompressionArray,
         c (torch.Tensor): Shape (num_frames, num_neurons). Initial temporal estimates of the spiking activity
     """
 
-    c_spike_estimate = hals_multi_iter_fullpmd(pmd_arr.u,
-                                               pmd_arr.v,
+    c_spike_estimate = hals_multi_iter_fullpmd(pmd_arr.spatial_compressed,
+                                               pmd_arr.temporal_compressed,
                                                dmr.a,
                                                c,
                                                dmr.b[:, None])
 
-    rescaled_a = rescale_a(dmr.a, pmd_arr.var_img).coalesce()
+    rescaled_a = rescale_a(dmr.a, pmd_arr.noise_variance_image).coalesce()
     c_trend_estimate = hals_on_trend(rescaled_a,
                                      c_spike_estimate,
                                      pmd_arr.spatial_trend_basis,
@@ -481,15 +481,15 @@ class OnePhotonCulturePipeline(BasePipeline):
 
         pmd_denoise = masknmf.CompressionArray.from_hdf5(pmd_source)
 
-        v = pmd_denoise.v[:, active_frames.astype('bool')]
+        v = pmd_denoise.temporal_compressed[:, active_frames.astype('bool')]
         new_shape = (v.shape[1], pmd_denoise.shape[1], pmd_denoise.shape[2])
 
         pmd_arr_truncated = masknmf.CompressionArray.from_tensors(new_shape,  # fov shape
-                                                                  pmd_denoise.u,
+                                                                  pmd_denoise.spatial_compressed,
                                                                   v,
-                                                                  pmd_denoise.mean_img,
-                                                                  pmd_denoise.var_img,
-                                                                  pmd_denoise.u_local_projector,
+                                                                  pmd_denoise.mean_image,
+                                                                  pmd_denoise.noise_variance_image,
+                                                                  pmd_denoise.spatial_compressed_local_projector,
                                                                   pmd_denoise.spatial_trend_basis,
                                                                   pmd_denoise.temporal_trend_basis)
 

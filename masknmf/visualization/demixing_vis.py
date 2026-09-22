@@ -448,7 +448,7 @@ class SingleSessionDemixingVis:
             )
         else:
             self._summary_image = self._ndw_fov["summary img"].add_nd_image(
-                self._pmd_array.mean_img.cpu().numpy(),
+                self._pmd_array.mean_image.cpu().numpy(),
                 ["m", "n"],
                 ["m", "n"],
                 name="summary img",
@@ -592,7 +592,7 @@ class SingleSessionDemixingVis:
 
     def _bind_arrays(self):
         if self._has_ac:
-            self._pmd_array = self.demixing_results.pmd_array
+            self._pmd_array = self.demixing_results.compression_array
             self._fluctuating_background_array = (
                 self.demixing_results.fluctuating_background_array
             )
@@ -1160,14 +1160,14 @@ class SingleSessionDemixingVis:
         pmd = self._pmd_array
         idx = torch.as_tensor(
             np.asarray(rows, np.int64) * self._shape[2] + np.asarray(cols, np.int64),
-            device=pmd.v.device,
+            device=pmd.temporal_compressed.device,
         )
-        u = torch.index_select(pmd.u, 0, idx).to_dense()
+        u = torch.index_select(pmd.spatial_compressed, 0, idx).to_dense()
         if pmd.rescale:
-            u = u * pmd.var_img.flatten()[idx, None]
-        trace = u.mean(dim=0) @ pmd.v
+            u = u * pmd.noise_variance_image.flatten()[idx, None]
+        trace = u.mean(dim=0) @ pmd.temporal_compressed
         if pmd.rescale:
-            trace = trace + pmd.mean_img.flatten()[idx].mean()
+            trace = trace + pmd.mean_image.flatten()[idx].mean()
             if (
                 pmd.include_trend
                 and pmd.spatial_trend_basis is not None

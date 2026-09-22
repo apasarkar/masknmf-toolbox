@@ -72,7 +72,7 @@ class CompressionVis:
         # the tensor (on device, no host copy); PMDArray frames are numpy, so that panel gets a numpy mean
         moco_mean_subtract = pmd_mean_subtract = None
         if mean_subtract:
-            mean = self.pmd_stack.mean_img
+            mean = self.pmd_stack.mean_image
             moco_mean = mean if isinstance(self.moco_stack[0], torch.Tensor) else mean.cpu().numpy()
             moco_mean_subtract = partial(compute_mean_subtract, moco_mean)
             pmd_mean_subtract = partial(compute_mean_subtract, mean.cpu().numpy())

@@ -76,15 +76,15 @@ def test_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
 
 class CompressionArray(ArrayLike, Serializer):
     """
-    Factorized demixing array for PMD movie
+    Factorized demixing array interface for the compressed representation of the video
     """
     _serialized = {
         "shape",
-        "u",
-        "v",
-        "u_local_projector",
-        "mean_img",
-        "var_img",
+        "spatial_compressed",
+        "temporal_compressed",
+        "spatial_compressed_local_projector",
+        "mean_image",
+        "noise_variance_image",
         "spatial_trend_basis",
         "temporal_trend_basis",
     }
@@ -119,17 +119,17 @@ class CompressionArray(ArrayLike, Serializer):
         return self._flyweight
     @classmethod
     def from_tensors(cls,
-                   shape: tuple[int, int, int] | np.ndarray,
-                   u: SparseCOOTensor,
-                   v: torch.Tensor,
-                   mean_img: torch.Tensor,
-                   var_img: torch.Tensor,
-                   u_local_projector: SparseCOOTensor | None = None,
-                   spatial_trend_basis: torch.Tensor | None = None,
-                   temporal_trend_basis: torch.Tensor | None = None,
-                   device: str = "cpu",
-                   rescale: bool = True,
-                   include_trend: bool = False):
+                     shape: tuple[int, int, int] | np.ndarray,
+                     spatial_compressed: SparseCOOTensor,
+                     temporal_compressed: torch.Tensor,
+                     mean_image: torch.Tensor,
+                     noise_variance_image: torch.Tensor,
+                     spatial_compressed_local_projector: SparseCOOTensor | None = None,
+                     spatial_trend_basis: torch.Tensor | None = None,
+                     temporal_trend_basis: torch.Tensor | None = None,
+                     device: str = "cpu",
+                     rescale: bool = True,
+                     include_trend: bool = False):
 
         """
             Key assumption: the spatial basis matrix U has n + k columns; the first n columns is blocksparse (this serves
@@ -138,11 +138,11 @@ class CompressionArray(ArrayLike, Serializer):
 
             Args:
                 shape (tuple): (num_frames, fov_dim1, fov_dim2)
-                u (SparseCOOTensor): shape (pixels, rank)
-                v (torch.tensor): shape (rank, frames)
-                mean_img (torch.tensor): shape (fov_dim1, fov_dim2). The pixelwise mean of the data
-                var_img (torch.tensor): shape (fov_dim1, fov_dim2). A pixelwise noise normalizer for the data
-                u_local_projector (SparseCOOTensor | None): shape (pixels, rank)
+                spatial_compressed (SparseCOOTensor): shape (pixels, rank)
+                temporal_compressed (torch.tensor): shape (rank, frames)
+                mean_image (torch.tensor): shape (fov_dim1, fov_dim2). The pixelwise mean of the data
+                noise_variance_image (torch.tensor): shape (fov_dim1, fov_dim2). A pixelwise noise normalizer for the data
+                spatial_compressed_local_projector (SparseCOOTensor | None): shape (pixels, rank)
                 spatial_trend_basis (Optional[torch.Tensor]): Shape (pixels, trend_rank)
                 temporal_trend_basis (Optional[torch.Tensor]): Shape (trend_rank, num_frames)
                     spatial_trend_basis @ temporal_trend_basis gives the trend estimate across the full movie
@@ -151,11 +151,11 @@ class CompressionArray(ArrayLike, Serializer):
                     and add back the mean) in __getitem__
                 include_trend (bool): Whether or not to include the trend for this data
         """
-        flyweight = TensorFlyWeight(u=u.float(),
-                                    v=v.float(),
-                                    mean_img=mean_img.float(),
-                                    var_img=var_img.float(),
-                                    u_local_projector=u_local_projector.float() if u_local_projector is not None else None,
+        flyweight = TensorFlyWeight(spatial_compressed=spatial_compressed.float(),
+                                    temporal_compressed=temporal_compressed.float(),
+                                    mean_image=mean_image.float(),
+                                    noise_variance_image=noise_variance_image.float(),
+                                    spatial_compressed_local_projector=spatial_compressed_local_projector.float() if spatial_compressed_local_projector is not None else None,
                                     spatial_trend_basis=spatial_trend_basis.float() if spatial_trend_basis is not None else None,
                                     temporal_trend_basis=temporal_trend_basis.float() if temporal_trend_basis is not None else None)
         return cls(shape,
@@ -174,7 +174,7 @@ class CompressionArray(ArrayLike, Serializer):
                        include_trend: bool = True
                        ):
         """
-        Memory efficient way to construct PMD Array from a flyweight tensor manager. See from_tensors for parameter documentation
+        Memory efficient way to construct CompressionArray from a flyweight tensor manager. See from_tensors for parameter documentation
         """
         return cls(shape,
                    flyweight,
@@ -207,12 +207,12 @@ class CompressionArray(ArrayLike, Serializer):
             self._include_trend = new_val
 
     @property
-    def mean_img(self) -> torch.Tensor:
-        return self.flyweight.mean_img
+    def mean_image(self) -> torch.Tensor:
+        return self.flyweight.mean_image
 
     @property
-    def var_img(self) -> torch.Tensor:
-        return self.flyweight.var_img
+    def noise_variance_image(self) -> torch.Tensor:
+        return self.flyweight.noise_variance_image
 
     def to(self, new_device: str):
         if self._flyweight.device != new_device:
@@ -227,18 +227,18 @@ class CompressionArray(ArrayLike, Serializer):
         return self.flyweight.device
 
     @property
-    def u(self) -> SparseCOOTensor:
-        return self.flyweight.u
+    def spatial_compressed(self) -> SparseCOOTensor:
+        return self.flyweight.spatial_compressed
 
     @property
-    def u_local_projector(self) -> SparseCOOTensor | None:
-        if hasattr(self.flyweight, "u_local_projector"):
-            return self.flyweight.u_local_projector
+    def spatial_compressed_local_projector(self) -> SparseCOOTensor | None:
+        if hasattr(self.flyweight, "spatial_compressed_local_projector"):
+            return self.flyweight.spatial_compressed_local_projector
         return None
 
     @property
-    def v(self) -> torch.Tensor:
-        return self.flyweight.v
+    def temporal_compressed(self) -> torch.Tensor:
+        return self.flyweight.temporal_compressed
 
     @property
     def spatial_trend_basis(self) -> torch.Tensor | None:
@@ -253,8 +253,8 @@ class CompressionArray(ArrayLike, Serializer):
         return None
 
     @property
-    def pmd_rank(self) -> int:
-        return self.u.shape[1]
+    def compression_rank(self) -> int:
+        return self.spatial_compressed.shape[1]
 
     @property
     def dtype(self) -> np.dtype:
@@ -282,13 +282,13 @@ class CompressionArray(ArrayLike, Serializer):
         Returns:
             rank_heatmap (torch.Tensor). Shape (fov_dim1, fov_dim2).
         """
-        binarized_u = torch.sparse_coo_tensor(
-            self.u.indices(), 
-            torch.ones_like(self.u.values()), 
-            self.u.size()
+        binarized_spatial_compressed = torch.sparse_coo_tensor(
+            self.spatial_compressed.indices(),
+            torch.ones_like(self.spatial_compressed.values()),
+            self.spatial_compressed.size()
             )
-        row_sum_u = torch.sparse.sum(binarized_u, dim=1)
-        return torch.reshape(row_sum_u.to_dense(), 
+        row_sum_spatial_compressed = torch.sparse.sum(binarized_spatial_compressed, dim=1)
+        return torch.reshape(row_sum_spatial_compressed.to_dense(),
                              (self.shape[1],self.shape[2]))
 
     def project_frames(
@@ -297,21 +297,21 @@ class CompressionArray(ArrayLike, Serializer):
         """
         Projects frames onto the spatial basis, using the u_projector property. u_projector must be defined.
         Args:
-            frames (torch.Tensor). Shape (fov_dim1, fov_dim2, num_frames) or (fov_dim1*fov_dim2, num_frames).
+            frames (torch.Tensor). Shape (fov_height, fov_width, num_frames) or (fov_height*fov_width, num_frames).
                 Frames which we want to project onto the spatial basis.
-            standardize (Optional[bool]): Indicates whether the frames of data are standardized before projection is performed
+            standardize (bool): Indicates whether the frames of data are standardized before projection is performed
         Returns:
-            projected_frames (torch.Tensor). Shape (fov_dim1 * fov_dim2, num_frames).
+            projected_frames (torch.Tensor). Shape (fov_height * fov_width, num_frames).
         """
-        if self.u_local_projector is None:
+        if self.spatial_compressed_local_projector is None:
             raise ValueError(
-                "u_local_projector must be defined to project frames onto spatial basis"
+                "spatial_compressed_local_projector must be defined to project frames onto spatial basis"
             )
         orig_device = frames.device
         frames = frames.to(self.device).float()
         if len(frames.shape) == 3:
             if standardize:
-                frames = (frames - self.mean_img[..., None]) / self.var_img[
+                frames = (frames - self.mean_image[..., None]) / self.noise_variance_image[
                     ..., None
                 ]  # Normalize the frames
                 frames = torch.nan_to_num(frames, nan=0.0)
@@ -319,11 +319,11 @@ class CompressionArray(ArrayLike, Serializer):
         else:
             if standardize:
                 frames = (
-                    frames - self.mean_img.flatten()[..., None]
-                ) / self.var_img.flatten()[..., None]
+                    frames - self.mean_image.flatten()[..., None]
+                ) / self.noise_variance_image.flatten()[..., None]
                 frames = torch.nan_to_num(frames, nan=0.0)
 
-        projection = torch.sparse.mm(self.u_local_projector.T, frames)
+        projection = torch.sparse.mm(self.spatial_compressed_local_projector.T, frames)
         return projection.to(orig_device)
 
     def getitem_tensor(
@@ -333,9 +333,9 @@ class CompressionArray(ArrayLike, Serializer):
         frame_indexer, item = self._parse_indices(item)
 
         # Step 3: Now slice the data with frame_indexer (careful: if the ndims has shrunk, add a dim)
-        v_crop = self.v[:, frame_indexer]
-        if v_crop.ndim < self.v.ndim:
-            v_crop = v_crop.unsqueeze(1)
+        temporal_compressed_crop = self.temporal_compressed[:, frame_indexer]
+        if temporal_compressed_crop.ndim < self.temporal_compressed.ndim:
+            temporal_compressed_crop = temporal_compressed_crop.unsqueeze(1)
 
 
         # Step 4: Deal with remaining indices after lazy computing the frame(s)
@@ -363,22 +363,22 @@ class CompressionArray(ArrayLike, Serializer):
             spatial_crop_terms = (term_1, term_2)
 
             pixel_space_crop = self._pixel_mat[spatial_crop_terms]
-            mean_img_crop = self.mean_img[spatial_crop_terms].flatten()
-            var_img_crop = self.var_img[spatial_crop_terms].flatten()
-            u_indices = pixel_space_crop.flatten()
-            u_crop = torch.index_select(self.u, 0, u_indices)
+            mean_image_crop = self.mean_image[spatial_crop_terms].flatten()
+            noise_variance_image_crop = self.noise_variance_image[spatial_crop_terms].flatten()
+            spatial_compressed_indices = pixel_space_crop.flatten()
+            spatial_compressed_crop = torch.index_select(self.spatial_compressed, 0, spatial_compressed_indices)
             implied_fov = pixel_space_crop.shape
         else:
             spatial_crop_terms = None
-            u_crop = self.u
-            mean_img_crop = self.mean_img.flatten()
-            var_img_crop = self.var_img.flatten()
+            spatial_compressed_crop = self.spatial_compressed
+            mean_image_crop = self.mean_image.flatten()
+            noise_variance_image_crop = self.noise_variance_image.flatten()
             implied_fov = self.shape[1], self.shape[2]
 
-        product = torch.sparse.mm(u_crop, v_crop)
+        product = torch.sparse.mm(spatial_compressed_crop, temporal_compressed_crop)
         if self.rescale:
-            product *= var_img_crop.unsqueeze(1)
-            product += mean_img_crop.unsqueeze(1)
+            product *= noise_variance_image_crop.unsqueeze(1)
+            product += mean_image_crop.unsqueeze(1)
 
             if self.include_trend and self.spatial_trend_basis is not None and self.temporal_trend_basis is not None:
                 if spatial_crop_terms is not None:
@@ -412,19 +412,19 @@ class CompressionResidualArray(ArrayLike):
 
     def __init__(
         self,
-        raw_arr: ArrayLike,
-        compression_arr: CompressionArray,
+        raw_array: ArrayLike,
+        compression_array: CompressionArray,
     ):
         """
         Args:
-            raw_arr (LazyFrameLoader): Any object that supports LazyFrameLoder functionality
-            compression_arr (CompressionArray)
+            raw_array (LazyFrameLoader): Any object that supports LazyFrameLoder functionality
+            compression_array (CompressionArray)
         """
-        self.pmd_arr = compression_arr
-        self.raw_arr = raw_arr
-        self._shape = self.pmd_arr.shape
+        self.compression_array = compression_array
+        self.raw_array = raw_array
+        self._shape = self.compression_array.shape
 
-        if self.pmd_arr.shape != self.raw_arr.shape:
+        if self.compression_array.shape != self.raw_array.shape:
             raise ValueError("Two image stacks do not have the same shape")
 
 
@@ -433,7 +433,7 @@ class CompressionResidualArray(ArrayLike):
         """
         data type, default np.float32
         """
-        return self.pmd_arr.dtype
+        return self.compression_array.dtype
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -453,16 +453,16 @@ class CompressionResidualArray(ArrayLike):
             self,
             item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ):
-        if self.pmd_arr.rescale is False:
-            self.pmd_arr.rescale = True
+        if self.compression_array.rescale is False:
+            self.compression_array.rescale = True
             switch = True
         else:
             switch = False
 
-        output = self.raw_arr[item].astype(self.dtype) - self.pmd_arr[item].astype(self.dtype)
+        output = self.raw_array[item].astype(self.dtype) - self.compression_array[item].astype(self.dtype)
         
         if switch:
-            self.pmd_arr.rescale = False
+            self.compression_array.rescale = False
         return output
 
 class TrendArray(ArrayLike):
@@ -551,11 +551,14 @@ class TrendArray(ArrayLike):
 
     def _move_local_tensors(self, new_device: str):
         self._pixel_mat = self._pixel_mat.to(new_device)
+
     @property
     def device(self) -> torch.device | str:
         return self.flyweight.device
+
     @property
     def shape(self) -> tuple[int, int, int]:
+        """(num_frames, fov_height, fov_width)"""
         return self._shape
 
     def getitem_tensor(

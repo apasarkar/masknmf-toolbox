@@ -217,7 +217,7 @@ class CompressDenoiseStrategy(CompressStrategy):
                                             detrender=self.detrender,
                                             device=self.device)
 
-        v = pmd_no_denoiser.v.cpu()
+        v = pmd_no_denoiser.temporal_compressed.cpu()
         trained_model, _ = masknmf.compression.denoising.train_total_variance_denoiser(v,
                                                                                        max_epochs=self.num_epochs,
                                                                                        batch_size=128,

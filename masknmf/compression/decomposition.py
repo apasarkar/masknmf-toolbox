@@ -290,8 +290,8 @@ def compute_mean_and_normalizer_dataset(
         dtype (torch.dtype): The dtype of the data once it has been moved to accelerator.
         device (str): The
     Returns:
-        mean_img (torch.tensor): The (fov dim1, fov dim2) shaped mean image.
-        var_img (torch.tensor): The (fvo dim1, fov dim2) noise variance image.
+        mean_image (torch.tensor): The (fov dim1, fov dim2) shaped mean image.
+        noise_variance_image (torch.tensor): The (fvo dim1, fov dim2) noise variance image.
     """
     num_frames, fov_dim1, fov_dim2 = dataset.shape
 
@@ -460,11 +460,11 @@ def compute_factorized_svd_with_leftbasis(
     singular vecotrs, s describes singular values, V_new describes right singular vectors.
 
     Args:
-        u (torch.sparse_coo_tensor): shape (pixels, rank)
+        spatial_compressed (torch.sparse_coo_tensor): shape (pixels, rank)
         p (torch.tensor): shape (rank, rank)
         v: (torch.tensor): shape (rank, num_frames)
     """
-    q, m = [i.float().T for i in torch.linalg.qr(v.T, mode="reduced")]  # Now v = mq
+    q, m = [i.float().T for i in torch.linalg.qr(v.T, mode="reduced")]  # Now temporal_compressed = mq
 
     # Note that (upm)^T(upm) = (m^T)m
     mtm = m.T @ m
@@ -497,19 +497,19 @@ def compute_factorized_svd_with_leftbasis(
 
 
 def compute_lowrank_factorized_svd(
-        u: torch.sparse_coo_tensor,
+        spatial_compressed: torch.sparse_coo_tensor,
         v: torch.tensor,
 ):
     """
     Compute the factorized Singular Value Decomposition (SVD) of a low-rank matrix factorization.
 
-    This function computes the SVD of a matrix `u @ v`, where `u` is sparse and `v` is dense,
+    This function computes the SVD of a matrix `spatial_compressed @ temporal_compressed`, where `spatial_compressed` is sparse and `temporal_compressed` is dense,
     both representing a low-rank factorization. It efficiently computes a reduced or partial SVD
     based on this factorization. The function allows returning just the left singular vectors
     (spatial mixing matrix) if specified.
 
     Args:
-        u (torch.sparse_coo_tensor):
+        spatial_compressed (torch.sparse_coo_tensor):
             Sparse left matrix of the factorization with shape `(pixels, low_rank)`.
         v (torch.tensor):
             Dense right matrix of the factorization with shape `(low_rank, frames)`.
@@ -519,7 +519,7 @@ def compute_lowrank_factorized_svd(
 
     Returns:
         np.ndarray:
-            `spatial_mixing_matrix`: An orthonormal column basis for the factorization `u @ v`.
+            `spatial_mixing_matrix`: An orthonormal column basis for the factorization `spatial_compressed @ temporal_compressed`.
             This matrix represents the spatial components of the original data.
 
         If `only_left` is False, it also returns:
@@ -528,7 +528,7 @@ def compute_lowrank_factorized_svd(
             for the corresponding orthonormal directions.
         np.ndarray:
             `right_singular_vectors`: Orthonormal column vectors representing the temporal
-            components of the matrix `v`.
+            components of the matrix `temporal_compressed`.
 
     Notes:
         - This is not a full SVD; the result is truncated to preserve efficiency, especially
@@ -539,7 +539,7 @@ def compute_lowrank_factorized_svd(
     """
     q, p = [
         i.float().T for i in torch.linalg.qr(v.T, mode="reduced")
-    ]  # Here, v = pq, with q having orth rows
+    ]  # Here, temporal_compressed = pq, with q having orth rows
     ut_u = torch.sparse.mm(u.T, u).to_dense()
 
     ptut_up = (p.T @ ut_u) @ p
@@ -577,10 +577,10 @@ def regress_onto_spatial_basis(
         (2) It will perform a linear subspace projection of the centered+standardized data onto the full FOV data
 
     The computation to perform here is:
-    v_aggregate = u^T (I_{norms} * (Data - Mean) - Spatial_Full_FOV_Bkgd * Temporal_Full_FOV_Bkgd)
+    v_aggregate = spatial_compressed^T (I_{norms} * (Data - Mean) - Spatial_Full_FOV_Bkgd * Temporal_Full_FOV_Bkgd)
     Here, I_{norms} is a diagonal matrix containing the reciprocal of the dataset_noise_variance. The term
     I_{norms}(Data - Mean) does pixelwise centering + standardization of the data.
-    In the below routine, we exploit the low rank of u and conduct operations in an order that minimizes data size/number of computations.
+    In the below routine, we exploit the low rank of spatial_compressed and conduct operations in an order that minimizes data size/number of computations.
 
     Args:
         dataset (Union[masknmf.ArrayLike, masknmf.LazyFrameLoader]): Any array-like object that supports __getitem__ for fast frame retrieval.
@@ -1140,7 +1140,7 @@ def pmd_decomposition(
         device ("auto" | "cuda" | "cpu"): Which device the computations should be performed on.
 
     Returns:
-        compression_arr (masknmf.PMDArray): A PMD Array object capturing the compression results.
+        compression_array (masknmf.PMDArray): A PMD Array object capturing the compression results.
     """
 
     device = torch_select_device(device)
@@ -1429,7 +1429,7 @@ def pmd_decomposition(
         v_aggregated.cpu(),
         dataset_mean,
         dataset_noise_std,
-        u_local_projector=u_local_projector.cpu()
+        spatial_compressed_local_projector=u_local_projector.cpu()
         if u_local_projector is not None
         else None,
         spatial_trend_basis=spatial_preprocess_basis.cpu() if spatial_preprocess_basis is not None else None,

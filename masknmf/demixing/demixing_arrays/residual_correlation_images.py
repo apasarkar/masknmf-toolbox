@@ -1,6 +1,6 @@
 from enum import Enum
-from typing import *
 import numpy as np
+from masknmf.utils import SparseCOOTensor
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
@@ -22,8 +22,8 @@ class ResidualCorrelationImages(ArrayLike):
         """
 
         self._flyweight = flyweight
-        self.flyweight.validate_attributes(["u",
-                                            "v",
+        self.flyweight.validate_attributes(["spatial_compressed",
+                                            "temporal_compressed",
                                             "factorized_bkgd_term1",
                                             "factorized_bkgd_term2",
                                             "a",
@@ -42,7 +42,7 @@ class ResidualCorrelationImages(ArrayLike):
         self._mode = mode
 
         self._ones_basis = (
-            torch.ones([1, self.v.shape[1]], device=self.device) @ self.v.T
+                torch.ones([1, self.temporal_compressed.shape[1]], device=self.device) @ self.temporal_compressed.T
         )
         self._pixel_mat = torch.arange(self.shape[1] * self.shape[2], device=self.device, dtype=torch.long).reshape(
             self.shape[1], self.shape[2])
@@ -50,13 +50,13 @@ class ResidualCorrelationImages(ArrayLike):
     @classmethod
     def from_tensors(
         cls,
-        u_sparse: torch.sparse_coo_tensor,
-        v: torch.Tensor,
+        spatial_compressed: SparseCOOTensor,
+        temporal_compressed: torch.Tensor,
         factorized_bkgd_term1: torch.Tensor,
         factorized_bkgd_term2: torch.Tensor,
-        a: torch.sparse_coo_tensor,
+        a: SparseCOOTensor,
         c: torch.Tensor,
-        resid_corr_img_support_values: torch.sparse_coo_tensor,
+        resid_corr_img_support_values: SparseCOOTensor,
         resid_corr_img_mean: torch.Tensor,
         resid_corr_img_normalizer: torch.Tensor,
         fov_dims: tuple[int, int],
@@ -73,8 +73,8 @@ class ResidualCorrelationImages(ArrayLike):
         pixels x number of neural signals data.
 
         Args:
-            u_sparse (torch.sparse_coo_tensor): shape (pixels, rank 1)
-            v (torch.Tensor): shape (rank 2, frames)
+            spatial_compressed (torch.sparse_coo_tensor): shape (pixels, rank 1)
+            temporal_compressed (torch.Tensor): shape (rank 2, frames)
             factorized_bkgd_term1 (torch.Tensor):
             factorized_bkgd_term2 (torch.Tensor):
             a (torch.sparse_coo_tensor): shape (pixels, number of neural signals). Spatial components
@@ -86,8 +86,8 @@ class ResidualCorrelationImages(ArrayLike):
             fov_dims (tuple): A tuple of two values describing the field height/width of the field of view.
             mode (ResidCorrMode): The mode of the residual correlation image
         """
-        flyweight = TensorFlyWeight(u=u_sparse,
-                                    v=v,
+        flyweight = TensorFlyWeight(spatial_compressed=spatial_compressed,
+                                    temporal_compressed=temporal_compressed,
                                     factorized_bkgd_term1=factorized_bkgd_term1,
                                     factorized_bkgd_term2=factorized_bkgd_term2,
                                     a=a,
@@ -157,16 +157,15 @@ class ResidualCorrelationImages(ArrayLike):
         return self.c.shape[1], self._fov_dims[0], self._fov_dims[1]
 
     @property
-    def u(self) -> torch.sparse_coo_tensor:
-        return self.flyweight.u
+    def spatial_compressed(self) -> SparseCOOTensor:
+        return self.flyweight.spatial_compressed
 
     @property
-    def v(self) -> torch.Tensor:
-        return self.flyweight.v
-
+    def temporal_compressed(self) -> torch.Tensor:
+        return self.flyweight.temporal_compressed
 
     @property
-    def a(self) -> torch.sparse_coo_tensor:
+    def a(self) -> SparseCOOTensor:
         return self.flyweight.a
 
     @property
@@ -174,7 +173,7 @@ class ResidualCorrelationImages(ArrayLike):
         return self.flyweight.c
 
     @property
-    def resid_corr_img_support_values(self) -> torch.sparse_coo_tensor:
+    def resid_corr_img_support_values(self) -> SparseCOOTensor:
         return self.flyweight.resid_corr_img_support_values
 
     @property
@@ -198,12 +197,12 @@ class ResidualCorrelationImages(ArrayLike):
         return len(self.shape)
 
     @property
-    def dtype(self):
+    def dtype(self) -> np.dtype:
         return np.float32
 
     def getitem_tensor(
         self,
-        item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
     ) -> torch.Tensor:
         frame_indexer, item = self._parse_indices(item)
 
@@ -212,7 +211,7 @@ class ResidualCorrelationImages(ArrayLike):
         if c_crop.ndim < self._c_norm.ndim:
             c_crop = c_crop.unsqueeze(1)
 
-        v_crop = self.v @ c_crop - (self.factorized_bkgd_term1 @ (self.factorized_bkgd_term2 @ c_crop))
+        v_crop = self.temporal_compressed @ c_crop - (self.factorized_bkgd_term1 @ (self.factorized_bkgd_term2 @ c_crop))
         cc_crop = self.c.T @ c_crop
         selected_neurons = self._index_values[frame_indexer]
         if selected_neurons.ndim < 1:
@@ -227,7 +226,7 @@ class ResidualCorrelationImages(ArrayLike):
         ):
             pixel_space_crop = self._pixel_mat[item[1:]]
             u_indices = pixel_space_crop.flatten()
-            u_crop = torch.index_select(self.u, 0, u_indices)
+            u_crop = torch.index_select(self.spatial_compressed, 0, u_indices)
             a_crop = torch.index_select(self.a, 0, u_indices)
             support_values_crop = torch.index_select(
                 support_values_crop, 0, u_indices
@@ -238,7 +237,7 @@ class ResidualCorrelationImages(ArrayLike):
             )
             implied_fov = pixel_space_crop.shape
         else:
-            u_crop = self.u
+            u_crop = self.spatial_compressed
             a_crop = self.a
             mean_crop = self.resid_corr_img_mean
             movie_normalizer_crop = self.resid_corr_img_normalizer
@@ -275,7 +274,7 @@ class ResidualCorrelationImages(ArrayLike):
 
     def __getitem__(
         self,
-        item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
     ) -> np.ndarray:
         product = self.getitem_tensor(item)
         product = product.cpu().numpy().astype(self.dtype)
