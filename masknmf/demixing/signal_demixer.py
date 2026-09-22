@@ -1557,29 +1557,24 @@ def find_local_peaks_2d(greyscale_img: torch.tensor,
     return selected_peak_coords, total_peak_coords
 
 
-def superpixel_adapter(peak_coords: torch.tensor,
-                       dims: tuple[int, int, int],
-                       order: str = "C"):
+def superpixel_adapter(peak_coords: torch.Tensor,
+                       dims: tuple[int, int, int]):
     """
     Args:
-        peak_coords (torch.tensor): Shape (num_coords, 2)
-        dims (tuple[int, int, int]): Height, Width, Num Frames of video
+        peak_coords (torch.Tensor): Shape (num_coords, 2)
+        dims (tuple[int, int, int]): fov_height, fov_width, num_frames
     """
     device = peak_coords.device
-    fov_d1, fov_d2, n_frames = dims
+    fov_height, fov_width, num_frames = dims
 
     # First construct the superpixel mat that masknmf currently uses
     unique_pix = torch.arange(1, peak_coords.shape[0] + 1, device=device)
-    superpixel_img = torch.zeros(fov_d1, fov_d2, dtype=torch.int64, device=device)
+    superpixel_img = torch.zeros(fov_height, fov_width, dtype=torch.int64, device=device)
     superpixel_img[(peak_coords[:, 0], peak_coords[:, 1])] = unique_pix
 
     # Next construct the a_ini that mask uses. Note: row major order
-    if order == "C":
-        row_values = peak_coords[:, 0] * fov_d2 + peak_coords[:, 1]
-    elif order == "F":
-        row_values = peak_coords[:, 1] * fov_d1 + peak_coords[:, 0]
-    else:
-        raise ValueError("Invalid ordering provided")
+    row_values = peak_coords[:, 0] * fov_width + peak_coords[:, 1]
+
     col_values = torch.arange(row_values.shape[0], device=device)
     data = torch.ones_like(col_values).float()
 
@@ -1597,7 +1592,6 @@ def superpixel_init(
         v: torch.Tensor,
         corr_image: torch.Tensor,
         patch_size: tuple[int, int],
-        data_order: str,
         dims: tuple[int, int, int],
         cut_off_point: float,
         residual_cut: float,
@@ -1655,8 +1649,7 @@ def superpixel_init(
         return None
 
     a_ini, connectivity_mat, unique_pix = superpixel_adapter(peaks,
-                                                             dims,
-                                                             data_order)
+                                                             dims)
 
     c_ini, a_ini = spatial_temporal_ini_uv(u_sparse,
                                            v,
@@ -1751,7 +1744,7 @@ def superpixel_init(
                                      b,
                                      correlation_img=corr_image,
                                      nmf_seed_map=connectivity_mat,
-                                     pure_nmf_seed_map = pure_superpixel_img_1d.cpu().numpy().reshape((dims[0], dims[1]), order=data_order))
+                                     pure_nmf_seed_map = pure_superpixel_img_1d.cpu().numpy().reshape((dims[0], dims[1])))
     return init_res
 
 def _compute_indices_to_merge(a: SparseCOOTensor,
@@ -2503,7 +2496,6 @@ class InitializingState(SignalProcessingState):
             self.v,
             self._curr_corr_image,
             patch_size,
-            self.data_order,
             self.shape,
             mad_correlation_threshold,
             residual_threshold,
