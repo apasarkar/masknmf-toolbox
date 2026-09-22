@@ -45,9 +45,9 @@ class CompressionVis:
         self._mean_subtract = mean_subtract
         self._pmd_stack = CompressionArray.from_flyweight(pmd_stack.shape,
                                                           pmd_stack.flyweight,
-                                                          device=device,
                                                           rescale=True,
                                                           include_trend=True)
+        self._pmd_stack.to(device)
         self._moco_stack = moco_stack
         self._include_trend = include_trend
 

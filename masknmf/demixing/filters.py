@@ -49,7 +49,8 @@ def spatial_filter_compressed_array(compression_array: masknmf.CompressionArray,
     #We can change the state of the below compression array without any issue
     compression_array = masknmf.CompressionArray.from_flyweight(compression_array.shape,
                                                                 compression_array.flyweight,
-                                                                rescale = True)
+                                                                rescale = True,
+                                                                include_trend = False)
     device = compression_array.device
     num_frames, fov_height, fov_width = compression_array.shape
     hp_filter_kernel = construct_gaussian_highpass_filter_kernel(
@@ -100,8 +101,8 @@ def truncated_random_svd_compressed_array(
     The random projection must act on F, not just temporal_compressed, so we thread spatial_compressed
     through both the forward and adjoint passes.
 
-    Returns spatial_mixing_matrix (compression_rank, rank), singular_values (rank,), right_singular_vectors (rank, num_frames)
-    where F ≈ (spatial_compressed @ spatial_mixing_matrix) @ diag(singular_values) @ right_singular_vectors
+    Returns global_spatial_basis (num_pixels, rank), singular_values (rank,), right_singular_vectors (rank, num_frames)
+    where F ≈ (spatial_compressed @ global_spatial_basis) @ diag(singular_values) @ right_singular_vectors
     """
     compression_rank, num_frames = temporal_compressed.shape
 
@@ -115,9 +116,9 @@ def truncated_random_svd_compressed_array(
 
     left_singular_vectors, singular_values, right_singular_vectors = torch.linalg.svd(b, full_matrices=False)
 
-    spatial_mixing_matrix = q @ left_singular_vectors                        # (compression_rank, rank+os) — in compression basis
+    global_spatial_basis = q @ left_singular_vectors                        # (num_pixels, rank+os)
 
-    return spatial_mixing_matrix[:, :rank], singular_values[:rank], right_singular_vectors[:rank, :]
+    return global_spatial_basis[:, :rank], singular_values[:rank], right_singular_vectors[:rank, :]
 
 
 def filter_global_signal_compression_array(
@@ -130,10 +131,12 @@ def filter_global_signal_compression_array(
     spatial_compressed = compression_array.spatial_compressed         # (num_pixels, compression_rank)
     temporal_compressed = compression_array.temporal_compressed          # (compression_rank, num_frames), dense
 
-    spatial_mixing_matrix, singular_values, right_singular_vectors = truncated_random_svd_compressed_array(spatial_compressed, temporal_compressed, rank, num_oversamples, device)
+    global_spatial_basis, singular_values, right_singular_vectors = truncated_random_svd_compressed_array(spatial_compressed, temporal_compressed, rank, num_oversamples, device)
 
-    # --- Global signal in pixel space (never densified to n_pixels x num_frames) ---
-    temporal_compressed_global = (spatial_mixing_matrix * singular_values[None, :]) @ right_singular_vectors  #(compression_rank, num_frames)
+    # --- Global signal in pixel space, multiplication order exploits low-rank structure ---
+    temporal_compressed_global = torch.sparse.mm(
+        compression_array.spatial_compressed_local_projector.T, global_spatial_basis * singular_values[None, :]
+    ) @ right_singular_vectors
 
     temporal_compressed_global_subtracted = temporal_compressed - temporal_compressed_global
 

@@ -170,7 +170,7 @@ class CompressionArray(ArrayLike, Serializer):
                        shape: tuple[int, int, int] | np.ndarray,
                        flyweight: TensorFlyWeight,
                        rescale: bool = True,
-                       include_trend: bool = True
+                       include_trend: bool = False
                        ):
         """
         Memory efficient way to construct CompressionArray from a flyweight tensor manager. See from_tensors for parameter documentation
@@ -423,7 +423,10 @@ class CompressionResidualArray(ArrayLike):
         ## This object has its own CompressionArray, so we can set its state without affecting any other workflows
         self.compression_array = CompressionArray.from_flyweight(compression_array.shape,
                                                                  compression_array.flyweight)
+
+        ## We want the compression to be rescaled pixelwise to the raw data scale and also include all trends
         self.compression_array.rescale = True
+        self.compression_array.include_trend = True
         self.raw_array = raw_array
         self._shape = self.compression_array.shape
 
