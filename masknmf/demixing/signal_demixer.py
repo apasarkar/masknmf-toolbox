@@ -2642,24 +2642,24 @@ class InitializingState(SignalProcessingState):
 class DemixingState(SignalProcessingState):
     def __init__(
             self,
-            pmd_arr: CompressionArray,
+            compression_array: CompressionArray,
             init_results: InitializationResults,
             factorized_ring_term: tuple[torch.Tensor, torch.Tensor] = None,
             device: str = "cpu",
             frame_batch_size: int = 10000,
             robust_noise_term: float | None = None
     ):
-        self._shape = pmd_arr.shape[1], pmd_arr.shape[2], pmd_arr.shape[0] #height, width, frames
+        self._shape = compression_array.shape[1], compression_array.shape[2], compression_array.shape[0] #height, width, frames
         pixel_batch_size = pixel_batch_size_from_frame_batch_size(self.d1, self.d2, self.T, frame_batch_size)
         super().__init__(pixel_batch_size, frame_batch_size)
         # Define the data dimensions, data ordering scheme, and device
 
         self.device = device
         self._results = None
-        self.pmd_obj = pmd_arr
+        self.pmd_obj = compression_array
 
-        self.u_sparse = pmd_arr.spatial_compressed.to(device)
-        self.v = pmd_arr.temporal_compressed.to(device)
+        self.spatial_compressed = compression_array.spatial_compressed.to(device)
+        self.temporal_compressed = compression_array.temporal_compressed.to(device)
 
         self._mask_a_init = init_results.mask_a.to(device).coalesce()
         self._a_init = init_results.a.to(device).coalesce()
@@ -2671,13 +2671,13 @@ class DemixingState(SignalProcessingState):
         self.mask_ab = None
         self.standard_correlation_image = None
         self.residual_correlation_image = None
-        self.uv_mean = get_mean_data(self.u_sparse, self.v)
+        self.uv_mean = get_mean_data(self.spatial_compressed, self.temporal_compressed)
         self.background_rank = None
 
         if factorized_ring_term is None:
             self._factorized_ring_term_init = (
-            torch.zeros(self.v.shape[0], 1, device=self.v.device, dtype=self.v.dtype),
-            torch.zeros(1, self.v.shape[1], device=self.v.device, dtype=self.v.dtype))
+            torch.zeros(self.temporal_compressed.shape[0], 1, device=self.temporal_compressed.device, dtype=self.temporal_compressed.dtype),
+            torch.zeros(1, self.temporal_compressed.shape[1], device=self.temporal_compressed.device, dtype=self.temporal_compressed.dtype))
         else:
             self._factorized_ring_term_init = (
             factorized_ring_term[0].to(self.device), factorized_ring_term[1].to(self.device))
@@ -2716,25 +2716,25 @@ class DemixingState(SignalProcessingState):
         Estimate the pixelwise variance of the data
         :return:
         """
-        num_frames = min(num_frames, self.v.shape[1])
-        if num_frames == self.v.shape[1]:
+        num_frames = min(num_frames, self.temporal_compressed.shape[1])
+        if num_frames == self.temporal_compressed.shape[1]:
             indices = torch.arange(num_frames, device=self.device)
         else:
-            indices = torch.from_numpy(np.random.choice(self.v.shape[1], size=num_frames, replace=False)).to(
+            indices = torch.from_numpy(np.random.choice(self.temporal_compressed.shape[1], size=num_frames, replace=False)).to(
                 self.device)
 
         num_iters = math.ceil(indices.shape[0] / self.frame_batch_size)
-        sq_cumulator = torch.zeros(self.u_sparse.shape[0], device=self.device)
-        mean_cumulator = torch.zeros(self.u_sparse.shape[0], device=self.device)
+        sq_cumulator = torch.zeros(self.spatial_compressed.shape[0], device=self.device)
+        mean_cumulator = torch.zeros(self.spatial_compressed.shape[0], device=self.device)
 
         for k in range(num_iters):
             start = k * self.frame_batch_size
-            end = min(start + self.frame_batch_size, self.v.shape[1])
+            end = min(start + self.frame_batch_size, self.temporal_compressed.shape[1])
             if self.factorized_ring_term is not None:
-                v_used = self.v[:, indices[start:end]] - self.factorized_ring_term[0] @ self.factorized_ring_term[1]
+                v_used = self.temporal_compressed[:, indices[start:end]] - self.factorized_ring_term[0] @ self.factorized_ring_term[1]
             else:
-                v_used = self.v[:, indices[start:end]]
-            curr_subset = torch.sparse.mm(self.u_sparse, v_used)
+                v_used = self.temporal_compressed[:, indices[start:end]]
+            curr_subset = torch.sparse.mm(self.spatial_compressed, v_used)
             sq_cumulator += torch.sum(curr_subset ** 2, dim=1) / num_frames
             mean_cumulator = torch.sum(curr_subset, dim=1) / num_frames
 
@@ -2817,16 +2817,16 @@ class DemixingState(SignalProcessingState):
             raise ValueError(f"Factorized Ring Term product dimensions do not match. Term 1 has "
                              f"shape {self._factorized_ring_term_init[0].shape[1]} while Term 2 has shape"
                              f"{self._factorized_ring_term_init[1].shape[0]}")
-        if not self._factorized_ring_term_init[0].shape[0] == self.v.shape[0]:
+        if not self._factorized_ring_term_init[0].shape[0] == self.temporal_compressed.shape[0]:
             raise ValueError("Left dimensions of factorized ring term needs to have shape equal to the PMD rank")
-        if not self._factorized_ring_term_init[1].shape[1] == self.v.shape[1]:
+        if not self._factorized_ring_term_init[1].shape[1] == self.temporal_compressed.shape[1]:
             raise ValueError(
                 "Right dimension of factorized ring term needs to have shape equal to the number of frames")
 
     def initialize_standard_correlation_image(self):
         self.standard_correlation_image = _compute_standard_correlation_image(
-            self.u_sparse,
-            self.v,
+            self.spatial_compressed,
+            self.temporal_compressed,
             self.c,
             (self.shape[0], self.shape[1]),
             noise_std=self.robust_noise_term,
@@ -2836,8 +2836,8 @@ class DemixingState(SignalProcessingState):
 
     def compute_residual_correlation_image(self):
         self.residual_correlation_image, self._uv_norms = _compute_residual_correlation_image(
-            self.u_sparse,
-            self.v,
+            self.spatial_compressed,
+            self.temporal_compressed,
             self.factorized_ring_term,
             self.a,
             self.c,
@@ -2887,18 +2887,18 @@ class DemixingState(SignalProcessingState):
 
 
         device = self.device
-        num_frames = self.v.shape[1]
+        num_frames = self.temporal_compressed.shape[1]
         random_data = torch.randn(num_frames, background_rank + num_oversamples, device=device)
-        resid_projection = (torch.sparse.mm(self.u_sparse, self.v @ random_data) -
+        resid_projection = (torch.sparse.mm(self.spatial_compressed, self.temporal_compressed @ random_data) -
                             torch.sparse.mm(self.a, self.c.T @ random_data) -
                             self.b @ torch.sum(random_data, dim=0, keepdim=True))
         if self.factorized_ring_term is not None:
-            resid_projection -= torch.sparse.mm(self.u_sparse, self.factorized_ring_term[0] @ (self.factorized_ring_term[1] @ random_data))
+            resid_projection -= torch.sparse.mm(self.spatial_compressed, self.factorized_ring_term[0] @ (self.factorized_ring_term[1] @ random_data))
 
         resid_projection -= torch.mean(resid_projection, dim=1, keepdims=True)
         orth_qr, tri_qr = torch.linalg.qr(resid_projection, mode="reduced")
-        proj_u = torch.sparse.mm(self.u_sparse.t(), orth_qr)
-        right_term = proj_u.T @ self.v
+        proj_u = torch.sparse.mm(self.spatial_compressed.t(), orth_qr)
+        right_term = proj_u.T @ self.temporal_compressed
         if self.factorized_ring_term is not None:
             right_term -= (proj_u.T @ self.factorized_ring_term[0]) @ self.factorized_ring_term[1]
         right_term -= torch.sparse.mm(self.a.t(), orth_qr).T @ self.c.T
@@ -2928,9 +2928,9 @@ class DemixingState(SignalProcessingState):
         Regresses this back onto (UV - AC - b) to get the full background estimate
         """
         device = self.device
-        num_frames = self.v.shape[1]
+        num_frames = self.temporal_compressed.shape[1]
         random_data = torch.randn(num_frames, background_rank + num_oversamples, device=device)
-        resid_projection = (torch.sparse.mm(self.u_sparse, self.v @ random_data) -
+        resid_projection = (torch.sparse.mm(self.spatial_compressed, self.temporal_compressed @ random_data) -
                             torch.sparse.mm(self.a, self.c.T @ random_data) -
                             self.b @ torch.sum(random_data, dim=0, keepdim=True))
         resid_projection = resid_projection.reshape(self.d1, self.d2, resid_projection.shape[1])
@@ -2940,7 +2940,7 @@ class DemixingState(SignalProcessingState):
         orth_qr, tri_qr = torch.linalg.qr(resid_projection, mode="reduced")
 
         # Downsample spatial_compressed, A and B
-        u_downsample = masknmf.compression.decomposition.downsample_sparse(self.u_sparse,
+        u_downsample = masknmf.compression.decomposition.downsample_sparse(self.spatial_compressed,
                                                                            (self.d1, self.d2),
                                                                            downsampling_factor)
         a_downsample = masknmf.compression.decomposition.downsample_sparse(self.a,
@@ -2950,14 +2950,14 @@ class DemixingState(SignalProcessingState):
                                                                             downsampling_factor).squeeze()
         b_downsample = b_downsample.reshape(b_downsample.shape[0] * b_downsample.shape[1], 1)
 
-        right_term = torch.sparse.mm(u_downsample.t(), orth_qr).T @ self.v
+        right_term = torch.sparse.mm(u_downsample.t(), orth_qr).T @ self.temporal_compressed
         right_term -= torch.sparse.mm(a_downsample.t(), orth_qr).T @ self.c.T
         right_term -= orth_qr.T @ b_downsample
         #Project the residual onto this orth spatial basis
         _, _, v_bkgd = torch.linalg.svd(right_term, full_matrices=False)
 
         #Go back to full resolution data, project onto the v_bkgd temporal basis
-        left_term = torch.sparse.mm(self.u_sparse, self.v @ v_bkgd.T)
+        left_term = torch.sparse.mm(self.spatial_compressed, self.temporal_compressed @ v_bkgd.T)
         left_term -= torch.sparse.mm(self.a, (self.c.T @ v_bkgd.T))
         left_term -= self.b @ torch.sum(v_bkgd.T, dim=0, keepdim=True)
         u, s, v_left = torch.linalg.svd(left_term, full_matrices=False)
@@ -2966,7 +2966,7 @@ class DemixingState(SignalProcessingState):
 
     def static_baseline_update(self):
         if self.factorized_ring_term is not None:
-            mean_used = self.uv_mean - torch.sparse.mm(self.u_sparse,
+            mean_used = self.uv_mean - torch.sparse.mm(self.spatial_compressed,
                                                        (self.factorized_ring_term[0] @
                                                         torch.mean(self.factorized_ring_term[1], dim=1, keepdim=True)))
         else:
@@ -3012,15 +3012,15 @@ class DemixingState(SignalProcessingState):
         u_bkgd, s_bkgd, v_bkgd = self.lowrank_background_svd(downsampling_factor,
                                                              self.background_rank)
         new_left_term = self.pmd_obj.project_frames(u_bkgd, standardize=False)
-        new_left_term = torch.sparse.mm(self.u_sparse, new_left_term)
+        new_left_term = torch.sparse.mm(self.spatial_compressed, new_left_term)
         new_left_term *= s_bkgd[None, :]
         ring_weighted_left_term = self.lowrank_ring_update(new_left_term)
         self.factorized_ring_term = (ring_weighted_left_term, v_bkgd)
 
     def spatial_update(self, plot_en=False):
         self.a = regression_update.spatial_update_hals(
-            self.u_sparse,
-            self.v,
+            self.spatial_compressed,
+            self.temporal_compressed,
             self.a,
             self.c,
             self.b,
@@ -3054,8 +3054,8 @@ class DemixingState(SignalProcessingState):
 
     def temporal_update(self, denoise=False, plot_en=False, c_nonneg=True):
         self.c = regression_update.temporal_update_hals(
-            self.u_sparse,
-            self.v,
+            self.spatial_compressed,
+            self.temporal_compressed,
             self.a,
             self.c,
             self.b,
@@ -3099,7 +3099,7 @@ class DemixingState(SignalProcessingState):
         """
 
         # Compute spatial_compressed @ factorized_ring_term1 to collapse rank
-        u_term1 = torch.sparse.mm(self.u_sparse, self.factorized_ring_term[0])
+        u_term1 = torch.sparse.mm(self.spatial_compressed, self.factorized_ring_term[0])
         lu_term1 = torch.sparse.mm(graph_laplacian, u_term1)
         alu_term1 = torch.sparse.mm(self.a.t(), lu_term1)  # Shape (num_neurons, background_rank)
 
@@ -3501,7 +3501,7 @@ class DemixingState(SignalProcessingState):
 
         self.standard_correlation_image.temporal_demixed = self.c
         self.compute_residual_correlation_image()
-        background_to_signal_correlation_image = _compute_standard_correlation_image(self.u_sparse,
+        background_to_signal_correlation_image = _compute_standard_correlation_image(self.spatial_compressed,
                                                                                      self.factorized_ring_term[0] @
                                                                                      self.factorized_ring_term[1],
                                                                                      self.c,
@@ -3512,8 +3512,8 @@ class DemixingState(SignalProcessingState):
         (
             self._curr_corr_image
         ) = get_local_correlation_structure(
-            self.u_sparse,
-            self.v,
+            self.spatial_compressed,
+            self.temporal_compressed,
             self.shape,
             1,
             self.robust_noise_term,
