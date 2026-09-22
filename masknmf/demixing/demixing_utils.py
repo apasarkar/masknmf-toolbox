@@ -312,7 +312,7 @@ def get_box(img):
     """
     For a given frame in the dataset, this function calculates its bounding box
         Args:
-            img (np.ndarray): Shape (d1 x d2). The image to analyze
+            img (np.ndarray): Shape (fov_height x fov_width). The image to analyze
 
         Returns:
             [height_min, height_max, width_min, width_max]: a list of bounding coordinates which can be used to crop original image

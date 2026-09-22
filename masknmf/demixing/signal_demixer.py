@@ -394,8 +394,8 @@ def process_custom_signals(
     Function creates a copy of the input "a" tensor to avoid unintended side effects to original input.
 
     Params:
-        a (torch.sparse_coo_tensor): (shape (d1*d2, K) where K is number of neural signals
-        spatial_compressed (torch.sparse_coo_tensor): shape (d1*d2, rank 1) where rank 1 is larger PMD rank
+        a (torch.sparse_coo_tensor): (shape (fov_height*fov_width, K) where K is number of neural signals
+        spatial_compressed (torch.sparse_coo_tensor): shape (fov_height*fov_width, rank 1) where rank 1 is larger PMD rank
         V (torch.tensor): shape (rank 2, num_frames).
         device (str): either 'cpu' or 'cuda'. Passed directly to pytorch "to" function for tensors to place data
             on the correct device.
@@ -466,7 +466,7 @@ def append_signals(
     Place newly initialized signals after the existing ones, as the superpixel passes do, and refit the baseline.
 
     Params:
-        a (torch.sparse_coo_tensor): shape (d1*d2, K), the existing spatial footprints
+        a (torch.sparse_coo_tensor): shape (fov_height*fov_width, K), the existing spatial footprints
         c (torch.tensor): shape (T, K), the existing temporal footprints
         init_res (InitializationResults): the new signals
         spatial_compressed, temporal_compressed: the PMD factors, used for the baseline
@@ -647,15 +647,15 @@ def get_local_correlation_structure(
     This computation is done after subtracting all existing signals and background from the compressed + denoised movie (given by spatial_compressed @ temporal_compressed)
 
     Context: here,
-    d1, d2 are the fov dimensions of the original data (i.e. 512 x 512 pixels or the like)
+    fov_height, fov_width are the fov dimensions of the original data (i.e. 512 x 512 pixels or the like)
     T is the number of frames in the video
-    R is the rank of the PMD decomposition (so U_sparse has shape (d1*d2, R) and V has shape (R, T))
+    R is the rank of the PMD decomposition (so U_sparse has shape (fov_height*fov_width, R) and V has shape (R, T))
     K is the number of neural signals identified (in "a" and "c", if they are provided)
 
     Inputs:
-        U_sparse: torch.sparse_coo_tensor object, shape (d1*d2, T)
+        U_sparse: torch.sparse_coo_tensor object, shape (fov_height*fov_width, T)
         V: torch.Tensor, shape (R, T)
-        dims: (d1, d2, T)
+        dims: (fov_height, fov_width, T)
         th: int (positive integer), describes the MAD threshold. We use this to threshold the pixels for when we compute correlations.
             We compute the median and median absolute deviation (MAD), then zero all bins (x,t) such that Yd(x,t) < med(x) + th * MAD(x).
         batch_size: int. Maximum number of pixels of the movie that we fully expand out (i.e. we never have more than batch_size * T -sized Tensor in device memory.
@@ -663,7 +663,7 @@ def get_local_correlation_structure(
         pseudo: float >= 0. a robust correlation parameter, used in the robust correlation calculation between every pair of neighboring pixels.
             In general, a higher value of pseudo will reduce the compute correlation between two pixels.
         tol: float: A tolerance parameter used when normalizing time series (to avoid divide by "close to 0" issues).
-        a Optional[torch.sparse_coo_tensor]: A (d1*d2, K)-shaped ndarray whose columns describe the correlation structure of the data.
+        a Optional[torch.sparse_coo_tensor]: A (fov_height*fov_width, K)-shaped ndarray whose columns describe the correlation structure of the data.
         c Optional[torch.tensor]: A (T, K)-shaped array whose columns describe the estimated fluorescence time course of each signal.
 
 
@@ -849,14 +849,14 @@ def find_superpixel_UV(
     of pixels. The clusters of connected components in this graph are superpixels.
 
     Context:
-        d1, d2: the FOV dimensions
+        fov_height, fov_width: the FOV dimensions
         T: The number of frames
         R: rank of PMD decomposition
     Parameters:
     ----------------
-    U_sparse: torch.sparse_coo_tensor object, shape (d1*d2, T)
+    U_sparse: torch.sparse_coo_tensor object, shape (fov_height*fov_width, T)
     V: torch.Tensor, shape (R, T)
-    dims: (d1, d2, T)
+    dims: (fov_height, fov_width, T)
     cut_off_point: float between 0 and 1. Correlation threshold which we use to determine whether two neighboring pixels are "highly correlated"
     length_cut: int. Minimum size of a connected component required for us to call it a superpixel
 
@@ -942,14 +942,14 @@ def spatial_temporal_ini_uv(
     Apply rank 1 NMF to find spatial and temporal initialization for each superpixel in Yt.
 
     Args:
-        u_sparse (torch.sparse_coo_tensor): Shape (d1*d2, R1) where d1, d2 are field of view dimensions.
+        u_sparse (torch.sparse_coo_tensor): Shape (fov_height*fov_width, R1) where fov_height, fov_width are field of view dimensions.
         v (torch.Tensor): Shape (R2, T). T is the number of timepoints.
-        dims (tuple): Contains (d1, d2, T). Describes data shape.
-        a (Optional[np.ndarray], optional): Shape (d1*d2, K) where K is the number of neurons. Defaults to None.
+        dims (tuple): Contains (fov_height, fov_width, T). Describes data shape.
+        a (Optional[np.ndarray], optional): Shape (fov_height*fov_width, K) where K is the number of neurons. Defaults to None.
         c (Optional[np.ndarray], optional): Shape (T, K) where T is the number of time points. Defaults to None.
 
     Returns:
-        a_init (torch.sparse_coo_tensor): Shape (d1*d2, K). Describes initial spatial footprints.
+        a_init (torch.sparse_coo_tensor): Shape (fov_height*fov_width, K). Describes initial spatial footprints.
         c_init (torch.tensor): Shape (T, K). Describes temporal initializations.
     """
     device = v.device
@@ -1219,12 +1219,12 @@ def get_mean(U, R, V, a=None, X=None):
     """
     Routine for calculating the mean of the movie in question in terms of the V basis
     Inputs:
-        U: torch.sparse_coo_tensor. Dimensions (d1*d2, R) where d1, d2 are the FOV dimensions
+        U: torch.sparse_coo_tensor. Dimensions (fov_height*fov_width, R) where fov_height, fov_width are the FOV dimensions
         R: torch.Tensor. Dimensions (R, R)
         V: torch.Tensor: Dimensions (R, T), where R is the rank of the matrix
 
     Returns:
-        m: torch.Tensor. Shape (d1*d2, 1)
+        m: torch.Tensor. Shape (fov_height*fov_width, 1)
         s: torch.Tensor. Shape (1, R)
 
         Idea: msV is the "mean movie"
@@ -1301,12 +1301,12 @@ def compute_correlation(I, U, R, m, s, norm, a=None, X=None, batch_size=200):
     """
     Computes local correlation matrix given pre-computed quantities:
     Inputs:
-        I: torch.sparse_coo_tensor, shape (d1*d2, d1*d2). Extremely sparse (<5 elts per row)
-        U: torch.sparse_coo_tensor. Shape (d1*d2, R).
-        m: torch.Tensor. Shape (d1*d2, 1)
+        I: torch.sparse_coo_tensor, shape (fov_height*fov_width, fov_height*fov_width). Extremely sparse (<5 elts per row)
+        U: torch.sparse_coo_tensor. Shape (fov_height*fov_width, R).
+        m: torch.Tensor. Shape (fov_height*fov_width, 1)
         s: torch.Tensor. Shape (1, R)
-        norm: torch.Tensor. Shape (d1*d2,1)
-        a: torch.sparse_coo_tensor. Shape (d1*d2, K)
+        norm: torch.Tensor. Shape (fov_height*fov_width,1)
+        a: torch.sparse_coo_tensor. Shape (fov_height*fov_width, K)
         X: torch.Tensor. Shape (K, R)
         batch_size: number of columns to process at a time. Default: 200 (to avoid issues with large fov data)
     """
@@ -1349,7 +1349,7 @@ def pure_superpixel_corr_compare_plot(
     """
     General plotting diagnostic for superpixels
     Args:
-        connect_mat_1 (np.ndarray): The (d1, d2) shaped superpixel matrix
+        connect_mat_1 (np.ndarray): The (fov_height, fov_width) shaped superpixel matrix
         unique_pix (np.ndarray): The (N,) shaped array describing the values of the superpixels in the superpix mat
         pure_pix (np.ndarray): The (N,) shaped array describing the values of the pure superpixels
 
@@ -1463,7 +1463,7 @@ def local_mad_correlation_mat(
         order (str): either "F" or "C" indicating how to reshape flattened data
 
     Returns:
-        correlation_image (np.ndarray): Shape (d1, d2).
+        correlation_image (np.ndarray): Shape (fov_height, fov_width).
     """
     coordinate_pairs = torch.stack((dim1_coordinates, dim2_coordinates), dim=1)
     sorted_coordinates, _ = torch.sort(coordinate_pairs, dim=1)
@@ -1517,7 +1517,7 @@ def prepare_iteration_uv(
     Args:
         pure_pix (numpy.ndarray): Shape (number_of_pure_superpixels,). A value of "i" indicates the superpixel at index
             i - 1 is a pure superpixel
-        a_mat (torch.sparse_coo_tensro): Shape (d1*d2, K) where K is the total number of superpixels
+        a_mat (torch.sparse_coo_tensro): Shape (fov_height*fov_width, K) where K is the total number of superpixels
         c_mat (torch.tensor): Shape (T, K) where T is the number of frames.
 
     Returns:
@@ -1622,26 +1622,26 @@ def superpixel_init(
 ] | None:
     """
     Args:
-        u_sparse (torch.sparse_coo_tensor): Shape (d1*d2, R)
+        u_sparse (torch.sparse_coo_tensor): Shape (fov_height*fov_width, R)
         v (torch.Tensor): dims (R2, T). PMD temporal basis.
-        corr_image (torch.Tensor): dims (d1, d2)
+        corr_image (torch.Tensor): dims (fov_height, fov_width)
         patch_size (tuple): Patch size that we use to partition the FOV when computing pure superpixels
         data_order (str): "F" or "C" depending on how the field of view "collapsed" into 1D vectors
-        dims (tuple): containing (d1, d2, T), the dimensions of the data
+        dims (tuple): containing (fov_height, fov_width, T), the dimensions of the data
         cut_off_point (float): between 0 and 1. Correlation thresholds used in superpixel calculations
         residual_cut (float): between 0 and 1. Threshold used in successive projection to find pure superpixels
         length_cut (int): Minimum allowed sizes of superpixels
         device (string): string used by pytorch to move and construct objects on cpu or gpu
         min_peak_distance (int): The min distance between adjacent peaks
-        a (torch.sparse_coo_tensor): shape (d1*d2, K) where K is the number of neurons
+        a (torch.sparse_coo_tensor): shape (fov_height*fov_width, K) where K is the number of neurons
         c (torch.tensor): shape (T, K) where T is the number of time points, K is number of neurons
         frame_batch_size: maximum number of frames that will be loaded into GPU/CPU ram at a time
 
     Returns:
-        a (torch.sparse_coo_tensor): Shape (d1*d2, K) where d1, d2 are the FOV dimensions and K is the number of signals identified
+        a (torch.sparse_coo_tensor): Shape (fov_height*fov_width, K) where fov_height, fov_width are the FOV dimensions and K is the number of signals identified
         mask_ab (torch.sparse_coo_tensor): None or torch.sparse_coo_tensor of shape same as "a"
         c (torch.tensor): Temporal data, shape (T,  K)
-        b (torch.Tensor): Pixelwise baseline estimate, shape(d1*d2)
+        b (torch.Tensor): Pixelwise baseline estimate, shape(fov_height*fov_width)
         superpixel_dictionary (dict): Dictionary of key superpixel matrices for this round of initialization
     """
 
@@ -3451,7 +3451,7 @@ class DemixingState(SignalProcessingState):
 
         self.precompute_quantities()
         self.W = RingModel(
-            self.shape[0], self.shape[1], ring_radius, self.device, self.data_order
+            self.shape[0], self.shape[1], ring_radius, self.device
         )
         self.update_hals_scheduler()
         graph_laplacian = None
