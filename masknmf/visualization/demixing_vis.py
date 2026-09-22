@@ -1924,7 +1924,7 @@ class SingleSessionDemixingVis:
 def visualize_superpixels_peaks(init_results: masknmf.InitializationResults):
     superpixel_map = init_results.nmf_seed_map
     pure_superpixel_map = init_results.pure_nmf_seed_map
-    correlation_image = init_results.correlation_img
+    correlation_image = init_results.corr_image
 
     superpixel_img = np.stack([correlation_image.copy()] * 3, axis=-1)
     superpixel_img[superpixel_map > 0] = [4, 0, 0]

@@ -1731,7 +1731,7 @@ def superpixel_init(
                                      a.bool(),
                                      c,
                                      b,
-                                     correlation_img=corr_image,
+                                     corr_image=corr_image,
                                      nmf_seed_map=connectivity_mat,
                                      pure_nmf_seed_map = pure_superpixel_img_1d.cpu().numpy().reshape((dims[0], dims[1])))
     return init_res
@@ -2661,10 +2661,10 @@ class DemixingState(SignalProcessingState):
         self.spatial_compressed = compression_array.spatial_compressed.to(device)
         self.temporal_compressed = compression_array.temporal_compressed.to(device)
 
-        self._mask_a_init = init_results.mask_a.to(device).coalesce()
-        self._a_init = init_results.a.to(device).coalesce()
+        self._mask_a_init = init_results.spatial_demixed_masks.to(device).coalesce()
+        self._a_init = init_results.spatial_demixed.to(device).coalesce()
         self._b_init = init_results.b.to(device)
-        self._c_init = init_results.c.to(device)
+        self._c_init = init_results.temporal_demixed.to(device)
         self.a = None
         self.b = None
         self.c = None
