@@ -202,7 +202,7 @@ class CompressDenoiseStrategy(CompressStrategy):
 
     def compress(self, dataset: masknmf.ArrayLike | np.ndarray):
 
-        pmd_no_denoiser = compression_routine(dataset,
+        compression_no_denoiser = compression_routine(dataset,
                                               self.block_sizes,
                                               frame_range=self.frame_range,
                                               max_components=self.max_components,
@@ -217,13 +217,13 @@ class CompressDenoiseStrategy(CompressStrategy):
                                               detrender=self.detrender,
                                               device=self.device)
 
-        v = pmd_no_denoiser.temporal_compressed.cpu()
-        trained_model, _ = masknmf.compression.denoising.train_total_variance_denoiser(v,
+        temporal_compressed_no_denoiser = compression_no_denoiser.temporal_compressed.cpu()
+        trained_model, _ = masknmf.compression.denoising.train_total_variance_denoiser(temporal_compressed_no_denoiser,
                                                                                        max_epochs=self.num_epochs,
                                                                                        batch_size=128,
                                                                                        learning_rate=1e-4)
 
-        curr_temporal_denoiser = masknmf.compression.PMDTemporalDenoiser(trained_model, self.noise_variance_quantile)
+        curr_temporal_denoiser = masknmf.compression.CompressionTemporalDenoiser(trained_model, self.noise_variance_quantile)
 
         self._results = masknmf.compression.compression_routine(dataset,
                                                                 self.block_sizes,

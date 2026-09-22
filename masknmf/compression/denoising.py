@@ -7,7 +7,6 @@ import pytorch_lightning as pl
 import torch.nn as nn
 import networkx as nx
 import numpy as np
-from typing import *
 from pytorch_lightning.loggers import TensorBoardLogger
 from torch.utils.data import DataLoader
 import os
@@ -296,7 +295,7 @@ class MultivariateTimeSeriesDataset(torch.utils.data.Dataset):
 
 def denoise_batched(
         model: torch.nn.Module,
-        traces: torch.tensor,
+        traces: torch.Tensor,
         noise_variance_quantile: float = 0.05,
         input_size: int = 900,
         overlap: int = 200,
@@ -308,7 +307,7 @@ def denoise_batched(
 
     Args:
         model (torch.nn.Module): Trained model
-        traces (torch.tensor): Input traces to denoise [num_traces, num_timesteps]
+        traces (torch.Tensor): Input traces to denoise [num_traces, num_timesteps]
         noise_variance_quantile (float): quantile for noise variance estimation
         var_partition_timesteps (int): Number of timesteps to use for variance partitioning
         input_size (int): We break each T-length time series into batches of size ``input_size" when running inference.
@@ -359,7 +358,7 @@ def denoise_batched(
 
 
 def partition_variance(model: torch.nn.Module,
-                       validation_data: torch.tensor,
+                       validation_data: torch.Tensor,
                        quantile: float=0.05):
     """
     Partition the total variance into signal and noise components using quantile regression.
@@ -367,11 +366,11 @@ def partition_variance(model: torch.nn.Module,
 
     Args:
         model (torch.nn.Module): trained model that predicts means and total variances
-        validation_data (torch.tensor): array of validation data used for partitioning. (Number of time series x time series length)
+        validation_data (torch.Tensor): array of validation data used for partitioning. (Number of time series x time series length)
         percentile float: The percentile for thresholding to set the noise variance
 
     Returns:
-        noise_variance (torch.tensor): Estimated observation noise variance (for each time series). Shape (number of time series, 1)
+        noise_variance (torch.Tensor): Estimated observation noise variance (for each time series). Shape (number of time series, 1)
     """
     model.eval()
     device = next(model.parameters()).device
@@ -395,8 +394,8 @@ def partition_variance(model: torch.nn.Module,
 
 
 def _denoise_batched_inner(model: torch.nn.Module,
-                           traces: torch.tensor,
-                           noise_variance: torch.tensor,
+                           traces: torch.Tensor,
+                           noise_variance: torch.Tensor,
                            input_size: int = 900,
                            overlap: int = 200):
     """
@@ -404,13 +403,13 @@ def _denoise_batched_inner(model: torch.nn.Module,
 
     Args:
         model (torch.nn.Module): Trained model
-        traces (torch.tensor): Input traces to denoise (number_of_traces, number_of_frames)
-        noise_variance (torch.tensor): Shape (number of traces, 1)
+        traces (torch.Tensor): Input traces to denoise (number_of_traces, number_of_frames)
+        noise_variance (torch.Tensor): Shape (number of traces, 1)
         input_size (int): The number of time points of data we process at once
         overlap (int) Overlap between windows
 
     Returns:
-        denoised_traces (torch.tensor): Shape (number_of_traces, number_of_frames) The denoised traces
+        denoised_traces (torch.Tensor): Shape (number_of_traces, number_of_frames) The denoised traces
     """
     # Create arrays to hold results
     device = next(model.parameters()).device
@@ -462,19 +461,19 @@ def _denoise_batched_inner(model: torch.nn.Module,
 
 
 def denoise_with_partitioned_variance(model: torch.nn.Module,
-                                      traces: torch.tensor,
-                                      noise_variance: torch.tensor):
+                                      traces: torch.Tensor,
+                                      noise_variance: torch.Tensor):
     """
     Denoise a single batch of traces.
 
     Args:
         model (torch.nn.Module): Trained model
-        traces (torch.tensor): Input traces (batch_size, num_nodes, num_timesteps)
-        noise_variance (torch.tensor): Estimated noise variance per node
+        traces (torch.Tensor): Input traces (batch_size, num_nodes, num_timesteps)
+        noise_variance (torch.Tensor): Estimated noise variance per node
 
     Returns:
-        denoised_traces (torch.tensor): The denoised traces. Shape (batch_size, num_timeseries, num_timesteps)
-        mean_traces (torch.tensor): The neural network outputs (mean estimate given temporal context)
+        denoised_traces (torch.Tensor): The denoised traces. Shape (batch_size, num_timeseries, num_timesteps)
+        mean_traces (torch.Tensor): The neural network outputs (mean estimate given temporal context)
 
     """
     model.eval()
@@ -514,18 +513,18 @@ def denoise_with_partitioned_variance(model: torch.nn.Module,
     )
 
 
-class PMDTemporalDenoiser(torch.nn.Module):
+class CompressionTemporalDenoiser(torch.nn.Module):
 
     def __init__(self,
                  trained_model: torch.nn.Module,
                  noise_variance_quantile:float = 1,
                  padding: int = 100):
-        super(PMDTemporalDenoiser, self).__init__()
+        super(CompressionTemporalDenoiser, self).__init__()
         self.noise_variance_quantile = noise_variance_quantile
         self.net = trained_model
         self._padding = padding
 
-    def forward(self, traces: torch.tensor):
+    def forward(self, traces: torch.Tensor):
         #F.pad(x, (pad_size, pad_size), mode=mode)
         padded = torch.nn.functional.pad(traces, (self._padding, self._padding), mode = 'reflect')
         outputs = denoise_batched(self.net,

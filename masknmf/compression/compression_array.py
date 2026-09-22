@@ -137,14 +137,14 @@ class CompressionArray(ArrayLike, Serializer):
             as a global spatial basis for the data).
 
             Args:
-                shape (tuple): (num_frames, fov_dim1, fov_dim2)
+                shape (tuple): (num_frames, fov_height, fov_width)
                 spatial_compressed (SparseCOOTensor): shape (pixels, rank)
                 temporal_compressed (torch.tensor): shape (rank, frames)
-                mean_image (torch.tensor): shape (fov_dim1, fov_dim2). The pixelwise mean of the data
-                noise_variance_image (torch.tensor): shape (fov_dim1, fov_dim2). A pixelwise noise normalizer for the data
+                mean_image (torch.tensor): shape (fov_height, fov_width). The pixelwise mean of the data
+                noise_variance_image (torch.tensor): shape (fov_height, fov_width). A pixelwise noise normalizer for the data
                 spatial_compressed_local_projector (SparseCOOTensor | None): shape (pixels, rank)
-                spatial_trend_basis (Optional[torch.Tensor]): Shape (pixels, trend_rank)
-                temporal_trend_basis (Optional[torch.Tensor]): Shape (trend_rank, num_frames)
+                spatial_trend_basis (torch.Tensor | None): Shape (pixels, trend_rank)
+                temporal_trend_basis (torch.Tensor | None): Shape (trend_rank, num_frames)
                     spatial_trend_basis @ temporal_trend_basis gives the trend estimate across the full movie
                 device (str): The device on which computations occur/data is stored
                 rescale (bool): True if we rescale the PMD data (i.e. multiply by the pixelwise normalizer
@@ -214,7 +214,7 @@ class CompressionArray(ArrayLike, Serializer):
     def noise_variance_image(self) -> torch.Tensor:
         return self.flyweight.noise_variance_image
 
-    def to(self, new_device: str):
+    def to(self, new_device: torch.device | str):
         if self._flyweight.device != new_device:
             self._flyweight.to(new_device)
         self._move_local_tensors(new_device)
@@ -266,7 +266,7 @@ class CompressionArray(ArrayLike, Serializer):
     @property
     def shape(self) -> tuple[int, int, int]:
         """
-        Array shape (n_frames, dims_x, dims_y)
+        Array shape (num_frames, fov_height, fov_width)
         """
         return self._shape
     @property
@@ -280,7 +280,7 @@ class CompressionArray(ArrayLike, Serializer):
         """
         Generates rank heatmap image based on U. Equal to row summation of binarized U matrix.
         Returns:
-            rank_heatmap (torch.Tensor). Shape (fov_dim1, fov_dim2).
+            rank_heatmap (torch.Tensor). Shape (fov_height, fov_width).
         """
         binarized_spatial_compressed = torch.sparse_coo_tensor(
             self.spatial_compressed.indices(),
@@ -420,7 +420,10 @@ class CompressionResidualArray(ArrayLike):
             raw_array (LazyFrameLoader): Any object that supports LazyFrameLoder functionality
             compression_array (CompressionArray)
         """
-        self.compression_array = compression_array
+
+        ## This object has its own CompressionArray, so we can set its state without affecting any other workflows
+        self.compression_array = CompressionArray.from_flyweight(compression_array.flyweight)
+        self.compression_array.rescale = True
         self.raw_array = raw_array
         self._shape = self.compression_array.shape
 
@@ -438,7 +441,7 @@ class CompressionResidualArray(ArrayLike):
     @property
     def shape(self) -> tuple[int, int, int]:
         """
-        Array shape (n_frames, dims_x, dims_y)
+        Array shape (num_frames, fov_height, fov_width)
         """
         return self._shape
 
@@ -453,16 +456,7 @@ class CompressionResidualArray(ArrayLike):
             self,
             item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ):
-        if self.compression_array.rescale is False:
-            self.compression_array.rescale = True
-            switch = True
-        else:
-            switch = False
-
         output = self.raw_array[item].astype(self.dtype) - self.compression_array[item].astype(self.dtype)
-        
-        if switch:
-            self.compression_array.rescale = False
         return output
 
 class TrendArray(ArrayLike):
@@ -504,14 +498,14 @@ class TrendArray(ArrayLike):
                      temporal_trend_basis: torch.Tensor,
                      device: str = "cpu"):
         """
-            The trend estimate is a pixels x frames estimate given by the product spatial_trend_basis x temporal_trend_basis.
-            This class provides array-like access to this trend estimate across the full movie
+        The trend estimate is a pixels x frames estimate given by the product spatial_trend_basis x temporal_trend_basis.
+        This class provides array-like access to this trend estimate across the full movie
 
-            Args:
-                shape (tuple): (num_frames, fov_dim1, fov_dim2)
-                spatial_trend_basis (torch.Tensor): The spatial basis for the trend estimate, shape (num_pixels, rank)
-                temporal_trend_basis (torch.Tensor): The temporal basis for the trend estimate, shape (rank, num_frames)
-                device (str): The device on which computations occur/data is stored
+        Args:
+            shape (tuple): (num_frames, fov_height, fov_width)
+            spatial_trend_basis (torch.Tensor): The spatial basis for the trend estimate, shape (num_pixels, rank)
+            temporal_trend_basis (torch.Tensor): The temporal basis for the trend estimate, shape (rank, num_frames)
+            device (str): The device on which computations occur/data is stored
         """
         flyweight = TensorFlyWeight(spatial_trend_basis=spatial_trend_basis.float(),
                                     temporal_trend_basis=temporal_trend_basis.float())
@@ -544,7 +538,7 @@ class TrendArray(ArrayLike):
         """
         return self.flyweight.temporal_trend_basis
 
-    def to(self, new_device: str):
+    def to(self, new_device: torch.device | str):
         if self._flyweight.device != new_device:
             self._flyweight.to(new_device)
         self._move_local_tensors(new_device)
