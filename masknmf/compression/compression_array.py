@@ -563,11 +563,10 @@ class TrendArray(ArrayLike):
     @property
     def pixel_index_image(self) -> torch.Tensor:
         """
-        Shape (fov_height, fov_width). Gives the row of spatial_compressed that each pixel of the
+        Shape (fov_height, fov_width). Gives the row of spatial_trend_basis that each pixel of the
         field of view corresponds to, so that a spatial crop can be turned into row indices.
 
-        Always returned on the same device as the compressed tensors: the flyweight is shared between
-        CompressionArray objects, so another object may have moved it since this one was constructed.
+        Always returned on the same device as the flyweight tensors
         """
         self._pixel_index_image = self._pixel_index_image.to(self.flyweight.device)  # no-op if already there
         return self._pixel_index_image
