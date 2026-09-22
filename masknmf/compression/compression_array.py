@@ -101,14 +101,14 @@ class CompressionArray(ArrayLike, Serializer):
         See from_tensors class method for documentation
         """
         self._shape = tuple(shape)
-        self._rescale = rescale
-        self._include_trend = include_trend
+        self.rescale = rescale
+        self.include_trend = include_trend
 
         ##Set up the flyweight and all other tensors
         self._flyweight = flyweight
         self._flyweight.to(device)
 
-        self._pixel_mat = torch.arange(
+        self._pixel_index_image = torch.arange(
             self.shape[1] * self.shape[2], device=self.flyweight.device,
         ).reshape(self.shape[1], self.shape[2])
 
@@ -192,7 +192,13 @@ class CompressionArray(ArrayLike, Serializer):
 
     @rescale.setter
     def rescale(self, new_state: bool):
+        """
+        Setting rescale to False will also set include_trend to False. This is done because the pixelwise trends
+        are at the raw data scale, so it does not make sense to ever show them with the rest of the compression is at a different scale
+        """
         self._rescale = new_state
+        if not new_state:
+            self._include_trend = False
 
     @property
     def include_trend(self) -> bool:
@@ -200,8 +206,9 @@ class CompressionArray(ArrayLike, Serializer):
 
     @include_trend.setter
     def include_trend(self, new_val: bool):
-        if not self.rescale:
-            raise ValueError("Cannot add back trend if the data is being scaled back to the raw data space. First run my_pmd_arr.rescale = True.")
+        if not self.rescale and new_val:
+            raise ValueError("Cannot add back trend if the data is not being scaled back to the raw data space. self.rescale must be True"
+                             "If using the constructor, pass rescale = True.")
         else:
             self._include_trend = new_val
 
@@ -218,8 +225,8 @@ class CompressionArray(ArrayLike, Serializer):
             self._flyweight.to(new_device)
         self._move_local_tensors(new_device)
 
-    def _move_local_tensors(self, new_device: str):
-        self._pixel_mat = self._pixel_mat.to(new_device)
+    def _move_local_tensors(self, new_device: torch.device | str):
+        self._pixel_index_image = self._pixel_index_image.to(new_device)
 
     @property
     def device(self) -> torch.device | str:
@@ -256,11 +263,23 @@ class CompressionArray(ArrayLike, Serializer):
         return self.spatial_compressed.shape[1]
 
     @property
-    def dtype(self) -> np.dtype:
+    def dtype(self) -> type:
         """
         data type, default np.float32
         """
         return np.float32
+
+    @property
+    def pixel_index_image(self) -> torch.Tensor:
+        """
+        Shape (fov_height, fov_width). Gives the row of spatial_compressed that each pixel of the
+        field of view corresponds to, so that a spatial crop can be turned into row indices.
+
+        Always returned on the same device as the compressed tensors: the flyweight is shared between
+        CompressionArray objects, so another object may have moved it since this one was constructed.
+        """
+        self._pixel_index_image = self._pixel_index_image.to(self.flyweight.device)  # no-op if already there
+        return self._pixel_index_image
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -361,7 +380,7 @@ class CompressionArray(ArrayLike, Serializer):
 
             spatial_crop_terms = (term_1, term_2)
 
-            pixel_space_crop = self._pixel_mat[spatial_crop_terms]
+            pixel_space_crop = self.pixel_index_image[spatial_crop_terms]
             mean_image_crop = self.mean_image[spatial_crop_terms].flatten()
             noise_variance_image_crop = self.noise_variance_image[spatial_crop_terms].flatten()
             spatial_compressed_indices = pixel_space_crop.flatten()
@@ -381,7 +400,7 @@ class CompressionArray(ArrayLike, Serializer):
 
             if self.include_trend and self.spatial_trend_basis is not None and self.temporal_trend_basis is not None:
                 if spatial_crop_terms is not None:
-                    pixel_space_crop = self._pixel_mat[spatial_crop_terms].flatten()
+                    pixel_space_crop = self.pixel_index_image[spatial_crop_terms].flatten()
                     spatial_trend_crop = self.spatial_trend_basis[pixel_space_crop]
                 else:
                     spatial_trend_crop = self.spatial_trend_basis
@@ -406,7 +425,8 @@ class CompressionArray(ArrayLike, Serializer):
 
 class CompressionResidualArray(ArrayLike):
     """
-    Factorized video for the spatial and temporal extracted sources from the data
+    An array-like interface for examining the residual movie associated with running compression:
+    Raw_Movie - Compressed_Movie
     """
 
     def __init__(
@@ -435,7 +455,7 @@ class CompressionResidualArray(ArrayLike):
 
 
     @property
-    def dtype(self) -> np.dtype:
+    def dtype(self) -> type:
         """
         data type, default np.float32
         """
@@ -477,8 +497,8 @@ class TrendArray(ArrayLike):
         self._flyweight = flyweight
         self._flyweight.to(device)
 
-        self._pixel_mat = torch.arange(
-            self.shape[1] * self.shape[2], device=self.device,
+        self._pixel_index_image = torch.arange(
+            self.shape[1] * self.shape[2], device=self.flyweight.device,
         ).reshape(self.shape[1], self.shape[2])
 
     @classmethod
@@ -521,7 +541,7 @@ class TrendArray(ArrayLike):
         return self._flyweight
 
     @property
-    def dtype(self) -> np.dtype:
+    def dtype(self) -> type:
         """
         data type, default np.float32
         """
@@ -541,13 +561,25 @@ class TrendArray(ArrayLike):
         """
         return self.flyweight.temporal_trend_basis
 
+    @property
+    def pixel_index_image(self) -> torch.Tensor:
+        """
+        Shape (fov_height, fov_width). Gives the row of spatial_compressed that each pixel of the
+        field of view corresponds to, so that a spatial crop can be turned into row indices.
+
+        Always returned on the same device as the compressed tensors: the flyweight is shared between
+        CompressionArray objects, so another object may have moved it since this one was constructed.
+        """
+        self._pixel_index_image = self._pixel_index_image.to(self.flyweight.device)  # no-op if already there
+        return self._pixel_index_image
+
     def to(self, new_device: torch.device | str):
         if self._flyweight.device != new_device:
             self._flyweight.to(new_device)
         self._move_local_tensors(new_device)
 
-    def _move_local_tensors(self, new_device: str):
-        self._pixel_mat = self._pixel_mat.to(new_device)
+    def _move_local_tensors(self, new_device: torch.device | str):
+        self._pixel_index_image = self._pixel_index_image.to(new_device)
 
     @property
     def device(self) -> torch.device | str:
@@ -593,7 +625,7 @@ class TrendArray(ArrayLike):
 
             spatial_crop_terms = (term_1, term_2)
 
-            pixel_space_crop = self._pixel_mat[spatial_crop_terms]
+            pixel_space_crop = self.pixel_index_image[spatial_crop_terms]
             spatial_indices = pixel_space_crop.flatten()
             spatial_crop = torch.index_select(self.spatial_trend_basis, 0, spatial_indices)
             implied_fov = pixel_space_crop.shape
