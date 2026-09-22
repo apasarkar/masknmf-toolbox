@@ -18,13 +18,13 @@ class StandardCorrelationImages(ArrayLike):
         self._flyweight = flyweight
         self.flyweight.validate_attributes(['spatial_compressed',
                                             'temporal_compressed',
-                                            'c',
+                                            'temporal_demixed',
                                             'std_corr_img_mean',
                                             'std_corr_img_normalizer'])
 
-        ## Caution: This tensor is "settable" (when you update self._c the correlation image dynamically changes). So the getter for c should just call flyweight.c
-        self._c = None
-        self.c = flyweight.c
+        ## Caution: This tensor is "settable" (when you update self._temporal_demixed the correlation image dynamically changes). So the getter for c should just call flyweight.c
+        self._temporal_demixed = None
+        self.temporal_demixed = flyweight.temporal_demixed
         self._pixel_mat = torch.arange(self.shape[1]*self.shape[2], device=self.device, dtype=torch.long).reshape(
             self.shape[1], self.shape[2])
         self._ones_frames = torch.ones(
@@ -38,7 +38,7 @@ class StandardCorrelationImages(ArrayLike):
         cls,
         spatial_compressed: SparseCOOTensor,
         temporal_compressed: torch.Tensor,
-        c: torch.Tensor,
+        temporal_demixed: torch.Tensor,
         std_corr_img_mean: torch.Tensor,
         std_corr_img_normalizer: torch.Tensor,
         fov_dims: tuple[int, int],
@@ -50,15 +50,15 @@ class StandardCorrelationImages(ArrayLike):
         Args:
             spatial_compressed (torch.sparse_coo_tensor): shape (pixels, rank)
             temporal_compressed (torch.Tensor): shape (rank, frames)
-            c (torch.Tensor): shape (frames, number of neural signals). This is the temporal traces matrix, where every
+            temporal_demixed (torch.Tensor): shape (frames, number of neural signals). This is the temporal traces matrix, where every
                 column has mean 0 and Frobenius norm 1.
             std_corr_img_mean (torch.Tensor): shape (pixels), the mean of spatial_compressed times temporal_compressed
             std_corr_img_normalizer (torch.Tensor): shape (pixels), the pixelwise l2 norm of (spatial_compressed times temporal_compressed) - movie_mean
-            fov_dims (tuple[int, int]): A (height, width) tuple describing field of view (fov) dimensions
+            fov_dims (tuple[int, int]): A (fov_height, fov_width) tuple describing spatial imaging dimensions
         """
         flyweight = TensorFlyWeight(spatial_compressed=spatial_compressed,
                                     temporal_compressed=temporal_compressed,
-                                    c=c,
+                                    temporal_demixed=temporal_demixed,
                                     std_corr_img_mean=std_corr_img_mean,
                                     std_corr_img_normalizer=std_corr_img_normalizer)
         return cls(flyweight,
@@ -76,7 +76,7 @@ class StandardCorrelationImages(ArrayLike):
         return self._flyweight
 
     @property
-    def device(self) -> str:
+    def device(self) -> torch.device | str:
         """
         This specifies what device the internal tensors used for the lazy computations are located.
         """
@@ -90,18 +90,18 @@ class StandardCorrelationImages(ArrayLike):
     def _move_local_tensors(self, new_device: str):
         self._ones_frames = self._ones_frames.to(new_device)
         self._pixel_mat = self._pixel_mat.to(new_device)
-        self._c = self._c.to(new_device)
+        self._temporal_demixed = self._temporal_demixed.to(new_device)
 
     @property
-    def c(self) -> torch.Tensor:
+    def temporal_demixed(self) -> torch.Tensor:
         """
         Because this tensor is settable, we do not want to default to the flyweight (in other words,
         this attribute is an 'extrinsic' property that is not really shared
         """
-        return self._c
+        return self._temporal_demixed
 
-    @c.setter
-    def c(self, new_tensor: torch.Tensor):
+    @temporal_demixed.setter
+    def temporal_demixed(self, new_tensor: torch.Tensor):
         if new_tensor.shape[0] != self.temporal_compressed.shape[1]:
             raise ValueError(
                 f"Input temporal trace matrix has {new_tensor.shape[0]} frames"
@@ -110,7 +110,7 @@ class StandardCorrelationImages(ArrayLike):
         mean_zero = new_tensor - torch.mean(new_tensor, dim=0, keepdim=True)
         mean_zero /= torch.linalg.norm(mean_zero, dim=0, keepdim=True)
         mean_zero = torch.nan_to_num(mean_zero, nan=0.0, posinf=0.0, neginf=0.0)
-        self._c = mean_zero
+        self._temporal_demixed = mean_zero
 
     @property
     def spatial_compressed(self) -> torch.sparse_coo_tensor:
@@ -131,8 +131,7 @@ class StandardCorrelationImages(ArrayLike):
     @property
     def shape(self) -> tuple[int, int, int]:
         """(num_frames, fov_height, fov_width)"""
-        return self.c.shape[1], self._fov_dims[0], self._fov_dims[1]
-
+        return self.temporal_demixed.shape[1], self._fov_dims[0], self._fov_dims[1]
 
     @property
     def ndim(self) -> int:
@@ -149,8 +148,8 @@ class StandardCorrelationImages(ArrayLike):
         frame_indexer, item = self._parse_indices(item)
 
         # Step 3: Now slice the data with frame_indexer (careful: if the ndims has shrunk, add a dim)
-        c_crop = self._c[:, frame_indexer]
-        if c_crop.ndim < self._c.ndim:
+        c_crop = self.temporal_demixed[:, frame_indexer]
+        if c_crop.ndim < self.temporal_demixed.ndim:
             c_crop = c_crop.unsqueeze(1)
 
         v_crop = self.temporal_compressed @ c_crop

@@ -330,8 +330,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
         ## Define the unfiltered demixer object
         signals_array = curr_demix_results.signals_array
-        a_init = signals_array.export_a()
-        c_init = signals_array.export_c()
+        a_init = signals_array.export_spatial_demixed()
+        c_init = signals_array.export_temporal_demixed()
 
         ##Now overwrite the first pass of the UnfilteredDemixingConfig to be "custom" since we're using results from above
         # unfiltered_demixing_config_used.DemixingConfigs[0].InitConfig = CustomInitConfig(a_init, c_init, c_nonneg=True)

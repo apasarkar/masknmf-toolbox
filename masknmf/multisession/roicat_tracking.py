@@ -211,7 +211,7 @@ def extract_masknmf_spatial_footprints(dr: DemixingResults):
     """
     Given a masknmf demixingresults object, extracts the spatial footprints in a format needed for ROICaT cross-session matching
     """
-    a = dr.signals_array.a.cpu().t().coalesce()  # Shape (num_neurons, num_pixels)
+    a = dr.signals_array.spatial_demixed.cpu().t().coalesce()  # Shape (num_neurons, num_pixels)
     row, col = a.indices()
     vals = a.values().clone()
 

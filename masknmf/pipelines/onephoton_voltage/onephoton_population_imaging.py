@@ -237,11 +237,11 @@ def compute_final_denoised_c_estimates(pmd_arr: masknmf.CompressionArray,
 
     c_spike_estimate = hals_multi_iter_fullpmd(pmd_arr.spatial_compressed,
                                                pmd_arr.temporal_compressed,
-                                               dmr.a,
+                                               dmr.spatial_demixed,
                                                c,
                                                dmr.b[:, None])
 
-    rescaled_a = rescale_a(dmr.a, pmd_arr.noise_variance_image).coalesce()
+    rescaled_a = rescale_a(dmr.spatial_demixed, pmd_arr.noise_variance_image).coalesce()
     c_trend_estimate = hals_on_trend(rescaled_a,
                                      c_spike_estimate,
                                      pmd_arr.spatial_trend_basis,

@@ -1076,8 +1076,8 @@ def delete_comp(
             ini=False,
         )
 
-    standard_correlation_image.c = torch.index_select(
-        standard_correlation_image.c, 1, neg
+    standard_correlation_image.temporal_demixed = torch.index_select(
+        standard_correlation_image.temporal_demixed, 1, neg
     )
     spatial_masks = torch.index_select(spatial_masks, 1, neg).coalesce()
     spatial_components = torch.index_select(spatial_components, 1, neg).coalesce()
@@ -1939,7 +1939,7 @@ def merge_components(
             (a.shape[0], c.shape[1]),
         ).coalesce()
 
-        standard_correlation_image.c = c
+        standard_correlation_image.temporal_demixed = c
     return a, c, a.bool(), standard_correlation_image
 
 
@@ -2262,8 +2262,8 @@ class SignalDemixer:
             ring_term = (results.factorized_bkgd_term1, results.factorized_bkgd_term2)
         else:
             ring_term = None
-        a = results.a.coalesce()
-        c = results.c
+        a = results.spatial_demixed.coalesce()
+        c = results.temporal_demixed
         if drop:
             keep = torch.ones(a.shape[1], dtype=torch.bool, device=a.device)
             keep[torch.as_tensor(list(drop), dtype=torch.long, device=a.device)] = False
@@ -3362,7 +3362,7 @@ class DemixingState(SignalProcessingState):
             self.a = torch.index_select(self.a, 1, indices_to_keep).coalesce()
             self.mask_ab = torch.index_select(self.mask_ab, 1, indices_to_keep).coalesce()
             self.c = torch.index_select(self.c, 1, indices_to_keep)
-            self.standard_correlation_image.c = self.c
+            self.standard_correlation_image.temporal_demixed = self.c
             # Need to update the residual correlation image since the A/C terms changed
             self.update_hals_scheduler()
             self.compute_residual_correlation_image()
@@ -3515,7 +3515,7 @@ class DemixingState(SignalProcessingState):
 
             if update_frequency and ((iters + 1) % update_frequency == 0):
                 ##First: Compute correlation images
-                self.standard_correlation_image.c = self.c
+                self.standard_correlation_image.temporal_demixed = self.c
 
                 # Merge signals as needed and update the scheduler
                 if not background_reassigned:
@@ -3534,7 +3534,7 @@ class DemixingState(SignalProcessingState):
 
                 self.update_hals_scheduler()
 
-        self.standard_correlation_image.c = self.c
+        self.standard_correlation_image.temporal_demixed = self.c
         self.compute_residual_correlation_image()
         background_to_signal_correlation_image = _compute_standard_correlation_image(self.u_sparse,
                                                                                      self.factorized_ring_term[0] @

@@ -83,8 +83,8 @@ class DemixingResults(Serializer):
         "shape",
         "spatial_compressed",
         "temporal_compressed",
-        "a",
-        "c",
+        "spatial_demixed",
+        "temporal_demixed",
         "b",
         "mean_image",
         "noise_variance_image",
@@ -127,8 +127,8 @@ class DemixingResults(Serializer):
             shape: tuple[int, int, int] | np.ndarray,
             spatial_compressed: SparseCOOTensor,
             temporal_compressed: torch.Tensor,
-            a: SparseCOOTensor,
-            c: torch.Tensor,
+            spatial_demixed: SparseCOOTensor,
+            temporal_demixed: torch.Tensor,
             mean_image: torch.Tensor | None = None,
             noise_variance_image: torch.Tensor | None = None,
             spatial_compressed_local_projector: SparseCOOTensor | None = None,
@@ -163,8 +163,8 @@ class DemixingResults(Serializer):
             shape (tuple): (number of frames, field of view dimension 1, field of view dimension 2)
             spatial_compressed (torch.sparse_coo_tensor): shape (pixels, rank 1)
             temporal_compressed (torch.Tensor): shape (rank 2, num_frames)
-            a (torch.sparse_coo_tensor): shape (pixels, number of neural signals)
-            c (torch.Tensor): shape (number of frames, number of neural signals)
+            spatial_demixed (torch.sparse_coo_tensor): shape (pixels, number of neural signals)
+            temporal_demixed (torch.Tensor): shape (number of frames, number of neural signals)
             mean_image (torch.Tensor | None): The mean image of the imaging data, used for reconstructing PMD Arrays
             noise_variance_image (torch.Tensor | None): The pixelwise noise variance image of the data, used for reconstructing PMD Arrays
             spatial_compressed_local_projector (SparseCOOTensor | None): A projection matrix used to project frames of data onto the PMD spatial_compressed subspace
@@ -193,8 +193,8 @@ class DemixingResults(Serializer):
         self._flyweight = TensorFlyWeight()
         self.flyweight.spatial_compressed = spatial_compressed.to(self._device).float().coalesce()
         self.flyweight.temporal_compressed = temporal_compressed.to(self._device).float()
-        self.flyweight.a = a.to(self._device).float().coalesce()
-        self.flyweight.c = c.to(self._device).float()
+        self.flyweight.spatial_demixed = spatial_demixed.to(self._device).float().coalesce()
+        self.flyweight.temporal_demixed = temporal_demixed.to(self._device).float()
 
         self.flyweight.mean_image = mean_image.to(self._device) if mean_image is not None else torch.zeros(self.shape[1], self.shape[2], device=self._device)
         self.flyweight.noise_variance_image = noise_variance_image.to(self._device) if noise_variance_image is not None else torch.ones(self.shape[1], self.shape[2], device=self._device)
@@ -228,7 +228,7 @@ class DemixingResults(Serializer):
         if b is None:
             display("Static term was not provided, constructing baseline to ensure residual is mean 0")
             self.flyweight.b = (torch.sparse.mm(self.spatial_compressed, torch.mean(self.temporal_compressed, dim=1, keepdim=True)) -
-                                torch.sparse.mm(self.a, torch.mean(self.c.T, dim=1, keepdim=True)) -
+                                torch.sparse.mm(self.spatial_demixed, torch.mean(self.temporal_demixed.T, dim=1, keepdim=True)) -
                                 torch.sparse.mm(self.spatial_compressed, (
                                    self.factorized_bkgd_term1 @ torch.mean(self.factorized_bkgd_term2, axis=1,
                                                                            keepdim=True)))).to(self._device)
@@ -379,7 +379,7 @@ class DemixingResults(Serializer):
         self._move_managed_arrays(new_device)
 
 
-    def _move_managed_tensors(self, new_device: str):
+    def _move_managed_tensors(self, new_device: torch.device | str):
         self.flyweight.to(new_device)
 
     def _move_managed_arrays(self, new_device: str):
@@ -389,7 +389,7 @@ class DemixingResults(Serializer):
                 curr_arr.to(self.device)
 
     @property
-    def fov_shape(self) -> Tuple[int, int]:
+    def fov_shape(self) -> tuple[int, int]:
         return self.shape[1:3]
 
     @property
@@ -416,12 +416,12 @@ class DemixingResults(Serializer):
         return self.flyweight.temporal_compressed
 
     @property
-    def a(self) -> torch.Tensor:
-        return self.flyweight.a
+    def spatial_demixed(self) -> torch.Tensor:
+        return self.flyweight.spatial_demixed
 
     @property
-    def c(self) -> torch.Tensor:
-        return self.flyweight.c
+    def temporal_demixed(self) -> torch.Tensor:
+        return self.flyweight.temporal_demixed
 
     @property
     def std_corr_img_mean(self) -> None | torch.Tensor:
@@ -461,11 +461,11 @@ class DemixingResults(Serializer):
         and residual movie.
         """
         if self.flyweight.residual_roi_averages is None or self.flyweight.pmd_roi_averages is None or self.flyweight.fluctuating_background_roi_averages is None:
-            device = self.c.device
+            device = self.temporal_demixed.device
 
             ## Compute an "ROI Average" tensor, which is just "a" where each neuron is binarized + normalized by size of support
-            values = self.a.values()
-            rows, cols = self.a.indices()
+            values = self.spatial_demixed.values()
+            rows, cols = self.spatial_demixed.indices()
 
             values_keep = values != 0
             values = values[values_keep]
@@ -473,21 +473,21 @@ class DemixingResults(Serializer):
             cols = cols[values_keep]
 
             values_bin = torch.ones_like(values)
-            counts = torch.zeros(self.a.shape[1], device=device)
+            counts = torch.zeros(self.spatial_demixed.shape[1], device=device)
             counts.scatter_reduce_(0, cols, values_bin, reduce="sum")
             values_bin /= counts[cols]
             values_bin = torch.nan_to_num(values_bin, nan=0.0)
 
             #Note we do [cols, rows] instead of [rows, cols] because we want the transposed mat
             roi_avg_operator = torch.sparse_coo_tensor(torch.stack([cols, rows], dim=0),
-                                                   values_bin,
-                                                   size=(self.a.shape[1], self.a.shape[0])).to(self.a.device).coalesce()
+                                                       values_bin,
+                                                       size=(self.spatial_demixed.shape[1], self.spatial_demixed.shape[0])).to(self.spatial_demixed.device).coalesce()
 
             rU = torch.sparse.mm(roi_avg_operator, self.spatial_compressed)
-            rA = torch.sparse.mm(roi_avg_operator, self.a)
+            rA = torch.sparse.mm(roi_avg_operator, self.spatial_demixed)
 
             pmd_roi_averages = torch.sparse.mm(rU, self.temporal_compressed)
-            ac_roi_averages = torch.sparse.mm(rA, self.c.T)
+            ac_roi_averages = torch.sparse.mm(rA, self.temporal_demixed.T)
             static_background_roi_averages = torch.sparse.mm(roi_avg_operator, self.b[..., None])
             fluctuating_background_roi_averages = torch.sparse.mm(rU, self.factorized_bkgd_term1) @ self.factorized_bkgd_term2
             residual_roi_averages = pmd_roi_averages - ac_roi_averages - static_background_roi_averages - fluctuating_background_roi_averages
@@ -527,7 +527,7 @@ class DemixingResults(Serializer):
         if self.bkgd_corr_img_mean is not None:
             return StandardCorrelationImages.from_tensors(self.spatial_compressed,
                                                           self.factorized_bkgd_term1 @ self.factorized_bkgd_term2,
-                                                          self.c,
+                                                          self.temporal_demixed,
                                                           self.bkgd_corr_img_mean,
                                                           self.bkgd_corr_img_normalizer,
                                                           (self._shape[1], self._shape[2]))

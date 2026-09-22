@@ -442,8 +442,8 @@ class ClassificationVis:
                             dmr.global_residual_correlation_image.cpu().numpy(),
                         )
 
-                    f.append(brightness_order(dmr.a, dmr.c)[1].cpu().numpy())
-                    c = dmr.c.cpu().numpy()  # (num_frames, num_rois)
+                    f.append(brightness_order(dmr.spatial_demixed, dmr.temporal_demixed)[1].cpu().numpy())
+                    c = dmr.temporal_demixed.cpu().numpy()  # (num_frames, num_rois)
                     mean = c.mean(axis=0)
                     std = c.std(axis=0)
                     skew.append(((c - mean) ** 3).mean(axis=0) / np.where(std == 0, 1, std) ** 3)

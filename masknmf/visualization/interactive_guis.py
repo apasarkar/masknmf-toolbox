@@ -25,8 +25,8 @@ def signal_space_demixing(demixing_results: masknmf.DemixingResults,
     num_frames, fov_dim1, fov_dim2 = pmd_arr.shape
 
     data_order = demixing_results.signals_array.order
-    a_dense = demixing_results.signals_array.export_a()
-    c_numpy = demixing_results.signals_array.export_c()
+    a_dense = demixing_results.signals_array.export_spatial_demixed()
+    c_numpy = demixing_results.signals_array.export_temporal_demixed()
     print(c_numpy.shape)
     colors = demixing_results.colorful_ac_array.colors.cpu().numpy()
 
@@ -240,7 +240,7 @@ def brightness_demix_init(curr_dr, splits=4, device='cpu'):
     The goal of this is to segregate the signals based on "max brightness" and see whether the dimmer vs. brighter signals are significantly different in any way
     """
     curr_dr.to(device)
-    a, c = curr_dr.a, curr_dr.c
+    a, c = curr_dr.spatial_demixed, curr_dr.temporal_demixed
     matched = torch.arange(a.shape[1], device=a.device).long()
     subset_ind = matched
     a_subset = torch.index_select(a, 1, subset_ind)
@@ -299,7 +299,7 @@ def brightness_demix_init(curr_dr, splits=4, device='cpu'):
 
 def quantile_segregated_signal_gui(ac_arr: masknmf.SignalsArray,
                                    partitions = 4) -> fpl.Figure:
-    brightness_ordering, _ = brightness_order(ac_arr.a, ac_arr.c)
+    brightness_ordering, _ = brightness_order(ac_arr.spatial_demixed, ac_arr.temporal_demixed)
     points = [int(i) for i in np.linspace(0, brightness_ordering.shape[0], partitions + 1)]
     ac_arr_list = []
     colorful_arr_list = []
@@ -307,8 +307,8 @@ def quantile_segregated_signal_gui(ac_arr: masknmf.SignalsArray,
         start = points[k]
         end = points[k+1]
         current_subset = brightness_ordering[start:end]
-        curr_ac = SignalsArray(ac_arr.shape[1:], ac_arr.a, ac_arr.c)
-        curr_colorful_ac = ColorfulACArray(ac_arr.shape[1:], ac_arr.a, ac_arr.c)
+        curr_ac = SignalsArray(ac_arr.shape[1:], ac_arr.spatial_demixed, ac_arr.temporal_demixed)
+        curr_colorful_ac = ColorfulACArray(ac_arr.shape[1:], ac_arr.spatial_demixed, ac_arr.temporal_demixed)
         curr_mask = torch.zeros_like(curr_ac.mask)
         curr_mask[current_subset] = 1.0
         curr_ac.mask = curr_mask

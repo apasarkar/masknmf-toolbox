@@ -285,7 +285,7 @@ class MultiSessionDemixingVis:
         tracked = torch.as_tensor(
             self.tracking_results.labels_by_session[self.session_ids[display_sess_index]] > 0,
             dtype=torch.bool)
-        neuron = component_at_pixel(curr_ac.a,
+        neuron = component_at_pixel(curr_ac.spatial_demixed,
                                     curr_ac.centers,
                                     curr_ac.shape[1:],
                                     ev.pick_info['index'],
@@ -400,7 +400,7 @@ class MultiSessionDemixingVis:
             curr_colorful_ac_array.mask = torch.from_numpy(mask)
 
             ## Now define the coloring scheme
-            curr_coloring = np.zeros((int(curr_ac_array.a.shape[1]), 3)).astype('float32')
+            curr_coloring = np.zeros((int(curr_ac_array.spatial_demixed.shape[1]), 3)).astype('float32')
             clusters_present = curr_labels[mask]
             cluster_indices = cluster_id_to_index[clusters_present]
             curr_coloring[mask, :] = self.coloring[cluster_indices, :]

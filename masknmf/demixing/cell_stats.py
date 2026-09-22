@@ -73,7 +73,7 @@ class CellStats:
         (``pmd_roi_averages``): fit, the trace's correlation with it; resid and bkgd, the residual's and the
         fluctuating background's std over that average's.
         """
-        c = np.asarray(results.c.detach().cpu(), dtype=np.float32)
+        c = np.asarray(results.temporal_demixed.detach().cpu(), dtype=np.float32)
         mean = c.mean(0)
         std = c.std(0) + 1e-6
         skew = ((c - mean) ** 3).mean(0) / std**3
