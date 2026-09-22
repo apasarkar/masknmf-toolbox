@@ -598,7 +598,7 @@ class SingleSessionDemixingVis:
             )
             self._residual_array = self.demixing_results.residual_array
             self._colorful_ac_array = self.demixing_results.colorful_ac_array
-            self._ac_array = self.demixing_results.ac_array
+            self._ac_array = self.demixing_results.signals_array
         else:
             self._pmd_array = self.demixing_results
             self._fluctuating_background_array = None

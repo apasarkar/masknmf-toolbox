@@ -7,7 +7,7 @@ from imgui_bundle import imgui
 class MoviePlayer:
     """
     Imgui transport bar (play/pause, frame slider, fps) over a lazy (T, H, W)
-    array such as ACArray. draw() renders the controls and returns True when
+    array such as SignalsArray. draw() renders the controls and returns True when
     the displayed frame changed; frame() fetches the current frame lazily.
     """
 

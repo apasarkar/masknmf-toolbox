@@ -109,9 +109,9 @@ class MultiSessionDemixingVis:
             curr_a = masknmf.demixing.demixing_utils.scipy_sparse_to_torch(
                 self.tracking_results.aligned_rois[sess_id]).coalesce()
 
-            curr_ac_array = masknmf.ACArray.from_tensors(curr_shape[1:],
-                                                         curr_a.to(self.device),
-                                                         curr_c.to(self.device))
+            curr_ac_array = masknmf.SignalsArray.from_tensors(curr_shape[1:],
+                                                              curr_a.to(self.device),
+                                                              curr_c.to(self.device))
 
             curr_colorful_ac_array = masknmf.ColorfulACArray.from_tensors(curr_shape[1:],
                                                                           curr_a.to(self.device),
@@ -379,7 +379,7 @@ class MultiSessionDemixingVis:
         self._coloring = new_coloring
 
     @property
-    def ac_arrays(self) -> list[masknmf.ACArray]:
+    def ac_arrays(self) -> list[masknmf.SignalsArray]:
         return self._ac_arrays
 
     @property

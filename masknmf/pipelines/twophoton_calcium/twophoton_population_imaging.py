@@ -329,9 +329,9 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             torch.cuda.empty_cache()
 
         ## Define the unfiltered demixer object
-        ac_arr = curr_demix_results.ac_array
-        a_init = ac_arr.export_a()
-        c_init = ac_arr.export_c()
+        signals_array = curr_demix_results.signals_array
+        a_init = signals_array.export_a()
+        c_init = signals_array.export_c()
 
         ##Now overwrite the first pass of the UnfilteredDemixingConfig to be "custom" since we're using results from above
         # unfiltered_demixing_config_used.DemixingConfigs[0].InitConfig = CustomInitConfig(a_init, c_init, c_nonneg=True)

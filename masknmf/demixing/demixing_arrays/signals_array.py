@@ -2,13 +2,13 @@ from __future__ import annotations
 from typing import Optional
 import numpy as np
 import torch
-from typing import *
+from masknmf.utils import SparseCOOTensor
 import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
 
-class ACArray(ArrayLike):
+class SignalsArray(ArrayLike):
     """
     Factorized video for the spatial and temporal extracted sources from the data
     Computations happen transparently on GPU, if device = 'cuda' is specified
@@ -82,7 +82,7 @@ class ACArray(ArrayLike):
         return self.flyweight.device
 
 
-    def to(self, new_device):
+    def to(self, new_device: torch.device | str):
         if self._flyweight.device != new_device:
             self._flyweight.to(new_device)
         self._move_local_tensors(new_device)
@@ -216,7 +216,7 @@ class ACArray(ArrayLike):
         return self.flyweight.c
 
     @property
-    def a(self) -> torch.sparse_coo_tensor:
+    def a(self) -> SparseCOOTensor:
         """
         return spatial profiles of all signals as sparse matrix, shape (pixels, components)
         """
@@ -234,21 +234,21 @@ class ACArray(ArrayLike):
 
     def export_c(self) -> np.ndarray:
         """
-        returns the temporal traces, where each trace is a n_frames-shaped time series. output shape (n_frames, n_components)
+        returns the temporal traces, where each trace is a n_frames-shaped time series. output shape (num_frames, num_components)
         """
         return self.c.cpu().numpy()
 
     @property
-    def dtype(self) -> str:
+    def dtype(self) -> type:
         """
         data type, default np.float32
         """
         return np.float32
 
     @property
-    def shape(self) -> Tuple[int, int, int]:
+    def shape(self) -> tuple[int, int, int]:
         """
-        Array shape (n_frames, dims_x, dims_y)
+        Array shape (num_frames, fov_height, fov_width)
         """
         return self._shape
 
@@ -261,7 +261,7 @@ class ACArray(ArrayLike):
 
     def getitem_tensor(
         self,
-        item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ) -> torch.Tensor:
         # Step 1: index the frames (dimension 0)
         frame_indexer, item = self._parse_indices(item)
@@ -300,7 +300,7 @@ class ACArray(ArrayLike):
 
     def __getitem__(
         self,
-        item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ) -> np.ndarray:
         product = self.getitem_tensor(item)
         product = product.cpu().numpy().astype(self.dtype)
@@ -618,7 +618,7 @@ def largest_component_only(
 
 
 # ---------------------------------------------------------------------- #
-# drop-in replacement for ACArray.contours
+# drop-in replacement for SignalsArray.contours
 # ---------------------------------------------------------------------- #
 
 

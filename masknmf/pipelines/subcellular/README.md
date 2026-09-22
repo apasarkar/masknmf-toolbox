@@ -91,10 +91,10 @@ res = masknmf.DemixingResults.from_hdf5(run / "glutamate_spine_demixing.hdf5", d
 | attribute | shape / type |
 |---|---|
 | `res.a` | `(H*W, K)` sparse footprints |
-| `res.ac_array.export_a()` | `(H, W, K)` ndarray |
+| `res.signals_array.export_a()` | `(H, W, K)` ndarray |
 | `res.c` | `(frames, K)` traces |
 | `res.mean_image` | `(H, W)` |
-| `res.compression_array`, `res.ac_array`, `res.residual_array` | lazy `(frames, H, W)` movies |
+| `res.compression_array`, `res.signals_array`, `res.residual_array` | lazy `(frames, H, W)` movies |
 
 ```python
 masknmf.SingleSessionDemixingVis(res, frame_timings=timings, device="cuda").show()

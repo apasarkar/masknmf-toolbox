@@ -2,7 +2,7 @@ from typing import *
 import numpy as np
 from masknmf import display
 from masknmf.compression import CompressionArray, TrendArray
-from masknmf.demixing.demixing_arrays import ACArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulACArray, StaticBackgroundArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode, MultiunitBackgroundArray
+from masknmf.demixing.demixing_arrays import SignalsArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulACArray, StaticBackgroundArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode, MultiunitBackgroundArray
 import torch
 from masknmf.utils import Serializer, SparseCOOTensor
 from masknmf.arrays.array_interfaces import TensorFlyWeight
@@ -113,7 +113,7 @@ class DemixingResults(Serializer):
     When you do DemixingResults.to(new_device), this object is responsible for making sure all of these arrays are moved to that device
     """
     _managed_arrays = ["compression_array",
-                       "ac_array",
+                       "signals_array",
                        "colorful_ac_array",
                        "fluctuating_background_array",
                        "static_background_array",
@@ -277,7 +277,7 @@ class DemixingResults(Serializer):
             self.flyweight.multiunit_basis_term1 = multiunit_basis_term1.to(self._device)
             self.flyweight.multiunit_basis_term2 = multiunit_basis_term2.to(self._device)
 
-        self._ac_array = None
+        self._signals_array = None
         self._colorful_ac_array = None
         self._compression_array = None
         self._fluctuating_background_array = None
@@ -312,7 +312,7 @@ class DemixingResults(Serializer):
     @rescale.setter
     def rescale(self, new_value: bool):
         managed_arrays_rescale = ['compression_array',
-                          'ac_array',
+                          'signals_array',
                           'static_background_array',
                           'fluctuating_background_array',
                           'multiunit_background_array']
@@ -546,13 +546,13 @@ class DemixingResults(Serializer):
             return None
 
     @property
-    def ac_array(self) -> ACArray:
+    def signals_array(self) -> SignalsArray:
         """
-        Returns an ACArray using the tensors stored in this object
+        Returns an SignalsArray using the tensors stored in this object
         """
-        if self._ac_array is None:
-            self._ac_array = ACArray.from_flyweight(self.fov_shape, self.flyweight, rescale=self.rescale)
-        return self._ac_array
+        if self._signals_array is None:
+            self._signals_array = SignalsArray.from_flyweight(self.fov_shape, self.flyweight, rescale=self.rescale)
+        return self._signals_array
 
     @property
     def compression_array(self) -> CompressionArray:
@@ -571,8 +571,7 @@ class DemixingResults(Serializer):
     def trend_array(self) -> TrendArray:
         if self._trend_array is None:
             self._trend_array = TrendArray.from_flyweight(self.shape,
-                                          self.flyweight,
-                                          self.device)
+                                          self.flyweight)
 
         return self._trend_array
 
@@ -607,7 +606,7 @@ class DemixingResults(Serializer):
     def residual_array(self) -> ResidualArray:
         if self._residual_array is None:
             self._residual_array = ResidualArray(self.compression_array,
-                                                 self.ac_array,
+                                                 self.signals_array,
                                                  self.fluctuating_background_array,
                                                  self.static_background_array,
                                                  )

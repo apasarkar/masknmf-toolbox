@@ -12,7 +12,7 @@ from masknmf.utils import display
 from masknmf.demixing import DemixingResults
 from masknmf.compression import CompressionArray
 from masknmf.demixing import InitializationResults
-from masknmf.demixing.demixing_arrays import ACArray, ColorfulACArray
+from masknmf.demixing.demixing_arrays import SignalsArray, ColorfulACArray
 from masknmf.demixing.demixing_utils import brightness_order
 
 def signal_space_demixing(demixing_results: masknmf.DemixingResults,
@@ -21,12 +21,12 @@ def signal_space_demixing(demixing_results: masknmf.DemixingResults,
     demixing_results.to(device)
     pmd_arr = demixing_results.compression_array
     pmd_arr.rescale = False
-    ac_arr = demixing_results.ac_array
+    ac_arr = demixing_results.signals_array
     num_frames, fov_dim1, fov_dim2 = pmd_arr.shape
 
-    data_order = demixing_results.ac_array.order
-    a_dense = demixing_results.ac_array.export_a()
-    c_numpy = demixing_results.ac_array.export_c()
+    data_order = demixing_results.signals_array.order
+    a_dense = demixing_results.signals_array.export_a()
+    c_numpy = demixing_results.signals_array.export_c()
     print(c_numpy.shape)
     colors = demixing_results.colorful_ac_array.colors.cpu().numpy()
 
@@ -194,7 +194,7 @@ def make_demixing_video(
 ) -> fpl.ImageWidget:
     results.to(device)
 
-    ac_arr = results.ac_array
+    ac_arr = results.signals_array
     fluctuating_arr = results.fluctuating_background_array
     pmd_arr = results.compression_array
 
@@ -262,8 +262,8 @@ def brightness_demix_init(curr_dr, splits=4, device='cpu'):
     fluctuating_bg = curr_dr.fluctuating_background_array
     static_bg = curr_dr.b.reshape(curr_dr.fov_shape)
     for k in range(splits):
-        curr_resid_ac_arr = curr_dr.ac_array
-        curr_ac_arr = curr_dr.ac_array
+        curr_resid_ac_arr = curr_dr.signals_array
+        curr_ac_arr = curr_dr.signals_array
 
         curr_resid_mask = torch.ones_like(curr_resid_ac_arr.mask)
         curr_subset_indices = subset_indices[k]
@@ -297,7 +297,7 @@ def brightness_demix_init(curr_dr, splits=4, device='cpu'):
     return iw
 
 
-def quantile_segregated_signal_gui(ac_arr: masknmf.ACArray,
+def quantile_segregated_signal_gui(ac_arr: masknmf.SignalsArray,
                                    partitions = 4) -> fpl.Figure:
     brightness_ordering, _ = brightness_order(ac_arr.a, ac_arr.c)
     points = [int(i) for i in np.linspace(0, brightness_ordering.shape[0], partitions + 1)]
@@ -307,7 +307,7 @@ def quantile_segregated_signal_gui(ac_arr: masknmf.ACArray,
         start = points[k]
         end = points[k+1]
         current_subset = brightness_ordering[start:end]
-        curr_ac = ACArray(ac_arr.shape[1:], ac_arr.a, ac_arr.c)
+        curr_ac = SignalsArray(ac_arr.shape[1:], ac_arr.a, ac_arr.c)
         curr_colorful_ac = ColorfulACArray(ac_arr.shape[1:], ac_arr.a, ac_arr.c)
         curr_mask = torch.zeros_like(curr_ac.mask)
         curr_mask[current_subset] = 1.0
