@@ -8,11 +8,12 @@ import scipy.ndimage
 import scipy.signal
 import scipy.sparse
 import scipy
-from typing import *
 import networkx as nx
 from tqdm import tqdm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from typing import Tuple
+from typing import Tuple, Optional, Literal, Dict, Union
+from collections.abc import Sequence
+from masknmf.utils import SparseCOOTensor
 from masknmf.compression.preprocessing import SplineDetrenderBase
 import masknmf.demixing.regression_update
 from masknmf.demixing.demixing_arrays import (
@@ -52,36 +53,35 @@ class NoSignalsDetectedError(DemixingError):
 def make_mask_dynamic(
         corr_img_all_r: np.ndarray,
         corr_percent: np.ndarray,
-        mask_a: np.ndarray,
-        data_order: str = "C",
+        mask_spatial_demixed: np.ndarray,
 ) -> np.ndarray:
     """
     update the spatial support: connected region in corr_img(corr(Y,c)) which is connected with previous spatial support
     """
     s = np.ones([3, 3])
-    mask_a = (mask_a.reshape(corr_img_all_r.shape, order=data_order)).copy()
-    for ii in range(mask_a.shape[2]):
-        max_corr_val = np.amax(mask_a[:, :, ii] * corr_img_all_r[:, :, ii])
+    mask_spatial_demixed = (mask_spatial_demixed.reshape(corr_img_all_r.shape)).copy()
+    for ii in range(mask_spatial_demixed.shape[2]):
+        max_corr_val = np.amax(mask_spatial_demixed[:, :, ii] * corr_img_all_r[:, :, ii])
         corr_thres = corr_percent * max_corr_val
         labeled_array, num_features = scipy.ndimage.measurements.label(
             corr_img_all_r[:, :, ii] > corr_thres, structure=s
         )
         u, indices, counts = np.unique(
-            labeled_array * mask_a[:, :, ii], return_inverse=True, return_counts=True
+            labeled_array * mask_spatial_demixed[:, :, ii], return_inverse=True, return_counts=True
         )
 
         if len(u) == 1:
-            mask_a[:, :, ii] *= 0
+            mask_spatial_demixed[:, :, ii] *= 0
         else:
             c = u[1:][np.argmax(counts[1:])]
             labeled_array = labeled_array == c
-            mask_a[:, :, ii] = labeled_array
+            mask_spatial_demixed[:, :, ii] = labeled_array
 
-    return mask_a.reshape((-1, mask_a.shape[2]), order=data_order)
+    return mask_spatial_demixed.reshape((-1, mask_spatial_demixed.shape[2]))
 
 
-def _compute_hals_schedule(mask_tensor: torch.sparse_coo_tensor,
-                           device: str,
+def _compute_hals_schedule(mask_tensor: SparseCOOTensor,
+                           device: torch.device | str,
                            frame_batch_size: int):
     mask_used = mask_tensor.float()
     adjacency_mat = torch.sparse.mm(mask_used.t(), mask_used)
@@ -99,42 +99,42 @@ def _v_new_mm(x: torch.Tensor,
     return v @ x - ring_left @ (ring_right @ x)
 
 def _compute_residual_correlation_image(
-        u_sparse: torch.sparse_coo_tensor,
-        v: torch.Tensor,
-        factorized_ring_term: Tuple[torch.Tensor, torch.Tensor],
-        spatial_comps: torch.sparse_coo_tensor,
-        temporal_comps: torch.Tensor,
-        fov_dims: Tuple[int, int],
-        uv_norms: torch.Tensor | None = None,
-        blocks: Optional[Union[torch.Tensor, list]] = None,
-        noise_std: Optional[torch.Tensor] = None,
+        spatial_compressed: SparseCOOTensor,
+        temporal_compressed: torch.Tensor,
+        factorized_ring_term: tuple[torch.Tensor, torch.Tensor],
+        spatial_demixed: SparseCOOTensor,
+        temporal_demixed: torch.Tensor,
+        fov_dims: tuple[int, int],
+        compressed_array_norms: torch.Tensor | None = None,
+        blocks: torch.Tensor | list | None = None,
+        noise_std: torch.Tensor | None = None,
         batch_size: int = 1000,
-        device: str = "cpu",
+        device: torch.device | str = "cpu",
 ) -> tuple[ResidualCorrelationImages, torch.Tensor]:
     """
     Insert docs here
     """
     if noise_std is None:
-        noise_std = torch.zeros(fov_dims[0], fov_dims[1], device=device, dtype=u_sparse.dtype).flatten()
-    num_frames = v.shape[1]
+        noise_std = torch.zeros(fov_dims[0], fov_dims[1], device=device, dtype=spatial_compressed.dtype).flatten()
+    num_frames = temporal_compressed.shape[1]
 
     if (factorized_ring_term is None or factorized_ring_term[0] is None or factorized_ring_term[1] is None):
-        ring_left = torch.zeros((v.shape[0], 1), device=v.device, dtype=v.dtype)
-        ring_right = torch.zeros((1, v.shape[1]), device=v.device, dtype=v.dtype)
+        ring_left = torch.zeros((temporal_compressed.shape[0], 1), device=temporal_compressed.device, dtype=temporal_compressed.dtype)
+        ring_right = torch.zeros((1, temporal_compressed.shape[1]), device=temporal_compressed.device, dtype=temporal_compressed.dtype)
     else:
         ring_left, ring_right = factorized_ring_term[0], factorized_ring_term[1]
 
     # Row sums / means of v_new, shape (pmd_rank, 1)
-    v_new_sum = torch.sum(v, dim=1, keepdim=True) - ring_left @ torch.sum(
+    v_new_sum = torch.sum(temporal_compressed, dim=1, keepdim=True) - ring_left @ torch.sum(
         ring_right, dim=1, keepdim=True
     )
     v_new_mean = v_new_sum / num_frames
 
     residual_movie_norms = torch.zeros(
-        (u_sparse.shape[0], 1), device=device, dtype=torch.float32
+        (spatial_compressed.shape[0], 1), device=device, dtype=torch.float32
     )
 
-    c_meanzero = temporal_comps - torch.mean(temporal_comps, dim=0, keepdim=True)
+    c_meanzero = temporal_demixed - torch.mean(temporal_demixed, dim=0, keepdim=True)
     c_meanzero_norms = torch.linalg.norm(
         c_meanzero, dim=0, keepdim=True
     )  # This is reused below
@@ -142,29 +142,29 @@ def _compute_residual_correlation_image(
     c = torch.nan_to_num(c, nan=0, posinf=0, neginf=0)
 
     ## Step 1: Compute the mean and pixelwise normalizer for (spatial_compressed(I - Q)temporal_compressed - ac)
-    residual_mean = torch.sparse.mm(u_sparse, v_new_mean)
+    residual_mean = torch.sparse.mm(spatial_compressed, v_new_mean)
     residual_mean -= torch.sparse.mm(
-        spatial_comps, torch.mean(temporal_comps.T, dim=1, keepdim=True)
+        spatial_demixed, torch.mean(temporal_demixed.T, dim=1, keepdim=True)
     )
 
     num_neural_signals = c.shape[1]
-    pmd_rank = v.shape[0]
+    pmd_rank = temporal_compressed.shape[0]
     max_value = max(num_neural_signals, pmd_rank)
     num_batches = math.ceil(max_value / batch_size)
 
     residual_movie_norms += -2 * (
-            torch.sparse.mm(u_sparse, v_new_sum) * residual_mean
+            torch.sparse.mm(spatial_compressed, v_new_sum) * residual_mean
     )
     residual_movie_norms += 2 * (
-            torch.sparse.mm(spatial_comps, torch.sum(temporal_comps.T, dim=1, keepdim=True))
+            torch.sparse.mm(spatial_demixed, torch.sum(temporal_demixed.T, dim=1, keepdim=True))
             * residual_mean
     )
     residual_movie_norms += num_frames * torch.square(residual_mean)
 
-    if uv_norms is None:
+    if compressed_array_norms is None:
         compute_uv_norm = True
-        uv_norms = torch.zeros(u_sparse.shape[0], 1, device=u_sparse.device)
-        v_ring_right_t = v @ ring_right.T  # (pmd_rank, k)
+        compressed_array_norms = torch.zeros(spatial_compressed.shape[0], 1, device=spatial_compressed.device)
+        v_ring_right_t = temporal_compressed @ ring_right.T  # (pmd_rank, k)
         ring_right_gram = ring_right @ ring_right.T  # (k, k)
     else:
         compute_uv_norm = False
@@ -180,28 +180,28 @@ def _compute_residual_correlation_image(
             # Every term is (pmd_rank, batch); no copy of temporal_compressed or of a block of temporal_compressed's rows is made.
             ring_left_batch_t = ring_left[start:pmd_end].T  # (k, batch)
             curr_vvt = (
-                    v @ v[start:pmd_end].T
+                    temporal_compressed @ temporal_compressed[start:pmd_end].T
                     - v_ring_right_t @ ring_left_batch_t
                     - ring_left @ v_ring_right_t[start:pmd_end].T
                     + ring_left @ (ring_right_gram @ ring_left_batch_t)
             )
-            curr_uvvt = torch.sparse.mm(u_sparse, curr_vvt)
+            curr_uvvt = torch.sparse.mm(spatial_compressed, curr_vvt)
             inds = torch.arange(start, pmd_end, device=device, dtype=torch.long)
-            curr_u_dense = torch.index_select(u_sparse, 1, inds).to_dense()
-            uv_norms += torch.sum(
+            curr_u_dense = torch.index_select(spatial_compressed, 1, inds).to_dense()
+            compressed_array_norms += torch.sum(
                 curr_uvvt * curr_u_dense, dim=1, keepdim=True
             )
 
         if start < num_neural_signals:
             c_end = min(end, num_neural_signals)
-            curr_vc = _v_new_mm(temporal_comps[:, start:c_end], v, ring_left, ring_right)
-            curr_ctc = temporal_comps.T @ temporal_comps[:, start:c_end]
+            curr_vc = _v_new_mm(temporal_demixed[:, start:c_end], temporal_compressed, ring_left, ring_right)
+            curr_ctc = temporal_demixed.T @ temporal_demixed[:, start:c_end]
             inds = torch.arange(start, c_end, device=device, dtype=torch.long)
 
-            curr_uvc = torch.sparse.mm(u_sparse, curr_vc)
-            curr_actc = torch.sparse.mm(spatial_comps, curr_ctc)
+            curr_uvc = torch.sparse.mm(spatial_compressed, curr_vc)
+            curr_actc = torch.sparse.mm(spatial_demixed, curr_ctc)
 
-            curr_a_dense = torch.index_select(spatial_comps, 1, inds).to_dense()
+            curr_a_dense = torch.index_select(spatial_demixed, 1, inds).to_dense()
 
             residual_movie_norms += -2 * torch.sum(
                 curr_uvc * curr_a_dense, dim=1, keepdim=True
@@ -211,8 +211,8 @@ def _compute_residual_correlation_image(
             )
 
     if compute_uv_norm:
-        uv_norms = torch.sqrt(uv_norms)
-    residual_movie_norms += uv_norms**2
+        compressed_array_norms = torch.sqrt(compressed_array_norms)
+    residual_movie_norms += compressed_array_norms ** 2
 
     robust_residual_movie_norms = torch.sqrt(residual_movie_norms + num_frames * noise_std.flatten()[:, None] ** 2)
     residual_movie_norms = torch.sqrt(residual_movie_norms)
@@ -226,7 +226,7 @@ def _compute_residual_correlation_image(
         blocks = torch.arange(c.shape[1], device=device).unsqueeze(1)
     for index_select_tensor_net in blocks:
         a_curr = torch.index_select(
-            spatial_comps, 1, index_select_tensor_net
+            spatial_demixed, 1, index_select_tensor_net
         ).coalesce()
 
         curr_rows, curr_cols = [a_curr.indices()[i] for i in [0, 1]]
@@ -247,9 +247,9 @@ def _compute_residual_correlation_image(
         curr_c = (
                 c[:, index_select_tensor_net] * c_meanzero_norms[:, index_select_tensor_net]
         )
-        resid_image_cumulator = torch.sparse.mm(u_sparse, _v_new_mm(curr_c, v, ring_left, ring_right))
+        resid_image_cumulator = torch.sparse.mm(spatial_compressed, _v_new_mm(curr_c, temporal_compressed, ring_left, ring_right))
         resid_image_cumulator -= torch.sparse.mm(
-            spatial_comps, temporal_comps.T @ curr_c
+            spatial_demixed, temporal_demixed.T @ curr_c
         )
         resid_image_cumulator -= residual_mean @ torch.sum(curr_c, dim=0, keepdim=True)
         # This is used below
@@ -279,81 +279,80 @@ def _compute_residual_correlation_image(
     final_values = torch.cat(final_values, 0)
     resid_corr_indices = torch.stack([final_rows, final_cols])
     resid_corr_on_support = torch.sparse_coo_tensor(
-        resid_corr_indices, final_values, spatial_comps.size()
+        resid_corr_indices, final_values, spatial_demixed.size()
     ).coalesce()
 
     residual_array = ResidualCorrelationImages.from_tensors(
-        u_sparse,
-        v,
+        spatial_compressed,
+        temporal_compressed,
         ring_left,
         ring_right,
-        spatial_comps,
-        temporal_comps,
+        spatial_demixed,
+        temporal_demixed,
         resid_corr_on_support,
         residual_mean.squeeze(),
         robust_residual_movie_norms.squeeze(),
         fov_dims,
         mode=ResidCorrMode.DEFAULT,
     )
-    return residual_array, uv_norms
+    return residual_array, compressed_array_norms
 
 def _compute_standard_correlation_image(
-        u_sparse: torch.sparse_coo_tensor,
-        v: torch.tensor,
-        temporal_traces: torch.tensor,
-        fov_dims: Tuple[int, int],
-        noise_std: Optional[torch.Tensor] = None,
-        data_order: str = "F",
+        spatial_compressed: SparseCOOTensor,
+        temporal_compressed: torch.Tensor,
+        temporal_demixed: torch.Tensor,
+        fov_dims: tuple[int, int],
+        noise_std: torch.Tensor | None = None,
         frame_batch_size: int = 1000,
-        device: str = "cpu",
+        device: torch.device | str = "cpu",
 ) -> StandardCorrelationImages:
     """
     Correlation image calculation using spatial_compressed, r, s, temporal_compressed
 
     Args:
-        u_sparse (torch.sparse_coo_tensor): dims (d x r), where the FOV has d pixels
-        v (torch.tensor): dims (rank 2, number of frames): The temporal basis (right singular vectors of the PMD
-            decomposition.
-        temporal_traces (torch.tensor): shape (number of frames, number of neural signals). Temporal traces currently
+        spatial_compressed (torch.sparse_coo_tensor): dims (num_pixels x compression_rank), where the FOV has d pixels
+        temporal_compressed (torch.Tensor): dims (compression_rank, num_frames) The temporal basis of the compression decomposition
+        temporal_demixed (torch.Tensor): shape (num_frames, num_signals). Temporal traces currently
             extracted
-        frame_batch_size (int): The number of frames we expand at any given time (pixels x frames) to avoid OOM errors
-        device (str): The device on which computations occur (given to pytorch to move tensors around).
+        fov_dims (tuple[int, int]): (fov_height, fov_width)
+        frame_batch_size (int): The number of frames we expand at any given time (num_pixels x num_frames) to avoid OOM errors
+        device (torch.device | str): The device on which computations occur (given to pytorch to move tensors around).
 
     Returns:
         corr_array (StandardCorrelationImages): A FactorizedVideo object that can lazily compute correlation images.
 
     """
-    num_frames = v.shape[1]
+    num_frames = temporal_compressed.shape[1]
     # Step 1: Standardize c
-    c = temporal_traces - torch.mean(temporal_traces, dim=0, keepdim=True)
+    c = temporal_demixed - torch.mean(temporal_demixed, dim=0, keepdim=True)
     c_norm = torch.sqrt(torch.sum(c * c, dim=0, keepdim=True))
     c /= c_norm
 
     ##Step 2: Compute the mean of the UV video
-    v_mean = torch.mean(v, dim=1, keepdim=True)
-    uv_mean = torch.sparse.mm(u_sparse, v_mean)  # Dims: d x 1
+    v_mean = torch.mean(temporal_compressed, dim=1, keepdim=True)
+    uv_mean = torch.sparse.mm(spatial_compressed, v_mean)  # Dims: d x 1
 
     """
     Step 3: Compute the pixelwise norm of the mean-subtracted PMD data. Exploit low-rank of PMD here.
     We want to find diag([UV - m1^T][temporal_compressed^TU^T - 1m^T]) here.
     """
     uv_meanzero_norm = torch.zeros(
-        (u_sparse.shape[0], 1), device=device, dtype=u_sparse.dtype
+        (spatial_compressed.shape[0], 1), device=device, dtype=spatial_compressed.dtype
     )
-    v_sum = torch.sum(v, dim=1, keepdim=True)
-    uv_sum = torch.sparse.mm(u_sparse, v_sum)
+    v_sum = torch.sum(temporal_compressed, dim=1, keepdim=True)
+    uv_sum = torch.sparse.mm(spatial_compressed, v_sum)
     uv_meanzero_norm += (-2) * uv_sum * uv_mean
     uv_meanzero_norm += uv_mean * uv_mean * num_frames
 
     # To finish norm computation, need to compute diag(UVV^TU). This is rowsum(UVV^T (hadamard) spatial_compressed).
-    batch_iters = math.ceil(u_sparse.shape[1] / frame_batch_size)
+    batch_iters = math.ceil(spatial_compressed.shape[1] / frame_batch_size)
     for k in range(batch_iters):
         start = frame_batch_size * k
-        end = min(start + frame_batch_size, u_sparse.shape[1])
-        curr_vvt = v @ v.T[:, start:end]
-        curr_uvvt = torch.sparse.mm(u_sparse, curr_vvt)
+        end = min(start + frame_batch_size, spatial_compressed.shape[1])
+        curr_vvt = temporal_compressed @ temporal_compressed.T[:, start:end]
+        curr_uvvt = torch.sparse.mm(spatial_compressed, curr_vvt)
         inds = torch.arange(start, end, device=device, dtype=torch.long)
-        curr_u_dense = torch.index_select(u_sparse, 1, inds).to_dense()
+        curr_u_dense = torch.index_select(spatial_compressed, 1, inds).to_dense()
         uv_meanzero_norm += torch.sum(curr_uvvt * curr_u_dense, dim=1, keepdim=True)
 
     if noise_std is not None:
@@ -361,8 +360,8 @@ def _compute_standard_correlation_image(
 
     uv_meanzero_norm = torch.sqrt(uv_meanzero_norm)
     corr_array = StandardCorrelationImages.from_tensors(
-        u_sparse,
-        v,
+        spatial_compressed,
+        temporal_compressed,
         c,
         uv_mean.squeeze(),
         uv_meanzero_norm.squeeze(),
@@ -372,8 +371,9 @@ def _compute_standard_correlation_image(
     return corr_array
 
 
-def get_mean_data(u_sparse, v):
-    return torch.sparse.mm(u_sparse, torch.mean(v, dim=1, keepdim=True))
+def get_mean_data(spatial_compressed: SparseCOOTensor,
+                  temporal_compressed: torch.Tensor):
+    return torch.sparse.mm(spatial_compressed, torch.mean(temporal_compressed, dim=1, keepdim=True))
 
 
 def process_custom_signals(
@@ -2862,7 +2862,6 @@ class DemixingState(SignalProcessingState):
             self.c,
             (self.shape[0], self.shape[1]),
             noise_std=self.robust_noise_term,
-            data_order=self.data_order,
             frame_batch_size=self.frame_batch_size,
             device=self.device,
         )
@@ -2875,7 +2874,7 @@ class DemixingState(SignalProcessingState):
             self.a,
             self.c,
             (self.shape[0], self.shape[1]),
-            uv_norms = self._uv_norms,
+            compressed_array_norms= self._uv_norms,
             blocks=self.blocks,
             noise_std=self.robust_noise_term.flatten(),
             batch_size=self.frame_batch_size,
@@ -3541,7 +3540,6 @@ class DemixingState(SignalProcessingState):
                                                                                      self.factorized_ring_term[1],
                                                                                      self.c,
                                                                                      (self.d1, self.d2),
-                                                                                     data_order=self.data_order,
                                                                                      frame_batch_size=self.frame_batch_size,
                                                                                      device=self.device)
 
