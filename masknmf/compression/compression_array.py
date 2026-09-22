@@ -405,7 +405,7 @@ class CompressionArray(ArrayLike, Serializer):
         return product
 
 
-class PMDResidualArray(ArrayLike):
+class CompressionResidualArray(ArrayLike):
     """
     Factorized video for the spatial and temporal extracted sources from the data
     """
@@ -413,14 +413,14 @@ class PMDResidualArray(ArrayLike):
     def __init__(
         self,
         raw_arr: ArrayLike,
-        pmd_arr: CompressionArray,
+        compression_arr: CompressionArray,
     ):
         """
         Args:
             raw_arr (LazyFrameLoader): Any object that supports LazyFrameLoder functionality
-            pmd_arr (CompressionArray)
+            compression_arr (CompressionArray)
         """
-        self.pmd_arr = pmd_arr
+        self.pmd_arr = compression_arr
         self.raw_arr = raw_arr
         self._shape = self.pmd_arr.shape
 

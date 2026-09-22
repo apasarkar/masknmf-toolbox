@@ -1140,7 +1140,7 @@ def pmd_decomposition(
         device ("auto" | "cuda" | "cpu"): Which device the computations should be performed on.
 
     Returns:
-        pmd_arr (masknmf.PMDArray): A PMD Array object capturing the compression results.
+        compression_arr (masknmf.PMDArray): A PMD Array object capturing the compression results.
     """
 
     device = torch_select_device(device)

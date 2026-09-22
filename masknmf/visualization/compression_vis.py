@@ -1,7 +1,7 @@
 from masknmf.arrays.array_interfaces import ArrayLike
 from typing import *
 import numpy as np
-from masknmf.compression import CompressionArray, PMDResidualArray
+from masknmf.compression import CompressionArray, CompressionResidualArray
 from masknmf.utils import display
 from masknmf.visualization.imgui import TracePlot, resolve_time_reference, is_notebook_canvas
 from masknmf.diagnostics import pmd_autocovariance_diagnostics
@@ -52,7 +52,7 @@ class CompressionVis:
         self._include_trend = include_trend
 
         # Tricky: comparison stack is not mean subtracted, which is what we need to pass in to the residual array and to the autocov diagnostic
-        self._residual_stack = PMDResidualArray(self.moco_stack, self.pmd_stack)
+        self._residual_stack = CompressionResidualArray(self.moco_stack, self.pmd_stack)
         display('Computing Residual Statistics')
         raw_lag1, pmd_lag1, resid_lag1 = pmd_autocovariance_diagnostics(self.moco_stack,
                                                                         self.pmd_stack,
