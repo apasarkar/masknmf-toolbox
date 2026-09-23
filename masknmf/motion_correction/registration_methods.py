@@ -382,7 +382,8 @@ def compute_stride_routine(shape: tuple[int, int, int],
     """
     Args:
         shape (tuple[int, int, int]): Describes shape of imaging data (num_frames, fov_height, fov_width)
-        minimum_patch_sizes (tuple[int, int]): The number of blocks in each dimension that we use to partition the FOV
+        minimum_patch_sizes (tuple[int, int]): The minimum (height, width) patch dimensions used to compute local
+            rigid shifts in the piecewise rigid shifts
         overlaps (tuple[int, int]): The amount of overlap in each dimension between adjacent blocks
     Returns:
         tuple[tuple[int, int], torch.Tensor, torch.Tensor]: A tuple describing the (a) strides in both dimensions and the start points for
