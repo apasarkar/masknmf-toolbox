@@ -96,7 +96,7 @@ class DemixingResults(Serializer):
         "global_residual_correlation_image",
         "standard_correlation_image_mean",
         "standard_correlation_image_normalizer",
-        "resid_corr_img_support_values",
+        "residual_correlation_image_support_values",
         "resid_corr_img_mean",
         "resid_corr_img_normalizer",
         "background_correlation_image_mean",
@@ -139,7 +139,7 @@ class DemixingResults(Serializer):
             b: torch.Tensor | None = None,
             standard_correlation_image_mean: torch.Tensor | None = None,
             standard_correlation_image_normalizer: torch.Tensor | None = None,
-            resid_corr_img_support_values: SparseCOOTensor | None = None,
+            residual_correlation_image_support_values: SparseCOOTensor | None = None,
             resid_corr_img_mean: torch.Tensor | None = None,
             resid_corr_img_normalizer: torch.Tensor | None = None,
             background_correlation_image_mean: torch.Tensor | None = None,
@@ -177,7 +177,7 @@ class DemixingResults(Serializer):
                 The residual is defined as UV - AC - Fluctuaating background - Static Background
             standard_correlation_image_mean (torch.Tensor | None): the mean image used to lazily construct the standard correlation image per neuron
             standard_correlation_image_normalizer (torch.Tensor | None): the normalizer image used to lazily construct the standard correlation image per neuron
-            resid_corr_img_support_values (SparseCOOTensor | None): Shape (num_pixels, num_neurons). A sparse tensor describing the residual correlation
+            residual_correlation_image_support_values (SparseCOOTensor | None): Shape (num_pixels, num_neurons). A sparse tensor describing the residual correlation
                 image only at values where the neuron footprint is nonzero
             resid_corr_img_mean (torch.Tensor | None): Shape (height, width). The mean image used to lazily
                 compute the residual correlation image per neural signal.
@@ -252,12 +252,12 @@ class DemixingResults(Serializer):
             self.flyweight.standard_correlation_image_mean = standard_correlation_image_mean.to(self._device)  # standard_correlation_image.movie_mean
             self.flyweight.standard_correlation_image_normalizer = standard_correlation_image_normalizer.to(self._device)  # standard_correlation_image.movie_normalizer
 
-        if resid_corr_img_mean is None or resid_corr_img_support_values is None or resid_corr_img_normalizer is None:
-            self.flyweight.resid_corr_img_support_values = None
+        if resid_corr_img_mean is None or residual_correlation_image_support_values is None or resid_corr_img_normalizer is None:
+            self.flyweight.residual_correlation_image_support_values = None
             self.flyweight.resid_corr_img_mean = None
             self.flyweight.resid_corr_img_normalizer = None
         else:
-            self.flyweight.resid_corr_img_support_values = resid_corr_img_support_values.coalesce().to(self._device)
+            self.flyweight.residual_correlation_image_support_values = residual_correlation_image_support_values.coalesce().to(self._device)
             self.flyweight.resid_corr_img_mean = resid_corr_img_mean.to(self._device)
             self.flyweight.resid_corr_img_normalizer = resid_corr_img_normalizer.to(self._device)
 
@@ -432,8 +432,8 @@ class DemixingResults(Serializer):
         return self.flyweight.standard_correlation_image_normalizer
 
     @property
-    def resid_corr_img_support_values(self) -> None | torch.Tensor:
-        return self.flyweight.resid_corr_img_support_values
+    def residual_correlation_image_support_values(self) -> None | torch.Tensor:
+        return self.flyweight.residual_correlation_image_support_values
 
     @property
     def resid_corr_img_mean(self) ->  None | torch.Tensor:

@@ -3137,7 +3137,7 @@ class DemixingState(SignalProcessingState):
                 "Deletion Routine requires that a residual correlation image was calculated"
             )
 
-        support_data = self.residual_correlation_image.resid_corr_img_support_values
+        support_data = self.residual_correlation_image.residual_correlation_image_support_values
         rows, columns = support_data.indices()
         values = (support_data.values() > deletion_threshold).long()
 
@@ -3236,9 +3236,9 @@ class DemixingState(SignalProcessingState):
         (
             _,
             correlation_cols,
-        ) = residual_correlation_data.resid_corr_img_support_values.indices()
+        ) = residual_correlation_data.residual_correlation_image_support_values.indices()
         correlation_values = (
-            residual_correlation_data.resid_corr_img_support_values.values()
+            residual_correlation_data.residual_correlation_image_support_values.values()
         )
 
         max_correlation_values.scatter_reduce_(
@@ -3544,7 +3544,7 @@ class DemixingState(SignalProcessingState):
             b = self.b.squeeze(),
             standard_correlation_image_mean=self.standard_correlation_image.standard_correlation_image_mean,
             standard_correlation_image_normalizer=self.standard_correlation_image.standard_correlation_image_normalizer,
-            resid_corr_img_support_values=self.residual_correlation_image.resid_corr_img_support_values,
+            residual_correlation_image_support_values=self.residual_correlation_image.residual_correlation_image_support_values,
             resid_corr_img_mean=self.residual_correlation_image.resid_corr_img_mean,
             resid_corr_img_normalizer=self.residual_correlation_image.resid_corr_img_normalizer,
             background_correlation_image_mean=background_to_signal_correlation_image.standard_correlation_image_mean,

@@ -28,7 +28,7 @@ class ResidualCorrelationImages(ArrayLike):
                                             "factorized_background_term2",
                                             "spatial_demixed",
                                             "temporal_demixed",
-                                            "resid_corr_img_support_values",
+                                            "residual_correlation_image_support_values",
                                             "resid_corr_img_mean",
                                             "resid_corr_img_normalizer"])
         self._temporal_demixed_norm = self.temporal_demixed - torch.mean(self.temporal_demixed, dim=0, keepdim=True)
@@ -56,7 +56,7 @@ class ResidualCorrelationImages(ArrayLike):
         factorized_background_term2: torch.Tensor,
         spatial_demixed: SparseCOOTensor,
         temporal_demixed: torch.Tensor,
-        resid_corr_img_support_values: SparseCOOTensor,
+        residual_correlation_image_support_values: SparseCOOTensor,
         resid_corr_img_mean: torch.Tensor,
         resid_corr_img_normalizer: torch.Tensor,
         fov_dims: tuple[int, int],
@@ -79,7 +79,7 @@ class ResidualCorrelationImages(ArrayLike):
             factorized_background_term2 (torch.Tensor):
             spatial_demixed (torch.sparse_coo_tensor): shape (pixels, number of neural signals). Spatial components
             temporal_demixed (torch.Tensor): shape (frames, number of neural signals). This is the temporal traces matrix
-            resid_corr_img_support_values (torch.sparse_coo_tensor): Shape (pixels, number of neural signals). The i-th
+            residual_correlation_image_support_values (torch.sparse_coo_tensor): Shape (pixels, number of neural signals). The i-th
                 gives the residual correlation image for neural signal "i" on its spatial support.
             resid_corr_img_mean (torch.Tensor): shape (pixels)
             resid_corr_img_normalizer (torch.Tensor): shape (pixels)
@@ -92,7 +92,7 @@ class ResidualCorrelationImages(ArrayLike):
                                     factorized_background_term2=factorized_background_term2,
                                     spatial_demixed=spatial_demixed,
                                     temporal_demixed=temporal_demixed,
-                                    resid_corr_img_support_values=resid_corr_img_support_values,
+                                    residual_correlation_image_support_values=residual_correlation_image_support_values,
                                     resid_corr_img_mean=resid_corr_img_mean,
                                     resid_corr_img_normalizer=resid_corr_img_normalizer,
                                     )
@@ -173,8 +173,8 @@ class ResidualCorrelationImages(ArrayLike):
         return self.flyweight.temporal_demixed
 
     @property
-    def resid_corr_img_support_values(self) -> SparseCOOTensor:
-        return self.flyweight.resid_corr_img_support_values
+    def residual_correlation_image_support_values(self) -> SparseCOOTensor:
+        return self.flyweight.residual_correlation_image_support_values
 
     @property
     def resid_corr_img_mean(self) -> torch.Tensor:
@@ -217,7 +217,7 @@ class ResidualCorrelationImages(ArrayLike):
         if selected_neurons.ndim < 1:
             selected_neurons = selected_neurons.unsqueeze(0)
         support_values_crop = torch.index_select(
-            self.resid_corr_img_support_values, 1, selected_neurons
+            self.residual_correlation_image_support_values, 1, selected_neurons
         ).coalesce()
 
         # Step 4: Deal with remaining indices after lazy computing the frame(s)
