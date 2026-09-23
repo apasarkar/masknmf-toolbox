@@ -300,12 +300,12 @@ def normalize_traces(trace1: np.ndarray,
     """
 
     if np.count_nonzero(trace1 != 0) == 0:
-        trace1_norm = np.zeros_like(trace_1)
+        trace1_norm = np.zeros_like(trace1)
     else:
         trace1_norm = trace1 / np.linalg.norm(trace1)
 
     if np.count_nonzero(trace2 != 0) == 0:
-        trace2_norm = np.zeros_like(trace_2)
+        trace2_norm = np.zeros_like(trace2)
     else:
         trace2_norm = trace2 / np.linalg.norm(trace2)
 
