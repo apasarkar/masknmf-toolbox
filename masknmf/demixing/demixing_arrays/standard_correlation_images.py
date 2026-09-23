@@ -19,8 +19,8 @@ class StandardCorrelationImages(ArrayLike):
         self.flyweight.validate_attributes(['spatial_compressed',
                                             'temporal_compressed',
                                             'temporal_demixed',
-                                            'std_corr_img_mean',
-                                            'std_corr_img_normalizer'])
+                                            'standard_correlation_image_mean',
+                                            'standard_correlation_image_normalizer'])
 
         ## Caution: This tensor is "settable" (when you update self._temporal_demixed the correlation image dynamically changes). So the getter for c should just call flyweight.c
         self._temporal_demixed = None
@@ -39,8 +39,8 @@ class StandardCorrelationImages(ArrayLike):
         spatial_compressed: SparseCOOTensor,
         temporal_compressed: torch.Tensor,
         temporal_demixed: torch.Tensor,
-        std_corr_img_mean: torch.Tensor,
-        std_corr_img_normalizer: torch.Tensor,
+        standard_correlation_image_mean: torch.Tensor,
+        standard_correlation_image_normalizer: torch.Tensor,
         fov_dims: tuple[int, int],
     ):
         """
@@ -52,15 +52,15 @@ class StandardCorrelationImages(ArrayLike):
             temporal_compressed (torch.Tensor): shape (rank, frames)
             temporal_demixed (torch.Tensor): shape (frames, number of neural signals). This is the temporal traces matrix, where every
                 column has mean 0 and Frobenius norm 1.
-            std_corr_img_mean (torch.Tensor): shape (pixels), the mean of spatial_compressed times temporal_compressed
-            std_corr_img_normalizer (torch.Tensor): shape (pixels), the pixelwise l2 norm of (spatial_compressed times temporal_compressed) - movie_mean
+            standard_correlation_image_mean (torch.Tensor): shape (pixels), the mean of spatial_compressed times temporal_compressed
+            standard_correlation_image_normalizer (torch.Tensor): shape (pixels), the pixelwise l2 norm of (spatial_compressed times temporal_compressed) - movie_mean
             fov_dims (tuple[int, int]): A (fov_height, fov_width) tuple describing spatial imaging dimensions
         """
         flyweight = TensorFlyWeight(spatial_compressed=spatial_compressed,
                                     temporal_compressed=temporal_compressed,
                                     temporal_demixed=temporal_demixed,
-                                    std_corr_img_mean=std_corr_img_mean,
-                                    std_corr_img_normalizer=std_corr_img_normalizer)
+                                    standard_correlation_image_mean=standard_correlation_image_mean,
+                                    standard_correlation_image_normalizer=standard_correlation_image_normalizer)
         return cls(flyweight,
                    fov_dims)
 
@@ -121,12 +121,12 @@ class StandardCorrelationImages(ArrayLike):
         return self.flyweight.temporal_compressed
 
     @property
-    def std_corr_img_mean(self) -> torch.Tensor:
-        return self.flyweight.std_corr_img_mean
+    def standard_correlation_image_mean(self) -> torch.Tensor:
+        return self.flyweight.standard_correlation_image_mean
 
     @property
-    def std_corr_img_normalizer(self) -> torch.Tensor:
-        return self.flyweight.std_corr_img_normalizer
+    def standard_correlation_image_normalizer(self) -> torch.Tensor:
+        return self.flyweight.standard_correlation_image_normalizer
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -162,15 +162,15 @@ class StandardCorrelationImages(ArrayLike):
             pixel_space_crop = self._pixel_mat[item[1:]]
             u_indices = pixel_space_crop.flatten()
             u_crop = torch.index_select(self.spatial_compressed, 0, u_indices)
-            mean_crop = torch.index_select(self.std_corr_img_mean, 0, u_indices)
+            mean_crop = torch.index_select(self.standard_correlation_image_mean, 0, u_indices)
             movie_normalizer_crop = torch.index_select(
-                self.std_corr_img_normalizer, 0, u_indices
+                self.standard_correlation_image_normalizer, 0, u_indices
             )
             implied_fov = pixel_space_crop.shape
         else:
             u_crop = self.spatial_compressed
-            mean_crop = self.std_corr_img_mean
-            movie_normalizer_crop = self.std_corr_img_normalizer
+            mean_crop = self.standard_correlation_image_mean
+            movie_normalizer_crop = self.standard_correlation_image_normalizer
             implied_fov = self.shape[1], self.shape[2]
 
         product = (

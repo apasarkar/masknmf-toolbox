@@ -94,8 +94,8 @@ class DemixingResults(Serializer):
         "factorized_background_term1",
         "factorized_background_term2",
         "global_residual_correlation_image",
-        "std_corr_img_mean",
-        "std_corr_img_normalizer",
+        "standard_correlation_image_mean",
+        "standard_correlation_image_normalizer",
         "resid_corr_img_support_values",
         "resid_corr_img_mean",
         "resid_corr_img_normalizer",
@@ -137,8 +137,8 @@ class DemixingResults(Serializer):
             factorized_background_term1: torch.Tensor | None = None,
             factorized_background_term2: torch.Tensor | None = None,
             b: torch.Tensor | None = None,
-            std_corr_img_mean: torch.Tensor | None = None,
-            std_corr_img_normalizer: torch.Tensor | None = None,
+            standard_correlation_image_mean: torch.Tensor | None = None,
+            standard_correlation_image_normalizer: torch.Tensor | None = None,
             resid_corr_img_support_values: SparseCOOTensor | None = None,
             resid_corr_img_mean: torch.Tensor | None = None,
             resid_corr_img_normalizer: torch.Tensor | None = None,
@@ -175,8 +175,8 @@ class DemixingResults(Serializer):
             b (torch.Tensor). The per-pixel static baseline.
                 If not provided, the below code will set it so that the residual movie has mean 0.
                 The residual is defined as UV - AC - Fluctuaating background - Static Background
-            std_corr_img_mean (torch.Tensor | None): the mean image used to lazily construct the standard correlation image per neuron
-            std_corr_img_normalizer (torch.Tensor | None): the normalizer image used to lazily construct the standard correlation image per neuron
+            standard_correlation_image_mean (torch.Tensor | None): the mean image used to lazily construct the standard correlation image per neuron
+            standard_correlation_image_normalizer (torch.Tensor | None): the normalizer image used to lazily construct the standard correlation image per neuron
             resid_corr_img_support_values (SparseCOOTensor | None): Shape (num_pixels, num_neurons). A sparse tensor describing the residual correlation
                 image only at values where the neuron footprint is nonzero
             resid_corr_img_mean (torch.Tensor | None): Shape (height, width). The mean image used to lazily
@@ -245,12 +245,12 @@ class DemixingResults(Serializer):
 
 
 
-        if std_corr_img_mean is None or std_corr_img_normalizer is None:
-            self.flyweight.std_corr_img_mean = None
-            self.flyweight.std_corr_img_normalizer = None
+        if standard_correlation_image_mean is None or standard_correlation_image_normalizer is None:
+            self.flyweight.standard_correlation_image_mean = None
+            self.flyweight.standard_correlation_image_normalizer = None
         else:
-            self.flyweight.std_corr_img_mean = std_corr_img_mean.to(self._device)  # standard_correlation_image.movie_mean
-            self.flyweight.std_corr_img_normalizer = std_corr_img_normalizer.to(self._device)  # standard_correlation_image.movie_normalizer
+            self.flyweight.standard_correlation_image_mean = standard_correlation_image_mean.to(self._device)  # standard_correlation_image.movie_mean
+            self.flyweight.standard_correlation_image_normalizer = standard_correlation_image_normalizer.to(self._device)  # standard_correlation_image.movie_normalizer
 
         if resid_corr_img_mean is None or resid_corr_img_support_values is None or resid_corr_img_normalizer is None:
             self.flyweight.resid_corr_img_support_values = None
@@ -424,12 +424,12 @@ class DemixingResults(Serializer):
         return self.flyweight.temporal_demixed
 
     @property
-    def std_corr_img_mean(self) -> None | torch.Tensor:
-        return self.flyweight.std_corr_img_mean
+    def standard_correlation_image_mean(self) -> None | torch.Tensor:
+        return self.flyweight.standard_correlation_image_mean
 
     @property
-    def std_corr_img_normalizer(self) -> None | torch.Tensor:
-        return self.flyweight.std_corr_img_normalizer
+    def standard_correlation_image_normalizer(self) -> None | torch.Tensor:
+        return self.flyweight.standard_correlation_image_normalizer
 
     @property
     def resid_corr_img_support_values(self) -> None | torch.Tensor:
@@ -510,7 +510,7 @@ class DemixingResults(Serializer):
 
     @property
     def standard_correlation_images(self) -> None | StandardCorrelationImages:
-        if self.std_corr_img_mean is not None:
+        if self.standard_correlation_image_mean is not None:
             if self._standard_correlation_images is None:
                 self._standard_correlation_images = StandardCorrelationImages.from_flyweight(self.flyweight,
                                                                                              (self._shape[1], self._shape[2]))
