@@ -158,14 +158,13 @@ def plot_ith_roi(
         )
 
     background_to_signal_corr_image = results.background_to_signal_correlation_image
-    order = results.order
     current_a = (
         torch.index_select(results.spatial_demixed, 1, torch.arange(i, i + 1).to(results.device))
         .to_dense()
         .cpu()
         .numpy()
     )
-    a = current_a.reshape((results.shape[1], results.shape[2]), order=order)
+    a = current_a.reshape((results.shape[1], results.shape[2]))
 
     p1, p2 = a.nonzero()
     T, d1, d2 = results.compression_array.shape
