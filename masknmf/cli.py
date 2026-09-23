@@ -18,7 +18,6 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import argparse
-import inspect
 import sys
 from pathlib import Path
 
@@ -176,9 +175,16 @@ def add_pipeline_options(parser: argparse.ArgumentParser, spec: scraper.Pipeline
         parser (argparse.ArgumentParser): The run subparser
         spec (PipelineSpec): The scraped pipeline
     """
+    from masknmf.pipelines import scraper
+
     for param in spec.movie_params:
+        if len(spec.movie_params) > 1:
+            parser.add_argument(flag_for(param), help=f"imaging movie for {param.field}", default=None)
+            continue
+        _, allows_none = scraper.annotation_members(annotation=param.annotation)
         parser.add_argument(
-            param.field if len(spec.movie_params) == 1 else flag_for(param),
+            param.field,
+            nargs="?" if allows_none else None,
             help=f"imaging movie for {param.field}",
             default=None,
         )
@@ -431,36 +437,21 @@ def command_run(args: argparse.Namespace) -> None:
         except ValueError as error:
             fail(str(error))
 
-    cater_to_missing_globals(spec=spec, kwargs_run=kwargs_run)
-
-    pipeline = spec.cls(**kwargs_init)
+    try:
+        pipeline = spec.cls(**kwargs_init)
+    except ValueError as error:
+        fail(str(error))
     shapes = ", ".join(
         str(kwargs_run[p.field].shape)
         for p in spec.movie_params
         if kwargs_run.get(p.field) is not None
     )
     print(f"{spec.cls.__name__} on {shapes or 'stored results'}")
-    results = pipeline.run(**kwargs_run)
+    try:
+        results = pipeline.run(**kwargs_run)
+    except ValueError as error:
+        fail(str(error))
     print(f"done{': ' + str(results.shape) if hasattr(results, 'shape') else ''}")
-
-
-def cater_to_missing_globals(spec: scraper.PipelineSpec, kwargs_run: dict) -> None:
-    """
-    Supply free variables a pipeline's run reads but never binds.
-
-    WidefieldSinglechannelPipeline.run reads exclude_border_radius without taking it
-    as an argument, so it resolves against its module globals at call time. Setting it there
-    keeps the pipeline file untouched.
-    """
-    module = sys.modules[spec.cls.__module__]
-    source_run = inspect.getsource(spec.cls.run)
-    code = spec.cls.run.__code__
-    bound = set(code.co_varnames) | set(code.co_cellvars)
-    for name in code.co_names:
-        if name in bound or hasattr(module, name) or name not in source_run:
-            continue
-        if name == "exclude_border_radius":
-            setattr(module, name, 0)
 
 
 def command_view(args: argparse.Namespace) -> None:
