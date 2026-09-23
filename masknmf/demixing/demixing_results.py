@@ -114,7 +114,7 @@ class DemixingResults(Serializer):
     """
     _managed_arrays = ["compression_array",
                        "signals_array",
-                       "colorful_ac_array",
+                       "colorful_signals_array",
                        "fluctuating_background_array",
                        "static_background_array",
                        "standard_correlation_images",
@@ -278,7 +278,7 @@ class DemixingResults(Serializer):
             self.flyweight.multiunit_basis_term2 = multiunit_basis_term2.to(self._device)
 
         self._signals_array = None
-        self._colorful_ac_array = None
+        self._colorful_signals_array = None
         self._compression_array = None
         self._fluctuating_background_array = None
         self._multiunit_background_array = None
@@ -613,7 +613,7 @@ class DemixingResults(Serializer):
         return self._residual_array
 
     @property
-    def colorful_ac_array(self) -> ColorfulSignalsArray:
-        if self._colorful_ac_array is None:
-            self._colorful_ac_array = ColorfulSignalsArray.from_flyweight(self.fov_shape, self.flyweight)
-        return self._colorful_ac_array
+    def colorful_signals_array(self) -> ColorfulSignalsArray:
+        if self._colorful_signals_array is None:
+            self._colorful_signals_array = ColorfulSignalsArray.from_flyweight(self.fov_shape, self.flyweight)
+        return self._colorful_signals_array
