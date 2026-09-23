@@ -101,7 +101,7 @@ class DemixingResults(Serializer):
         "resid_corr_img_normalizer",
         "bkgd_corr_img_mean",
         "bkgd_corr_img_normalizer",
-        "pmd_roi_averages",
+        "compression_array_roi_averages",
         "fluctuating_background_roi_averages",
         "residual_roi_averages",
         "multiunit_basis_term1",
@@ -145,7 +145,7 @@ class DemixingResults(Serializer):
             bkgd_corr_img_mean: torch.Tensor | None = None,
             bkgd_corr_img_normalizer: torch.Tensor | None = None,
             global_residual_correlation_image: torch.Tensor | None= None,
-            pmd_roi_averages: torch.Tensor | None = None,
+            compression_array_roi_averages: torch.Tensor | None = None,
             fluctuating_background_roi_averages: torch.Tensor | None= None,
             residual_roi_averages: torch.Tensor | None = None,
             multiunit_basis_term1: torch.Tensor | None = None,
@@ -236,7 +236,7 @@ class DemixingResults(Serializer):
             self.flyweight.b = b.to(self._device)
         self.flyweight.baseline = self.b.reshape(self.fov_shape)
 
-        self.flyweight.pmd_roi_averages = pmd_roi_averages
+        self.flyweight.compression_array_roi_averages = compression_array_roi_averages
         self.flyweight.fluctuating_background_roi_averages = fluctuating_background_roi_averages
         self.flyweight.residual_roi_averages = residual_roi_averages
 
@@ -460,7 +460,7 @@ class DemixingResults(Serializer):
         Returns the ROI averages for each spatial footprint of the AC Array in the PMD movie, fluctuating background movie,
         and residual movie.
         """
-        if self.flyweight.residual_roi_averages is None or self.flyweight.pmd_roi_averages is None or self.flyweight.fluctuating_background_roi_averages is None:
+        if self.flyweight.residual_roi_averages is None or self.flyweight.compression_array_roi_averages is None or self.flyweight.fluctuating_background_roi_averages is None:
             device = self.temporal_demixed.device
 
             ## Compute an "ROI Average" tensor, which is just "a" where each neuron is binarized + normalized by size of support
@@ -486,19 +486,19 @@ class DemixingResults(Serializer):
             rU = torch.sparse.mm(roi_avg_operator, self.spatial_compressed)
             rA = torch.sparse.mm(roi_avg_operator, self.spatial_demixed)
 
-            pmd_roi_averages = torch.sparse.mm(rU, self.temporal_compressed)
+            compression_array_roi_averages = torch.sparse.mm(rU, self.temporal_compressed)
             ac_roi_averages = torch.sparse.mm(rA, self.temporal_demixed.T)
             static_background_roi_averages = torch.sparse.mm(roi_avg_operator, self.b[..., None])
             fluctuating_background_roi_averages = torch.sparse.mm(rU, self.factorized_background_term1) @ self.factorized_background_term2
-            residual_roi_averages = pmd_roi_averages - ac_roi_averages - static_background_roi_averages - fluctuating_background_roi_averages
+            residual_roi_averages = compression_array_roi_averages - ac_roi_averages - static_background_roi_averages - fluctuating_background_roi_averages
 
-            self.flyweight.pmd_roi_averages = pmd_roi_averages
+            self.flyweight.compression_array_roi_averages = compression_array_roi_averages
             self.flyweight.fluctuating_background_roi_averages = fluctuating_background_roi_averages
             self.flyweight.residual_roi_averages = residual_roi_averages
 
     @property
-    def pmd_roi_averages(self) -> torch.Tensor:
-        return self.flyweight.pmd_roi_averages
+    def compression_array_roi_averages(self) -> torch.Tensor:
+        return self.flyweight.compression_array_roi_averages
 
     @property
     def fluctuating_background_roi_averages(self) -> torch.Tensor:
