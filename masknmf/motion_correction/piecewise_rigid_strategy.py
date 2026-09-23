@@ -99,7 +99,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
     @property
     def minimum_patch_sizes(self) -> tuple[int, int]:
         """
-        Number of blocks that the image plane is split into, [rows, cols].
+        The minimum (height, width) patch size used to estimate local rigid shifts.
         Motion is estimated in each block and then interpolated in 2D space across the entire image plane.
         """
         return self._minimum_patch_sizes
@@ -129,7 +129,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
 
     @property
     def overlaps(self) -> tuple[int, int]:
-        """Number of pixels that overlap between adjacent blocks"""
+        """Number of pixels that overlap between adjacent patches"""
         return self._overlaps
 
     @overlaps.setter

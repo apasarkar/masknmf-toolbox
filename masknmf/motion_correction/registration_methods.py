@@ -393,9 +393,11 @@ def compute_stride_routine(shape: tuple[int, int, int],
         raise ValueError(f"overlap values are bigger than the corresponding FOV dimensions")
     if fov_height <= minimum_patch_sizes[0]  or fov_width <= minimum_patch_sizes[1]:
         raise ValueError(f"patch size dimensions must be smaller than the actual FOV dimensions")
-    if minimum_patch_sizes[0] < overlaps[0]:
+    if minimum_patch_sizes[0] <= 2 * overlaps[0] or minimum_patch_sizes[1] <= 2 * overlaps[1]:
+        raise ValueError(f"the minimum patch size must be at least twice the size of the overlaps")
+    if minimum_patch_sizes[0] <= overlaps[0]:
         raise ValueError(f"In this configuration the requested min patch size in dimension 0 is less than the overlaps, which is not allowed")
-    if minimum_patch_sizes[1] < overlaps[1]:
+    if minimum_patch_sizes[1] <= overlaps[1]:
         raise ValueError(f"In this configuration the requested min patch size in dimension 0 is less than the overlaps, which is not allowed")
 
     min_strides = (minimum_patch_sizes[0] - overlaps[0], minimum_patch_sizes[1] - overlaps[1])
