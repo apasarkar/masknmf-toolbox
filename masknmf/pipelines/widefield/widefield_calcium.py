@@ -81,7 +81,7 @@ class WidefieldSinglechannelPipeline(BasePipeline):
                 'frame_batch_size': self.frame_batch_size,
                 'device': self.device}
 
-    def run(self, data: np.ndarray | ArrayLike):
+    def run(self, data: np.ndarray | ArrayLike, exclude_border_radius: int = 0):
         """
         Uses the API to run rigid motion correction, compression (with denoising)
         """
