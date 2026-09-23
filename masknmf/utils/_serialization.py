@@ -8,16 +8,19 @@ import h5py
 import torch
 
 
-def save_dict(d, filename, group, raise_type_fail=True):
+def save_dict(d, filename, group, exists_ok=False, raise_type_fail=True):
     """
-    Recursively save a dict to an hdf5 group in a new file.
+    Recursively save a dict to a hdf5 group in a new file.
 
     Args:
         d (dict): dict to save as an hdf5 file
 
-        filename (str | Path): Full path to save the file to. File must not already exist.
+        filename (str | Path): Full path to save the file to. Must not already exist unless ``exists_ok``.
 
         group (str): group name to save the dict to
+
+        exists_ok (bool): Whether to write to an existing file; an existing ``group`` in it is replaced.
+        Useful for writing multiple serialized objects to a file
 
         raise_type_fail (bool): If True: raise an exception if saving a part of the dict fails.
         If False: prints a warning instead and saves the
@@ -34,13 +37,28 @@ def save_dict(d, filename, group, raise_type_fail=True):
             If a particular entry within the dict cannot be saved to hdf5 AND
             the argument `raise_type_fail` is set to `True`
     """
-
     if os.path.isfile(filename):
-        raise FileExistsError
+        if not exists_ok:
+            raise FileExistsError
+        else:
+            writemode = 'r+'
+    else:
+        writemode = 'w'
 
-    with h5py.File(filename, 'w') as h5file:
+
+    with h5py.File(filename, writemode) as h5file:
+        if group in h5file:
+            del h5file[group]
         _dicts_to_group(h5file, "{}/".format(group), d,
                         raise_meta_fail=raise_type_fail)
+    #
+    # if not exists_ok:
+    #     if os.path.isfile(filename):
+    #         raise FileExistsError
+    #
+    # with h5py.File(filename, 'w') as h5file:
+    #     _dicts_to_group(h5file, "{}/".format(group), d,
+    #                     raise_meta_fail=raise_type_fail)
 
 
 def _dicts_to_group(h5file, path, d, raise_meta_fail):
@@ -222,22 +240,40 @@ class Serializer:
 
     def export(self, path: str | Path):
         """
-        Export to an HDF5 file.
+        Export to an HDF5 file, as the group named after this class.
         Requires ``h5py`` http://docs.h5py.org/
 
         Args:
-            path (str): Full file path. File must not already exist.
-
-        Raises
-            FileExistsError
-                If a file with the same path already exists.
+            path (str): Full file path. Created if missing; in an existing file the other groups are kept
+                and this class's group is replaced, so one file can hold every stage of a pipeline.
         """
 
         d = self._to_dict()
-        save_dict(d, filename=path, group=__class__.__name__)
+        save_dict(d, filename=path, group=self.__class__.__name__, exists_ok=True)
 
     @classmethod
     def from_hdf5(cls, path, **kwargs):
         """Load result from an hdf5 file. Any additional kwargs are passed to the constructor"""
-        d = load_dict(path, __class__.__name__)
+        d = load_dict(path, cls.__name__)
         return cls(**d, **kwargs)
+
+
+def has_group(filename, group: str) -> bool:
+    """Whether ``filename`` is an hdf5 file that holds ``group``."""
+    if not os.path.isfile(filename):
+        return False
+    with h5py.File(filename, "r") as f:
+        return group in f
+
+
+def drop_group(filename, group: str):
+    """Remove ``group`` from an hdf5 file by rewriting it without the group, so the space comes back; a no-op when absent."""
+    if not has_group(filename, group):
+        return
+    packed = f"{filename}.repack"
+    with h5py.File(filename, "r") as src, h5py.File(packed, "w") as dst:
+        for name in src:
+            if name != group:
+                src.copy(name, dst)
+        dst.attrs.update(src.attrs)
+    os.replace(packed, filename)

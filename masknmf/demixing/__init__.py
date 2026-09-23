@@ -1,24 +1,31 @@
-from masknmf.demixing.signal_demixer import SignalDemixer, InitializingState, DemixingState
+from masknmf.demixing.signal_demixer import SignalDemixer, InitializingState, DemixingState, DemixingError, NoSignalsDetectedError
 from masknmf.demixing.demixing_results import DemixingResults
-from masknmf.demixing.demixing_arrays import ACArray, StandardCorrelationImages, ResidualCorrelationImages, ResidCorrMode, FluctuatingBackgroundArray, ColorfulACArray, ResidualArray
+from masknmf.demixing.demixing_arrays import SignalsArray, StandardCorrelationImages, ResidualCorrelationImages, ResidCorrMode, FluctuatingBackgroundArray, ColorfulSignalsArray, ResidualArray
 
 from masknmf.demixing.background_estimation import RingModel
 from masknmf.demixing.demixing_utils import torch_sparse_to_scipy_coo, ndarray_to_torch_sparse_coo
 from masknmf.demixing.filters import high_pass_filter_batch
 from masknmf.demixing.initialization_results import InitializationResults
+from masknmf.demixing.curation import update_signals, write_curated
+from masknmf.demixing.cell_stats import CellStats
 
 __all__ = [
-    "ACArray",
+    "SignalsArray",
     "StandardCorrelationImages",
     "ResidualCorrelationImages",
     "ResidCorrMode",
     "FluctuatingBackgroundArray",
-    "ColorfulACArray",
+    "ColorfulSignalsArray",
     "ResidualArray",
     "DemixingResults",
     "SignalDemixer",
     "InitializingState",
     "DemixingState",
-    "InitializationResults"
+    "InitializationResults",
+    "DemixingError",
+    "NoSignalsDetectedError",
+    "update_signals",
+    "write_curated",
+    "CellStats",
 ]
 

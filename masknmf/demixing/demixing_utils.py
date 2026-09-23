@@ -4,19 +4,19 @@ import scipy.sparse
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import torch
-from typing import *
 import networkx as nx
 from collections import defaultdict
+from masknmf.utils import SparseCOOTensor
 
-
-def _max_ac_routine(a, c):
+def _max_ac_routine(a: SparseCOOTensor,
+                    c: torch.Tensor):
     """
 
     Args:
         a (torch.sparse_coo_tensor): Spatial footprints, shape (num_pixels, num_neurons)
-        c (torch.tensor): Temporal footprints, shape (num_frames, num_neurons)
+        c (torch.Tensor): Temporal footprints, shape (num_frames, num_neurons)
     Returns:
-        - torch.tensor. shape (num_neurons)
+        - torch.Tensor. shape (num_neurons)
     """
     a = a.coalesce()
     accumulator = torch.zeros(a.shape[1], device=a.device)
@@ -27,12 +27,13 @@ def _max_ac_routine(a, c):
     return accumulator
 
 
-def brightness_order(a, c):
+def brightness_order(a: SparseCOOTensor,
+                     c: torch.Tensor):
     brightnesses = _max_ac_routine(a, c)
     idx_sort = torch.argsort(brightnesses, descending=True)
     return idx_sort, brightnesses
 
-def construct_graph_from_sparse_tensor(adj_tensor: torch.sparse_coo_tensor) -> nx.Graph:
+def construct_graph_from_sparse_tensor(adj_tensor: SparseCOOTensor) -> nx.Graph:
     """
     Constructs a NetworkX graph from a sparse COO tensor representing an adjacency matrix.
 
@@ -66,7 +67,7 @@ def construct_graph_from_sparse_tensor(adj_tensor: torch.sparse_coo_tensor) -> n
 
 def color_and_get_tensors(graph: nx.Graph,
                           device: str,
-                          frame_batch_size: int = 1500) -> List[torch.Tensor]:
+                          frame_batch_size: int = 1500) -> list[torch.Tensor]:
     """
     Color the nodes of a graph using a greedy coloring algorithm and convert the
     resulting color groups into PyTorch tensors.
@@ -75,19 +76,19 @@ def color_and_get_tensors(graph: nx.Graph,
         graph (nx.Graph): The input graph to be colored.
 
     Returns:
-        List[torch.Tensor]: A list of PyTorch tensors, where each tensor contains
+        - list[torch.Tensor]: A list of PyTorch tensors, where each tensor contains
         the nodes corresponding to a specific color. The list is ordered by color.
     """
     # Compute coloring using greedy algorithm
     coloring = nx.coloring.greedy_color(graph, strategy="largest_first")
 
     # Create a dictionary mapping colors to lists of nodes
-    color_to_nodes: Dict[int, List[int]] = defaultdict(list)
+    color_to_nodes: dict[int, list[int]] = defaultdict(list)
     for node, color in coloring.items():
         color_to_nodes[color].append(node)
 
     # Convert lists of nodes to PyTorch tensors
-    color_to_tensors: List[torch.Tensor] = [
+    color_to_tensors: list[torch.Tensor] = [
         chunk
         for nodes in color_to_nodes.values()
         for chunk in torch.split(
@@ -98,7 +99,7 @@ def color_and_get_tensors(graph: nx.Graph,
     return color_to_tensors
 
 
-def torch_sparse_to_scipy_coo(a):
+def torch_sparse_to_scipy_coo(a: SparseCOOTensor):
     data = a.values().cpu().detach().numpy()
     row = a.indices().cpu().detach().numpy()[0, :]
     col = a.indices().cpu().detach().numpy()[1, :]
@@ -162,7 +163,7 @@ def scipy_sparse_to_torch(scipy_sparse):
     return sparse_tensor
 
 
-def torch_dense_to_sparse_coo(dense_tensor):
+def torch_dense_to_sparse_coo(dense_tensor: torch.Tensor) -> SparseCOOTensor:
     """
     Converts a 2D dense PyTorch tensor to a sparse COO tensor.
 
@@ -259,12 +260,13 @@ def spatial_sum_plot(a, a_fin, patch_size, order="C", num_list_fin=None, text=Fa
     return fig
 
 
-def cosine_similarity(img1, img2):
+def cosine_similarity(img1: np.ndarray,
+                      img2: np.ndarray):
     """
     Calculates cosine similarity between two 2D images
     Args:
-        img1: first image being compared
-        img2: second image being compared
+        img1 (np.ndarray): first image being compared
+        img2 (np.ndarray): second image being compared
     Returns:
         cosine_sim: cosine similarity between these two images
     """
@@ -283,12 +285,14 @@ def cosine_similarity(img1, img2):
     return cosine_sim
 
 
-def normalize_traces(trace1, trace2):
+def normalize_traces(trace1: np.ndarray,
+                     trace2: np.ndarray
+                     ) -> tuple[np.ndarray, np.ndarray]:
     """
     Normalizes trace
     Args:
-        trace1: First trace (provided as an ndarray)
-        trace2: Second trace (provided as ndarray)
+        trace1 (np.ndarray): First trace (provided as an ndarray)
+        trace2 (np.ndarray): Second trace (provided as ndarray)
 
     Returns:
         trace1_norm: Normalized trace1
@@ -296,23 +300,23 @@ def normalize_traces(trace1, trace2):
     """
 
     if np.count_nonzero(trace1 != 0) == 0:
-        trace1_norm = np.zeros_like(trace_1)
+        trace1_norm = np.zeros_like(trace1)
     else:
         trace1_norm = trace1 / np.linalg.norm(trace1)
 
     if np.count_nonzero(trace2 != 0) == 0:
-        trace2_norm = np.zeros_like(trace_2)
+        trace2_norm = np.zeros_like(trace2)
     else:
         trace2_norm = trace2 / np.linalg.norm(trace2)
 
     return trace1_norm, trace2_norm
 
 
-def get_box(img):
+def get_box(img: np.ndarray) -> tuple[int, int, int, int]:
     """
     For a given frame in the dataset, this function calculates its bounding box
         Args:
-            img (np.ndarray): Shape (d1 x d2). The image to analyze
+            img (np.ndarray): Shape (fov_height x fov_width). The image to analyze
 
         Returns:
             [height_min, height_max, width_min, width_max]: a list of bounding coordinates which can be used to crop original image
