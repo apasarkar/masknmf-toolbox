@@ -14,8 +14,6 @@ import typing
 
 import numpy as np
 
-from masknmf.pipelines import configs
-
 
 SUFFIX_PIPELINE = "Pipeline"
 
