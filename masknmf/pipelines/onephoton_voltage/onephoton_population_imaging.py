@@ -239,7 +239,7 @@ def compute_final_denoised_c_estimates(pmd_arr: masknmf.CompressionArray,
                                                pmd_arr.temporal_compressed,
                                                dmr.spatial_demixed,
                                                c,
-                                               dmr.b[:, None])
+                                               dmr.static_baseline[:, None])
 
     rescaled_a = rescale_a(dmr.spatial_demixed, pmd_arr.noise_variance_image).coalesce()
     c_trend_estimate = hals_on_trend(rescaled_a,
