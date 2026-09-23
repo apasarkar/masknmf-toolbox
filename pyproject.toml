@@ -33,7 +33,8 @@ dependencies = [
     "imgui-bundle==1.92.801",  # wgpu<=0.32 needs cmd_lists_count (gone in 1.92.900), fastplotlib needs the newer add_polyline
     "simplejpeg",
     "glfw",
-    "oasis-deconv"
+    "oasis-deconv",
+    "roicat[latest] >= 1.7.10" ## Latest version that allows clean axonal and somatic tracking
 ]
 
 [project.optional-dependencies]
@@ -45,15 +46,6 @@ docs = [
     "sphinx-design",
     "pandoc",
     "imageio[ffmpeg]",
-]
-
-multisession = [
-    "roicat[tracking_latest] >= 1.7.7", #First release that has this extras structure
-    "onnx2torch" # This will eventually be removed
-]
-
-classification = [
-    "roicat[classification_latest] >= 1.7.7", #First release that has this extras structure
 ]
 
 dev = [
