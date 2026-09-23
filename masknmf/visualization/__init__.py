@@ -1,11 +1,3 @@
-# from masknmf.visualization.interactive_guis import (
-#     signal_space_demixing,
-#     stack_comparison_interface,
-#     get_correlation_widget,
-#     make_demixing_video,
-#     PMDWidget,
-#     quantile_segregated_signal_gui
-# )
 from masknmf.visualization import imgui
 from masknmf.visualization.plots import (
     construct_index,
