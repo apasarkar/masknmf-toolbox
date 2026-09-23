@@ -85,7 +85,7 @@ class DemixingResults(Serializer):
         "temporal_compressed",
         "spatial_demixed",
         "temporal_demixed",
-        "b",
+        "static_baseline",
         "mean_image",
         "noise_variance_image",
         "spatial_compressed_local_projector",
@@ -136,7 +136,7 @@ class DemixingResults(Serializer):
             temporal_trend_basis: torch.Tensor | None = None,
             factorized_background_term1: torch.Tensor | None = None,
             factorized_background_term2: torch.Tensor | None = None,
-            b: torch.Tensor | None = None,
+            static_baseline: torch.Tensor | None = None,
             standard_correlation_image_mean: torch.Tensor | None = None,
             standard_correlation_image_normalizer: torch.Tensor | None = None,
             residual_correlation_image_support_values: SparseCOOTensor | None = None,
@@ -160,7 +160,7 @@ class DemixingResults(Serializer):
         For example, if PMDArray has spatial_compressed_local_projector as a constructor arg, the same name is used here
 
         Args:
-            shape (tuple): (number of frames, field of view dimension 1, field of view dimension 2)
+            shape (tuple): (number of frames, fov_height, fov_width)
             spatial_compressed (torch.sparse_coo_tensor): shape (pixels, rank 1)
             temporal_compressed (torch.Tensor): shape (rank 2, num_frames)
             spatial_demixed (torch.sparse_coo_tensor): shape (pixels, number of neural signals)
@@ -172,7 +172,7 @@ class DemixingResults(Serializer):
             temporal_trend_basis (torch.Tensor | None): Shape (basis_rank, num_frames). The temporal trend basis identified by PMD
             factorized_background_term1 (torch.Tensor | None): tensor used to express low-rank background estimate
             factorized_background_term2 (torch.Tensor | None): tensor used to express low-rank background estimate
-            b (torch.Tensor). The per-pixel static baseline.
+            static_baseline (torch.Tensor). The per-pixel static baseline_image.
                 If not provided, the below code will set it so that the residual movie has mean 0.
                 The residual is defined as UV - AC - Fluctuaating background - Static Background
             standard_correlation_image_mean (torch.Tensor | None): the mean image used to lazily construct the standard correlation image per neuron
@@ -225,16 +225,16 @@ class DemixingResults(Serializer):
         self.flyweight.global_residual_correlation_image = global_residual_correlation_image.to(self._device) if global_residual_correlation_image is not None else torch.zeros(self.shape[1], self.shape[2], device=self._device, dtype=self.spatial_compressed.dtype)
 
 
-        if b is None:
-            display("Static term was not provided, constructing baseline to ensure residual is mean 0")
-            self.flyweight.b = (torch.sparse.mm(self.spatial_compressed, torch.mean(self.temporal_compressed, dim=1, keepdim=True)) -
+        if static_baseline is None:
+            display("Static term was not provided, constructing baseline_image to ensure residual is mean 0")
+            self.flyweight.static_baseline = (torch.sparse.mm(self.spatial_compressed, torch.mean(self.temporal_compressed, dim=1, keepdim=True)) -
                                 torch.sparse.mm(self.spatial_demixed, torch.mean(self.temporal_demixed.T, dim=1, keepdim=True)) -
                                 torch.sparse.mm(self.spatial_compressed, (
                                    self.factorized_background_term1 @ torch.mean(self.factorized_background_term2, axis=1,
                                                                            keepdim=True)))).to(self._device)
         else:
-            self.flyweight.b = b.to(self._device)
-        self.flyweight.baseline = self.b.reshape(self.fov_shape)
+            self.flyweight.static_baseline = static_baseline.to(self._device)
+        self.flyweight.baseline_image = self.static_baseline.reshape(self.fov_shape)
 
         self.flyweight.compression_array_roi_averages = compression_array_roi_averages
         self.flyweight.fluctuating_background_roi_averages = fluctuating_background_roi_averages
@@ -401,15 +401,15 @@ class DemixingResults(Serializer):
         return self.flyweight.spatial_compressed
 
     @property
-    def b(self) -> torch.Tensor:
-        return self.flyweight.b
+    def static_baseline(self) -> torch.Tensor:
+        return self.flyweight.static_baseline
 
     @property
-    def baseline(self) -> torch.Tensor:
+    def baseline_image(self) -> torch.Tensor:
         """
-        Returns a (height, width)-shaped 2D tensor
+        Returns a (height, width)-shaped 2D tensor. Derived from static_baseline, which is a 1D vectorized version of this
         """
-        return self.flyweight.baseline
+        return self.flyweight.baseline_image
 
     @property
     def temporal_compressed(self) -> torch.Tensor:
@@ -488,7 +488,7 @@ class DemixingResults(Serializer):
 
             compression_array_roi_averages = torch.sparse.mm(rU, self.temporal_compressed)
             ac_roi_averages = torch.sparse.mm(rA, self.temporal_demixed.T)
-            static_background_roi_averages = torch.sparse.mm(roi_avg_operator, self.b[..., None])
+            static_background_roi_averages = torch.sparse.mm(roi_avg_operator, self.static_baseline[..., None])
             fluctuating_background_roi_averages = torch.sparse.mm(rU, self.factorized_background_term1) @ self.factorized_background_term2
             residual_roi_averages = compression_array_roi_averages - ac_roi_averages - static_background_roi_averages - fluctuating_background_roi_averages
 

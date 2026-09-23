@@ -927,7 +927,7 @@ class SingleSessionDemixingVis:
                     )
                 else:
                     lines.append(
-                        (f"signal {k}", results.pmd_roi_averages[k].cpu().numpy(), rgb)
+                        (f"signal {k}", results.compression_array_roi_averages[k].cpu().numpy(), rgb)
                     )
                 self._selected_signals.append(k)
         elif self._active_component is not None:
@@ -942,7 +942,7 @@ class SingleSessionDemixingVis:
                 torch.index_select(results.spatial_demixed, 0, support), results.temporal_demixed.T
             ).mean(dim=0)
             traces = (
-                results.pmd_roi_averages[k],
+                results.compression_array_roi_averages[k],
                 signal,
                 results.fluctuating_background_roi_averages[k],
                 results.residual_roi_averages[k],

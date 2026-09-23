@@ -77,7 +77,7 @@ class CellStats:
         mean = c.mean(0)
         std = c.std(0) + 1e-6
         skew = ((c - mean) ** 3).mean(0) / std**3
-        pmd = np.asarray(results.pmd_roi_averages.detach().cpu(), dtype=np.float32)
+        pmd = np.asarray(results.compression_array_roi_averages.detach().cpu(), dtype=np.float32)
         resid = np.asarray(results.residual_roi_averages.detach().cpu(), dtype=np.float32)
         bkgd = np.asarray(results.fluctuating_background_roi_averages.detach().cpu(), dtype=np.float32)
         pmd_std = pmd.std(1) + 1e-6

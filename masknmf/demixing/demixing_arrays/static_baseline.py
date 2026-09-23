@@ -15,11 +15,11 @@ class StaticBackgroundArray(ArrayLike):
             rescale: bool = False,
     ):
         self._flyweight=flyweight
-        self.flyweight.validate_attributes(["baseline"])
-        self._shape = self.flyweight.baseline.shape
+        self.flyweight.validate_attributes(["baseline_image"])
+        self._shape = self.flyweight.baseline_image.shape
         self._rescale=rescale
 
-        self._default_normalizer = torch.ones_like(self.baseline, device=self.device).float()
+        self._default_normalizer = torch.ones_like(self.baseline_image, device=self.device).float()
         if hasattr(self.flyweight, "normalizer"):
             if self.flyweight.normalizer.shape[0] != self.shape[0] or self.flyweight.normalizer.shape[1] != self.shape[
                 1]:
@@ -31,17 +31,17 @@ class StaticBackgroundArray(ArrayLike):
 
     @classmethod
     def from_tensors(cls,
-                     baseline: torch.Tensor,
+                     baseline_image: torch.Tensor,
                      normalizer: Optional[torch.Tensor] = None,
                      rescale: bool=False):
         """
         Constructor for static baseline class
         Args:
-            baseline (torch.Tensor): Shape (height, width)
+            baseline_image (torch.Tensor): Shape (height, width)
             normalizer (Optional[torch.Tensor]): Shape (height, width)
         """
 
-        flyweight = TensorFlyWeight(baseline=baseline, normalizer=normalizer)
+        flyweight = TensorFlyWeight(baseline_image=baseline_image, normalizer=normalizer)
         return cls(flyweight,
                    rescale=rescale)
 
@@ -63,7 +63,6 @@ class StaticBackgroundArray(ArrayLike):
 
     def _move_local_tensors(self, new_device: str):
         self._default_normalizer = self._default_normalizer.to(new_device)
-
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -91,14 +90,14 @@ class StaticBackgroundArray(ArrayLike):
         self._rescale = new_value
 
     @property
-    def baseline(self) -> torch.Tensor:
-        return self.flyweight.baseline
+    def baseline_image(self) -> torch.Tensor:
+        return self.flyweight.baseline_image
 
     def getitem_tensor(
             self,
             item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
     ):
-        cropped_baseline = self.baseline[item]
+        cropped_baseline = self.baseline_image[item]
         if self.rescale:
             cropped_normalizer = self.normalizer[item]
             return cropped_baseline * cropped_normalizer

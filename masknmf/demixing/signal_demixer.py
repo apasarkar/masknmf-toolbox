@@ -3541,7 +3541,7 @@ class DemixingState(SignalProcessingState):
             temporal_trend_basis=self.compression_array.temporal_trend_basis,
             factorized_background_term1= self.factorized_ring_term[0],
             factorized_background_term2= self.factorized_ring_term[1],
-            b = self.b.squeeze(),
+            static_baseline = self.b.squeeze(),
             standard_correlation_image_mean=self.standard_correlation_image.standard_correlation_image_mean,
             standard_correlation_image_normalizer=self.standard_correlation_image.standard_correlation_image_normalizer,
             residual_correlation_image_support_values=self.residual_correlation_image.residual_correlation_image_support_values,
