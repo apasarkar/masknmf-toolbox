@@ -1,24 +1,20 @@
 """
 Introspection of the pipeline classes and their config dataclasses.
 
-Describes, rather than executes. :func:`scrape` turns a pipeline class into a
-:class:`PipelineSpec` listing every value a caller could set: the config dataclasses its
-``__init__`` accepts, the plain arguments beside them, and the arguments its ``run`` takes.
-Nothing here enumerates a parameter by hand, so a field added to a config dataclass shows up
-without this module changing.
+Turns a pipeline class into a "PipelineSpec" with each value a caller can set.
 """
 
-from typing import Any, Literal, Optional, Union  ## typing
+from typing import Any, Literal, Optional, Union
 
 import dataclasses
 import inspect
 import re
 import types
-import typing  ## built-ins
+import typing
 
-import numpy as np  ## third-party
+import numpy as np
 
-from masknmf.pipelines import configs  ## local
+from masknmf.pipelines import configs
 
 
 SUFFIX_PIPELINE = "Pipeline"
@@ -47,7 +43,7 @@ class Param:
 
 @dataclasses.dataclass
 class Section:
-    """A pipeline ``__init__`` argument that takes one of several config dataclasses."""
+    """A pipeline __init__ argument that takes one of several config dataclasses."""
 
     name: str
     argument: str
@@ -57,7 +53,7 @@ class Section:
 
     @property
     def kinds(self) -> tuple[str, ...]:
-        """Every value the ``--<section>-kind`` flag accepts."""
+        """Every value the --<section>-kind flag accepts."""
         names = list(self.configs_by_kind)
         if self.allows_skip:
             names.append("skip")
@@ -76,27 +72,29 @@ class PipelineSpec:
 
     @property
     def movie_params(self) -> list[Param]:
-        """The ``run`` arguments that take an imaging movie."""
+        """The run arguments that take an imaging movie."""
         return [p for p in self.run_params if p.kind == "movie"]
 
     @property
     def array_params(self) -> list[Param]:
-        """The ``run`` arguments that take an array loaded from a ``.npy`` file."""
+        """The run arguments that take an array loaded from a .npy file."""
         return [p for p in self.run_params if p.kind == "array"]
 
     @property
     def run_scalars(self) -> list[Param]:
-        """The ``run`` arguments that take a plain value."""
+        """The run arguments that take a plain value."""
         return [p for p in self.run_params if p.kind == "scalar"]
 
     def section(self, name: str) -> Section:
         """
         Look a section up by name.
 
-        Raises
-        ------
-        KeyError
-            If the pipeline has no such section.
+        Args:
+            name (str): The section name, as scraped from the constructor argument
+        Returns:
+            Section: The matching section
+        Raises:
+            KeyError: If the pipeline has no such section
         """
         for section in self.sections:
             if section.name == name:
@@ -104,7 +102,15 @@ class PipelineSpec:
         raise KeyError(f"{self.slug} has no section {name!r}")
 
     def params_for(self, section: Section, kind: str) -> list[Param]:
-        """Every field of the config dataclass that ``kind`` selects, settable or not."""
+        """
+        Every field of the config dataclass that a kind selects, settable or not.
+
+        Args:
+            section (Section): The section being inspected
+            kind (str): One of the section's kinds
+        Returns:
+            list[Param]: One per field, empty when the kind names no dataclass
+        """
         if kind not in section.configs_by_kind:
             return []
         return scrape_dataclass(
@@ -116,17 +122,16 @@ def slugify(name_class: str) -> str:
     """
     Turn a pipeline class name into its command line name.
 
-    Parameters
-    ----------
-    name_class : str
-        For example ``"TwoPhotonCalciumPipeline"``.
-
-    Returns
-    -------
-    str
-        For example ``"two-photon-calcium"``.
+    Args:
+        name_class (str): For example "TwoPhotonCalciumPipeline"
+    Returns:
+        str: For example "two-photon-calcium"
     """
-    stem = name_class[: -len(SUFFIX_PIPELINE)] if name_class.endswith(SUFFIX_PIPELINE) else name_class
+    stem = (
+        name_class[: -len(SUFFIX_PIPELINE)]
+        if name_class.endswith(SUFFIX_PIPELINE)
+        else name_class
+    )
     return re.sub(r"(?<!^)(?=[A-Z])", "-", stem).lower()
 
 
@@ -134,10 +139,8 @@ def pipeline_registry() -> dict[str, type]:
     """
     Every pipeline masknmf exports, keyed by its command line name.
 
-    Returns
-    -------
-    dict of str to type
-        Slug to pipeline class.
+    Returns:
+        dict[str, type]: Slug to pipeline class
     """
     from masknmf import pipelines
 
@@ -150,17 +153,11 @@ def annotation_members(annotation: Any) -> tuple[list, bool]:
     """
     Split a possibly-optional annotation into its members.
 
-    Parameters
-    ----------
-    annotation : Any
-        A type, a ``Union``, or a ``X | None``.
-
-    Returns
-    -------
-    list
-        The members with ``NoneType`` removed.
-    bool
-        Whether ``None`` was one of them.
+    Args:
+        annotation (Any): A type, a Union, or an X | None
+    Returns:
+        list: The members with NoneType removed
+        bool: Whether None was one of them
     """
     origin = typing.get_origin(annotation)
     if origin not in (Union, types.UnionType):
@@ -171,7 +168,14 @@ def annotation_members(annotation: Any) -> tuple[list, bool]:
 
 
 def literal_choices(annotation: Any) -> Optional[tuple]:
-    """The values a ``Literal`` annotation allows, or ``None`` for anything else."""
+    """
+    The values a Literal annotation allows.
+
+    Args:
+        annotation (Any): The annotation to inspect
+    Returns:
+        tuple | None: The allowed values, or None for anything that is not a Literal
+    """
     if typing.get_origin(annotation) is Literal:
         return typing.get_args(annotation)
     return None
@@ -181,8 +185,13 @@ def is_settable(annotation: Any) -> bool:
     """
     Whether a value of this type can be given on a command line.
 
-    Scalars, strings, tuples of scalars and ``Literal`` choices can. Arrays, detrenders,
+    Scalars, strings, tuples of scalars and Literal choices can. Arrays, detrenders,
     nested config dataclasses and lists of them cannot.
+
+    Args:
+        annotation (Any): The annotation to inspect
+    Returns:
+        bool: Whether every member of the annotation is command line expressible
     """
     members, _ = annotation_members(annotation=annotation)
     for member in members:
@@ -201,17 +210,11 @@ def scrape_dataclass(cls_config: type, name_section: str) -> list[Param]:
     """
     Describe every field of a config dataclass.
 
-    Parameters
-    ----------
-    cls_config : type
-        A dataclass from :mod:`masknmf.pipelines.configs`.
-    name_section : str
-        The section the fields are reported under.
-
-    Returns
-    -------
-    list of Param
-        One per field, in declaration order.
+    Args:
+        cls_config (type): A dataclass from masknmf.pipelines.configs
+        name_section (str): The section the fields are reported under
+    Returns:
+        list[Param]: One per field, in declaration order
     """
     hints = resolve_hints(cls=cls_config)
     params = []
@@ -237,7 +240,14 @@ def scrape_dataclass(cls_config: type, name_section: str) -> list[Param]:
 
 
 def resolve_hints(cls: type) -> dict:
-    """Type hints for a class, falling back to raw annotations when they cannot resolve."""
+    """
+    Type hints for a class, falling back to raw annotations when they cannot resolve.
+
+    Args:
+        cls (type): The dataclass to inspect
+    Returns:
+        dict: Field name to annotation
+    """
     try:
         return typing.get_type_hints(cls)
     except Exception:
@@ -245,7 +255,14 @@ def resolve_hints(cls: type) -> dict:
 
 
 def first_literal(annotation: Any) -> Optional[tuple]:
-    """The choices of the first ``Literal`` member of an annotation, if any."""
+    """
+    The choices of the first Literal member of an annotation.
+
+    Args:
+        annotation (Any): The annotation to inspect
+    Returns:
+        tuple | None: The allowed values, or None when no member is a Literal
+    """
     members, _ = annotation_members(annotation=annotation)
     for member in members:
         choices = literal_choices(annotation=member)
@@ -258,15 +275,10 @@ def config_kind(cls_config: type) -> str:
     """
     The command line name for a config dataclass.
 
-    Parameters
-    ----------
-    cls_config : type
-        For example ``PiecewiseRigidMotionCorrectionConfig``.
-
-    Returns
-    -------
-    str
-        For example ``"piecewise-rigid"``.
+    Args:
+        cls_config (type): For example PiecewiseRigidMotionCorrectionConfig
+    Returns:
+        str: For example "piecewise-rigid"
     """
     name = cls_config.__name__
     for suffix in ("MotionCorrectionConfig", "DemixingConfig", "Config"):
@@ -277,7 +289,14 @@ def config_kind(cls_config: type) -> str:
 
 
 def section_name(name_argument: str) -> str:
-    """Turn ``"motion_correct_config"`` into ``"motion-correct"``."""
+    """
+    Turn a constructor argument name into a section name.
+
+    Args:
+        name_argument (str): For example "motion_correct_config"
+    Returns:
+        str: For example "motion-correct"
+    """
     stem = name_argument
     for suffix in ("_config", "_configs"):
         if stem.endswith(suffix):
@@ -287,7 +306,15 @@ def section_name(name_argument: str) -> str:
 
 
 def classify_run_param(name: str, annotation: Any) -> str:
-    """Whether a ``run`` argument takes a movie, a ``.npy`` array, or a plain value."""
+    """
+    Whether a run argument takes a movie, a .npy array, or a plain value.
+
+    Args:
+        name (str): The argument name
+        annotation (Any): Its annotation
+    Returns:
+        str: One of "movie", "array" or "scalar"
+    """
     if name in NAMES_MOVIE_ARGUMENT:
         return "movie"
     members, _ = annotation_members(annotation=annotation)
@@ -300,15 +327,10 @@ def scrape(cls_pipeline: type) -> PipelineSpec:
     """
     Describe a pipeline class.
 
-    Parameters
-    ----------
-    cls_pipeline : type
-        A pipeline from :mod:`masknmf.pipelines`.
-
-    Returns
-    -------
-    PipelineSpec
-        Its config sections, plain constructor arguments and ``run`` arguments.
+    Args:
+        cls_pipeline (type): A pipeline from masknmf.pipelines
+    Returns:
+        PipelineSpec: Its config sections, plain constructor arguments and run arguments
     """
     sections = []
     scalars = []
@@ -390,22 +412,13 @@ def coerce(param: Param, text: str) -> Any:
     """
     Parse a command line string into the type a parameter wants.
 
-    Parameters
-    ----------
-    param : Param
-        The parameter being set.
-    text : str
-        The string given on the command line. Tuples are comma separated.
-
-    Returns
-    -------
-    Any
-        The parsed value.
-
-    Raises
-    ------
-    ValueError
-        If the text does not parse as the parameter's type.
+    Args:
+        param (Param): The parameter being set
+        text (str): The string given on the command line. Tuples are comma separated
+    Returns:
+        Any: The parsed value
+    Raises:
+        ValueError: If the text does not parse as the parameter's type
     """
     if param.choices is not None and text in param.choices:
         return text
@@ -433,7 +446,15 @@ def coerce(param: Param, text: str) -> Any:
 
 
 def coerce_tuple(member: Any, text: str) -> tuple:
-    """Parse ``"15,15"`` into a tuple, converting each element to the annotated type."""
+    """
+    Parse "15,15" into a tuple, converting each element to the annotated type.
+
+    Args:
+        member (Any): The tuple annotation, for example tuple[int, int]
+        text (str): Comma separated elements
+    Returns:
+        tuple: The parsed elements
+    """
     args = typing.get_args(member)
     type_element = args[0] if len(args) > 0 and args[0] is not Ellipsis else str
     if type_element not in TYPES_SCALAR:
@@ -446,10 +467,12 @@ def coerce_bool(text: str) -> bool:
     """
     Parse a command line boolean.
 
-    Raises
-    ------
-    ValueError
-        If the text is not a recognised boolean.
+    Args:
+        text (str): One of true/1/yes/on or false/0/no/off, in any case
+    Returns:
+        bool: The parsed value
+    Raises:
+        ValueError: If the text is not a recognised boolean
     """
     lowered = text.strip().lower()
     if lowered in ("true", "1", "yes", "on"):

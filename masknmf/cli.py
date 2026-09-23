@@ -2,8 +2,8 @@
 Command line entry point for masknmf.
 
 Every option a pipeline accepts is discovered at runtime by
-:mod:`masknmf.pipelines.scraper`, so ``--pipeline`` decides which flags exist and nothing
-here enumerates a parameter by hand::
+masknmf.pipelines.scraper, so --pipeline decides which flags exist and nothing
+here enumerates a parameter by hand:
 
     masknmf pipelines
     masknmf params --pipeline two-photon-calcium
@@ -13,17 +13,17 @@ here enumerates a parameter by hand::
     masknmf view results.hdf5 --raw movie.tif
 """
 
-from typing import Any, Optional  ## typing
+from typing import Any, Optional
 
 import argparse
 import inspect
 import sys
-from pathlib import Path  ## built-ins
+from pathlib import Path
 
-import numpy as np  ## third-party
+import numpy as np
 
 import masknmf
-from masknmf.pipelines import scraper  ## local
+from masknmf.pipelines import scraper
 
 
 SUFFIXES_TIFF = (".tif", ".tiff")
@@ -55,23 +55,14 @@ def load_movie(filepath_movie: str, name_dataset: Optional[str] = None):
     """
     Open a raw movie with the loader matching its path.
 
-    Parameters
-    ----------
-    filepath_movie : str
-        A tiff file, a directory of tiff files, or an hdf5 file.
-    name_dataset : str, optional
-        For hdf5 input, the dataset holding the movie.
-
-    Returns
-    -------
-    masknmf.LazyFrameLoader
-        A (frames, height, width) lazy array.
-
-    Raises
-    ------
-    SystemExit
-        If the path is not one masknmf can read, a tiff directory is empty, or an hdf5
-        dataset was not named.
+    Args:
+        filepath_movie (str): A tiff file, a directory of tiff files, or an hdf5 file
+        name_dataset (str | None): For hdf5 input, the dataset holding the movie
+    Returns:
+        LazyFrameLoader: A (frames, height, width) lazy array
+    Raises:
+        SystemExit: If the path is not one masknmf can read, a tiff directory is empty,
+            or an hdf5 dataset was not named
     """
     path_movie = Path(filepath_movie).expanduser()
     if not path_movie.exists():
@@ -105,7 +96,7 @@ def has_stage(filepath_results: str, name_group: str) -> bool:
     """
     Whether a results file holds a stage group.
 
-    ``masknmf.utils.has_group`` opens any path it is handed and raises a bare ``OSError``
+    masknmf.utils.has_group opens any path it is handed and raises a bare OSError
     on a non-hdf5 file, so the suffix is checked here first.
     """
     path_results = Path(filepath_results)
@@ -136,12 +127,14 @@ def fail(message: str) -> None:
 
 def spec_for(slug: str) -> scraper.PipelineSpec:
     """
-    Scrape the pipeline a ``--pipeline`` value names.
+    Scrape the pipeline a --pipeline value names.
 
-    Raises
-    ------
-    SystemExit
-        If the slug is not a pipeline masknmf exports.
+    Args:
+        slug (str): The command line name of a pipeline
+    Returns:
+        PipelineSpec: The scraped pipeline
+    Raises:
+        SystemExit: If the slug is not a pipeline masknmf exports
     """
     registry = scraper.pipeline_registry()
     if slug not in registry:
@@ -166,7 +159,7 @@ def option_name(flag: str) -> str:
 
 
 def build_bootstrap_parser() -> argparse.ArgumentParser:
-    """A parser that reads only ``--pipeline``, so the real parser can be built from it."""
+    """A parser that reads only --pipeline, so the real parser can be built from it."""
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--pipeline", default=None)
     return parser
@@ -174,14 +167,11 @@ def build_bootstrap_parser() -> argparse.ArgumentParser:
 
 def add_pipeline_options(parser: argparse.ArgumentParser, spec: scraper.PipelineSpec) -> None:
     """
-    Add every flag the scraped pipeline accepts to a ``run`` parser.
+    Add every flag the scraped pipeline accepts to a run parser.
 
-    Parameters
-    ----------
-    parser : argparse.ArgumentParser
-        The ``run`` subparser.
-    spec : scraper.PipelineSpec
-        The scraped pipeline.
+    Args:
+        parser (argparse.ArgumentParser): The run subparser
+        spec (PipelineSpec): The scraped pipeline
     """
     for param in spec.movie_params:
         parser.add_argument(
@@ -249,12 +239,14 @@ def describe(param: scraper.Param) -> str:
 
 def parse_overrides(texts: list[str]) -> dict[str, str]:
     """
-    Read ``--set section.field=value`` strings into a mapping.
+    Read --set section.field=value strings into a mapping.
 
-    Raises
-    ------
-    SystemExit
-        If an entry has no ``=``.
+    Args:
+        texts (list[str]): The raw --set entries
+    Returns:
+        dict[str, str]: Dotted name to unparsed value
+    Raises:
+        SystemExit: If an entry has no "="
     """
     overrides = {}
     for text in texts:
@@ -274,29 +266,17 @@ def build_section_value(
     """
     Build the value a pipeline's config argument should receive.
 
-    Parameters
-    ----------
-    spec : scraper.PipelineSpec
-        The scraped pipeline.
-    section : scraper.Section
-        The section being built.
-    kind : str, optional
-        The ``--<section>-kind`` value, or ``None`` when the user did not choose.
-    overrides : dict of str to str
-        Every ``--set`` entry, keyed by dotted name.
-
-    Returns
-    -------
-    bool
-        Whether the caller should pass this value at all.
-    tuple
-        The value, when it should be passed.
-
-    Raises
-    ------
-    SystemExit
-        If a kind was chosen whose config cannot be built from the command line, or an
-        override names a field the chosen config does not have.
+    Args:
+        spec (PipelineSpec): The scraped pipeline
+        section (Section): The section being built
+        kind (str | None): The --<section>-kind value, or None when the user did not choose
+        overrides (dict[str, str]): Every --set entry, keyed by dotted name
+    Returns:
+        bool: Whether the caller should pass this value at all
+        Any: The value, when it should be passed
+    Raises:
+        SystemExit: If a kind was chosen whose config cannot be built from the command
+            line, or an override names a field the chosen config does not have
     """
     mine = {k: v for k, v in overrides.items() if k.startswith(f"{section.name}.")}
 
@@ -457,9 +437,9 @@ def command_run(args: argparse.Namespace) -> None:
 
 def cater_to_missing_globals(spec: scraper.PipelineSpec, kwargs_run: dict) -> None:
     """
-    Supply free variables a pipeline's ``run`` reads but never binds.
+    Supply free variables a pipeline's run reads but never binds.
 
-    ``WidefieldSinglechannelPipeline.run`` reads ``exclude_border_radius`` without taking it
+    WidefieldSinglechannelPipeline.run reads exclude_border_radius without taking it
     as an argument, so it resolves against its module globals at call time. Setting it there
     keeps the pipeline file untouched.
     """
@@ -551,7 +531,7 @@ def command_view(args: argparse.Namespace) -> None:
 
 
 def timings(num_frames: int, frame_rate: Optional[float]):
-    """Frame times in seconds, or ``None`` when no acquisition rate was given."""
+    """Frame times in seconds, or None when no acquisition rate was given."""
     if frame_rate is None:
         return None
     return np.arange(num_frames) / float(frame_rate)
@@ -561,15 +541,11 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     """
     Build the full parser, adding pipeline specific flags when a pipeline was named.
 
-    Parameters
-    ----------
-    spec : scraper.PipelineSpec, optional
-        The scraped pipeline, or ``None`` when ``--pipeline`` was not given.
-
-    Returns
-    -------
-    argparse.ArgumentParser
-        The parser.
+    Args:
+        spec (PipelineSpec | None): The scraped pipeline, or None when --pipeline was
+            not given
+    Returns:
+        argparse.ArgumentParser: The parser
     """
     parser = argparse.ArgumentParser(
         prog="masknmf",
