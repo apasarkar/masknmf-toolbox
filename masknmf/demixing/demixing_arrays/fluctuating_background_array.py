@@ -19,9 +19,9 @@ class FluctuatingBackgroundArray(ArrayLike):
         See from_tensors for parameter documentation
         """
         self._flyweight = flyweight
-        self.flyweight.validate_attributes(['spatial_compressed', 'factorized_bkgd_term1', 'factorized_bkgd_term2'])
-        t = self.factorized_bkgd_term2.shape[1]
-        self._shape = (t,) + fov_shape
+        self.flyweight.validate_attributes(['spatial_compressed', 'factorized_background_term1', 'factorized_background_term2'])
+        num_frames = self.factorized_background_term2.shape[1]
+        self._shape = (num_frames,) + fov_shape
         self._pixel_mat = torch.arange(self.shape[1] * self.shape[2], device=self.device, dtype=torch.long).reshape(self.shape[1], self.shape[2])
 
         self._default_normalizer = torch.ones(self.shape[1], self.shape[2], device=self.device).float()
@@ -35,8 +35,8 @@ class FluctuatingBackgroundArray(ArrayLike):
     def from_tensors(cls,
                      fov_shape: tuple[int, int],
                      spatial_compressed: SparseCOOTensor,
-                     factorized_bkgd_term1: torch.Tensor,
-                     factorized_bkgd_term2: torch.Tensor,
+                     factorized_background_term1: torch.Tensor,
+                     factorized_background_term2: torch.Tensor,
                      normalizer: torch.Tensor | None,
                      rescale: bool = False
                      ):
@@ -46,14 +46,14 @@ class FluctuatingBackgroundArray(ArrayLike):
         Args:
             fov_shape (tuple): (fov_height, fov_width)
             spatial_compressed (torch.sparse_coo_tensor): shape (pixels, rank1)
-            factorized_bkgd_term1 (torch.Tensor): shape (compression rank, background_rank)
-            factorized_bkgd_term2 (torch.Tensor): shape (background_rank, num_frames)
+            factorized_background_term1 (torch.Tensor): shape (compression rank, background_rank)
+            factorized_background_term2 (torch.Tensor): shape (background_rank, num_frames)
             normalizer (torch.Tensor | None): Demixing is performed in a normalized space; this tensor of shape (height, width) specifies pixel-wise normalization
             rescale (bool): Whether or not to rescale the data to the original data space (i.e. multiply pixelwise by the normalizer)
         """
         flyweight = TensorFlyWeight(spatial_compressed=spatial_compressed,
-                                    factorized_bkgd_term1=factorized_bkgd_term1,
-                                    factorized_bkgd_term2=factorized_bkgd_term2,
+                                    factorized_background_term1=factorized_background_term1,
+                                    factorized_background_term2=factorized_background_term2,
                                     normalizer=normalizer)
         return cls(fov_shape,
                    flyweight,
@@ -78,12 +78,12 @@ class FluctuatingBackgroundArray(ArrayLike):
         return self.flyweight.spatial_compressed
 
     @property
-    def factorized_bkgd_term1(self) -> torch.Tensor:
-        return self.flyweight.factorized_bkgd_term1
+    def factorized_background_term1(self) -> torch.Tensor:
+        return self.flyweight.factorized_background_term1
 
     @property
-    def factorized_bkgd_term2(self) -> torch.Tensor:
-        return self.flyweight.factorized_bkgd_term2
+    def factorized_background_term2(self) -> torch.Tensor:
+        return self.flyweight.factorized_background_term2
 
     @property
     def normalizer(self) -> torch.Tensor:
@@ -145,8 +145,8 @@ class FluctuatingBackgroundArray(ArrayLike):
         frame_indexer, item = self._parse_indices(item)
 
         # Step 3: Now slice the data with frame_indexer (careful: if the ndims has shrunk, add a dim)
-        factorized_bkgd_term2_crop = self.factorized_bkgd_term2[:, frame_indexer]
-        if factorized_bkgd_term2_crop.ndim < self.factorized_bkgd_term2.ndim:
+        factorized_bkgd_term2_crop = self.factorized_background_term2[:, frame_indexer]
+        if factorized_bkgd_term2_crop.ndim < self.factorized_background_term2.ndim:
             factorized_bkgd_term2_crop = factorized_bkgd_term2_crop.unsqueeze(1)
 
         # Step 4: Deal with remaining indices after lazy computing the frame(s)
@@ -186,11 +186,11 @@ class FluctuatingBackgroundArray(ArrayLike):
 
         # Temporal term is guaranteed to have nonzero "T" dimension below
         if np.prod(implied_fov) <= factorized_bkgd_term2_crop.shape[1]:
-            product = torch.sparse.mm(u_crop, self.factorized_bkgd_term1)
+            product = torch.sparse.mm(u_crop, self.factorized_background_term1)
             product = torch.matmul(product, factorized_bkgd_term2_crop)
 
         else:
-            product = torch.matmul(self.factorized_bkgd_term1, factorized_bkgd_term2_crop)
+            product = torch.matmul(self.factorized_background_term1, factorized_bkgd_term2_crop)
             product = torch.sparse.mm(u_crop, product)
 
 

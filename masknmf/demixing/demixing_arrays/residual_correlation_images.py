@@ -24,8 +24,8 @@ class ResidualCorrelationImages(ArrayLike):
         self._flyweight = flyweight
         self.flyweight.validate_attributes(["spatial_compressed",
                                             "temporal_compressed",
-                                            "factorized_bkgd_term1",
-                                            "factorized_bkgd_term2",
+                                            "factorized_background_term1",
+                                            "factorized_background_term2",
                                             "spatial_demixed",
                                             "temporal_demixed",
                                             "resid_corr_img_support_values",
@@ -52,8 +52,8 @@ class ResidualCorrelationImages(ArrayLike):
         cls,
         spatial_compressed: SparseCOOTensor,
         temporal_compressed: torch.Tensor,
-        factorized_bkgd_term1: torch.Tensor,
-        factorized_bkgd_term2: torch.Tensor,
+        factorized_background_term1: torch.Tensor,
+        factorized_background_term2: torch.Tensor,
         spatial_demixed: SparseCOOTensor,
         temporal_demixed: torch.Tensor,
         resid_corr_img_support_values: SparseCOOTensor,
@@ -75,8 +75,8 @@ class ResidualCorrelationImages(ArrayLike):
         Args:
             spatial_compressed (torch.sparse_coo_tensor): shape (pixels, rank 1)
             temporal_compressed (torch.Tensor): shape (rank 2, frames)
-            factorized_bkgd_term1 (torch.Tensor):
-            factorized_bkgd_term2 (torch.Tensor):
+            factorized_background_term1 (torch.Tensor):
+            factorized_background_term2 (torch.Tensor):
             spatial_demixed (torch.sparse_coo_tensor): shape (pixels, number of neural signals). Spatial components
             temporal_demixed (torch.Tensor): shape (frames, number of neural signals). This is the temporal traces matrix
             resid_corr_img_support_values (torch.sparse_coo_tensor): Shape (pixels, number of neural signals). The i-th
@@ -88,8 +88,8 @@ class ResidualCorrelationImages(ArrayLike):
         """
         flyweight = TensorFlyWeight(spatial_compressed=spatial_compressed,
                                     temporal_compressed=temporal_compressed,
-                                    factorized_bkgd_term1=factorized_bkgd_term1,
-                                    factorized_bkgd_term2=factorized_bkgd_term2,
+                                    factorized_background_term1=factorized_background_term1,
+                                    factorized_background_term2=factorized_background_term2,
                                     spatial_demixed=spatial_demixed,
                                     temporal_demixed=temporal_demixed,
                                     resid_corr_img_support_values=resid_corr_img_support_values,
@@ -185,12 +185,12 @@ class ResidualCorrelationImages(ArrayLike):
         return self.flyweight.resid_corr_img_normalizer
 
     @property
-    def factorized_bkgd_term1(self) -> torch.Tensor:
-        return self.flyweight.factorized_bkgd_term1
+    def factorized_background_term1(self) -> torch.Tensor:
+        return self.flyweight.factorized_background_term1
 
     @property
-    def factorized_bkgd_term2(self) -> torch.Tensor:
-        return self.flyweight.factorized_bkgd_term2
+    def factorized_background_term2(self) -> torch.Tensor:
+        return self.flyweight.factorized_background_term2
 
     @property
     def ndim(self) -> int:
@@ -211,7 +211,7 @@ class ResidualCorrelationImages(ArrayLike):
         if temporal_demixed_crop.ndim < self._temporal_demixed_norm.ndim:
             temporal_demixed_crop = temporal_demixed_crop.unsqueeze(1)
 
-        temporal_compressed_crop = self.temporal_compressed @ temporal_demixed_crop - (self.factorized_bkgd_term1 @ (self.factorized_bkgd_term2 @ temporal_demixed_crop))
+        temporal_compressed_crop = self.temporal_compressed @ temporal_demixed_crop - (self.factorized_background_term1 @ (self.factorized_background_term2 @ temporal_demixed_crop))
         cc_crop = self.temporal_demixed.T @ temporal_demixed_crop
         selected_neurons = self._index_values[frame_indexer]
         if selected_neurons.ndim < 1:

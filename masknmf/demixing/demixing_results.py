@@ -91,8 +91,8 @@ class DemixingResults(Serializer):
         "spatial_compressed_local_projector",
         "spatial_trend_basis",
         "temporal_trend_basis",
-        "factorized_bkgd_term1",
-        "factorized_bkgd_term2",
+        "factorized_background_term1",
+        "factorized_background_term2",
         "global_residual_correlation_image",
         "std_corr_img_mean",
         "std_corr_img_normalizer",
@@ -134,8 +134,8 @@ class DemixingResults(Serializer):
             spatial_compressed_local_projector: SparseCOOTensor | None = None,
             spatial_trend_basis: torch.Tensor | None= None,
             temporal_trend_basis: torch.Tensor | None = None,
-            factorized_bkgd_term1: torch.Tensor | None = None,
-            factorized_bkgd_term2: torch.Tensor | None = None,
+            factorized_background_term1: torch.Tensor | None = None,
+            factorized_background_term2: torch.Tensor | None = None,
             b: torch.Tensor | None = None,
             std_corr_img_mean: torch.Tensor | None = None,
             std_corr_img_normalizer: torch.Tensor | None = None,
@@ -170,8 +170,8 @@ class DemixingResults(Serializer):
             spatial_compressed_local_projector (SparseCOOTensor | None): A projection matrix used to project frames of data onto the PMD spatial_compressed subspace
             spatial_trend_basis (torch.Tensor | None): Shape (num_pixels, basis_rank). The spatial trend basis identified by PMD
             temporal_trend_basis (torch.Tensor | None): Shape (basis_rank, num_frames). The temporal trend basis identified by PMD
-            factorized_bkgd_term1 (torch.Tensor | None): tensor used to express low-rank background estimate
-            factorized_bkgd_term2 (torch.Tensor | None): tensor used to express low-rank background estimate
+            factorized_background_term1 (torch.Tensor | None): tensor used to express low-rank background estimate
+            factorized_background_term2 (torch.Tensor | None): tensor used to express low-rank background estimate
             b (torch.Tensor). The per-pixel static baseline.
                 If not provided, the below code will set it so that the residual movie has mean 0.
                 The residual is defined as UV - AC - Fluctuaating background - Static Background
@@ -214,13 +214,13 @@ class DemixingResults(Serializer):
             self.flyweight.spatial_trend_basis = spatial_trend_basis.to(self._device)
             self.flyweight.temporal_trend_basis = temporal_trend_basis.to(self._device)
 
-        if factorized_bkgd_term1 is None or factorized_bkgd_term2 is None:
+        if factorized_background_term1 is None or factorized_background_term2 is None:
             display("Background term empty")
-            self.flyweight.factorized_bkgd_term1 = torch.zeros(self.spatial_compressed.shape[1], 1, dtype=self.spatial_compressed.dtype, device=self._device)
-            self.flyweight.factorized_bkgd_term2 = torch.zeros((1, self.temporal_compressed.shape[1]), dtype=self.spatial_compressed.dtype, device=self._device)
+            self.flyweight.factorized_background_term1 = torch.zeros(self.spatial_compressed.shape[1], 1, dtype=self.spatial_compressed.dtype, device=self._device)
+            self.flyweight.factorized_background_term2 = torch.zeros((1, self.temporal_compressed.shape[1]), dtype=self.spatial_compressed.dtype, device=self._device)
         else:
-            self.flyweight.factorized_bkgd_term1 = factorized_bkgd_term1.to(self._device)
-            self.flyweight.factorized_bkgd_term2 = factorized_bkgd_term2.to(self._device)
+            self.flyweight.factorized_background_term1 = factorized_background_term1.to(self._device)
+            self.flyweight.factorized_background_term2 = factorized_background_term2.to(self._device)
 
         self.flyweight.global_residual_correlation_image = global_residual_correlation_image.to(self._device) if global_residual_correlation_image is not None else torch.zeros(self.shape[1], self.shape[2], device=self._device, dtype=self.spatial_compressed.dtype)
 
@@ -230,7 +230,7 @@ class DemixingResults(Serializer):
             self.flyweight.b = (torch.sparse.mm(self.spatial_compressed, torch.mean(self.temporal_compressed, dim=1, keepdim=True)) -
                                 torch.sparse.mm(self.spatial_demixed, torch.mean(self.temporal_demixed.T, dim=1, keepdim=True)) -
                                 torch.sparse.mm(self.spatial_compressed, (
-                                   self.factorized_bkgd_term1 @ torch.mean(self.factorized_bkgd_term2, axis=1,
+                                   self.factorized_background_term1 @ torch.mean(self.factorized_background_term2, axis=1,
                                                                            keepdim=True)))).to(self._device)
         else:
             self.flyweight.b = b.to(self._device)
@@ -350,12 +350,12 @@ class DemixingResults(Serializer):
         return self.flyweight.spatial_compressed_local_projector
 
     @property
-    def factorized_bkgd_term1(self) -> None | torch.Tensor:
-        return self.flyweight.factorized_bkgd_term1
+    def factorized_background_term1(self) -> None | torch.Tensor:
+        return self.flyweight.factorized_background_term1
 
     @property
-    def factorized_bkgd_term2(self) -> None | torch.Tensor:
-        return self.flyweight.factorized_bkgd_term2
+    def factorized_background_term2(self) -> None | torch.Tensor:
+        return self.flyweight.factorized_background_term2
 
     @property
     def multiunit_basis_term1(self) -> None | torch.Tensor:
@@ -489,7 +489,7 @@ class DemixingResults(Serializer):
             pmd_roi_averages = torch.sparse.mm(rU, self.temporal_compressed)
             ac_roi_averages = torch.sparse.mm(rA, self.temporal_demixed.T)
             static_background_roi_averages = torch.sparse.mm(roi_avg_operator, self.b[..., None])
-            fluctuating_background_roi_averages = torch.sparse.mm(rU, self.factorized_bkgd_term1) @ self.factorized_bkgd_term2
+            fluctuating_background_roi_averages = torch.sparse.mm(rU, self.factorized_background_term1) @ self.factorized_background_term2
             residual_roi_averages = pmd_roi_averages - ac_roi_averages - static_background_roi_averages - fluctuating_background_roi_averages
 
             self.flyweight.pmd_roi_averages = pmd_roi_averages
@@ -526,7 +526,7 @@ class DemixingResults(Serializer):
         """
         if self.bkgd_corr_img_mean is not None:
             return StandardCorrelationImages.from_tensors(self.spatial_compressed,
-                                                          self.factorized_bkgd_term1 @ self.factorized_bkgd_term2,
+                                                          self.factorized_background_term1 @ self.factorized_background_term2,
                                                           self.temporal_demixed,
                                                           self.bkgd_corr_img_mean,
                                                           self.bkgd_corr_img_normalizer,

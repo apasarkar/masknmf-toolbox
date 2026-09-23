@@ -2231,8 +2231,8 @@ class SignalDemixer:
         Args:
             drop (Sequence[int] | None): indices of signals to leave out of the resumed pass
         """
-        if results.factorized_bkgd_term1 is not None and results.factorized_bkgd_term2 is not None:
-            ring_term = (results.factorized_bkgd_term1, results.factorized_bkgd_term2)
+        if results.factorized_background_term1 is not None and results.factorized_background_term2 is not None:
+            ring_term = (results.factorized_background_term1, results.factorized_background_term2)
         else:
             ring_term = None
         a = results.spatial_demixed.coalesce()
@@ -3539,8 +3539,8 @@ class DemixingState(SignalProcessingState):
             spatial_compressed_local_projector=self.compression_array.spatial_compressed_local_projector,
             spatial_trend_basis=self.compression_array.spatial_trend_basis,
             temporal_trend_basis=self.compression_array.temporal_trend_basis,
-            factorized_bkgd_term1 = self.factorized_ring_term[0],
-            factorized_bkgd_term2 = self.factorized_ring_term[1],
+            factorized_background_term1= self.factorized_ring_term[0],
+            factorized_background_term2= self.factorized_ring_term[1],
             b = self.b.squeeze(),
             std_corr_img_mean=self.standard_correlation_image.std_corr_img_mean,
             std_corr_img_normalizer=self.standard_correlation_image.std_corr_img_normalizer,
