@@ -30,7 +30,7 @@ def demix(data_path: str | Path,
     data_file = os.path.abspath(data_path)
     if not os.path.exists(data_file):
         raise ValueError(f"the path {data_file} does not seem to exist")
-    pmd_denoise = masknmf.PMDArray.from_hdf5(data_path)
+    pmd_denoise = masknmf.CompressionArray.from_hdf5(data_path)
 
     # Generate a spatially filtered version of the PMD data
     spatial_filt_pmd = masknmf.demixing.filters.spatial_filter_pmd(pmd_denoise,

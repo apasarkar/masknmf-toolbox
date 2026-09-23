@@ -1,11 +1,8 @@
-from typing import *
-import torch
-import torch.nn as nn
-import numpy as np
-from scipy.interpolate import BSpline
 from abc import ABC, abstractmethod
-from typing import Tuple
+from collections.abc import Sequence
+import numpy as np
 import torch
+from scipy.interpolate import BSpline
 
 class SplineDetrenderBase(torch.nn.Module, ABC):
     """
@@ -66,7 +63,7 @@ class SplineDetrenderBase(torch.nn.Module, ABC):
     @abstractmethod
     def forward(
         self, data: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Detrend the input data and return the spline coefficients.
 
@@ -129,27 +126,27 @@ class SplineDetrend(SplineDetrenderBase):
             device='cuda',
         )
 
-        detrended, coeffs = detrend(data)  # (T, N) -> (T, N), (spline_rank, N)
+        detrended, coeffs = detrend(data)  # (num_frames, num_pixels) -> (num_frames, num_pixels), (spline_rank, num_pixels)
     """
 
     def __init__(
         self,
         num_frames: int,
         num_knots: int,
-        knot_positions: Optional[Sequence[float]] = None,
+        knot_positions: Sequence[float] | None = None,
         degree: int = 3,
-        device: str = "cpu",
+        device: str | torch.device = "cpu",
     ):
         """
         Args:
             num_frames: Length of the time axis.
             num_knots: Number of interior knot points. Total basis dimension
-                will be `num_knots + degree - 1`.
+                will be `num_knots + degree + 1`.
             knot_positions: Optional explicit interior knot positions as
                 fractions in (0, 1), strictly increasing. If provided, length
                 must equal `num_knots`. If omitted, knots are placed uniformly.
             degree: B-spline degree (3 = cubic, the standard choice).
-            device: Device for the basis and solve buffers.
+            device (str | torch.device): Device for the basis and solve buffers.
         """
         super().__init__()
 
@@ -158,20 +155,20 @@ class SplineDetrend(SplineDetrenderBase):
 
         interior_knots = self._resolve_interior_knots(num_knots, knot_positions)
 
-        basis = self._build_basis(num_frames, interior_knots, degree)  # (T, d)
+        basis = self._build_basis(num_frames, interior_knots, degree)  # (num_frames, spline_rank)
         basis_torch = torch.tensor(basis, dtype=torch.float32, device=device)
 
         # Precompute (B^T B)^{-1} B^T so the fit is a single matmul.
         # `linalg.solve` is more numerically stable than explicit `inv`.
         solve_matrix = torch.linalg.solve(basis_torch.T @ basis_torch, basis_torch.T)
 
-        self.register_buffer("basis", basis_torch)              # (T, d)
-        self.register_buffer("solve_matrix", solve_matrix)      # (d, T)
+        self.register_buffer("basis", basis_torch)              # (num_frames, spline_rank)
+        self.register_buffer("solve_matrix", solve_matrix)      # (spline_rank, num_frames)
 
     @staticmethod
     def _resolve_interior_knots(
         num_knots: int,
-        knot_positions: Optional[Sequence[float]],
+        knot_positions: Sequence[float] | None,
     ) -> np.ndarray:
         """
         Validate the knot specification and return interior knots as a 1D
@@ -205,7 +202,7 @@ class SplineDetrend(SplineDetrenderBase):
         degree: int,
     ) -> np.ndarray:
         """
-        Construct B-spline basis matrix of shape (num_frames, num_basis).
+        Construct B-spline basis matrix of shape (num_frames, spline_rank).
         """
         t = np.linspace(0, 1, num_frames)
         knots = np.concatenate(
@@ -224,7 +221,7 @@ class SplineDetrend(SplineDetrenderBase):
             basis[:, i] = spline(t)
         return basis
 
-    def forward(self, data: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, data: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             data: (num_frames, num_pixels) tensor.
@@ -233,7 +230,7 @@ class SplineDetrend(SplineDetrenderBase):
             detrended: (num_frames, num_pixels), data minus the spline fit.
             coeffs:    (spline_rank, num_pixels), the fitted spline coefficients.
         """
-        coeffs = self.solve_matrix @ data       # (d, num_pixels)
+        coeffs = self.solve_matrix @ data       # (spline_rank, num_pixels)
         trend = self.basis @ coeffs             # (num_frames, num_pixels)
         return data - trend, coeffs
 
@@ -258,10 +255,10 @@ class MaximinSplineDetrend(SplineDetrenderBase):
           fractions in (0, 1), strictly increasing. If provided, its length
           must equal `num_knots`. If omitted, knots are placed uniformly.
 
-    Suggested defaults for 2P GCaMP at frame rate `fs`:
-        window = int(60 * fs)                          # 60 seconds
-        sigma  = max(2.0, 0.3 * fs)                    # 0.3 seconds, min 2 frames
-        num_knots = max(4, int(num_frames / fs / 45))  # one per ~45s
+    Suggested defaults for 2P GCaMP at frame rate `frame_rate`:
+        window = int(60 * frame_rate)                          # 60 seconds
+        sigma  = max(2.0, 0.3 * frame_rate)                    # 0.3 seconds, min 2 frames
+        num_knots = max(4, int(num_frames / frame_rate / 45))  # one per ~45s
 
     Usage:
         # Uniform knots:
@@ -283,24 +280,24 @@ class MaximinSplineDetrend(SplineDetrenderBase):
             device='cuda',
         )
 
-        detrended, coeffs = detrend(data)  # (T, N) -> (T, N), (spline_rank, N)
+        detrended, coeffs = detrend(data)  # (num_frames, num_pixels) -> (num_frames, num_pixels), (spline_rank, num_pixels)
     """
 
     def __init__(
         self,
         num_frames: int,
         num_knots: int,
-        knot_positions: Optional[Sequence[float]] = None,
+        knot_positions: Sequence[float] | None = None,
         degree: int = 3,
         window: int = 600,
         sigma: float = 10.0,
-        device: str = "cpu",
+        device: str | torch.device = "cpu",
     ):
         """
         Args:
             num_frames: Length of the time axis.
             num_knots: Number of interior knot points. Total basis dimension
-                will be `num_knots + degree - 1`.
+                will be `num_knots + degree + 1`.
             knot_positions: Optional explicit interior knot positions as
                 fractions in (0, 1), strictly increasing. If provided, length
                 must equal `num_knots`. If omitted, knots are placed uniformly.
@@ -323,32 +320,32 @@ class MaximinSplineDetrend(SplineDetrenderBase):
             raise ValueError(f"sigma must be > 0, got {sigma}")
 
         self.window = window
-        self.pad = window // 2
+        self.window_padding = window // 2
 
         # Gaussian smoothing kernel
         radius = max(1, int(3 * sigma))
-        self.gauss_pad = radius
+        self.gaussian_padding = radius
         t = torch.arange(2 * radius + 1, dtype=torch.float32) - radius
         gauss = torch.exp(-(t ** 2) / (2 * sigma ** 2))
         gauss = gauss / gauss.sum()
-        gauss = gauss.to(device).view(1, 1, -1)  # (1, 1, K) for conv1d
+        gauss = gauss.to(device).view(1, 1, -1)  # (1, 1, conv_size) for conv1d
 
         # B-spline basis
         interior_knots = self._resolve_interior_knots(num_knots, knot_positions)
         basis = self._build_basis(num_frames, interior_knots, degree)
         basis_torch = torch.tensor(basis, dtype=torch.float32, device=device)
 
-        # Precomputed solve matrix: (B^T B)^{-1} B^T  of shape (d, T)
+        # Precomputed solve matrix: (B^T B)^{-1} B^T  of shape (spline rank, num_frames)
         solve_matrix = torch.linalg.solve(basis_torch.T @ basis_torch, basis_torch.T)
 
-        self.register_buffer("basis", basis_torch)              # (T, d)
-        self.register_buffer("solve_matrix", solve_matrix)      # (d, T)
-        self.register_buffer("gauss_kernel", gauss)             # (1, 1, K)
+        self.register_buffer("basis", basis_torch)              # (num_frames, spline_rank)
+        self.register_buffer("solve_matrix", solve_matrix)      # (spline_rank, num_frames)
+        self.register_buffer("gaussian_kernel", gauss)             # (1, 1, conv_size)
 
     @staticmethod
     def _resolve_interior_knots(
         num_knots: int,
-        knot_positions: Optional[Sequence[float]],
+        knot_positions: Sequence[float] | None,
     ) -> np.ndarray:
         """
         Validate the knot specification and return interior knots as a 1D
@@ -402,32 +399,32 @@ class MaximinSplineDetrend(SplineDetrenderBase):
     def _maximin(self, data: torch.Tensor) -> torch.Tensor:
         """
         Maximin lower envelope.
-        data: (T, N) -> (T, N).
+        data: (num_frames, num_pixels) -> (num_frames, num_pixels).
         """
-        x = data.t().unsqueeze(1)  # (N, 1, T)
+        input_traces = data.t().unsqueeze(1)  # (num_pixels, 1, num_frames)
 
         # Gaussian smooth along time
-        x_smooth = torch.nn.functional.conv1d(
-            torch.nn.functional.pad(x, (self.gauss_pad, self.gauss_pad), mode="reflect"),
-            self.gauss_kernel,
+        traces_smoothed = torch.nn.functional.conv1d(
+            torch.nn.functional.pad(input_traces, (self.gaussian_padding, self.gaussian_padding), mode="reflect"),
+            self.gaussian_kernel,
         )
 
         # Rolling min: negate, max-pool, negate
-        x_min = -torch.nn.functional.max_pool1d(
-            torch.nn.functional.pad(-x_smooth, (self.pad, self.pad), mode="reflect"),
+        traces_min = -torch.nn.functional.max_pool1d(
+            torch.nn.functional.pad(-traces_smoothed, (self.window_padding, self.window_padding), mode="reflect"),
             kernel_size=self.window,
             stride=1,
         )
         # Rolling max of the rolling min
-        x_max = torch.nn.functional.max_pool1d(
-            torch.nn.functional.pad(x_min, (self.pad, self.pad), mode="reflect"),
+        traces_max_min = torch.nn.functional.max_pool1d(
+            torch.nn.functional.pad(traces_min, (self.window_padding, self.window_padding), mode="reflect"),
             kernel_size=self.window,
             stride=1,
         )
 
-        return x_max.squeeze(1).t()  # (T, N)
+        return traces_max_min.squeeze(1).t()  # (num_frames, num_pixels)
 
-    def forward(self, data: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, data: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             data: (num_frames, num_pixels) tensor.
@@ -437,7 +434,7 @@ class MaximinSplineDetrend(SplineDetrenderBase):
             coeffs:    (spline_rank, num_pixels), spline coefficients defining
                 the baseline. Reconstruct the baseline as `self.basis @ coeffs`.
         """
-        baseline_est = self._maximin(data)          # (T, N)
-        coeffs = self.solve_matrix @ baseline_est   # (d, N)
-        trend = self.basis @ coeffs                 # (T, N)
+        baseline_est = self._maximin(data)          # (num_frames, num_pixels)
+        coeffs = self.solve_matrix @ baseline_est   # (spline_rank, num_pixels)
+        trend = self.basis @ coeffs                 # (num_frames, num_pixels)
         return data - trend, coeffs

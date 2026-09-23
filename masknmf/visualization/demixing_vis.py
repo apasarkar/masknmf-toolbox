@@ -175,7 +175,7 @@ class SingleSessionDemixingVis:
     def __init__(
         self,
         demixing_results: masknmf.DemixingResults
-        | masknmf.PMDArray
+        | masknmf.CompressionArray
         | List[masknmf.DemixingResults],
         frame_timings: Optional[np.ndarray | List[np.ndarray]] = None,
         ref_range: Optional[dict] = None,
@@ -213,7 +213,7 @@ class SingleSessionDemixingVis:
         self._shape = self.demixing_results.shape
 
         folder = None if self._results_path is None else Path(self._results_path).parent
-        num_signals = demixing_results.a.shape[1] if self._has_ac else 0
+        num_signals = demixing_results.spatial_demixed.shape[1] if self._has_ac else 0
         # the results' own stats, hidden; given stats join them, shown, replacing same-named columns
         self._cell_stats = CellStats.from_results(demixing_results) if self._has_ac else None
         self._shown_stats = set()
@@ -448,7 +448,7 @@ class SingleSessionDemixingVis:
             )
         else:
             self._summary_image = self._ndw_fov["summary img"].add_nd_image(
-                self._pmd_array.mean_img.cpu().numpy(),
+                self._pmd_array.mean_image.cpu().numpy(),
                 ["m", "n"],
                 ["m", "n"],
                 name="summary img",
@@ -554,9 +554,9 @@ class SingleSessionDemixingVis:
 
     def _make_footprints(self):
         self._footprints = FootprintSet.from_sparse(
-            self._ac_array.a, tuple(self._shape[1:3])
+            self._ac_array.spatial_demixed, tuple(self._shape[1:3])
         )
-        peaks = self.demixing_results.c.max(dim=0).values.cpu().numpy()
+        peaks = self.demixing_results.temporal_demixed.max(dim=0).values.cpu().numpy()
         columns = {"area": self._footprints.areas, "peak": peaks}
         if self._cell_stats is not None:
             columns.update(zip(self._cell_stats.names, self._cell_stats.values.T))
@@ -592,13 +592,13 @@ class SingleSessionDemixingVis:
 
     def _bind_arrays(self):
         if self._has_ac:
-            self._pmd_array = self.demixing_results.pmd_array
+            self._pmd_array = self.demixing_results.compression_array
             self._fluctuating_background_array = (
                 self.demixing_results.fluctuating_background_array
             )
             self._residual_array = self.demixing_results.residual_array
-            self._colorful_ac_array = self.demixing_results.colorful_ac_array
-            self._ac_array = self.demixing_results.ac_array
+            self._colorful_ac_array = self.demixing_results.colorful_signals_array
+            self._ac_array = self.demixing_results.signals_array
         else:
             self._pmd_array = self.demixing_results
             self._fluctuating_background_array = None
@@ -732,7 +732,7 @@ class SingleSessionDemixingVis:
             self._status = f"demix failed: {pending}"
             return
         results, path = pending
-        before = self._ac_array.a.shape[1]
+        before = self._ac_array.spatial_demixed.shape[1]
         try:
             self._load_results(results)
         except Exception as e:
@@ -740,7 +740,7 @@ class SingleSessionDemixingVis:
             return
         parent, self._results_path = self._results_path, path
         self._status = (
-            f"{results.a.shape[1]} signals (was {before}) written to {os.path.basename(path)}; "
+            f"{results.spatial_demixed.shape[1]} signals (was {before}) written to {os.path.basename(path)}; "
             f"{os.path.basename(parent)} kept"
         )
 
@@ -789,7 +789,7 @@ class SingleSessionDemixingVis:
 
         if self._ac_array is not None:
             component = component_at_pixel(
-                self._ac_array.a, self._ac_array.centers, self._shape[1:], (col, row)
+                self._ac_array.spatial_demixed, self._ac_array.centers, self._shape[1:], (col, row)
             )
             if component is not None:
                 if mods & {"Control", "Ctrl"}:
@@ -927,7 +927,7 @@ class SingleSessionDemixingVis:
                     )
                 else:
                     lines.append(
-                        (f"signal {k}", results.pmd_roi_averages[k].cpu().numpy(), rgb)
+                        (f"signal {k}", results.compression_array_roi_averages[k].cpu().numpy(), rgb)
                     )
                 self._selected_signals.append(k)
         elif self._active_component is not None:
@@ -935,14 +935,14 @@ class SingleSessionDemixingVis:
             self._selected_signals = None
             ypix, xpix, _lam = self._footprints.footprints[k]
             support = torch.as_tensor(
-                ypix.astype(np.int64) * self._shape[2] + xpix, device=results.a.device
+                ypix.astype(np.int64) * self._shape[2] + xpix, device=results.spatial_demixed.device
             )
             # the signal movie averaged over the footprint's support, like the stored roi averages
             signal = torch.sparse.mm(
-                torch.index_select(results.a, 0, support), results.c.T
+                torch.index_select(results.spatial_demixed, 0, support), results.temporal_demixed.T
             ).mean(dim=0)
             traces = (
-                results.pmd_roi_averages[k],
+                results.compression_array_roi_averages[k],
                 signal,
                 results.fluctuating_background_roi_averages[k],
                 results.residual_roi_averages[k],
@@ -1160,14 +1160,14 @@ class SingleSessionDemixingVis:
         pmd = self._pmd_array
         idx = torch.as_tensor(
             np.asarray(rows, np.int64) * self._shape[2] + np.asarray(cols, np.int64),
-            device=pmd.v.device,
+            device=pmd.temporal_compressed.device,
         )
-        u = torch.index_select(pmd.u, 0, idx).to_dense()
+        u = torch.index_select(pmd.spatial_compressed, 0, idx).to_dense()
         if pmd.rescale:
-            u = u * pmd.var_img.flatten()[idx, None]
-        trace = u.mean(dim=0) @ pmd.v
+            u = u * pmd.noise_variance_image.flatten()[idx, None]
+        trace = u.mean(dim=0) @ pmd.temporal_compressed
         if pmd.rescale:
-            trace = trace + pmd.mean_img.flatten()[idx].mean()
+            trace = trace + pmd.mean_image.flatten()[idx].mean()
             if (
                 pmd.include_trend
                 and pmd.spatial_trend_basis is not None
@@ -1391,7 +1391,7 @@ class SingleSessionDemixingVis:
     def _append_to_signals(self, masks: np.ndarray) -> np.ndarray:
         if self._ac_array is None:
             raise ValueError("combined footprints need demixing results")
-        return np.concatenate([self._ac_array.export_a(), masks], axis=-1)
+        return np.concatenate([self._ac_array.export_spatial_demixed(), masks], axis=-1)
 
     def combined_footprints(self) -> np.ndarray:
         """
@@ -1857,7 +1857,7 @@ class SingleSessionDemixingVis:
         return self._device
 
     @property
-    def demixing_results(self) -> masknmf.DemixingResults | masknmf.PMDArray:
+    def demixing_results(self) -> masknmf.DemixingResults | masknmf.CompressionArray:
         return self._demixing_results
 
     @property
@@ -1924,7 +1924,7 @@ class SingleSessionDemixingVis:
 def visualize_superpixels_peaks(init_results: masknmf.InitializationResults):
     superpixel_map = init_results.nmf_seed_map
     pure_superpixel_map = init_results.pure_nmf_seed_map
-    correlation_image = init_results.correlation_img
+    correlation_image = init_results.corr_image
 
     superpixel_img = np.stack([correlation_image.copy()] * 3, axis=-1)
     superpixel_img[superpixel_map > 0] = [4, 0, 0]

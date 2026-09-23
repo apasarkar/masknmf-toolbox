@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import plotly.subplots as sp
 import matplotlib.pyplot as plt
 
-from masknmf.compression import PMDArray
+from masknmf.compression import CompressionArray
 from masknmf.arrays import ArrayLike, LazyFrameLoader
 from masknmf.demixing.demixing_arrays import ResidCorrMode
 
@@ -158,22 +158,21 @@ def plot_ith_roi(
         )
 
     background_to_signal_corr_image = results.background_to_signal_correlation_image
-    order = results.order
     current_a = (
-        torch.index_select(results.a, 1, torch.arange(i, i + 1).to(results.device))
+        torch.index_select(results.spatial_demixed, 1, torch.arange(i, i + 1).to(results.device))
         .to_dense()
         .cpu()
         .numpy()
     )
-    a = current_a.reshape((results.shape[1], results.shape[2]), order=order)
+    a = current_a.reshape((results.shape[1], results.shape[2]))
 
     p1, p2 = a.nonzero()
-    T, d1, d2 = results.pmd_array.shape
-    pmd_roi_avg = get_roi_avg(results.pmd_array, p1, p2, normalize=False)
+    T, d1, d2 = results.compression_array.shape
+    pmd_roi_avg = get_roi_avg(results.compression_array, p1, p2, normalize=False)
     fluctuating_bg_roi_avg = get_roi_avg(
         results.fluctuating_background_array, p1, p2, normalize=False
     )
-    signal_roi_avg = np.mean(a[a > 0]) * results.c[:, i].cpu().numpy()
+    signal_roi_avg = np.mean(a[a > 0]) * results.temporal_demixed[:, i].cpu().numpy()
     residual_roi_avg = get_roi_avg(results.residual_array, p1, p2, normalize=False)
 
     lb_dim1 = max(int(np.amin(p1)) - radius, 0)
@@ -186,7 +185,7 @@ def plot_ith_roi(
     residual_img = np.std(residual_data, axis=0)
 
     mean_pmd_img = np.std(
-        results.pmd_array[:, lb_dim1:ub_dim1, lb_dim2:ub_dim2], axis=0
+        results.compression_array[:, lb_dim1:ub_dim1, lb_dim2:ub_dim2], axis=0
     )
 
     if residual_mode is None:
@@ -425,13 +424,13 @@ def plot_pmd_vs_raw_stack_diagnostic(raw_trace: np.ndarray,
     return fig
 
 def roi_compare_pmd_raw(raw_stack: ArrayLike,
-                        pmd_movie: PMDArray,
+                        pmd_movie: CompressionArray,
                         spatial_footprint: np.ndarray):
     """
     Args:
         raw_stack (np.ndarray): shape (num_frames, fov_dim1, fov_dim2)
         raw_mean (np.ndarray): shape (fov_dim1, fov_dim2)
-        pmd_movie (masknmf.PMDArray): The pmd object
+        pmd_movie (masknmf.CompressionArray): The pmd object
         spatial_footprint (np.ndarray): A single spatial footprint (fov_dim1, fov_dim2)
     """
 
@@ -494,7 +493,7 @@ def generate_raw_vs_resid_plot_folder(raw_stack: LazyFrameLoader,
                     index_name="index.html")
 
 def pmd_spike_diagnostic(moco_stack: np.ndarray,
-                         pmd_object: PMDArray,
+                         pmd_object: CompressionArray,
                          roi_footprint: np.ndarray,
                          raw_autocorr: np.ndarray,
                          pmd_autocorr: np.ndarray,

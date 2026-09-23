@@ -70,14 +70,14 @@ class CellStats:
         """
         Per-signal stats from what the results already hold. Of the demixed trace ``c``: mean, std, snr
         (peak over std) and skew. Against the compressed movie averaged over the footprint
-        (``pmd_roi_averages``): fit, the trace's correlation with it; resid and bkgd, the residual's and the
+        (``compression_array_roi_averages``): fit, the trace's correlation with it; resid and bkgd, the residual's and the
         fluctuating background's std over that average's.
         """
-        c = np.asarray(results.c.detach().cpu(), dtype=np.float32)
+        c = np.asarray(results.temporal_demixed.detach().cpu(), dtype=np.float32)
         mean = c.mean(0)
         std = c.std(0) + 1e-6
         skew = ((c - mean) ** 3).mean(0) / std**3
-        pmd = np.asarray(results.pmd_roi_averages.detach().cpu(), dtype=np.float32)
+        pmd = np.asarray(results.compression_array_roi_averages.detach().cpu(), dtype=np.float32)
         resid = np.asarray(results.residual_roi_averages.detach().cpu(), dtype=np.float32)
         bkgd = np.asarray(results.fluctuating_background_roi_averages.detach().cpu(), dtype=np.float32)
         pmd_std = pmd.std(1) + 1e-6

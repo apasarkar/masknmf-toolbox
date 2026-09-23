@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import masknmf
-from masknmf.compression import PMDArray
+from masknmf.compression import CompressionArray
 from typing import *
 import math
 from tqdm import tqdm
@@ -108,7 +108,7 @@ def compute_general_spatial_correlation_map(
 
 
 def compute_pmd_spatial_correlation_maps(raw_stack: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
-                                         pmd_stack: masknmf.PMDArray,
+                                         pmd_stack: masknmf.CompressionArray,
                                          device='cpu',
                                          batch_size: int = 200) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
@@ -121,7 +121,7 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[masknmf.ArrayLike, mas
     Args:
         raw_stack (Union[masknmf.ArrayLike, masknmf.FactorizedVideo]):
             The raw video stack with shape (frames, height, width).
-        pmd_stack (masknmf.PMDArray):
+        pmd_stack (masknmf.CompressionArray):
             The PMD reconstruction object, which includes factorized temporal and spatial components.
         device (str):
             The device on which computations will be performed ('cpu' or 'cuda').
@@ -154,8 +154,8 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[masknmf.ArrayLike, mas
 
     raw_std_img = torch.sqrt(raw_std_img - (raw_mean**2))
 
-    pmd_mean = pmd_stack.mean_img.to(device)[None, :, :] + torch.sparse.mm(pmd_stack.u, torch.mean(pmd_stack.v, dim=1,
-                                                                                                   keepdim=True)).reshape((1, fov_dim1, fov_dim2)).to(device)
+    pmd_mean = pmd_stack.mean_image.to(device)[None, :, :] + torch.sparse.mm(pmd_stack.spatial_compressed, torch.mean(pmd_stack.temporal_compressed, dim=1,
+                                                                                                                      keepdim=True)).reshape((1, fov_dim1, fov_dim2)).to(device)
     resid_mean = raw_mean - pmd_mean
 
     top_left_bottom_right = torch.zeros((3, fov_dim1 - 1, fov_dim2 - 1), device=device).float()
@@ -256,14 +256,14 @@ def compute_pmd_spatial_correlation_maps(raw_stack: Union[masknmf.ArrayLike, mas
 
 
 def pmd_autocovariance_diagnostics(raw_movie: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
-                                   pmd_movie: PMDArray,
+                                   pmd_movie: CompressionArray,
                                    batch_size: int = 200,
                                    device: str = 'cpu') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Computes a normalized version of the lag-1 autocovariance for the raw, pmd, and residual stacks.
     Args:
         raw_movie (masknmf.LazyFrameLoader or ArrayLike): Any array object returning numpy ndarray data which can be indexed in time
-        pmd_movie (masknmf.PMDArray)
+        pmd_movie (masknmf.CompressionArray)
         batch_size (int): Number of frames we process at a time
         device (str): 'cpu' or 'cuda' depending on where computations occur
 
@@ -273,7 +273,7 @@ def pmd_autocovariance_diagnostics(raw_movie: Union[masknmf.ArrayLike, masknmf.L
         - np.ndarray: The lag-1 autocovariance of the resid movie, normalized by l2 norms used in the raw lag-1 statistics
 
     Key assumptions in calculation:
-        - raw_movie mean is pmd_movie.mean_img
+        - raw_movie mean is pmd_movie.mean_image
         - resid movie is therefore mean 0
     """
     num_frames, fov_dim1, fov_dim2 = raw_movie.shape
@@ -288,18 +288,18 @@ def pmd_autocovariance_diagnostics(raw_movie: Union[masknmf.ArrayLike, masknmf.L
         switch = False
     pmd_movie.rescale = True
     raw_autocov = torch.zeros(fov_dim1, fov_dim2, device=device, dtype=torch.float32)
-    left_raw_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (
+    left_raw_mean = pmd_movie.mean_image * (num_frames / (num_frames - 1)) - (
             torch.as_tensor(raw_movie[-1], device=device, dtype=torch.float32) / (
             num_frames - 1))
-    right_raw_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (
+    right_raw_mean = pmd_movie.mean_image * (num_frames / (num_frames - 1)) - (
             torch.as_tensor(raw_movie[0], device=device, dtype=torch.float32) / (
             num_frames - 1))
 
     pmd_autocov = torch.zeros(fov_dim1, fov_dim2, device=device, dtype=torch.float32)
-    left_pmd_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (
+    left_pmd_mean = pmd_movie.mean_image * (num_frames / (num_frames - 1)) - (
             pmd_movie.getitem_tensor([num_frames - 1]).float().to(device) / (
             num_frames - 1))
-    right_pmd_mean = pmd_movie.mean_img * (num_frames / (num_frames - 1)) - (
+    right_pmd_mean = pmd_movie.mean_image * (num_frames / (num_frames - 1)) - (
             pmd_movie.getitem_tensor([0]).float().to(device) / (
             num_frames - 1))
 

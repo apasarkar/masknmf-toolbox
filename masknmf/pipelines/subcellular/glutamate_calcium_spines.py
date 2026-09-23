@@ -324,7 +324,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
             if pmd_ca is not None:
                 ## Pull out the spatial/temporal footprints from the glutamate movie
-                spatialfoot_spines_glu = glu_pmd_demixer_results.ac_array.export_a()  # spatial_footprints
+                spatialfoot_spines_glu = glu_pmd_demixer_results.signals_array.export_spatial_demixed()  # spatial_footprints
 
                 ca_pmd_demixer = masknmf.demixing.signal_demixer.SignalDemixer(
                     pmd_ca,

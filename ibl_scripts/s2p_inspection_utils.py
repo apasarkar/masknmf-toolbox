@@ -30,14 +30,14 @@ def make_masks_from_suite2p_statfile(stat: dict,
     return signal_arr, neuropil_signal_arr
 
 def demix_with_s2p_outputs(folder: str,
-                           pmd_object: masknmf.PMDArray,
+                           pmd_object: masknmf.CompressionArray,
                            device='cuda') -> masknmf.DemixingResults:
 
     """
     Goal here is to compare the suite2p results directly w.r.t. the PMD array: how well does suite2p demix the PMD representation of the data? 
     Args:
         folder (str): An absolute folder path describing a folder containing all of the suite2p outputs (named in the usual way)
-        pmd_object (masknmf.PMDArray) 
+        pmd_object (masknmf.CompressionArray)
     """
     is_cell = np.load(os.path.join(folder, "iscell.npy"))
     c_traces = np.load(os.path.join(folder, "F.npy"), allow_pickle=True)
@@ -98,13 +98,13 @@ def demix_with_s2p_outputs(folder: str,
     
 
 def build_s2p_demixingresults(folder: str,
-                              pmd_object: masknmf.PMDArray,
-                             device = 'cpu') -> masknmf.DemixingResults:
+                              pmd_object: masknmf.CompressionArray,
+                              device = 'cpu') -> masknmf.DemixingResults:
     """
     Goal here is to compare the suite2p results directly w.r.t. the PMD array: how well does suite2p demix the PMD representation of the data? 
     Args:
         folder (str): An absolute folder path describing a folder containing all of the suite2p outputs (named in the usual way)
-        pmd_object (masknmf.PMDArray) 
+        pmd_object (masknmf.CompressionArray)
     """
     is_cell = np.load(os.path.join(folder, "iscell.npy"))
     c_traces = np.load(os.path.join(folder, "F.npy"), allow_pickle=True)

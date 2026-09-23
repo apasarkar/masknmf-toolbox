@@ -54,20 +54,20 @@ masknmf.MotionCorrectionVis(reg, frame_timings=timings, mean_subtract=True).show
 
 | file | hdf5 groups |
 |---|---|
-| `pmd_calcium.hdf5`, `pmd_glutamate.hdf5` | `PMDArray` (u, v, mean_img, var_img, u_local_projector, shape) |
+| `pmd_calcium.hdf5`, `pmd_glutamate.hdf5` | `PMDArray` (spatial_compressed, temporal_compressed, mean_image, noise_variance_image, spatial_compressed_local_projector, shape) |
 
 ```python
-pmd = masknmf.PMDArray.from_hdf5(run / "pmd_calcium.hdf5")
+pmd = masknmf.CompressionArray.from_hdf5(run / "pmd_calcium.hdf5")
 ```
 
 | attribute | shape / type |
 |---|---|
 | `pmd.shape` | `(frames, H, W)` |
-| `pmd.u`, `pmd.v` | `(H*W, rank)` sparse, `(rank, frames)` |
-| `pmd.mean_img`, `pmd.var_img` | `(H, W)` tensors |
+| `pmd.spatial_compressed`, `pmd.temporal_compressed` | `(H*W, rank)` sparse, `(rank, frames)` |
+| `pmd.mean_image`, `pmd.noise_variance_image` | `(H, W)` tensors |
 | `pmd[i]` | `(1, H, W)` ndarray, raw scale |
 
-Compression ran on the registered movie masked to the dendrite (`mean_img == 0` outside).
+Compression ran on the registered movie masked to the dendrite (`mean_image == 0` outside).
 
 ```python
 moco = reg[:].cpu().numpy()
@@ -91,10 +91,10 @@ res = masknmf.DemixingResults.from_hdf5(run / "glutamate_spine_demixing.hdf5", d
 | attribute | shape / type |
 |---|---|
 | `res.a` | `(H*W, K)` sparse footprints |
-| `res.ac_array.export_a()` | `(H, W, K)` ndarray |
+| `res.signals_array.export_a()` | `(H, W, K)` ndarray |
 | `res.c` | `(frames, K)` traces |
-| `res.mean_img` | `(H, W)` |
-| `res.pmd_array`, `res.ac_array`, `res.residual_array` | lazy `(frames, H, W)` movies |
+| `res.mean_image` | `(H, W)` |
+| `res.compression_array`, `res.signals_array`, `res.residual_array` | lazy `(frames, H, W)` movies |
 
 ```python
 masknmf.SingleSessionDemixingVis(res, frame_timings=timings, device="cuda").show()

@@ -2,12 +2,10 @@ import math
 from pathlib import Path
 import numbers
 
-from masknmf.utils import Serializer
 from masknmf.utils import torch_select_device
 import torch
 from masknmf.utils import Serializer, display
 from masknmf.motion_correction.strategies import MotionCorrectionStrategy
-from typing import *
 import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, LazyFrameLoader
 from tqdm import tqdm
@@ -203,7 +201,7 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
     def _correct_singlebatch(
             self,
             reference_frames: np.ndarray,
-            target_frames: Optional[np.ndarray],
+            target_frames: np.ndarray | None,
             apply_alpha_correction: bool = True
     ) -> tuple[np.ndarray, np.ndarray]:
         result, shifts, _ = self.correction_routine(reference_frames,
@@ -324,7 +322,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
         self._include_mean = True
 
     @property
-    def shape(self) -> Tuple[int, int, int]:
+    def shape(self) -> tuple[int, int, int]:
         return self.input_movie.shape
 
     @property
@@ -378,7 +376,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
         return self._gradient
 
     def __getitem__(self,
-                    item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]]) -> torch.Tensor:
+                    item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range]) -> torch.Tensor:
 
         data_subset = torch.as_tensor(self.input_movie._get(item, include_mean=self.include_mean), device=self.output_device, dtype=self.dtype)
         frame_indexer, item = self._parse_indices(item)

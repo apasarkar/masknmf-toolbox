@@ -1,6 +1,6 @@
 from dataclasses import asdict
 import masknmf
-from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
+from masknmf.compression import CompressStrategy, CompressDenoiseStrategy, CompressionArray
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector, GradientMotionCorrector, GradientRegistrationArray
 from masknmf.utils import display, has_group, drop_group
@@ -153,9 +153,9 @@ def hals_on_rawdata(moco_data: np.ndarray,
     device = a.device
     num_batches = math.ceil(moco_data.shape[0] / batch_size)
     frames, height, width = moco_data.shape
-    # mean_img = dmr.mean_img
-    # var_img = dmr.var_img
-    # var_img[var_img == 0] = 1.0 #Avoids divide by 0 issues
+    # mean_image = dmr.mean_image
+    # noise_variance_image = dmr.noise_variance_image
+    # noise_variance_image[noise_variance_image == 0] = 1.0 #Avoids divide by 0 issues
     # fluctuating_background_array = dmr.fluctuating_background_array
     # baseline = dmr.baseline
     blocks = masknmf.demixing.signal_demixer._compute_hals_schedule(a,
@@ -167,8 +167,8 @@ def hals_on_rawdata(moco_data: np.ndarray,
         end_pt = min(moco_data.shape[0], start_pt + batch_size)
         data = torch.as_tensor(moco_data[start_pt:end_pt, :, :], device=device,
                                dtype=torch.float32)  # frames, height, width
-        # data -= mean_img[None, ...]
-        # data /= var_img[None, ...]
+        # data -= mean_image[None, ...]
+        # data /= noise_variance_image[None, ...]
         # data -= fluctuating_background_array.getitem_tensor(slice(start_pt, end_pt))
         # data -= baseline[None, ...]
 
@@ -222,7 +222,7 @@ def hals_multi_iter_raw(block: list[torch.Tensor],
     return c
 
 
-def compute_final_denoised_c_estimates(pmd_arr: masknmf.PMDArray,
+def compute_final_denoised_c_estimates(pmd_arr: masknmf.CompressionArray,
                                        dmr: masknmf.DemixingResults,
                                        c: torch.Tensor):
     """
@@ -230,18 +230,18 @@ def compute_final_denoised_c_estimates(pmd_arr: masknmf.PMDArray,
     This workflow performs the steps needed to re-incorporate subthreshold trends back into this "c" matrix and rescale
     the estimates back to the raw data space, so that we can revisit the raw data and get any missed signal
     Args:
-        pmd_arr (masknmf.PMDArray)
+        pmd_arr (masknmf.CompressionArray)
         dmr (masknmf.DemixingResults)
         c (torch.Tensor): Shape (num_frames, num_neurons). Initial temporal estimates of the spiking activity
     """
 
-    c_spike_estimate = hals_multi_iter_fullpmd(pmd_arr.u,
-                                               pmd_arr.v,
-                                               dmr.a,
+    c_spike_estimate = hals_multi_iter_fullpmd(pmd_arr.spatial_compressed,
+                                               pmd_arr.temporal_compressed,
+                                               dmr.spatial_demixed,
                                                c,
-                                               dmr.b[:, None])
+                                               dmr.static_baseline[:, None])
 
-    rescaled_a = rescale_a(dmr.a, pmd_arr.var_img).coalesce()
+    rescaled_a = rescale_a(dmr.spatial_demixed, pmd_arr.noise_variance_image).coalesce()
     c_trend_estimate = hals_on_trend(rescaled_a,
                                      c_spike_estimate,
                                      pmd_arr.spatial_trend_basis,
@@ -422,9 +422,9 @@ class OnePhotonCulturePipeline(BasePipeline):
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
                 # a previous run's compression: at outpath_compression, else an old compression.hdf5 beside it
-                if not has_group(pmd_source, "PMDArray"):
+                if not has_group(pmd_source, CompressionArray.__name__):
                     pmd_source = os.path.join(os.path.dirname(pmd_source), "compression.hdf5")
-                if not has_group(pmd_source, "PMDArray"):
+                if not has_group(pmd_source, CompressionArray.__name__):
                     raise ValueError("You specified that compression should be skipped but there is no compression at "
                                      "outpath_compression or in a compression.hdf5 beside it")
             else:
@@ -479,19 +479,19 @@ class OnePhotonCulturePipeline(BasePipeline):
             device = self.device
         display("Running demixing analysis")
 
-        pmd_denoise = masknmf.PMDArray.from_hdf5(pmd_source)
+        pmd_denoise = masknmf.CompressionArray.from_hdf5(pmd_source)
 
-        v = pmd_denoise.v[:, active_frames.astype('bool')]
+        v = pmd_denoise.temporal_compressed[:, active_frames.astype('bool')]
         new_shape = (v.shape[1], pmd_denoise.shape[1], pmd_denoise.shape[2])
 
-        pmd_arr_truncated = masknmf.PMDArray.from_tensors(new_shape,  # fov shape
-                                                          pmd_denoise.u,
-                                                          v,
-                                                          pmd_denoise.mean_img,
-                                                          pmd_denoise.var_img,
-                                                          pmd_denoise.u_local_projector,
-                                                          pmd_denoise.spatial_trend_basis,
-                                                          pmd_denoise.temporal_trend_basis)
+        pmd_arr_truncated = masknmf.CompressionArray.from_tensors(new_shape,  # fov shape
+                                                                  pmd_denoise.spatial_compressed,
+                                                                  v,
+                                                                  pmd_denoise.mean_image,
+                                                                  pmd_denoise.noise_variance_image,
+                                                                  pmd_denoise.spatial_compressed_local_projector,
+                                                                  pmd_denoise.spatial_trend_basis,
+                                                                  pmd_denoise.temporal_trend_basis)
 
 
 
@@ -544,7 +544,7 @@ class OnePhotonCulturePipeline(BasePipeline):
         curr_demix_results.export(final)
         if remove_intermediates:
             # in one results file the pmd group only duplicates what the demixing results carry
-            drop_group(final, "PMDArray")
+            drop_group(final, CompressionArray.__name__)
 
         return curr_demix_results, a_rawdata_scale, full_c_estimate_denoised, c_regressed_on_raw
 

@@ -3,29 +3,31 @@ import torch
 
 class RingModel:
     def __init__(
-        self, d1: int, d2: int, radius: int, device: str = "cpu", order: str = "F"
+            self,
+            fov_height: int,
+            fov_width: int,
+            radius: int,
+            device: torch.device | str = "cpu",
     ):
         """
         Ring Model object manages the state of the ring model during the model fit phase.
 
         Args:
-            d1 (int): the 0th dimension of the FOV (in python indexing)
-            d2 (int): the 1st dimension of the FOV (in python indexing)
+            fov_height (int): The height dimension of the imaging field of view
+            fov_width (int): The width dimension of the imaging field of view
             radius (int): the ring radius
             device (str): which device the pytorch data lies on
-            order (str): the order used to reshape from 1D to 2D (and vice versa)
         """
-        self._shape = (d1, d2)
+        self._shape = (fov_height, fov_width)
         self._radius = radius
         self._device = device
-        self._order = order
         self._kernel = self._construct_ring_kernel()
-        self.weights = torch.ones((d1 * d2), device=device)
+        self.weights = torch.ones((fov_height * fov_width), device=device)
         self.support = torch.ones(
             (self.shape[0] * self.shape[1]), device=self.device, dtype=torch.float32
         )
 
-    def _construct_ring_kernel(self) -> torch.tensor:
+    def _construct_ring_kernel(self) -> torch.Tensor:
         # Create a grid of coordinates (y, x) relative to the center
         range_values = torch.arange(
             2 * self.radius + 1, device=self.device
@@ -42,16 +44,12 @@ class RingModel:
         return ring_kernel.float()
 
     @property
-    def kernel(self) -> torch.tensor:
+    def kernel(self) -> torch.Tensor:
         return self._kernel
 
     @property
     def shape(self):
         return self._shape
-
-    @property
-    def order(self):
-        return self._order
 
     @property
     def device(self):
@@ -68,7 +66,7 @@ class RingModel:
         average of the pixels in a ring surrounding pixel "i". This is enforced by a diagonal weight matrix: d_weight.
 
         Returns:
-            d_weights (torch.sparse_coo_tensor): (d1*d2, d1*d2) diagonal matrix
+            d_weights (torch.sparse_coo_tensor): (fov_height*fov_width, fov_height*fov_width) diagonal matrix
         """
         return self._weights
 
@@ -77,7 +75,7 @@ class RingModel:
         """
         Sets the weights
         Args:
-            new_weights (torch.tensor): Shape (d1*d2)
+            new_weights (torch.Tensor): Shape (fov_height*fov_width)
         """
         self._weights = new_weights.clone().to(self.device)
 
@@ -88,7 +86,7 @@ class RingModel:
         mask matrix, D_{mask}. The i-th entry  is 0 if pixel i contains neural footprints, otherwise it is 1
 
         Returns:
-            d_mask (torch.sparse_coo_tensor): (d1*d2, d1*d2) diagonal matrix represe
+            d_mask (torch.sparse_coo_tensor): (fov_height*fov_width, fov_height*fov_width) diagonal matrix represe
         """
         return self._support
 
@@ -96,7 +94,7 @@ class RingModel:
     def support(self, new_mask):
         """
         Args:
-            new_mask (torch.tensor): Shape (d1*d2), index i is 0 if pixel i contains neural signal, otherwise it is 0
+            new_mask (torch.Tensor): Shape (fov_height*fov_width), index i is 0 if pixel i contains neural signal, otherwise it is 0
         """
         self._support = new_mask.clone().to(self.device)
 
@@ -112,14 +110,8 @@ class RingModel:
         """
         images_masked = self.support[:, None] * images  # (pixels, num_frames)
 
-        # Reshape to (d1, d2, frames)
-        if self.order == "F":
-            images_masked_3_d = torch.reshape(images_masked, (self.shape[1], self.shape[0], -1))
-            images_masked_3_d = torch.permute(images_masked_3_d, (1, 0, 2))
-        elif self.order == "C":
-            images_masked_3_d = torch.reshape(images_masked, (self.shape[0], self.shape[1], -1))
-        else:
-            raise ValueError(f"Invalid order: {self.order}")
+        # Reshape to (fov_height, fov_width, frames)
+        images_masked_3_d = torch.reshape(images_masked, (self.shape[0], self.shape[1], -1))
 
         # Shape: (frames, H, W)
         images_masked_3_d = torch.permute(images_masked_3_d, (2, 0, 1))
@@ -154,12 +146,10 @@ class RingModel:
         convolved = convolved.squeeze(1)  # (frames, H, W)
 
         # Convert back to (pixels, frames)
-        if self.order == "F":
-            convolved = torch.permute(convolved, (2, 1, 0))  # (d2, d1, frames)
-        else:
-            convolved = torch.permute(convolved, (1, 2, 0))  # (d1, d2, frames)
+        convolved = torch.permute(convolved, (1, 2, 0))  # (fov_height, fov_width, frames)
 
         convolved = convolved.reshape((self.shape[0] * self.shape[1], -1))
 
         # Apply output weights
         return self.weights[:, None] * convolved
+    

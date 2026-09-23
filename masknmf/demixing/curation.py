@@ -38,7 +38,7 @@ def update_signals(
     num_masks = 0 if masks is None else masks.shape[-1]
     if num_masks == 0 and not drop:
         raise ValueError("nothing to do: no masks to add and no signals to drop")
-    if num_masks == 0 and len(drop) >= results.a.shape[1]:
+    if num_masks == 0 and len(drop) >= results.spatial_demixed.shape[1]:
         raise ValueError("dropping every signal leaves nothing to demix")
     demixer = SignalDemixer.from_results(results, device=device, frame_batch_size=frame_batch_size, drop=drop)
     if num_masks:

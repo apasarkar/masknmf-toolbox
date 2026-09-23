@@ -1,8 +1,8 @@
 from typing import *
 import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike
-from masknmf.compression.pmd_array import PMDArray
-from masknmf.demixing.demixing_arrays.ac_array import ACArray
+from masknmf.compression.compression_array import CompressionArray
+from masknmf.demixing.demixing_arrays.signals_array import SignalsArray
 from masknmf.demixing.demixing_arrays.fluctuating_background_array import FluctuatingBackgroundArray
 from masknmf.demixing.demixing_arrays.static_baseline import StaticBackgroundArray
 import torch
@@ -14,15 +14,15 @@ class ResidualArray(ArrayLike):
 
     def __init__(
         self,
-        pmd_array: PMDArray,
-        ac_array: ACArray,
+        pmd_array: CompressionArray,
+        ac_array: SignalsArray,
         fluctuating_background_array: FluctuatingBackgroundArray,
         static_baseline_array: StaticBackgroundArray,
     ):
         """
         Args:
-            pmd_array (PMDArray)
-            ac_array (ACArray)
+            pmd_array (CompressionArray)
+            ac_array (SignalsArray)
             fluctuating_array (FluctuatingBackgroundArray)
             baseline (StaticBackgroundArray): Shape (height, width)
         """
@@ -49,11 +49,11 @@ class ResidualArray(ArrayLike):
         return self.pmd_array.dtype
 
     @property
-    def pmd_array(self) -> PMDArray:
+    def pmd_array(self) -> CompressionArray:
         return self._pmd_array
 
     @property
-    def ac_array(self) -> ACArray:
+    def ac_array(self) -> SignalsArray:
         return self._ac_array
 
     @property

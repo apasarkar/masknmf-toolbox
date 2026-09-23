@@ -2,13 +2,13 @@ from __future__ import annotations
 from typing import Optional
 import numpy as np
 import torch
-from typing import *
+from masknmf.utils import SparseCOOTensor
 import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
 
-class ACArray(ArrayLike):
+class SignalsArray(ArrayLike):
     """
     Factorized video for the spatial and temporal extracted sources from the data
     Computations happen transparently on GPU, if device = 'cuda' is specified
@@ -23,13 +23,13 @@ class ACArray(ArrayLike):
 
 
         self._flyweight = flyweight
-        self.flyweight.validate_attributes(["a", "c"])
-        num_frames = self.c.shape[0]
+        self.flyweight.validate_attributes(["spatial_demixed", "temporal_demixed"])
+        num_frames = self.temporal_demixed.shape[0]
         self._shape = tuple(map(int, (num_frames, *fov_shape)))
 
         self._pixel_mat = torch.arange(self.shape[1] * self.shape[2], device=self.device, dtype=torch.long).reshape(
             self.shape[1], self.shape[2])
-        self._mask = torch.ones(self.a.shape[1], device=self.device, dtype=self.c.dtype)
+        self._mask = torch.ones(self.spatial_demixed.shape[1], device=self.device, dtype=self.temporal_demixed.dtype)
         self._centers = None
         self._bbox = None
         self._contours = None
@@ -44,21 +44,21 @@ class ACArray(ArrayLike):
     @classmethod
     def from_tensors(cls,
                      fov_shape: tuple[int, int],
-                     a: torch.sparse_coo_tensor,
-                     c: torch.Tensor,
+                     spatial_demixed: SparseCOOTensor,
+                     temporal_demixed: torch.Tensor,
                      normalizer: torch.Tensor | None = None,
                      rescale: bool = False
                      ):
         """
         Args:
-            fov_shape (tuple): (fov_dim1, fov_dim2)
-            a (torch.sparse_coo_tensor): Shape (pixels, components)
-            c (torch.Tensor). Shape (frames, components)
+            fov_shape (tuple): (fov_height, fov_width)
+            spatial_demixed (torch.sparse_coo_tensor): Shape (pixels, num_components)
+            temporal_demixed (torch.Tensor). Shape (frames, components)
             normalizer (Optional[torch.Tensor]): A (height, width)-shaped tensor. Multiply the array pixelwise by this
                 value to obtain results in the "raw data" space.
             rescale (bool): Whether or not to rescale the data to the raw data space. This determines the output of getitem
         """
-        flyweight = TensorFlyWeight(a=a, c=c, normalizer=normalizer)
+        flyweight = TensorFlyWeight(spatial_demixed=spatial_demixed, temporal_demixed=temporal_demixed, normalizer=normalizer)
         return cls(fov_shape,
                    flyweight,
                    rescale=rescale)
@@ -82,12 +82,12 @@ class ACArray(ArrayLike):
         return self.flyweight.device
 
 
-    def to(self, new_device):
+    def to(self, new_device: torch.device | str):
         if self._flyweight.device != new_device:
             self._flyweight.to(new_device)
         self._move_local_tensors(new_device)
 
-    def _move_local_tensors(self, new_device: str):
+    def _move_local_tensors(self, new_device: torch.device | str):
         self._pixel_mat = self._pixel_mat.to(new_device)
         self._mask = self._mask.to(new_device)
         self._default_normalizer = self._default_normalizer.to(new_device)
@@ -99,7 +99,7 @@ class ACArray(ArrayLike):
 
     @mask.setter
     def mask(self, new_mask: torch.Tensor):
-        self._mask = new_mask.to(self.device).bool().to(self.c.dtype) #Ensures it's all 1s and 0s
+        self._mask = new_mask.to(self.device).bool().to(self.temporal_demixed.dtype) #Ensures it's all 1s and 0s
 
     @property
     def normalizer(self) -> torch.Tensor:
@@ -125,7 +125,7 @@ class ACArray(ArrayLike):
             -  torch.sparse_coo_tensor of shape (num_pixels, num_signals).
         """
         if self._contours is None:
-            self._contours = compute_contours(self.a, self.shape[1], self.shape[2])
+            self._contours = compute_contours(self.spatial_demixed, self.shape[1], self.shape[2])
         return self._contours
 
     @property
@@ -136,9 +136,9 @@ class ACArray(ArrayLike):
         """
         if self._centers is None:
             height, width = self.shape[1:]
-            num_signals = self.a.shape[1]
-            row, col = self.a.indices()
-            values = self.a.values().float()
+            num_signals = self.spatial_demixed.shape[1]
+            row, col = self.spatial_demixed.indices()
+            values = self.spatial_demixed.values().float()
 
             # First get rid of values that are nonzero
             values_keep = values != 0
@@ -180,9 +180,9 @@ class ACArray(ArrayLike):
         """
         if self._bbox is None:
             height, width = self.shape[1:]
-            num_signals = self.a.shape[1]
-            row, col = self.a.indices()
-            values = self.a.values()
+            num_signals = self.spatial_demixed.shape[1]
+            row, col = self.spatial_demixed.indices()
+            values = self.spatial_demixed.values()
 
             #First get rid of values that are nonzero
             row = row[values != 0]
@@ -209,46 +209,46 @@ class ACArray(ArrayLike):
 
 
     @property
-    def c(self) -> torch.Tensor:
+    def temporal_demixed(self) -> torch.Tensor:
         """
         return temporal time courses of all signals, shape (frames, components)
         """
-        return self.flyweight.c
+        return self.flyweight.temporal_demixed
 
     @property
-    def a(self) -> torch.sparse_coo_tensor:
+    def spatial_demixed(self) -> SparseCOOTensor:
         """
         return spatial profiles of all signals as sparse matrix, shape (pixels, components)
         """
-        return self.flyweight.a
+        return self.flyweight.spatial_demixed
 
-    def export_a(self, apply_rescale: bool = False) -> np.ndarray:
+    def export_spatial_demixed(self, apply_rescale: bool = False) -> np.ndarray:
         """
-        returns the spatial components, where each component is a 2D image. output shape (fov dim1, fov dim 2, n_frames)
+        returns the spatial components, where each component is a 2D image. output shape (fov height, fov width, num_frames)
         """
-        output = self.a.cpu().to_dense().numpy()
+        output = self.spatial_demixed.cpu().to_dense().numpy()
         output = output.reshape((self.shape[-2], self.shape[-1], -1))
         if apply_rescale:
             output *= self.normalizer[..., None].cpu().numpy()
         return output
 
-    def export_c(self) -> np.ndarray:
+    def export_temporal_demixed(self) -> np.ndarray:
         """
-        returns the temporal traces, where each trace is a n_frames-shaped time series. output shape (n_frames, n_components)
+        returns the temporal traces, where each trace is a n_frames-shaped time series. output shape (num_frames, num_components)
         """
-        return self.c.cpu().numpy()
+        return self.temporal_demixed.cpu().numpy()
 
     @property
-    def dtype(self) -> str:
+    def dtype(self) -> type:
         """
         data type, default np.float32
         """
         return np.float32
 
     @property
-    def shape(self) -> Tuple[int, int, int]:
+    def shape(self) -> tuple[int, int, int]:
         """
-        Array shape (n_frames, dims_x, dims_y)
+        Array shape (num_frames, fov_height, fov_width)
         """
         return self._shape
 
@@ -261,35 +261,35 @@ class ACArray(ArrayLike):
 
     def getitem_tensor(
         self,
-        item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ) -> torch.Tensor:
         # Step 1: index the frames (dimension 0)
         frame_indexer, item = self._parse_indices(item)
 
         # Step 3: Now slice the data with frame_indexer (careful: if the ndims has shrunk, add a dim)
-        c_crop = self.c[frame_indexer, :]
-        if c_crop.ndim < self.c.ndim:
-            c_crop = c_crop.unsqueeze(0)
+        temporal_demixed_crop = self.temporal_demixed[frame_indexer, :]
+        if temporal_demixed_crop.ndim < self.temporal_demixed.ndim:
+            temporal_demixed_crop = temporal_demixed_crop.unsqueeze(0)
 
-        c_crop = c_crop * self._mask[None, :]
+        temporal_demixed_crop = temporal_demixed_crop * self.mask[None, :]
 
         # Step 4: First do spatial subselection before multiplying by c
         if isinstance(item, tuple) and check_spatial_crop_effect(item[1:3], self.shape[1:3]):
 
             pixel_space_crop = self._pixel_mat[item[1:3]]
             normalizer_crop = self.normalizer[item[1:3]][None, ...]
-            a_indices = pixel_space_crop.flatten()
-            a_crop = torch.index_select(self.a, 0, a_indices)
+            spatial_demixed_indices = pixel_space_crop.flatten()
+            spatial_demixed_crop = torch.index_select(self.spatial_demixed, 0, spatial_demixed_indices)
             implied_fov = pixel_space_crop.shape
-            product = torch.sparse.mm(a_crop, c_crop.T)
+            product = torch.sparse.mm(spatial_demixed_crop, temporal_demixed_crop.T)
             product = product.reshape(implied_fov + (-1,))
             product = product.permute(-1, *range(product.ndim - 1))
 
         else:
-            a_crop = self.a
+            spatial_demixed_crop = self.spatial_demixed
             normalizer_crop  = self.normalizer[None, :, :]
             implied_fov = self.shape[-2], self.shape[-1]
-            product = torch.sparse.mm(a_crop, c_crop.T)
+            product = torch.sparse.mm(spatial_demixed_crop, temporal_demixed_crop.T)
             product = product.reshape((implied_fov[0], implied_fov[1], -1))
             product = product.permute(2, 0, 1)
 
@@ -300,7 +300,7 @@ class ACArray(ArrayLike):
 
     def __getitem__(
         self,
-        item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ) -> np.ndarray:
         product = self.getitem_tensor(item)
         product = product.cpu().numpy().astype(self.dtype)
@@ -362,7 +362,7 @@ class PixelSet:
     @classmethod
     def from_sparse(
         cls,
-        a: torch.Tensor,
+        spatial_demixed: SparseCOOTensor,
         height: int,
         width: int,
         rel_threshold: float = 0.0,
@@ -372,7 +372,7 @@ class PixelSet:
         Build a support set from a sparse (pixels, components) matrix.
 
         Args:
-            a: sparse COO tensor, shape (height * width, num_components).
+            spatial_demixed: sparse COO tensor, shape (height * width, num_components).
             rel_threshold: keep pixel only if |value| >= rel_threshold * peak
                 of its own component. This is the single cheapest quality win:
                 0.05-0.15 removes the faint halo that causes ragged boundaries.
@@ -382,14 +382,14 @@ class PixelSet:
             (support, values) where ``values`` is aligned elementwise with
             ``support.keys`` (needed by connected-component filtering).
         """
-        a = a.coalesce()
-        row, col = a.indices()
-        vals = a.values()
+        spatial_demixed = spatial_demixed.coalesce()
+        row, col = spatial_demixed.indices()
+        vals = spatial_demixed.values()
         mag = vals.abs()
 
         keep = mag > abs_threshold
         if rel_threshold > 0:
-            peak = torch.zeros(a.shape[1], device=vals.device, dtype=mag.dtype)
+            peak = torch.zeros(spatial_demixed.shape[1], device=vals.device, dtype=mag.dtype)
             peak.scatter_reduce_(0, col, mag, reduce="amax", include_self=False)
             keep = keep & (mag >= rel_threshold * peak[col])
 
@@ -397,7 +397,7 @@ class PixelSet:
         keys = col * (height * width) + row
         order = torch.argsort(keys)
         return (
-            cls(keys[order], height, width, a.shape[1], already_sorted=True),
+            cls(keys[order], height, width, spatial_demixed.shape[1], already_sorted=True),
             vals[order],
         )
 
@@ -618,7 +618,7 @@ def largest_component_only(
 
 
 # ---------------------------------------------------------------------- #
-# drop-in replacement for ACArray.contours
+# drop-in replacement for SignalsArray.contours
 # ---------------------------------------------------------------------- #
 
 

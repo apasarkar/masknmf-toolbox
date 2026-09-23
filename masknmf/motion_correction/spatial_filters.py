@@ -1,11 +1,9 @@
 import torch
 import numpy as np
-from typing import *
 import math
 import cv2
-from typing import List
 
-def compute_highpass_filter_kernel(sigma: List[float]):
+def compute_highpass_filter_kernel(sigma: list[float]):
     "Idea attributed to Giovanucci et al (Caiman)"
     ksize = tuple([math.ceil((3 * i) // 2 * 2 + 1) for i in sigma])
     ker = cv2.getGaussianKernel(ksize[0], sigma[0])
@@ -17,7 +15,7 @@ def compute_highpass_filter_kernel(sigma: List[float]):
     return torch.tensor(ker2D, dtype=torch.float32)
 
 
-def gaussian_kernel(kernel_size: int = 3, sigma: float = 1.0) -> torch.tensor:
+def gaussian_kernel(kernel_size: int = 3, sigma: float = 1.0) -> torch.Tensor:
     """Generates a 2D Gaussian kernel."""
     x = torch.arange(kernel_size) - kernel_size // 2
     y = torch.arange(kernel_size) - kernel_size // 2
@@ -34,14 +32,13 @@ def image_filter(frames: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
     convolve every image with the kernel using reflect padding.
 
     Args:
-        frames (torch.Tensor): Shape (num_frames, fov_dim1, fov_dim2)
+        frames (torch.Tensor): Shape (num_frames, fov_height, fov_width)
         kernel (torch.Tensor): Shape (kH, kW)
 
     Returns:
-        torch.Tensor: Convolved frames with shape (num_frames, fov_dim1, fov_dim2)
+        torch.Tensor: Convolved frames with shape (num_frames, fov_height, fov_width)
     """
 
-    num_frames, fov_dim1, fov_dim2 = frames.shape
     kH, kW = kernel.shape
 
     # Reshape frames to (batch, channels, height, width)

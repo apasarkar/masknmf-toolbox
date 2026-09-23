@@ -3,8 +3,6 @@ import random
 import warnings
 
 import torch
-from typing import Optional
-
 import numpy as np
 from tqdm import tqdm
 
@@ -21,7 +19,7 @@ class MotionCorrectionStrategy:
 
     def __init__(
             self,
-            template: Optional[np.ndarray] = None,
+            template: np.ndarray | None = None,
             batch_size: int = 200,
             device: str = "auto",
     ):
@@ -96,7 +94,7 @@ class MotionCorrectionStrategy:
     def correct(
             self,
             reference_movie_frames: np.ndarray,
-            target_movie_frames: Optional[np.ndarray] = None,
+            target_movie_frames: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         ## TODO: Decide whether this will really ever be needed
 
@@ -226,7 +224,7 @@ class DummyMotionCorrector(MotionCorrectionStrategy):
 
     def correct(self,
                 reference_movie_frames: np.ndarray,
-                target_movie_frames: Optional[np.ndarray] = None,
+                target_movie_frames: np.ndarray | None = None,
                 ) -> tuple[np.ndarray, np.ndarray]:
         if target_movie_frames is not None:
             return target_movie_frames, np.zeros((target_movie_frames.shape[0], 2))

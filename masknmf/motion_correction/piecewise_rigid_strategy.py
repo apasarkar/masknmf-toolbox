@@ -1,12 +1,10 @@
 from pathlib import Path
 
 from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
-from masknmf.utils import Serializer
 import torch
 from masknmf.utils import torch_select_device
 from masknmf.motion_correction.strategies import MotionCorrectionStrategy
 from masknmf.motion_correction.rigid_strategy import RigidMotionCorrector
-from typing import *
 import numpy as np
 from masknmf.motion_correction.registration_methods import register_frames_pwrigid, pwrigid_shift_estimation_routine, apply_pwrigid_shifts, compute_pwrigid_patch_midpoints
 from masknmf.motion_correction.registration_arrays import BaseRegistrationArray
@@ -86,8 +84,8 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
             overlaps: tuple[int, int] = (5, 5),
             max_rigid_shifts: tuple[int, int] = (15, 15),
             max_deviation_rigid: tuple[int, int] = (2, 2),
-            template: Optional[np.ndarray] = None,
-            pixel_weighting: Optional[np.ndarray] = None,
+            template: np.ndarray | None = None,
+            pixel_weighting: np.ndarray | None = None,
             batch_size: int = 200,
             device: str = "auto",
     ):
@@ -122,7 +120,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
     def pixel_weighting(self) -> None | np.ndarray:
         return self._pixel_weighting
 
-    def _pixel_weighting_tensor(self) -> Optional[torch.Tensor]:
+    def _pixel_weighting_tensor(self) -> torch.Tensor | None:
         if self.pixel_weighting is None:
             return None
         return torch.as_tensor(
@@ -339,7 +337,6 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
                        frames,
                        row_slice,
                        col_slice):
-        # num_batches = math.ceil(frames.shape[0] / self.strategy.batch_size)
 
         ## Greedy batch size computation so we load as much data as possible for smaller spatial crops
         row_indices = row_slice.indices(self.shape[1])

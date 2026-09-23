@@ -1,5 +1,5 @@
-from typing import *
 import numpy as np
+from masknmf.utils import SparseCOOTensor
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
@@ -12,7 +12,7 @@ class MultiunitBackgroundArray(ArrayLike):
 
     def __init__(
         self,
-        fov_shape: Tuple[int, int],
+        fov_shape: tuple[int, int],
         flyweight: TensorFlyWeight,
         rescale: bool = False,
     ):
@@ -20,7 +20,7 @@ class MultiunitBackgroundArray(ArrayLike):
         See from_tensors for parameter documentation
         """
         self._flyweight = flyweight
-        self.flyweight.validate_attributes(['u', 'multiunit_basis_term1', 'multiunit_basis_term2'])
+        self.flyweight.validate_attributes(['spatial_compressed', 'multiunit_basis_term1', 'multiunit_basis_term2'])
         t = self.multiunit_basis_term2.shape[1]
         self._shape = (t,) + fov_shape
         self._pixel_mat = torch.arange(self.shape[1] * self.shape[2], device=self.device, dtype=torch.long).reshape(self.shape[1], self.shape[2])
@@ -35,24 +35,24 @@ class MultiunitBackgroundArray(ArrayLike):
     @classmethod
     def from_tensors(cls,
                      fov_shape: tuple[int, int],
-                     u: torch.sparse_coo_tensor,
+                     spatial_compressed: torch.sparse_coo_tensor,
                      multiunit_basis_term1: torch.Tensor,
                      multiunit_basis_term2: torch.Tensor,
-                     normalizer: Optional[torch.Tensor],
+                     normalizer: torch.Tensor | None,
                      rescale: bool = False
                      ):
         """
         The background movie can be factorized as the matrix product Uab,
-        where u, and v are the standard matrices from the pmd decomposition,
+        where spatial_compressed, and temporal_compressed are the standard matrices from the pmd decomposition,
         Args:
             fov_shape (tuple): (fov_dim1, fov_dim2)
-            u (torch.sparse_coo_tensor): shape (pixels, rank1)
+            spatial_compressed (torch.sparse_coo_tensor): shape (pixels, rank1)
             multiunit_basis_term1 (torch.Tensor): shape (PMD rank, background_rank)
             multiunit_basis_term2 (torch.Tensor): shape (background_rank, num_frames)
             normalizer (Optional[torch.Tensor]): Demixing is performed in a normalized space; this tensor of shape (height, width) specifies pixel-wise normalization
             rescale (bool): Whether or not to rescale the data to the original data space (i.e. multiply pixelwise by the normalizer)
         """
-        flyweight = TensorFlyWeight(u=u,
+        flyweight = TensorFlyWeight(spatial_compressed=spatial_compressed,
                                     multiunit_basis_term1=multiunit_basis_term1,
                                     multiunit_basis_term2=multiunit_basis_term2,
                                     normalizer=normalizer)
@@ -75,8 +75,8 @@ class MultiunitBackgroundArray(ArrayLike):
         return self._flyweight
 
     @property
-    def u(self) -> torch.sparse_coo_tensor:
-        return self.flyweight.u
+    def spatial_compressed(self) -> SparseCOOTensor:
+        return self.flyweight.spatial_compressed
 
     @property
     def multiunit_basis_term1(self) -> torch.Tensor:
@@ -93,10 +93,10 @@ class MultiunitBackgroundArray(ArrayLike):
         return self.flyweight.normalizer
 
     @property
-    def device(self):
+    def device(self) -> torch.device | str:
         return self.flyweight.device
 
-    def to(self, new_device: str):
+    def to(self, new_device: torch.device | str):
         """
         Note: tensors that are not managed by flyweight need to be consistently moved to the device that flyweight is on
         in the getitem implementation
@@ -105,7 +105,7 @@ class MultiunitBackgroundArray(ArrayLike):
             self._flyweight.to(new_device)
         self._move_local_tensors(new_device)
 
-    def _move_local_tensors(self, new_device: str):
+    def _move_local_tensors(self, new_device: torch.device | str):
         self._pixel_mat = self._pixel_mat.to(new_device)
         self._default_normalizer = self._default_normalizer.to(new_device)
 
@@ -117,9 +117,9 @@ class MultiunitBackgroundArray(ArrayLike):
         return np.float32
 
     @property
-    def shape(self) -> Tuple[int, int, int]:
+    def shape(self) -> tuple[int, int, int]:
         """
-        Array shape (n_frames, dims_x, dims_y)
+        Array shape (num_frames, fov_height, fov_width)
         """
         return self._shape
 
@@ -141,7 +141,7 @@ class MultiunitBackgroundArray(ArrayLike):
 
     def getitem_tensor(
         self,
-        item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
     ):
         frame_indexer, item = self._parse_indices(item)
 
@@ -177,11 +177,11 @@ class MultiunitBackgroundArray(ArrayLike):
             pixel_space_crop = self._pixel_mat[spatial_crop_terms]
             normalizer_crop = self.normalizer[spatial_crop_terms][None, ...]
             u_indices = pixel_space_crop.flatten()
-            u_crop = torch.index_select(self.u, 0, u_indices)
+            u_crop = torch.index_select(self.spatial_compressed, 0, u_indices)
             implied_fov = pixel_space_crop.shape
 
         else:
-            u_crop = self.u
+            u_crop = self.spatial_compressed
             normalizer_crop = self.normalizer[None, ...]
             implied_fov = self.shape[1], self.shape[2]
 
@@ -205,7 +205,7 @@ class MultiunitBackgroundArray(ArrayLike):
 
     def __getitem__(
         self,
-        item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
     ) -> np.ndarray:
         product = self.getitem_tensor(item)
         product = product.cpu().numpy().astype(self.dtype)

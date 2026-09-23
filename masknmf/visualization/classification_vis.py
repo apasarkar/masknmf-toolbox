@@ -442,8 +442,8 @@ class ClassificationVis:
                             dmr.global_residual_correlation_image.cpu().numpy(),
                         )
 
-                    f.append(brightness_order(dmr.a, dmr.c)[1].cpu().numpy())
-                    c = dmr.c.cpu().numpy()  # (num_frames, num_rois)
+                    f.append(brightness_order(dmr.spatial_demixed, dmr.temporal_demixed)[1].cpu().numpy())
+                    c = dmr.temporal_demixed.cpu().numpy()  # (num_frames, num_rois)
                     mean = c.mean(axis=0)
                     std = c.std(axis=0)
                     skew.append(((c - mean) ** 3).mean(axis=0) / np.where(std == 0, 1, std) ** 3)
@@ -910,7 +910,7 @@ class ClassificationVis:
             if self._fov_images is not None:
                 if self._bg_movie and self._dmrs is not None:
                     sess = int(self._session_of[roi])
-                    self._movie_player.set_movie(self._dmrs[sess].ac_array)
+                    self._movie_player.set_movie(self._dmrs[sess].signals_array)
                     if self._peak_frames is not None:
                         self._movie_player.jump_to(int(self._peak_frames[roi]))
                     self._movie_range = None
@@ -935,7 +935,7 @@ class ClassificationVis:
                     self._summary.set_overlay(self._class_overlay(sess))
                     if self._dmrs is not None:
                         self._summary.set_movies(
-                            {"demixed movie": self._dmrs[sess].ac_array}
+                            {"demixed movie": self._dmrs[sess].signals_array}
                         )
         if roi is None:
             self._summary.set_highlight(None)
@@ -1044,7 +1044,7 @@ class ClassificationVis:
         self._summary.set_images(images, selected=selected, index=index)
         if self._dmrs is not None and self._session_of is not None and self.current is not None:
             sess = int(self._session_of[self.current])
-            self._summary.set_movies({"demixed movie": self._dmrs[sess].ac_array})
+            self._summary.set_movies({"demixed movie": self._dmrs[sess].signals_array})
             if self._peak_frames is not None:
                 self._summary.player.jump_to(int(self._peak_frames[self.current]))
         else:

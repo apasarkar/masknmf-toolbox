@@ -1,7 +1,7 @@
 from masknmf.arrays.array_interfaces import ArrayLike
 from typing import *
 import numpy as np
-from masknmf.compression import PMDArray, PMDResidualArray
+from masknmf.compression import CompressionArray, CompressionResidualArray
 from masknmf.utils import display
 from masknmf.visualization.imgui import TracePlot, resolve_time_reference, is_notebook_canvas
 from masknmf.diagnostics import pmd_autocovariance_diagnostics
@@ -16,7 +16,7 @@ from masknmf.visualization.motion_vis import compute_mean_subtract
 class CompressionVis:
     def __init__(self,
                  moco_stack: ArrayLike,
-                 pmd_stack: PMDArray,
+                 pmd_stack: CompressionArray,
                  frame_batch_size: int = 200,
                  mean_subtract: bool = False,
                  include_trend: bool = True,
@@ -28,7 +28,7 @@ class CompressionVis:
 
         Args:
             moco_stack (ArrayLike): Shape (frames, height, width) movie, the motion corrected dataset
-            pmd_stack (PMDArray): Shape (frames, height, width) movie, the compressed + denoised dataset
+            pmd_stack (CompressionArray): Shape (frames, height, width) movie, the compressed + denoised dataset
             frame_batch_size (int): Used to accelerate the diagnostic computations. How many frames we can load onto GPU at a time
             mean_subtract (int): Whether to display the mean subtracted raw and pmd movies. This often helps expose signals when the indicator
                 baseline is large relative to the signal amplitude (dF/F is small) or the SNR is very low
@@ -43,16 +43,16 @@ class CompressionVis:
         """
 
         self._mean_subtract = mean_subtract
-        self._pmd_stack = PMDArray.from_flyweight(pmd_stack.shape,
+        self._pmd_stack = CompressionArray.from_flyweight(pmd_stack.shape,
                                                           pmd_stack.flyweight,
-                                                          device=device,
                                                           rescale=True,
                                                           include_trend=True)
+        self._pmd_stack.to(device)
         self._moco_stack = moco_stack
         self._include_trend = include_trend
 
         # Tricky: comparison stack is not mean subtracted, which is what we need to pass in to the residual array and to the autocov diagnostic
-        self._residual_stack = PMDResidualArray(self.moco_stack, self.pmd_stack)
+        self._residual_stack = CompressionResidualArray(self.moco_stack, self.pmd_stack)
         display('Computing Residual Statistics')
         raw_lag1, pmd_lag1, resid_lag1 = pmd_autocovariance_diagnostics(self.moco_stack,
                                                                         self.pmd_stack,
@@ -72,7 +72,7 @@ class CompressionVis:
         # the tensor (on device, no host copy); PMDArray frames are numpy, so that panel gets a numpy mean
         moco_mean_subtract = pmd_mean_subtract = None
         if mean_subtract:
-            mean = self.pmd_stack.mean_img
+            mean = self.pmd_stack.mean_image
             moco_mean = mean if isinstance(self.moco_stack[0], torch.Tensor) else mean.cpu().numpy()
             moco_mean_subtract = partial(compute_mean_subtract, moco_mean)
             pmd_mean_subtract = partial(compute_mean_subtract, mean.cpu().numpy())
