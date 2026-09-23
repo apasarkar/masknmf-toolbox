@@ -377,29 +377,38 @@ def interpolate_to_border(shifted_images: torch.Tensor, shifts: torch.Tensor):
 
 
 def compute_stride_routine(shape: tuple[int, int, int],
-                           num_blocks: tuple[int, int],
+                           minimum_patch_sizes: tuple[int, int],
                            overlaps: tuple[int, int]) -> tuple[tuple[int, int], torch.Tensor, torch.Tensor]:
     """
-    Args
-        num_blocks (tuple[int, int]): The number of blocks in each dimension that we use to partition the FOV
+    Args:
+        shape (tuple[int, int, int]): Describes shape of imaging data (num_frames, fov_height, fov_width)
+        minimum_patch_sizes (tuple[int, int]): The minimum (height, width) patch dimensions used to compute local
+            rigid shifts in the piecewise rigid registration method
         overlaps (tuple[int, int]): The amount of overlap in each dimension between adjacent blocks
     Returns:
         tuple[tuple[int, int], torch.Tensor, torch.Tensor]: A tuple describing the (a) strides in both dimensions and the start points for
             each block.
     """
     fov_height, fov_width = shape[1], shape[2]
-    if fov_height < overlaps[0] or fov_width < overlaps[1]:
+    if fov_height <= overlaps[0] or fov_width <= overlaps[1]:
         raise ValueError(f"overlap values are bigger than the corresponding FOV dimensions")
-    if math.ceil((fov_height - overlaps[0]) / num_blocks[0]) < overlaps[0]:
-        raise ValueError(f"This configuration guarantees that the stride in dimenion 0 is less than the overlaps, which is not allowed")
-    if math.ceil((fov_width - overlaps[1]) / num_blocks[1]) < overlaps[1]:
-        raise ValueError(f"This configuration guarantees that the stride in dimenion 1 is less than the overlaps, which is not allowed")
+    if fov_height <= minimum_patch_sizes[0]  or fov_width <= minimum_patch_sizes[1]:
+        raise ValueError(f"patch size dimensions must be smaller than the actual FOV dimensions")
+    if minimum_patch_sizes[0] <= 2 * overlaps[0] or minimum_patch_sizes[1] <= 2 * overlaps[1]:
+        raise ValueError(f"the minimum patch size must be at least twice the size of the overlaps")
+
+    min_strides = (minimum_patch_sizes[0] - overlaps[0], minimum_patch_sizes[1] - overlaps[1])
+
+
+    ##Since minimum_patch_sizes is less than (fov_height, fov_width), both below terms are guaranteed to be at least 1
+    num_blocks_height = math.floor((fov_height - overlaps[0]) / min_strides[0])
+    num_blocks_width = math.floor((fov_width - overlaps[1]) / min_strides[1])
 
     ## Add some error catching logic later
-    dim1_start_pts = torch.floor(torch.linspace(0, fov_height - overlaps[0], num_blocks[0] + 1))[:-1]
+    dim1_start_pts = torch.floor(torch.linspace(0, fov_height - overlaps[0], num_blocks_height + 1))[:-1]
     dim1_stride = fov_height - overlaps[0] - dim1_start_pts[-1]
 
-    dim2_start_pts = torch.floor(torch.linspace(0, fov_width - overlaps[1], num_blocks[1] + 1))[:-1]
+    dim2_start_pts = torch.floor(torch.linspace(0, fov_width - overlaps[1], num_blocks_width + 1))[:-1]
     dim2_stride = fov_width - overlaps[1] - dim2_start_pts[-1]
 
     return (dim1_stride, dim2_stride), dim1_start_pts, dim2_start_pts
@@ -721,7 +730,7 @@ def scatter_patches_to_fov(
 def pwrigid_shift_estimation_routine(
         reference_frames: torch.Tensor,
         template: torch.Tensor,
-        num_blocks: tuple[int, int],
+        minimum_patch_sizes: tuple[int, int],
         overlaps: tuple[int, int],
         max_rigid_shifts: tuple[int, int],
         max_deviation_rigid: tuple[int, int],
@@ -747,7 +756,7 @@ def pwrigid_shift_estimation_routine(
         reference_frames, template, max_rigid_shifts, pixel_weighting=pixel_weighting
     )
 
-    strides, dim1_start_pts, dim2_start_pts = compute_stride_routine(reference_frames.shape, num_blocks, overlaps)
+    strides, dim1_start_pts, dim2_start_pts = compute_stride_routine(reference_frames.shape, minimum_patch_sizes, overlaps)
     dim1_start_pts = dim1_start_pts.to(device)
     dim2_start_pts = dim2_start_pts.to(device)
 
@@ -937,7 +946,7 @@ def apply_pwrigid_shifts(data: ArrayLike,
 def register_frames_pwrigid(
         reference_frames: torch.Tensor,
         template: torch.Tensor,
-        num_blocks: tuple[int, int],
+        minimum_patch_sizes: tuple[int, int],
         overlaps: tuple[int, int],
         max_rigid_shifts: tuple[int, int],
         max_deviation_rigid: tuple[int, int],
@@ -945,14 +954,16 @@ def register_frames_pwrigid(
         pixel_weighting: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Performs piecewise rigid normcorre registration. Method estimates a motion vector field that quantifies motion of
-    references frames relative to template, and applies relevant transform to correct the motion.
+    Performs piecewise rigid normcorre registration. Method partitions the imaging field of view into overlapping
+    rectangular patches, estimates rigid motion shifts within these patches, and then accordingly applies a nonrigid
+    transformation to the full field of view to correct motion.
 
     Args:
         reference_frames (torch.Tensor): Shape (num_frames, fov_height, fov_width). We estimate shifts that optimally align reference_frames to
             the template
         template (torch.Tensor): Shape (fov_height, fov_width)  or (num_frames, fov_height, fov_width). The template(s) used for alignment.
-        num_blocks (tuple[int, int]): The number of patches in both the height and width dimensions that we partition the FOV into
+        minimum_patch_sizes (tuple[int, int]): A lower bound on the (height, width) dimensions of the patch size. The actual patch sizes
+            used to perform motion correction will be approximately equal to these  and are guaranteed to be at least as large.
         overlaps (tuple[int, int]): Two integers, used to specify the degree of overlap between patches.
             Together, (strides[0] + overlaps[0], strides[1] + overlaps[1]) defines the patch size for pw rigid registration.
         max_rigid_shifts (tuple[int, int]): The maximum (full-fov) rigid shifts, used to perform rigid motion correction prior to piecewise
@@ -975,7 +986,7 @@ def register_frames_pwrigid(
     """
     lowrank_patchwise_rigid_shifts = pwrigid_shift_estimation_routine(reference_frames,
                                                                       template,
-                                                                      num_blocks,
+                                                                      minimum_patch_sizes,
                                                                       overlaps,
                                                                       max_rigid_shifts,
                                                                       max_deviation_rigid,
@@ -994,23 +1005,24 @@ def register_frames_pwrigid(
     return corrected_data, lowrank_patchwise_rigid_shifts
 
 
-def compute_pwrigid_patch_midpoints(num_blocks: tuple[int, int],
+def compute_pwrigid_patch_midpoints(minimum_patch_sizes: tuple[int, int],
                                     overlaps: tuple[int, int],
                                     fov_height: int,
                                     fov_width: int) -> torch.Tensor:
     """
     Computes the midpoints of all pwrigid patches.
     Args:
-        num_blocks (tuple[int, int]): The number of blocks which we partition the height/width into, respectively
+        minimum_patch_sizes (tuple[int, int]): The lower bound (height,width) patch size dimensions used to estimate
+            piecewise rigid shifts over the entire field of view.
         overlaps (tuple[int, int]): The number of pixels of overlap between adjacent blocks (in each spatial dimension)
         fov_height (int): The fov height
         fov_width (int): The fov width
     Returns:
-        midpoints (torch.Tensor): Shape (num_blocks[0], num_blocks[1], 2). Gives the height/width dimensions for the height and width
+        midpoints (torch.Tensor): Shape (num_blocks_height, num_blocks_width, 2). Gives the height/width dimensions for the height and width
             midpoints respectively
     """
     strides, dim1_start_pts, dim2_start_pts = compute_stride_routine(
-        (1, fov_height, fov_width), num_blocks, overlaps
+        (1, fov_height, fov_width), minimum_patch_sizes, overlaps
     )
     patch_h = strides[0] + overlaps[0]
     patch_w = strides[1] + overlaps[1]

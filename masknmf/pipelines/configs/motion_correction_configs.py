@@ -13,7 +13,7 @@ class RigidMotionCorrectionConfig:
 
 @dataclass
 class PiecewiseRigidMotionCorrectionConfig:
-    num_blocks: tuple[int, int] = (15, 15)
+    minimum_patch_sizes: tuple[int, int] = (50, 50)
     overlaps: tuple[int, int] = (5, 5)
     max_rigid_shifts: tuple[int, int] = (15, 15)
     max_deviation_rigid: tuple[int, int] = (2, 2)

@@ -69,7 +69,7 @@ def _frame_key(chunk: np.ndarray):
 
 class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
     _serialized = {
-        "num_blocks",
+        "minimum_patch_sizes",
         "overlaps",
         "max_rigid_shifts",
         "max_deviation_rigid",
@@ -80,7 +80,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
 
     def __init__(
             self,
-            num_blocks: tuple[int, int] = (12, 12),
+            minimum_patch_sizes: tuple[int, int] = (50, 50),
             overlaps: tuple[int, int] = (5, 5),
             max_rigid_shifts: tuple[int, int] = (15, 15),
             max_deviation_rigid: tuple[int, int] = (2, 2),
@@ -90,26 +90,26 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
             device: str = "auto",
     ):
         super().__init__(template, batch_size=batch_size, device=device)
-        self._num_blocks = num_blocks
+        self._minimum_patch_sizes = minimum_patch_sizes
         self._overlaps = overlaps
         self._max_rigid_shifts = max_rigid_shifts
         self._max_deviation_rigid = max_deviation_rigid
         self._pixel_weighting = pixel_weighting.astype('float') if pixel_weighting is not None else None
 
     @property
-    def num_blocks(self) -> tuple[int, int]:
+    def minimum_patch_sizes(self) -> tuple[int, int]:
         """
-        Number of blocks that the image plane is split into, [rows, cols].
+        The minimum (height, width) patch size used to estimate local rigid shifts.
         Motion is estimated in each block and then interpolated in 2D space across the entire image plane.
         """
-        return self._num_blocks
+        return self._minimum_patch_sizes
 
-    @num_blocks.setter
-    def num_blocks(self, value):
-        value = self._validate_tuple_int_int("num_blocks", value)
+    @minimum_patch_sizes.setter
+    def minimum_patch_sizes(self, value):
+        value = self._validate_tuple_int_int("minimum_patch_sizes", value)
 
         self._template = None
-        self._num_blocks = value
+        self._minimum_patch_sizes = value
 
 
     @property
@@ -129,7 +129,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
 
     @property
     def overlaps(self) -> tuple[int, int]:
-        """Number of pixels that overlap between adjacent blocks"""
+        """Number of pixels that overlap between adjacent patches"""
         return self._overlaps
 
     @overlaps.setter
@@ -188,7 +188,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
         outputs = register_frames_pwrigid(
             reference_frames.to(self.device),
             template,
-            self.num_blocks,
+            self.minimum_patch_sizes,
             self.overlaps,
             self.max_rigid_shifts,
             self.max_deviation_rigid,
@@ -254,12 +254,12 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
                 reference_subset = reference_subset[None, ...]
 
             current_shifts = pwrigid_shift_estimation_routine(reference_subset,
-                                                     template,
-                                                     self.num_blocks,
-                                                     self.overlaps,
-                                                     self.max_rigid_shifts,
-                                                     self.max_deviation_rigid,
-                                                     pixel_weighting=pixel_weighting)
+                                                              template,
+                                                              self.minimum_patch_sizes,
+                                                              self.overlaps,
+                                                              self.max_rigid_shifts,
+                                                              self.max_deviation_rigid,
+                                                              pixel_weighting=pixel_weighting)
             shifts_total.append(current_shifts.cpu()) ## Move to CPU to avoid overloading
 
         shifts_total = torch.concatenate(shifts_total, dim=0)
@@ -315,7 +315,7 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
 
     def _compute_block_centers(self):
         self._block_centers = compute_pwrigid_patch_midpoints(
-            num_blocks=self.strategy.num_blocks,
+            minimum_patch_sizes=self.strategy.minimum_patch_sizes,
             overlaps=self.strategy.overlaps,
             fov_height=self.input_movie.shape[1],
             fov_width=self.input_movie.shape[2]
