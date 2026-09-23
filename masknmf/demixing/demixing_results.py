@@ -99,8 +99,8 @@ class DemixingResults(Serializer):
         "resid_corr_img_support_values",
         "resid_corr_img_mean",
         "resid_corr_img_normalizer",
-        "bkgd_corr_img_mean",
-        "bkgd_corr_img_normalizer",
+        "background_correlation_image_mean",
+        "background_correlation_image_normalizer",
         "compression_array_roi_averages",
         "fluctuating_background_roi_averages",
         "residual_roi_averages",
@@ -142,8 +142,8 @@ class DemixingResults(Serializer):
             resid_corr_img_support_values: SparseCOOTensor | None = None,
             resid_corr_img_mean: torch.Tensor | None = None,
             resid_corr_img_normalizer: torch.Tensor | None = None,
-            bkgd_corr_img_mean: torch.Tensor | None = None,
-            bkgd_corr_img_normalizer: torch.Tensor | None = None,
+            background_correlation_image_mean: torch.Tensor | None = None,
+            background_correlation_image_normalizer: torch.Tensor | None = None,
             global_residual_correlation_image: torch.Tensor | None= None,
             compression_array_roi_averages: torch.Tensor | None = None,
             fluctuating_background_roi_averages: torch.Tensor | None= None,
@@ -183,8 +183,8 @@ class DemixingResults(Serializer):
                 compute the residual correlation image per neural signal.
             resid_corr_img_normalizer (torch.Tensor | None): Shape (height, width). The normalizer image used to lazily
                 compute the residual correlation image per neural signal.
-            bkgd_corr_img_mean (torch.Tensor | None): The mean image used to compute the correlation between the signal and the background.
-            bkgd_corr_img_normalizer (torch.Tensor | None): The mean image used to compute the correlation between the signal and the background.
+            background_correlation_image_mean (torch.Tensor | None): The mean image used to compute the correlation between the signal and the background.
+            background_correlation_image_normalizer (torch.Tensor | None): The mean image used to compute the correlation between the signal and the background.
             global_resid_correlation_image (torch.Tensor): The global correlation image of the residual. Shape (FOV dim 1, FOV dim 2).
             device (str): 'cpu' or 'cuda'. used to manage where the tensors reside
         """
@@ -261,12 +261,12 @@ class DemixingResults(Serializer):
             self.flyweight.resid_corr_img_mean = resid_corr_img_mean.to(self._device)
             self.flyweight.resid_corr_img_normalizer = resid_corr_img_normalizer.to(self._device)
 
-        if bkgd_corr_img_mean is None or bkgd_corr_img_normalizer is None:
-            self.flyweight.bkgd_corr_img_mean = None
-            self.flyweight.bkgd_corr_img_normalizer = None
+        if background_correlation_image_mean is None or background_correlation_image_normalizer is None:
+            self.flyweight.background_correlation_image_mean = None
+            self.flyweight.background_correlation_image_normalizer = None
         else:
-            self.flyweight.bkgd_corr_img_mean = bkgd_corr_img_mean.to(self._device)
-            self.flyweight.bkgd_corr_img_normalizer = bkgd_corr_img_normalizer.to(self._device)
+            self.flyweight.background_correlation_image_mean = background_correlation_image_mean.to(self._device)
+            self.flyweight.background_correlation_image_normalizer = background_correlation_image_normalizer.to(self._device)
 
         if multiunit_basis_term1 is None or multiunit_basis_term2 is None:
             self.flyweight.multiunit_basis_term1 = torch.zeros(self.spatial_compressed.shape[1], 1, dtype=self.spatial_compressed.dtype,
@@ -448,12 +448,12 @@ class DemixingResults(Serializer):
         return self.flyweight.global_residual_correlation_image
 
     @property
-    def bkgd_corr_img_mean(self) -> None | torch.Tensor:
-        return self.flyweight.bkgd_corr_img_mean
+    def background_correlation_image_mean(self) -> None | torch.Tensor:
+        return self.flyweight.background_correlation_image_mean
 
     @property
-    def bkgd_corr_img_normalizer(self) -> None | torch.Tensor:
-        return self.flyweight.bkgd_corr_img_normalizer
+    def background_correlation_image_normalizer(self) -> None | torch.Tensor:
+        return self.flyweight.background_correlation_image_normalizer
 
     def _set_roi_averages(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -524,12 +524,12 @@ class DemixingResults(Serializer):
         This array will not use the FlyWeight pattern that the other arrays use, since this is primarily an exploratory
         property. If this becomes crucial, can re-organize
         """
-        if self.bkgd_corr_img_mean is not None:
+        if self.background_correlation_image_mean is not None:
             return StandardCorrelationImages.from_tensors(self.spatial_compressed,
                                                           self.factorized_background_term1 @ self.factorized_background_term2,
                                                           self.temporal_demixed,
-                                                          self.bkgd_corr_img_mean,
-                                                          self.bkgd_corr_img_normalizer,
+                                                          self.background_correlation_image_mean,
+                                                          self.background_correlation_image_normalizer,
                                                           (self._shape[1], self._shape[2]))
         else:
             return None
