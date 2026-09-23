@@ -34,7 +34,7 @@ from masknmf.visualization.imgui import (
     right_aligned_text,
     button_colors,
 )
-from masknmf.visualization.rois import MARKED_COLOR, FootprintSet
+from masknmf.visualization.rois import MARKED_COLOR, SELECTED_ALPHA, FootprintSet
 from masknmf.demixing import CellStats, update_signals, write_curated
 from masknmf.pipelines.configs.demixing_configs import NMFConfig
 
@@ -56,7 +56,7 @@ _CLICK_SLOP = (
 _UNDO_DEPTH = 50  # ctrl+z snapshots kept
 # every grid's captions, so the caption column is one width across the sections and the tabs
 _CAPTIONS = (
-    "masks", "contours", "color by", "traces",
+    "masks", "contours", "sel masks", "sel contours", "color by", "traces",
     "rois", "on disk", "polygon", "side", "run", "options",
     "filter", "in view", "selection", "merge", "view", "stats",
 )
@@ -130,8 +130,9 @@ class SingleSessionDemixingVis:
     Clicking the selected mask, its trace or its table row again deselects it; a pan or drag on a panel
     leaves the selection alone. Esc deselects everything, ctrl+a groups every signal the table shows, and
     ctrl+z undoes the last mark, drawn roi, pixel average or deselect (a Demix empties the undo stack; roi
-    vertex drags are not undone). The selection's contour always shows; the Overlay "contours" checkbox
-    adds every other footprint's.
+    vertex drags are not undone). The Overlay section shows masks and contours in two pairs, each a checkbox
+    and an opacity: "masks" / "contours" over every footprint, "sel masks" / "sel contours" over the selection
+    and its group, which take their signal's mask color so a contour matches its trace.
     With "pixel traces" on (Curation tab checkbox or the p key, off by default), clicking an empty pixel adds the compressed movie's 5x5
     average there to the plot as if it were a grouped signal, and lists it at the top of the Signals table,
     marked. Pixel averages are diagnostic only: Demix and export ignore them, Delete drops them.
@@ -474,6 +475,8 @@ class SingleSessionDemixingVis:
         self._keybinds_open = False
         self._show_masks = show_masks
         self._mask_opacity = mask_opacity
+        self._show_selected_masks = True
+        self._selected_mask_opacity = SELECTED_ALPHA
         self._footprints = None
         self._mask_overlays = {}
         if self._has_ac:
@@ -519,6 +522,8 @@ class SingleSessionDemixingVis:
         self._image_selector = None
         self._show_contours = show_contours
         self._contour_opacity = 0.9
+        self._show_selected_contours = True
+        self._selected_contour_opacity = 0.7
         if self._ac_array is not None:
             self._make_selectors()
 
@@ -574,13 +579,16 @@ class SingleSessionDemixingVis:
             self._footprints.rgba(
                 tuple(self._shape[1:3]),
                 self._mask_opacity,
-                self._active_component,
+                self._active_component if self._show_selected_masks else None,
                 self._marked,
                 {
                     k: rgb
                     for k, rgb in self._group_colors().items()
                     if isinstance(k, int)
-                },
+                }
+                if self._show_selected_masks
+                else {},
+                self._selected_mask_opacity,
             )
             if self._show_masks
             else None
@@ -644,12 +652,11 @@ class SingleSessionDemixingVis:
         show = self._show_contours
         # the selected and grouped components' contours; the roi panel's "contours" adds every footprint's
         self._image_selector = fpl.ImageHighlightSelector(
-            lut="tab10",
             lut_wrap="repeat",
             selection_options={"pixels": self._ac_array.contours},
             options_color="w",
             options_alpha=self._contour_opacity,
-            alpha=0.7,
+            alpha=self._selected_contour_opacity if self._show_selected_contours else 0.0,
         )
         self._set_contours(show)
 
@@ -890,15 +897,34 @@ class SingleSessionDemixingVis:
         return picks
 
     def _sync_highlight(self):
-        """The contour selector and the mask overlay both show the group plus the selection."""
+        """The contour selector and the mask overlay both show the group plus the selection, in the same colors."""
         if self._image_selector is not None:
-            self._image_selector.selection = self._highlighted()
+            picks = self._highlighted()
+            grouped = self._group_colors()
+            if picks:
+                # the contour of a highlighted signal takes its mask's color, so it matches its trace too
+                self._image_selector.lut = np.array(
+                    [
+                        (
+                            *(
+                                MARKED_COLOR
+                                if k in self._marked
+                                else grouped.get(k, self._footprints.color(k))
+                            ),
+                            1.0,
+                        )
+                        for k in picks
+                    ],
+                    np.float32,
+                )
+            self._image_selector.selection = picks
         self._refresh_masks()
 
     def _update_traces(self):
         """
         One signal: its compressed / signal / background / residual roi averages. A group, or any pixel
-        average or drawn roi: every member's compressed average, colored like its mask or table row.
+        average or drawn roi: one line per member, colored like its mask or table row - a signal's
+        demixed trace, a pixel average or drawn roi's compressed average.
         Nothing unless "show selected traces" is on.
         """
         if not self._show_traces:
@@ -926,9 +952,10 @@ class SingleSessionDemixingVis:
                         )
                     )
                 else:
-                    lines.append(
-                        (f"signal {k}", results.compression_array_roi_averages[k].cpu().numpy(), rgb)
-                    )
+                    # lam to scale
+                    _y, _x, lam = self._footprints.footprints[k]
+                    trace = float(lam.mean()) * results.temporal_demixed[:, k]
+                    lines.append((f"signal {k}", trace.cpu().numpy(), rgb))
                 self._selected_signals.append(k)
         elif self._active_component is not None:
             k = self._active_component
@@ -1079,7 +1106,7 @@ class SingleSessionDemixingVis:
             self._select_component(self._order.current)
 
     def _set_contours(self, show: bool):
-        """The selection's contour is always drawn; ``show`` adds every other footprint's at the contour opacity."""
+        """``show`` draws every other footprint's contour at the contour opacity; the selection's has its own pair."""
         self._show_contours = show
         if self._image_selector is None:
             return
@@ -1696,27 +1723,52 @@ class SingleSessionDemixingVis:
                 self._show_masks = show
                 self._refresh_masks()
             g.cell(0)
-            imgui.set_next_item_width(g.span)
+            imgui.set_next_item_width(g.w)
             changed, self._mask_opacity = imgui.slider_float(
-                "##mask-opacity", self._mask_opacity, 0.05, 1.0, "opacity %.2f"
+                "##mask-opacity", self._mask_opacity, 0.05, 1.0, "%.2f"
             )
             if changed and self._show_masks:
                 self._refresh_masks()
+            help_mark("every footprint's mask at this opacity")
+            changed, show = imgui.checkbox("sel masks", self._show_selected_masks)
+            if changed:
+                self._show_selected_masks = show
+                self._refresh_masks()
+            g.cell(0)
+            imgui.set_next_item_width(g.w)
+            changed, self._selected_mask_opacity = imgui.slider_float(
+                "##selected-mask-opacity", self._selected_mask_opacity, 0.05, 1.0, "%.2f"
+            )
+            if changed and self._show_selected_masks:
+                self._refresh_masks()
+            help_mark("the selected and grouped masks, filled at this opacity with a white rim")
             changed, show = imgui.checkbox("contours", self._show_contours)
             if changed:
                 self._set_contours(show)
             g.cell(0)
-            imgui.set_next_item_width(g.span)
+            imgui.set_next_item_width(g.w)
             changed, self._contour_opacity = imgui.slider_float(
-                "##contour-opacity", self._contour_opacity, 0.05, 1.0, "opacity %.2f"
+                "##contour-opacity", self._contour_opacity, 0.05, 1.0, "%.2f"
             )
             if changed and self._show_contours:
                 self._image_selector.options_alpha = self._contour_opacity
-            help_mark("every footprint's contour at this opacity; the selection's contour always shows")
+            help_mark("every other footprint's contour at this opacity")
+            changed, show = imgui.checkbox("sel contours", self._show_selected_contours)
+            if changed:
+                self._show_selected_contours = show
+                self._image_selector.alpha = self._selected_contour_opacity if show else 0.0
+            g.cell(0)
+            imgui.set_next_item_width(g.w)
+            changed, self._selected_contour_opacity = imgui.slider_float(
+                "##selected-contour-opacity", self._selected_contour_opacity, 0.05, 1.0, "%.2f"
+            )
+            if changed and self._show_selected_contours:
+                self._image_selector.alpha = self._selected_contour_opacity
+            help_mark("the selected and grouped contours, in their mask's color at this opacity")
         if self._order is not None:
             g.row("color by")
             names = ["signal id", *[n for n in self._order.columns if n != "del"]]
-            imgui.set_next_item_width(g.span)
+            imgui.set_next_item_width(g.w)
             changed, index = imgui.combo("##color_by", names.index(self._color_by) if self._color_by in names else 0, names)
             if changed:
                 self._color_by = names[index]
@@ -1737,8 +1789,9 @@ class SingleSessionDemixingVis:
         if changed:
             self._update_traces()
         help_mark(
-            "plot whatever is selected: a signal's four averages, or one compressed average per grouped "
-            "signal, pixel average and drawn roi. off, selecting only highlights, however big the selection"
+            "plot whatever is selected: a signal's four averages, or one line per group member - a "
+            "grouped signal's demixed trace, a pixel average's or drawn roi's compressed average. "
+            "off, selecting only highlights, however big the selection"
         )
 
         section("ROIS")
