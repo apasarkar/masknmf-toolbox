@@ -2,7 +2,7 @@ from typing import *
 import numpy as np
 from masknmf import display
 from masknmf.compression import CompressionArray, TrendArray
-from masknmf.demixing.demixing_arrays import SignalsArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulACArray, StaticBackgroundArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode, MultiunitBackgroundArray
+from masknmf.demixing.demixing_arrays import SignalsArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulSignalsArray, StaticBackgroundArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode, MultiunitBackgroundArray
 import torch
 from masknmf.utils import Serializer, SparseCOOTensor
 from masknmf.arrays.array_interfaces import TensorFlyWeight
@@ -613,7 +613,7 @@ class DemixingResults(Serializer):
         return self._residual_array
 
     @property
-    def colorful_ac_array(self) -> ColorfulACArray:
+    def colorful_ac_array(self) -> ColorfulSignalsArray:
         if self._colorful_ac_array is None:
-            self._colorful_ac_array = ColorfulACArray.from_flyweight(self.fov_shape, self.flyweight)
+            self._colorful_ac_array = ColorfulSignalsArray.from_flyweight(self.fov_shape, self.flyweight)
         return self._colorful_ac_array

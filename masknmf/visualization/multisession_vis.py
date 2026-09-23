@@ -113,9 +113,9 @@ class MultiSessionDemixingVis:
                                                               curr_a.to(self.device),
                                                               curr_c.to(self.device))
 
-            curr_colorful_ac_array = masknmf.ColorfulACArray.from_tensors(curr_shape[1:],
-                                                                          curr_a.to(self.device),
-                                                                          curr_c.to(self.device))
+            curr_colorful_ac_array = masknmf.ColorfulSignalsArray.from_tensors(curr_shape[1:],
+                                                                               curr_a.to(self.device),
+                                                                               curr_c.to(self.device))
 
             self._ac_arrays.append(curr_ac_array)
             self._colorful_ac_arrays.append(curr_colorful_ac_array)
@@ -383,7 +383,7 @@ class MultiSessionDemixingVis:
         return self._ac_arrays
 
     @property
-    def colorful_ac_arrays(self) -> list[masknmf.ColorfulACArray]:
+    def colorful_ac_arrays(self) -> list[masknmf.ColorfulSignalsArray]:
         return self._colorful_ac_arrays
 
     def _apply_consistent_coloring(self):

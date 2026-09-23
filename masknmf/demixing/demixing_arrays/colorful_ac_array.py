@@ -4,7 +4,7 @@ import torch
 from masknmf.utils import SparseCOOTensor
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
 
-class ColorfulACArray(ArrayLike):
+class ColorfulSignalsArray(ArrayLike):
     """
     Factorized video for the spatial and temporal extracted sources from the data
     """
@@ -53,7 +53,7 @@ class ColorfulACArray(ArrayLike):
         Args:
             fov_shape (tuple): (fov_height, fov_width)
             spatial_demixed (torch.sparse_coo_tensor): Shape (pixels, components)
-            temporal_demixed (torch.tensor). Shape (frames, components)
+            temporal_demixed (torch.Tensor). Shape (frames, components)
             min_color (int): Minimum RGB value (from 0 to 255)
             max_color (int): Maximum RGB value (from 0 to 255)
         """

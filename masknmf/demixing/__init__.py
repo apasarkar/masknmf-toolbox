@@ -1,6 +1,6 @@
 from masknmf.demixing.signal_demixer import SignalDemixer, InitializingState, DemixingState, DemixingError, NoSignalsDetectedError
 from masknmf.demixing.demixing_results import DemixingResults
-from masknmf.demixing.demixing_arrays import SignalsArray, StandardCorrelationImages, ResidualCorrelationImages, ResidCorrMode, FluctuatingBackgroundArray, ColorfulACArray, ResidualArray
+from masknmf.demixing.demixing_arrays import SignalsArray, StandardCorrelationImages, ResidualCorrelationImages, ResidCorrMode, FluctuatingBackgroundArray, ColorfulSignalsArray, ResidualArray
 
 from masknmf.demixing.background_estimation import RingModel
 from masknmf.demixing.demixing_utils import torch_sparse_to_scipy_coo, ndarray_to_torch_sparse_coo
@@ -15,7 +15,7 @@ __all__ = [
     "ResidualCorrelationImages",
     "ResidCorrMode",
     "FluctuatingBackgroundArray",
-    "ColorfulACArray",
+    "ColorfulSignalsArray",
     "ResidualArray",
     "DemixingResults",
     "SignalDemixer",

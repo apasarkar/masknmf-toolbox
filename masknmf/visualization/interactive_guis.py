@@ -12,7 +12,7 @@ from masknmf.utils import display
 from masknmf.demixing import DemixingResults
 from masknmf.compression import CompressionArray
 from masknmf.demixing import InitializationResults
-from masknmf.demixing.demixing_arrays import SignalsArray, ColorfulACArray
+from masknmf.demixing.demixing_arrays import SignalsArray, ColorfulSignalsArray
 from masknmf.demixing.demixing_utils import brightness_order
 
 def signal_space_demixing(demixing_results: masknmf.DemixingResults,
@@ -307,7 +307,7 @@ def quantile_segregated_signal_gui(ac_arr: masknmf.SignalsArray,
         end = points[k+1]
         current_subset = brightness_ordering[start:end]
         curr_ac = SignalsArray(ac_arr.shape[1:], ac_arr.spatial_demixed, ac_arr.temporal_demixed)
-        curr_colorful_ac = ColorfulACArray(ac_arr.shape[1:], ac_arr.spatial_demixed, ac_arr.temporal_demixed)
+        curr_colorful_ac = ColorfulSignalsArray(ac_arr.shape[1:], ac_arr.spatial_demixed, ac_arr.temporal_demixed)
         curr_mask = torch.zeros_like(curr_ac.mask)
         curr_mask[current_subset] = 1.0
         curr_ac.mask = curr_mask
