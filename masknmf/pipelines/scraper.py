@@ -440,6 +440,10 @@ def coerce(param: Param, text: str) -> Any:
             except ValueError as error:
                 raise ValueError(f"{param.name}: {error}") from error
 
+    if param.choices is not None:
+        raise ValueError(
+            f"{param.name}: expected one of {', '.join(str(c) for c in param.choices)}, got {text!r}"
+        )
     raise ValueError(f"{param.name} cannot be set from the command line")
 
 
