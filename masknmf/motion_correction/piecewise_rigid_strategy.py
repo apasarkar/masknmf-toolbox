@@ -82,7 +82,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
             self,
             minimum_patch_sizes: tuple[int, int] = (50, 50),
             overlaps: tuple[int, int] = (5, 5),
-            max_rigid_shifts: tuple[int, int] = (25, 25),
+            max_rigid_shifts: tuple[int, int] = (15, 15),
             max_deviation_rigid: tuple[int, int] = (2, 2),
             template: np.ndarray | None = None,
             pixel_weighting: np.ndarray | None = None,
