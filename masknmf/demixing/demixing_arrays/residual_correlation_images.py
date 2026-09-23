@@ -29,8 +29,8 @@ class ResidualCorrelationImages(ArrayLike):
                                             "spatial_demixed",
                                             "temporal_demixed",
                                             "residual_correlation_image_support_values",
-                                            "resid_corr_img_mean",
-                                            "resid_corr_img_normalizer"])
+                                            "residual_correlation_image_mean",
+                                            "residual_correlation_image_normalizer"])
         self._temporal_demixed_norm = self.temporal_demixed - torch.mean(self.temporal_demixed, dim=0, keepdim=True)
         self._temporal_demixed_norm = self._temporal_demixed_norm / torch.linalg.norm(
             self._temporal_demixed_norm, dim=0, keepdim=True
@@ -57,8 +57,8 @@ class ResidualCorrelationImages(ArrayLike):
         spatial_demixed: SparseCOOTensor,
         temporal_demixed: torch.Tensor,
         residual_correlation_image_support_values: SparseCOOTensor,
-        resid_corr_img_mean: torch.Tensor,
-        resid_corr_img_normalizer: torch.Tensor,
+        residual_correlation_image_mean: torch.Tensor,
+        residual_correlation_image_normalizer: torch.Tensor,
         fov_dims: tuple[int, int],
         mode: ResidCorrMode = ResidCorrMode.DEFAULT,
     ):
@@ -81,8 +81,8 @@ class ResidualCorrelationImages(ArrayLike):
             temporal_demixed (torch.Tensor): shape (frames, number of neural signals). This is the temporal traces matrix
             residual_correlation_image_support_values (torch.sparse_coo_tensor): Shape (pixels, number of neural signals). The i-th
                 gives the residual correlation image for neural signal "i" on its spatial support.
-            resid_corr_img_mean (torch.Tensor): shape (pixels)
-            resid_corr_img_normalizer (torch.Tensor): shape (pixels)
+            residual_correlation_image_mean (torch.Tensor): shape (pixels)
+            residual_correlation_image_normalizer (torch.Tensor): shape (pixels)
             fov_dims (tuple): A tuple of two values describing the field height/width of the field of view.
             mode (ResidCorrMode): The mode of the residual correlation image
         """
@@ -93,8 +93,8 @@ class ResidualCorrelationImages(ArrayLike):
                                     spatial_demixed=spatial_demixed,
                                     temporal_demixed=temporal_demixed,
                                     residual_correlation_image_support_values=residual_correlation_image_support_values,
-                                    resid_corr_img_mean=resid_corr_img_mean,
-                                    resid_corr_img_normalizer=resid_corr_img_normalizer,
+                                    residual_correlation_image_mean=residual_correlation_image_mean,
+                                    residual_correlation_image_normalizer=residual_correlation_image_normalizer,
                                     )
 
         return cls(flyweight,
@@ -177,12 +177,12 @@ class ResidualCorrelationImages(ArrayLike):
         return self.flyweight.residual_correlation_image_support_values
 
     @property
-    def resid_corr_img_mean(self) -> torch.Tensor:
-        return self.flyweight.resid_corr_img_mean
+    def residual_correlation_image_mean(self) -> torch.Tensor:
+        return self.flyweight.residual_correlation_image_mean
 
     @property
-    def resid_corr_img_normalizer(self) -> torch.Tensor:
-        return self.flyweight.resid_corr_img_normalizer
+    def residual_correlation_image_normalizer(self) -> torch.Tensor:
+        return self.flyweight.residual_correlation_image_normalizer
 
     @property
     def factorized_background_term1(self) -> torch.Tensor:
@@ -231,16 +231,16 @@ class ResidualCorrelationImages(ArrayLike):
             support_values_crop = torch.index_select(
                 support_values_crop, 0, u_indices
             ).coalesce()
-            mean_crop = torch.index_select(self.resid_corr_img_mean, 0, u_indices)
+            mean_crop = torch.index_select(self.residual_correlation_image_mean, 0, u_indices)
             movie_normalizer_crop = torch.index_select(
-                self.resid_corr_img_normalizer, 0, u_indices
+                self.residual_correlation_image_normalizer, 0, u_indices
             )
             implied_fov = pixel_space_crop.shape
         else:
             u_crop = self.spatial_compressed
             a_crop = self.spatial_demixed
-            mean_crop = self.resid_corr_img_mean
-            movie_normalizer_crop = self.resid_corr_img_normalizer
+            mean_crop = self.residual_correlation_image_mean
+            movie_normalizer_crop = self.residual_correlation_image_normalizer
             implied_fov = self.shape[1], self.shape[2]
 
         # Temporal term is guaranteed to have nonzero "T" dimension below
