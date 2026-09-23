@@ -1,6 +1,5 @@
 import scipy.sparse
 import torch
-from typing import *
 from tqdm import tqdm
 import math
 from masknmf.utils import SparseCOOTensor
@@ -133,7 +132,7 @@ def temporal_update_hals(
         a: (d1*d2, k)-shaped torch.sparse_coo_tensor
         c: (T, k)-shaped torch.Tensor
         b: (d1*d2, 1)-shaped torch.Tensor
-        q Optional[torch.Tensor]: This is the factorized ring model term; u@r@q@v gives you the full ring model movie
+        q (torch.Tensor | None): This is the factorized ring model term; u@r@q@v gives you the full ring model movie
         c_nonneg (bool): Indicates whether "c" should be nonnegative or fully unconstrained. For voltage data, it should be unconstrained; for calcium it should be constrained.
         blocks torch.Tensor | list: Describes which components can be updated in parallel. Typically a list of 1D tensors, each describing indices
 
@@ -188,7 +187,7 @@ def temporal_update_hals(
 
     return c
 
-def _fast_a_squared_norm(a: torch.sparse_coo_tensor):
+def _fast_a_squared_norm(a: SparseCOOTensor):
     """
     Returns the l2 norm of each column of a
     Assumes "a" is coalesced
