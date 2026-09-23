@@ -469,11 +469,11 @@ def append_signals(
         a (torch.sparse_coo_tensor): shape (fov_height*fov_width, K), the existing spatial footprints
         c (torch.tensor): shape (T, K), the existing temporal footprints
         init_res (InitializationResults): the new signals
-        spatial_compressed, temporal_compressed: the PMD factors, used for the baseline
+        spatial_compressed, temporal_compressed: the CompressionArray factors, used for the baseline
     """
     a = a.coalesce()
-    a_new = init_res.a.coalesce().to(a.device)
-    c_new = init_res.c.to(c.device)
+    a_new = init_res.spatial_demixed.coalesce().to(a.device)
+    c_new = init_res.temporal_demixed.to(c.device)
     a_row, a_col = a.indices()
     new_row, new_col = a_new.indices()
     rows = torch.cat([a_row, new_row])

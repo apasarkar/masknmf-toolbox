@@ -24,7 +24,6 @@ def signal_space_demixing(demixing_results: masknmf.DemixingResults,
     ac_arr = demixing_results.signals_array
     num_frames, fov_dim1, fov_dim2 = pmd_arr.shape
 
-    data_order = demixing_results.signals_array.order
     a_dense = demixing_results.signals_array.export_spatial_demixed()
     c_numpy = demixing_results.signals_array.export_temporal_demixed()
     print(c_numpy.shape)
