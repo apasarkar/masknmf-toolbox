@@ -1021,7 +1021,7 @@ def compute_pwrigid_patch_midpoints(minimum_patch_sizes: tuple[int, int],
         fov_height (int): The fov height
         fov_width (int): The fov width
     Returns:
-        midpoints (torch.Tensor): Shape (minimum_patch_sizes[0], minimum_patch_sizes[1], 2). Gives the height/width dimensions for the height and width
+        midpoints (torch.Tensor): Shape (num_blocks_height, num_blocks_width, 2). Gives the height/width dimensions for the height and width
             midpoints respectively
     """
     strides, dim1_start_pts, dim2_start_pts = compute_stride_routine(
