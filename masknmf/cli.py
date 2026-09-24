@@ -24,6 +24,7 @@ import shutil
 import sys
 from pathlib import Path
 
+import h5py
 import numpy as np
 
 import masknmf
@@ -112,17 +113,25 @@ def has_stage(filepath_results: str, name_group: str) -> bool:
 
 
 def groups_present(filepath_results: str) -> list[str]:
-    """The masknmf stage groups a results file holds, in pipeline order."""
+    """The masknmf stage groups a results file holds, in pipeline order, then demixing results under a prefix."""
     names_known = (
         *group_names_registration(),
         group_name_compression(),
         group_name_demixing(),
     )
-    return [
+    names = [
         name
         for name in names_known
         if has_stage(filepath_results=filepath_results, name_group=name)
     ]
+    if len(names) > 0:
+        with h5py.File(filepath_results, "r") as f:
+            names += [
+                f"{key}/{group_name_demixing()}"
+                for key in f
+                if isinstance(f[key], h5py.Group) and group_name_demixing() in f[key]
+            ]
+    return names
 
 
 def format_command(argv: list[str]) -> str:
@@ -496,19 +505,23 @@ def command_view(args: argparse.Namespace) -> None:
     if args.list:
         return
 
+    name_demixing = f"{args.prefix}/{group_name_demixing()}" if args.prefix else group_name_demixing()
+    if name_demixing not in names_present and args.prefix:
+        fail(f"{args.results} holds no {name_demixing}")
+
     import fastplotlib as fpl
 
     device = (
         str(masknmf.utils.torch_select_device()) if args.device == "auto" else args.device
     )
     viewers = []
+    raw = None if args.raw is None else load_movie(filepath_movie=args.raw, name_dataset=args.dataset)
     registered = None
 
     name_registration = next(
         (n for n in group_names_registration() if n in names_present), None
     )
-    if name_registration is not None and args.raw is not None:
-        raw = load_movie(filepath_movie=args.raw, name_dataset=args.dataset)
+    if name_registration is not None and raw is not None:
         registered = getattr(masknmf, name_registration).from_hdf5(
             args.results, input_movie=raw
         )
@@ -522,34 +535,37 @@ def command_view(args: argparse.Namespace) -> None:
     elif name_registration is not None:
         print(f"skipping the {name_registration} viewer; it needs --raw")
 
-    if group_name_compression() in names_present and registered is not None:
+    if group_name_compression() in names_present and raw is not None:
         compressed = masknmf.CompressionArray.from_hdf5(args.results)
+        # with registration skipped, the raw movie is what was compressed
         viewers.append(
             masknmf.CompressionVis(
-                moco_stack=registered,
+                moco_stack=raw if registered is None else registered,
                 pmd_stack=compressed,
                 frame_timings=timings(compressed.shape[0], args.fs),
                 device=device,
             )
         )
+    elif group_name_compression() in names_present:
+        print(f"skipping the {group_name_compression()} viewer; it needs --raw")
 
-    if group_name_demixing() in names_present:
-        results = masknmf.DemixingResults.from_hdf5(args.results, device=device)
+    if name_demixing in names_present:
+        results = masknmf.DemixingResults.from_hdf5(args.results, prefix=args.prefix, device=device)
+    elif group_name_compression() in names_present:
+        results = masknmf.CompressionArray.from_hdf5(args.results)
+    else:
+        results = None
+    if results is not None:
+        # a raw movie the pipeline trimmed (the glutamate pipeline drops its first frames) no longer lines up
+        if raw is not None and tuple(raw.shape) != tuple(results.shape):
+            print(f"raw movie is {tuple(raw.shape)}, the results {tuple(results.shape)}; no raw panel")
         viewers.append(
             masknmf.SingleSessionDemixingVis(
                 demixing_results=results,
                 frame_timings=timings(results.shape[0], args.fs),
                 device=device,
                 results_path=args.results,
-            )
-        )
-    elif group_name_compression() in names_present:
-        compressed = masknmf.CompressionArray.from_hdf5(args.results)
-        viewers.append(
-            masknmf.SingleSessionDemixingVis(
-                demixing_results=compressed,
-                frame_timings=timings(compressed.shape[0], args.fs),
-                device=device,
+                raw=raw if raw is not None and tuple(raw.shape) == tuple(results.shape) else None,
             )
         )
 
@@ -615,6 +631,9 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_view.add_argument("--raw", default=None, help="the raw movie the results came from")
     parser_view.add_argument("--dataset", default=None)
     parser_view.add_argument("--fs", default=None, type=float, help="acquisition rate in Hz")
+    parser_view.add_argument(
+        "--prefix", default="", help="group the demixing results sit under, e.g. global for the glutamate pipeline's whole-dendrite result"
+    )
     parser_view.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     parser_view.add_argument(
         "--list", action="store_true", help="print what the file holds and exit"

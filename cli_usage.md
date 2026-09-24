@@ -232,4 +232,5 @@ masknmf view results.hdf5 --list                  # print which stage groups the
 masknmf view results.hdf5                         # demixing (or compression-only) viewer
 masknmf view results.hdf5 --raw movie.tif --fs 30 # + motion and compression viewers (need the raw movie)
 masknmf view results.hdf5 --raw raw.h5 --dataset /mov --device cpu
+masknmf view results.glutamate.hdf5 --prefix global  # the glutamate pipeline's whole-dendrite result
 ```
