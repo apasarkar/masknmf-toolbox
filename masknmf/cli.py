@@ -634,6 +634,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         if argv is None:
             return
         print(f"masknmf {format_command(argv=argv)}")
+    else:
+        print("\r\033[K", end="", file=sys.stderr, flush=True)
 
     bootstrap, _ = build_bootstrap_parser().parse_known_args(argv)
     if argv[:1] == ["run"] and bootstrap.pipeline is None and bootstrap.config is not None:

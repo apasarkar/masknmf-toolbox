@@ -11,6 +11,7 @@ from typing import Any, Optional
 import copy
 import dataclasses
 import json
+import sys
 import typing
 from pathlib import Path
 
@@ -1149,5 +1150,6 @@ def run_launcher() -> Optional[list[str]]:
     DIR_CONFIG.mkdir(parents=True, exist_ok=True)
     window = Launcher()
     window.attach(canvas=RenderCanvas(title="masknmf", size=SIZE_WINDOW, update_mode="continuous", max_fps=60), loop=loop)
+    print("\r\033[K", end="", file=sys.stderr, flush=True)
     loop.run()
     return window.argv
