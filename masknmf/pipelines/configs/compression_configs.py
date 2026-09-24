@@ -34,3 +34,8 @@ class CompressDenoiseConfig:
     noise_variance_quantile: float = 0.3
     num_epochs: int = 10
     detrender: SplineDetrenderBase | None = None
+
+"""
+Every config a pipeline's compression step can take; see MotionCorrectionConfigs.
+"""
+CompressionConfigs = CompressConfig | CompressDenoiseConfig
