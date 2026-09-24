@@ -41,9 +41,7 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         """
         self._motion_correct_config = motion_correct_config
         self._compress_config = compress_config
-        self._output_folder = output_folder
-        self._frame_batch_size = frame_batch_size
-        self._device = device
+        super().__init__(output_folder, frame_batch_size, device)
 
     @property
     def motion_correct_config(self) -> RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig | Literal[
@@ -53,14 +51,6 @@ class WidefieldSinglechannelPipeline(BasePipeline):
     @property
     def compress_config(self) -> CompressConfig | CompressDenoiseConfig | None:
         return self._compress_config
-
-    @property
-    def frame_batch_size(self) -> int:
-        return self._frame_batch_size
-
-    @property
-    def device(self) -> Literal["auto", "cuda", "cpu"]:
-        return self._device
 
     @property
     def config(self):

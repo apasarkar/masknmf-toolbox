@@ -85,21 +85,17 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"):
 
-        if output_folder is None:
-            self._output_folder = None
-        else:
+        if output_folder is not None:
             output_folder = Path(output_folder).expanduser().resolve()
             if output_folder.exists() and not output_folder.is_dir():
                 raise NotADirectoryError(
                     f"output_folder exists and is not a directory: {output_folder}"
                 )
-            self._output_folder = output_folder
+        super().__init__(output_folder, frame_batch_size, device)
 
         self.motion_correct_config = motion_correct_config
         self.compress_config = compress_config
         self.demixing_config = demixing_config
-        self._frame_batch_size = frame_batch_size
-        self._device = device
 
     @property
     def motion_correct_config(self) -> RigidMotionCorrectionConfig | None:
@@ -139,14 +135,6 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             if len(updated_config.DemixingConfigs) < 1:
                 raise ValueError("Must have sufficient configs for at least one pass of NMF in demixing configs")
             self._demixing_config = updated_config
-
-    @property
-    def frame_batch_size(self) -> int:
-        return self._frame_batch_size
-
-    @property
-    def device(self) -> Literal["auto", "cuda", "cpu"]:
-        return self._device
 
     @property
     def config(self):

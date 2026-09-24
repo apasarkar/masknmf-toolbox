@@ -7,6 +7,13 @@ from typing import *
 from masknmf.pipelines.scraper import slugify
 
 class BasePipeline(ABC):
+    def __init__(self,
+                 output_folder: str | Path | None = None,
+                 frame_batch_size: int = 300,
+                 device: Literal["auto", "cuda", "cpu"] = "auto"):
+        self._output_folder = output_folder
+        self._frame_batch_size = frame_batch_size
+        self._device = device
 
     @property
     @abstractmethod
@@ -16,6 +23,14 @@ class BasePipeline(ABC):
     @property
     def output_folder(self) -> str | Path | None:
         return self._output_folder
+
+    @property
+    def frame_batch_size(self) -> int:
+        return self._frame_batch_size
+
+    @property
+    def device(self) -> Literal["auto", "cuda", "cpu"]:
+        return self._device
 
     def create_run_folder(self) -> Path:
         """

@@ -52,9 +52,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         self._spatial_highpass_config = spatial_highpass_config
         self._filtered_demixing_config = filtered_demixing_config
         self._unfiltered_demixing_config = unfiltered_demixing_config
-        self._output_folder = output_folder
-        self._frame_batch_size = frame_batch_size
-        self._device = device
+        super().__init__(output_folder, frame_batch_size, device)
 
     @property
     def motion_correct_config(self) -> RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig | Literal[
@@ -76,14 +74,6 @@ class TwoPhotonCalciumPipeline(BasePipeline):
     @property
     def unfiltered_demixing_config(self) -> MultipassDemixingConfig | None:
         return self._unfiltered_demixing_config
-
-    @property
-    def frame_batch_size(self) -> int:
-        return self._frame_batch_size
-
-    @property
-    def device(self) -> Literal["auto", "cuda", "cpu"]:
-        return self._device
 
     @property
     def config(self):

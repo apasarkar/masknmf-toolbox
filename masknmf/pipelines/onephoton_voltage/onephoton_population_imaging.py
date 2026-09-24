@@ -300,10 +300,8 @@ class OnePhotonCulturePipeline(BasePipeline):
             curr_config = compress_config
 
         self._compress_config = curr_config
-        self._output_folder = output_folder
         self._load_into_ram = load_into_ram
-        self._frame_batch_size = frame_batch_size
-        self._device = device
+        super().__init__(output_folder, frame_batch_size, device)
 
         if demixing_config is None:
             conf_list = []
@@ -340,14 +338,6 @@ class OnePhotonCulturePipeline(BasePipeline):
     @property
     def load_into_ram(self) -> bool:
         return self._load_into_ram
-
-    @property
-    def frame_batch_size(self) -> int:
-        return self._frame_batch_size
-
-    @property
-    def device(self) -> Literal["auto", "cuda", "cpu"]:
-        return self._device
 
     @property
     def config(self):
