@@ -15,6 +15,7 @@ import typing
 from pathlib import Path
 
 import imgui_data_loader as idl
+import numpy as np
 from imgui_bundle import hello_imgui, imgui, imgui_ctx
 from imgui_bundle import icons_fontawesome_6 as fa
 from imgui_bundle import portable_file_dialogs as pfd
@@ -46,6 +47,11 @@ COLORS_RUN = (
     imgui.ImVec4(0.18, 0.65, 0.18, 1.0),
     imgui.ImVec4(0.10, 0.45, 0.10, 1.0),
 )
+COLORS_DEFAULTS = (
+    imgui.ImVec4(0.60, 0.35, 0.10, 1.0),
+    imgui.ImVec4(0.70, 0.42, 0.14, 1.0),
+    imgui.ImVec4(0.50, 0.28, 0.08, 1.0),
+)
 
 WIDTH_INPUT_EM = 7.5
 WIDTH_MIN_EM = 24
@@ -66,12 +72,39 @@ def text_default(param: scraper.Param) -> str:
 
 
 def text_of(value: Any) -> str:
-    """A config field's value as the text box editing it shows it."""
+    """A config field's value as text: numbers and lists of them in full, configs by kind, anything else by type."""
     if value is None:
         return ""
+    if isinstance(value, np.ndarray):
+        return f"array {' x '.join(str(n) for n in value.shape)}"
+    if dataclasses.is_dataclass(value):
+        return scraper.kind_of(value=value)
+    if isinstance(value, float):
+        return f"{value:.6g}"
     if isinstance(value, (list, tuple)):
-        return ", ".join(f"{v:.6g}" if isinstance(v, float) else str(v) for v in value)
-    return str(value)
+        return ", ".join(text_of(value=v) for v in value)
+    if isinstance(value, (bool, int, str)):
+        return str(value)
+    return type(value).__name__
+
+
+def kind_or_none(value: Any) -> str:
+    """The kind of a config, "none" for None."""
+    return "none" if value is None else scraper.kind_of(value=value)
+
+
+def same(a: Any, b: Any) -> bool:
+    """Whether two config values are equal, comparing arrays by content instead of failing on them."""
+    if dataclasses.is_dataclass(a) or dataclasses.is_dataclass(b):
+        return type(a) is type(b) and all(same(getattr(a, f.name), getattr(b, f.name)) for f in dataclasses.fields(a))
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        return isinstance(a, np.ndarray) and isinstance(b, np.ndarray) and a.shape == b.shape and bool(np.array_equal(a, b))
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b))
+    try:
+        return bool(a == b)
+    except (TypeError, ValueError):
+        return a is b
 
 
 def widget_for(param: scraper.Param) -> str:
@@ -103,9 +136,16 @@ def widget_for(param: scraper.Param) -> str:
     return "text"
 
 
+def is_number(value: Any) -> bool:
+    """Whether a value is an int or a float, booleans excluded."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def widget_for_field(param: scraper.Param, value: Any) -> str:
     """
-    Which widget edits a config field, judged by its annotation and the value it holds.
+    Which widget edits a config field, judged first by the value it holds and then by its annotation,
+    so a default of another type than annotated (None in an int field, a list in a tuple field) still
+    gets a widget that shows it.
 
     Args:
         param (Param): The field
@@ -113,12 +153,20 @@ def widget_for_field(param: scraper.Param, value: Any) -> str:
     Returns:
         str: "bool", "choice", "int", "float", "int2", "float2", "sequence" or "text"
     """
-    widget = widget_for(param=param)
-    if widget in ("bool", "choice", "int", "float", "int2"):
-        return widget
-    if isinstance(value, (list, tuple)) and len(value) == 2 and all(isinstance(v, int) for v in value):
+    members, _ = scraper.annotation_members(annotation=param.annotation)
+    if value is None:
+        return "text"
+    if isinstance(value, bool):
+        return "bool" if bool in members else "text"
+    if param.choices is not None and value in param.choices:
+        return "choice"
+    if isinstance(value, int) and int in members:
+        return "int"
+    if is_number(value=value) and float in members:
+        return "float"
+    if isinstance(value, (list, tuple)) and len(value) == 2 and all(isinstance(v, int) and not isinstance(v, bool) for v in value):
         return "int2"
-    if isinstance(value, (list, tuple)) and len(value) == 2 and all(isinstance(v, (int, float)) for v in value):
+    if isinstance(value, (list, tuple)) and len(value) == 2 and all(is_number(value=v) for v in value):
         return "float2"
     if isinstance(value, (list, tuple)):
         return "sequence"
@@ -208,16 +256,16 @@ def diff_config(current: Any, default: Any, path: str, rows: list) -> None:
                 )
         return
     if dataclasses.is_dataclass(current) or dataclasses.is_dataclass(default):
-        if scraper.kind_of(value=current) != scraper.kind_of(value=default):
-            rows.append((path, scraper.kind_of(value=current), scraper.kind_of(value=default)))
+        rows.append((path, kind_or_none(value=current), kind_or_none(value=default)))
         return
-    if isinstance(current, list) and len(current) > 0 and dataclasses.is_dataclass(current[0]):
+    holds_configs = any(isinstance(v, list) and len(v) > 0 and dataclasses.is_dataclass(v[0]) for v in (current, default))
+    if holds_configs and isinstance(current, list) and isinstance(default, list):
         if len(current) != len(default):
             rows.append((f"{path} passes", str(len(current)), str(len(default))))
         for i, item in enumerate(current):
             diff_config(current=item, default=default[i] if i < len(default) else NO_DEFAULT, path=f"{path}[{i}]", rows=rows)
         return
-    if current != default:
+    if not same(current, default):
         rows.append((path, text_of(value=current) or "none", text_of(value=default) or "none"))
 
 
@@ -285,7 +333,48 @@ class Launcher:
 
     def sections_changed(self) -> list[scraper.Section]:
         """The sections whose config differs from the pipeline's default."""
-        return [s for s in self.spec.sections if self.values[s.argument] != s.default]
+        return [s for s in self.spec.sections if not same(self.values[s.argument], s.default)]
+
+    def reset_field(self, config: Any, name: str, default: Any, path: str) -> None:
+        """Put one config field back to the pipeline's default."""
+        setattr(config, name, copy.deepcopy(default))
+        self.forget(path=path)
+
+    def reset_section(self, section: scraper.Section) -> None:
+        """Put a stage back to the pipeline's default config."""
+        self.values[section.argument] = section.value_for(kind=section.default_kind)
+        self.forget(path=section.argument)
+
+    def reset_all(self) -> None:
+        """Put every stage, run argument and constructor argument back to its default; paths and required values stay."""
+        for param in (*self.spec.run_scalars, *self.spec.scalars):
+            if not param.required:
+                self.texts[param.name] = text_default(param=param)
+        for section in self.spec.sections:
+            self.reset_section(section=section)
+
+    def select_nested(self, config: Any, name: str, kind: str, default: Any, path: str) -> None:
+        """
+        Give a nested config field another config, or None.
+
+        Args:
+            config (Any): The config holding the field
+            name (str): The field
+            kind (str): "none", or the kind of one of the configs the field's annotation allows
+            default (Any): The pipeline's default for the field, or NO_DEFAULT; choosing its kind restores it
+            path (str): Where the field sits
+        """
+        if kind == "none":
+            value = None
+        elif default is not NO_DEFAULT and default is not None and scraper.kind_of(value=default) == kind:
+            value = copy.deepcopy(default)
+        else:
+            annotation = scraper.resolve_hints(cls=type(config)).get(name)
+            members, _ = scraper.annotation_members(annotation=annotation)
+            by_kind = {scraper.config_kind(cls_config=m): m for m in members if dataclasses.is_dataclass(m)}
+            value = scraper.build_default(cls_config=by_kind[kind])
+        setattr(config, name, value)
+        self.forget(path=path)
 
     def params_folder(self) -> list[scraper.Param]:
         """Constructor arguments that name a folder, shown with the output section."""
@@ -525,10 +614,16 @@ class Launcher:
             self.draw_stage(section=section)
 
     def draw_stage(self, section: scraper.Section) -> None:
-        """A stage's box: which config it takes, then that config's fields."""
+        """A stage's box: which config it takes, a reset once it differs from the default, then the config's fields."""
         flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_use_window_padding
         with imgui_ctx.begin_child(f"##stage_{section.name}", imgui.ImVec2(0, 0), flags):
             imgui.text_colored(COLOR_TITLE, title_of(section=section))
+            if not same(self.values[section.argument], section.default):
+                same_line_if_fits(width=self.width_frame(text="Reset stage"))
+                if imgui.small_button(f"Reset stage##{section.name}"):
+                    self.reset_section(section=section)
+                if imgui.is_item_hovered():
+                    idl.wrapped_tooltip(f"Back to {label_of(kind=section.default_kind, section=section)} with the pipeline's values")
             kinds = cli.kinds_buildable(section=section)
             value = self.values[section.argument]
             kind = scraper.kind_of(value=value)
@@ -554,7 +649,8 @@ class Launcher:
 
     def draw_config(self, config: Any, default: Any, path: str) -> None:
         """
-        A config's editable fields; nested configs under their name, lists of configs one box per item.
+        A config's fields: nested configs under their name, lists of configs one box per item, editable
+        values with a widget, and values only Python can set shown read-only when they are set.
 
         Args:
             config (Any): The config dataclass being edited
@@ -570,37 +666,87 @@ class Launcher:
             current = getattr(config, field.name)
             default_field = NO_DEFAULT if default is NO_DEFAULT else getattr(default, field.name)
             path_field = f"{path}.{field.name}"
-            if dataclasses.is_dataclass(current):
-                imgui.spacing()
-                imgui.text_colored(COLOR_SUBSECTION, field.name)
-                imgui.indent(hello_imgui.em_size(0.8))
-                matches = default_field is not NO_DEFAULT and type(default_field) is type(current)
-                self.draw_config(config=current, default=default_field if matches else NO_DEFAULT, path=path_field)
-                imgui.unindent(hello_imgui.em_size(0.8))
-            elif scraper.item_dataclass_of(annotation=annotation) is not None:
-                self.draw_items(
-                    items=current,
-                    defaults=[] if default_field is NO_DEFAULT else default_field,
-                    cls_item=scraper.item_dataclass_of(annotation=annotation),
-                    path=path_field,
-                )
+            members, allows_none = scraper.annotation_members(annotation=annotation)
+            configs = [m for m in members if dataclasses.is_dataclass(m)]
+            classes_item = [scraper.item_dataclass_of(annotation=m) for m in members]
+            classes_item = [c for c in classes_item if c is not None]
+            if len(configs) > 0 or dataclasses.is_dataclass(current):
+                self.draw_nested(config=config, name=field.name, configs=configs, allows_none=allows_none,
+                                 default=default_field, path=path_field)
+            elif len(classes_item) > 0:
+                self.draw_items(config=config, name=field.name, cls_item=classes_item[0], default=default_field, path=path_field)
             elif params[field.name].settable:
                 self.draw_field(config=config, param=params[field.name], default=default_field, path=path_field)
+            elif current is not None:
+                draw_wrapped(text=f"{field.name}: {text_of(value=current)} (set from Python)", color=COLOR_DIM)
 
-    def draw_items(self, items: list, defaults: list, cls_item: type, path: str) -> None:
+    def draw_nested(self, config: Any, name: str, configs: list, allows_none: bool, default: Any, path: str) -> None:
         """
-        A list of configs, such as a multipass config's passes: a box per item with a remove button,
-        then a button adding a copy of the last item.
+        A nested config field: a dropdown when it can hold more than one config or None, then the held config's fields.
 
         Args:
-            items (list): The configs, edited in place
-            defaults (list): The pipeline's default list at the same place
+            config (Any): The config holding the field
+            name (str): The field
+            configs (list): The config classes its annotation allows
+            allows_none (bool): Whether its annotation allows None
+            default (Any): The pipeline's default for the field, or NO_DEFAULT
+            path (str): Where the field sits
+        """
+        current = getattr(config, name)
+        kinds = ["none"] if allows_none else []
+        for cls_config in configs:
+            try:
+                scraper.build_default(cls_config=cls_config)
+            except ValueError:
+                continue
+            kinds.append(scraper.config_kind(cls_config=cls_config))
+        kind = kind_or_none(value=current)
+        if kind not in kinds:
+            kinds.append(kind)
+        modified = default is not NO_DEFAULT and kind != kind_or_none(value=default)
+        imgui.spacing()
+        if len(kinds) > 1:
+            labels = [f"{k} (default)" if default is not NO_DEFAULT and k == kind_or_none(value=default) else k for k in kinds]
+            if modified:
+                imgui.push_style_color(imgui.Col_.text, COLOR_MODIFIED)
+            imgui.set_next_item_width(max(self.width_combo(items=labels), hello_imgui.em_size(WIDTH_INPUT_EM)))
+            edited, index = imgui.combo(f"##{path}", kinds.index(kind), labels)
+            if modified:
+                imgui.pop_style_color()
+            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+            draw_wrapped(text=name, color=COLOR_MODIFIED if modified else COLOR_SUBSECTION)
+            if edited:
+                self.select_nested(config=config, name=name, kind=kinds[index], default=default, path=path)
+            if modified and self.draw_reset(path=path, text_default=kind_or_none(value=default)):
+                self.reset_field(config=config, name=name, default=default, path=path)
+        else:
+            imgui.text_colored(COLOR_SUBSECTION, name)
+        current = getattr(config, name)
+        if dataclasses.is_dataclass(current):
+            imgui.indent(hello_imgui.em_size(0.8))
+            matches = default is not NO_DEFAULT and type(default) is type(current)
+            self.draw_config(config=current, default=default if matches else NO_DEFAULT, path=path)
+            imgui.unindent(hello_imgui.em_size(0.8))
+
+    def draw_items(self, config: Any, name: str, cls_item: type, default: Any, path: str) -> None:
+        """
+        A list of configs, such as a multipass config's passes: a box per item with a remove button,
+        then a button adding a copy of the last item, or a fresh one when the list is empty or None.
+
+        Args:
+            config (Any): The config holding the list
+            name (str): The list's field
             cls_item (type): The config class the list holds
+            default (Any): The pipeline's default list, or NO_DEFAULT
             path (str): Where the list sits
         """
+        items = getattr(config, name)
+        defaults = default if isinstance(default, list) else []
         flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_use_window_padding
+        if items is None or len(items) == 0:
+            draw_wrapped(text=f"{name}: none" if items is None else f"{name}: no passes", color=COLOR_DIM)
         removed = None
-        for i, item in enumerate(items):
+        for i, item in enumerate(items or []):
             with imgui_ctx.begin_child(f"##{path}[{i}]", imgui.ImVec2(0, 0), flags):
                 added = i >= len(defaults)
                 imgui.text_colored(COLOR_MODIFIED if added else COLOR_SUBSECTION, f"Pass {i + 1}{' (added)' if added else ''}")
@@ -613,28 +759,31 @@ class Launcher:
             del items[removed]
             self.forget(path=path)
         if imgui.button(f"{fa.ICON_FA_PLUS}  Add pass##{path}"):
-            items.append(copy.deepcopy(items[-1]) if len(items) > 0 else scraper.build_default(cls_config=cls_item))
+            fresh = copy.deepcopy(items[-1]) if items else scraper.build_default(cls_config=cls_item)
+            setattr(config, name, [*(items or []), fresh])
         if imgui.is_item_hovered():
             idl.wrapped_tooltip("Adds a pass copying the last one")
 
     def draw_field(self, config: Any, param: scraper.Param, default: Any, path: str) -> None:
-        """A fixed width widget for one config field with its name to the right, orange once it differs from the default."""
+        """
+        A widget for one config field chosen by the value it holds, its name to the right, and once it
+        differs from the pipeline's default an orange tint, a reset button and the default beside it.
+        """
         name = param.field
         current = getattr(config, name)
-        modified = default is not NO_DEFAULT and current != default
+        modified = default is not NO_DEFAULT and not same(current, default)
         widget = widget_for_field(param=param, value=current)
         width = hello_imgui.em_size(WIDTH_INPUT_EM)
         if modified:
             imgui.push_style_color(imgui.Col_.text, COLOR_MODIFIED)
         if widget == "bool":
-            edited, value = imgui.checkbox(f"##{path}", current is True)
+            edited, value = imgui.checkbox(f"##{path}", current)
             if edited:
                 setattr(config, name, value)
         elif widget == "choice":
             items = [str(choice) for choice in param.choices]
-            index = items.index(str(current)) if str(current) in items else -1
             imgui.set_next_item_width(max(width, self.width_combo(items=items)))
-            edited, index = imgui.combo(f"##{path}", index, items)
+            edited, index = imgui.combo(f"##{path}", list(param.choices).index(current), items)
             if edited:
                 setattr(config, name, param.choices[index])
         elif widget == "int":
@@ -643,13 +792,12 @@ class Launcher:
             if edited:
                 setattr(config, name, value)
         elif widget == "float":
-            imgui.set_next_item_width(max(width, self.width_frame(text=f"{current:.6g}") + hello_imgui.em_size(1)))
+            imgui.set_next_item_width(max(width, self.width_frame(text=text_of(value=float(current))) + hello_imgui.em_size(1)))
             edited, value = imgui.input_float(f"##{path}", float(current), 0.0, 0.0, "%.6g")
             if edited:
                 setattr(config, name, float(f"{value:.6g}"))
         elif widget in ("int2", "float2"):
-            texts = [f"{v:.6g}" if isinstance(v, float) else str(v) for v in current]
-            widest = max(self.width_frame(text=t) for t in texts)
+            widest = max(self.width_frame(text=text_of(value=v)) for v in current)
             imgui.set_next_item_width(max(width, 2 * (widest + hello_imgui.em_size(1)) + imgui.get_style().item_inner_spacing.x))
             if widget == "int2":
                 edited, values = imgui.input_int2(f"##{path}", list(current))
@@ -672,7 +820,19 @@ class Launcher:
         else:
             draw_wrapped(text=name)
         if imgui.is_item_hovered():
-            idl.wrapped_tooltip(error or f"pipeline default: {text_of(value=default) or 'none'}" if default is not NO_DEFAULT else error or name)
+            idl.wrapped_tooltip(error or name if default is NO_DEFAULT else error or f"pipeline default: {text_of(value=default) or 'none'}")
+        if modified and self.draw_reset(path=path, text_default=text_of(value=default) or "none"):
+            self.reset_field(config=config, name=name, default=default, path=path)
+
+    def draw_reset(self, path: str, text_default: str) -> bool:
+        """A reset button after a changed value, then its default in dim text; True when the button was clicked."""
+        imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+        clicked = imgui.small_button(f"{fa.ICON_FA_ARROW_ROTATE_LEFT}##reset_{path}")
+        if imgui.is_item_hovered():
+            idl.wrapped_tooltip(f"Reset to {text_default}")
+        same_line_if_fits(width=imgui.calc_text_size(f"default {text_default}").x)
+        draw_wrapped(text=f"default {text_default}", color=COLOR_DIM)
+        return clicked
 
     def draw_field_text(self, config: Any, param: scraper.Param, path: str, wrap: bool) -> None:
         """
@@ -855,20 +1015,30 @@ class Launcher:
             draw_wrapped(text=param.field)
         if imgui.is_item_hovered():
             idl.wrapped_tooltip(error or cli.describe(param=param))
+        if self.is_modified(param=param) and self.draw_reset(path=key, text_default=text_default(param=param) or "none"):
+            self.texts[key] = text_default(param=param)
 
     def draw_footer(self, dialog: idl.FileDialog) -> None:
-        """A green Run button and Quit, centered, with anything blocking the run under them."""
+        """
+        Run, Defaults and Quit centered on one row, or Run above the other two when the row does not fit,
+        with anything blocking the run under them.
+        """
         problems = self.problems()
+        nothing_modified = len(self.modified()) == 0
         label_run = f"{fa.ICON_FA_PLAY}  Run {self.spec.slug}"
+        label_defaults = f"{fa.ICON_FA_ARROW_ROTATE_LEFT}  Defaults"
         label_quit = "Quit"
-        style = imgui.get_style()
+        spacing = imgui.get_style().item_spacing.x
         width_run = max(self.width_frame(text=label_run) + hello_imgui.em_size(1), hello_imgui.em_size(WIDTH_RUN_EM))
+        width_defaults = self.width_frame(text=label_defaults) + hello_imgui.em_size(1)
         width_quit = self.width_frame(text=label_quit) + hello_imgui.em_size(1.5)
+        width_rest = width_defaults + spacing + width_quit
+        one_row = width_run + spacing + width_rest <= imgui.get_content_region_avail().x
         height = hello_imgui.em_size(1.6)
 
         imgui.separator()
         imgui.spacing()
-        idl.center_next_item(width_run + style.item_spacing.x + width_quit)
+        idl.center_next_item(width_run + spacing + width_rest if one_row else width_run)
         for color, colors in zip((imgui.Col_.button, imgui.Col_.button_hovered, imgui.Col_.button_active), COLORS_RUN):
             imgui.push_style_color(color, colors)
         imgui.begin_disabled(len(problems) > 0)
@@ -877,6 +1047,21 @@ class Launcher:
             self.quit()
         imgui.end_disabled()
         imgui.pop_style_color(3)
+
+        if one_row:
+            imgui.same_line()
+        else:
+            idl.center_next_item(width_rest)
+        for color, colors in zip((imgui.Col_.button, imgui.Col_.button_hovered, imgui.Col_.button_active), COLORS_DEFAULTS):
+            imgui.push_style_color(color, colors)
+        imgui.begin_disabled(nothing_modified)
+        if imgui.button(label_defaults, imgui.ImVec2(width_defaults, height)):
+            self.reset_all()
+        imgui.end_disabled()
+        imgui.pop_style_color(3)
+        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+            idl.wrapped_tooltip("Every value is at its default" if nothing_modified else
+                                "Reset every stage, run and runtime value to its default; movies, paths and required values stay")
         imgui.same_line()
         if imgui.button(label_quit, imgui.ImVec2(width_quit, height)):
             dialog.cancel()
