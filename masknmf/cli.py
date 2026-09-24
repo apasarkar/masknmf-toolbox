@@ -13,8 +13,6 @@ here enumerates a parameter by hand:
     masknmf view results.hdf5 --raw movie.tif
 """
 
-from __future__ import annotations
-
 from typing import Any, Optional
 
 import argparse
@@ -24,6 +22,7 @@ from pathlib import Path
 import numpy as np
 
 import masknmf
+from masknmf.pipelines import scraper
 
 
 SUFFIXES_TIFF = (".tif", ".tiff")
@@ -136,8 +135,6 @@ def spec_for(slug: str) -> scraper.PipelineSpec:
     Raises:
         SystemExit: If the slug is not a pipeline masknmf exports
     """
-    from masknmf.pipelines import scraper
-
     registry = scraper.pipeline_registry()
     if slug not in registry:
         fail(f"unknown pipeline {slug!r}; choose from {', '.join(sorted(registry))}")
@@ -175,8 +172,6 @@ def add_pipeline_options(parser: argparse.ArgumentParser, spec: scraper.Pipeline
         parser (argparse.ArgumentParser): The run subparser
         spec (PipelineSpec): The scraped pipeline
     """
-    from masknmf.pipelines import scraper
-
     for param in spec.movie_params:
         if len(spec.movie_params) > 1:
             parser.add_argument(flag_for(param), help=f"imaging movie for {param.field}", default=None)
@@ -287,8 +282,6 @@ def build_section_value(
         SystemExit: If a kind was chosen whose config cannot be built from the command
             line, or an override names a field the chosen config does not have
     """
-    from masknmf.pipelines import scraper
-
     mine = {k: v for k, v in overrides.items() if k.startswith(f"{section.name}.")}
 
     if kind == "skip":
@@ -338,8 +331,6 @@ def build_section_value(
 
 def command_pipelines(args: argparse.Namespace) -> None:
     """List the pipelines masknmf exports."""
-    from masknmf.pipelines import scraper
-
     for slug, cls in sorted(scraper.pipeline_registry().items()):
         spec = scraper.scrape(cls_pipeline=cls)
         sections = ", ".join(s.name for s in spec.sections)
@@ -377,8 +368,6 @@ def command_params(args: argparse.Namespace) -> None:
 
 def command_run(args: argparse.Namespace) -> None:
     """Build the pipeline the scraper described and run it."""
-    from masknmf.pipelines import scraper
-
     spec = spec_for(slug=args.pipeline)
     overrides = parse_overrides(texts=args.overrides)
 
@@ -567,7 +556,8 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_run.add_argument(
         "--pipeline",
         required=True,
-        help="which pipeline to run; `masknmf pipelines` lists them",
+        choices=sorted(scraper.pipeline_registry()),
+        help="which pipeline to run; decides the rest of the flags",
     )
     parser_run.add_argument(
         "--dataset", default=None, help="for hdf5 input, the dataset holding the movie"
@@ -595,7 +585,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
     bootstrap, _ = build_bootstrap_parser().parse_known_args(argv)
 
-    spec = None if bootstrap.pipeline is None else spec_for(slug=bootstrap.pipeline)
+    spec = None
+    if bootstrap.pipeline is not None and bootstrap.pipeline in scraper.pipeline_registry():
+        spec = spec_for(slug=bootstrap.pipeline)
 
     args = build_parser(spec=spec).parse_args(argv)
     args.handler(args)
