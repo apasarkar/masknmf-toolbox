@@ -10,6 +10,7 @@ from typing import *
 from masknmf.pipelines.scraper import slugify
 from masknmf.arrays import ArrayLike
 from masknmf.compression import CompressionArray, CompressStrategy, CompressDenoiseStrategy
+from masknmf.compression.preprocessing import MaximinSplineDetrend
 from masknmf.demixing import SignalDemixer, DemixingResults, NoSignalsDetectedError
 from masknmf.motion_correction import BaseRegistrationArray, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.motion_correction.moco_preprocessing import construct_moco_template
@@ -138,6 +139,19 @@ class BasePipeline(ABC):
         if isinstance(config, CompressDenoiseConfig):
             return CompressDenoiseStrategy(device=self.device, **kwargs)
         raise ValueError("Invalid compression config")
+
+    def spline_detrender(self,
+                         num_frames: int,
+                         frame_rate: float,
+                         window_seconds: float,
+                         knot_seconds: float,
+                         sigma_seconds: float) -> MaximinSplineDetrend:
+        """A maximin spline detrender with its rolling window, knot spacing and smoothing given in seconds."""
+        return MaximinSplineDetrend(num_frames=num_frames,
+                                    num_knots=max(4, int(num_frames / frame_rate / knot_seconds)),
+                                    window=int(window_seconds * frame_rate),
+                                    sigma=max(2.0, sigma_seconds * frame_rate),
+                                    device=self.torch_device)
 
     def run_multipass(self, demixer: SignalDemixer, config: MultipassDemixingConfig) -> DemixingResults:
         """

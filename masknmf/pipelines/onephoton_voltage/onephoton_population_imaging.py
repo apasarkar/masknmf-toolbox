@@ -7,8 +7,6 @@ import torch
 import math
 from tqdm import tqdm
 
-from masknmf.compression.preprocessing import MaximinSplineDetrend
-
 from masknmf.motion_correction.registration_arrays import OphysArray
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
@@ -399,23 +397,8 @@ class OnePhotonCulturePipeline(BasePipeline):
 
             compress_strategy = self.compress_strategy(self.compress_config)
 
-            num_frames = moco_array.shape[0]
-            recording_seconds = num_frames / frame_rate
-            window = int(0.05 * frame_rate)  # rolling window time interval
-            sigma = max(2.0, 0.01 * frame_rate)  # less smoothing
-            num_knots = max(4, int(recording_seconds / 0.05))  # one knot per 0.1 seconds
-
-            detrender_device = self.torch_device
-
-            detrender = MaximinSplineDetrend(
-                num_frames=num_frames,
-                num_knots=num_knots,
-                window=window,
-                sigma=sigma,
-                device=detrender_device,
-            )
-
-            compress_strategy.detrender = detrender
+            compress_strategy.detrender = self.spline_detrender(moco_array.shape[0], frame_rate, window_seconds=0.05,
+                                                                knot_seconds=0.05, sigma_seconds=0.01)
             compress_strategy.frame_batch_size = self.frame_batch_size
             compressed_results = compress_strategy.compress(moco_array)
             compressed_results.export(results_path)

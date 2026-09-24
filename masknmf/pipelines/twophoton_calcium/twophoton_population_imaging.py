@@ -3,8 +3,6 @@ from masknmf.compression import CompressionArray
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.utils import display, drop_group
 
-from masknmf.compression.preprocessing import MaximinSplineDetrend
-
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
@@ -107,25 +105,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
             display("Running Compression")
             compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
-
-
-            num_frames = data.shape[0]
-            recording_seconds = num_frames / frame_rate
-            window = int(40 * frame_rate)  # 40s rolling window
-            sigma = max(2.0, 0.3 * frame_rate)  # 0.3s smoothing
-            num_knots = max(4, int(recording_seconds / 25))  # one knot per ~25s
-
-            detrender_device = self.torch_device
-
-            detrender = MaximinSplineDetrend(
-                num_frames=num_frames,
-                num_knots=num_knots,
-                window=window,
-                sigma=sigma,
-                device=detrender_device,
-            )
-
-            compress_strategy.detrender = detrender
+            compress_strategy.detrender = self.spline_detrender(data.shape[0], frame_rate, window_seconds=40,
+                                                                knot_seconds=25, sigma_seconds=0.3)
 
             compressed_results = compress_strategy.compress(moco_data)
             compressed_results.export(results_path)
@@ -150,21 +131,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                                                                              device=device,
                                                                              frame_batch_size=self.frame_batch_size)
 
-        num_frames = pmd_denoise.shape[0]
-        recording_seconds = num_frames / frame_rate
-        window = int(20 * frame_rate)  # 20s rolling window
-        sigma = max(2.0, 0.3 * frame_rate)  # 0.3s smoothing
-        num_knots = max(4, int(recording_seconds / 20))  # one knot per ~20s
-
-        detrender_device = self.torch_device
-
-        detrender = MaximinSplineDetrend(
-            num_frames=num_frames,
-            num_knots=num_knots,
-            window=window,
-            sigma=sigma,
-            device=detrender_device,
-        )
+        detrender = self.spline_detrender(pmd_denoise.shape[0], frame_rate, window_seconds=20, knot_seconds=20,
+                                          sigma_seconds=0.3)
 
         ## Use spline detrending to more effectively pick out signals. 1 knot point per 20 seconds of data
         if self.filtered_demixing_config is None:
