@@ -150,8 +150,8 @@ class BasePipeline(ABC):
                           config: CompressConfig | CompressDenoiseConfig | None,
                           pixel_weighting: np.ndarray | None = None) -> CompressStrategy:
         """
-        The strategy for config (CompressDenoiseConfig defaults when None) on this pipeline's device, with
-        pixel_weighting multiplied into the config's own.
+        The strategy for config (CompressDenoiseConfig defaults when None) on this pipeline's device and
+        frame_batch_size, with pixel_weighting multiplied into the config's own.
         """
         if config is None:
             config = CompressDenoiseConfig()
@@ -159,9 +159,9 @@ class BasePipeline(ABC):
         if pixel_weighting is not None:
             kwargs["pixel_weighting"] = pixel_weighting if config.pixel_weighting is None else config.pixel_weighting * pixel_weighting
         if isinstance(config, CompressConfig):
-            return CompressStrategy(device=self.device, **kwargs)
+            return CompressStrategy(device=self.device, frame_batch_size=self.frame_batch_size, **kwargs)
         if isinstance(config, CompressDenoiseConfig):
-            return CompressDenoiseStrategy(device=self.device, **kwargs)
+            return CompressDenoiseStrategy(device=self.device, frame_batch_size=self.frame_batch_size, **kwargs)
         raise ValueError("Invalid compression config")
 
     def spline_detrender(self,

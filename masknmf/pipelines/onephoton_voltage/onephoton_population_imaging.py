@@ -397,13 +397,11 @@ class OnePhotonCulturePipeline(BasePipeline):
                 self.compress_config.frame_weighting *= active_frames.astype(self.compress_config.frame_weighting.dtype)
             else:
                 self.compress_config.frame_weighting = active_frames
-            self.compress_config.frame_batch_size = self.frame_batch_size
 
             compress_strategy = self.compress_strategy(self.compress_config)
 
             compress_strategy.detrender = self.spline_detrender(moco_array.shape[0], frame_rate, window_seconds=0.05,
                                                                 knot_seconds=0.05, sigma_seconds=0.01)
-            compress_strategy.frame_batch_size = self.frame_batch_size
             compressed_results = compress_strategy.compress(moco_array)
             compressed_results.export(results_path)
 
