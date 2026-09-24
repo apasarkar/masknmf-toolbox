@@ -333,7 +333,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             frame_rate: float,
             indicator_sign: Literal["negative", "positive"],
             active_frames: np.ndarray,
-            remove_intermediates: bool = True):
+            remove_intermediates: bool = True) -> Path:
         """
                 Uses the API to run rigid motion correction, compression (with denoising), and demixing.
 
@@ -460,7 +460,7 @@ class OnePhotonCulturePipeline(BasePipeline):
         if remove_intermediates:
             self.drop_compression(results_path)
 
-        return curr_demix_results, a_rawdata_scale, full_c_estimate_denoised, c_regressed_on_raw
+        return Path(results_path).parent
 
 
 

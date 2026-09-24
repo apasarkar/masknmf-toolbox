@@ -135,7 +135,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
     def run(self,
             glutamate_channel: np.ndarray | ArrayLike | None,
             calcium_channel: np.ndarray | ArrayLike | None,
-            exclude_initial_frames: int = 200):
+            exclude_initial_frames: int = 200) -> Path:
         """
         This routine runs the pipeline for processing single-plane glutamate and calcium imaging videos.
         It can analyze joint calcium/glutamate recordings or just process a single channel of either glutamate or calcium data
@@ -320,6 +320,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
             ca_pmd_demixer_results.export(ca_path)
             ca_pmd_demixer_global.results.export(ca_path, prefix="global")
+
+        return run_folder
 
 
 

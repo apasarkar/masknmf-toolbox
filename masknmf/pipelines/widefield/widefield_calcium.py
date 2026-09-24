@@ -54,7 +54,7 @@ class WidefieldSinglechannelPipeline(BasePipeline):
                 'frame_batch_size': self.frame_batch_size,
                 'device': self.device}
 
-    def run(self, data: np.ndarray | ArrayLike, exclude_border_radius: int = 0):
+    def run(self, data: np.ndarray | ArrayLike, exclude_border_radius: int = 0) -> Path:
         """
         Uses the API to run rigid motion correction, compression (with denoising)
         """
@@ -68,5 +68,5 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         compressed_results = compress_strategy.compress(moco_data)
 
         compressed_results.export(results_path)
-        return compressed_results
+        return Path(results_path).parent
 

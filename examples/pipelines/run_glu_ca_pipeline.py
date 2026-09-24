@@ -59,12 +59,12 @@ def main():
 
     Path(args.output).mkdir(exist_ok=True)
     pipe = GlutamateCalciumSpinePipeline(output_folder=args.output, device=args.device)
-    pipe.run(
+    run_folder = pipe.run(
         glutamate_channel=glu,
         calcium_channel=calcium,
         exclude_initial_frames=args.exclude_initial_frames,
     )
-    print(f"done, results under {args.output}")
+    print(f"done, results in {run_folder}")
 
 
 if __name__ == "__main__":

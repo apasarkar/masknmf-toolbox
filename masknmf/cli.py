@@ -437,10 +437,10 @@ def command_run(args: argparse.Namespace) -> None:
     )
     print(f"{spec.cls.__name__} on {shapes or 'stored results'}")
     try:
-        results = pipeline.run(**kwargs_run)
+        run_folder = pipeline.run(**kwargs_run)
     except ValueError as error:
         fail(str(error))
-    print(f"done{': ' + str(results.shape) if hasattr(results, 'shape') else ''}")
+    print(f"done: {run_folder}")
 
 
 def command_view(args: argparse.Namespace) -> None:

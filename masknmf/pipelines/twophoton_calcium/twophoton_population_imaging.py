@@ -68,7 +68,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             data: np.ndarray | ArrayLike | None,
             frame_rate: float,
             exclude_border_radius: int = 0,
-            remove_intermediates: bool = True):
+            remove_intermediates: bool = True) -> Path:
         """
                 Uses the API to run rigid motion correction, compression (with denoising), and demixing.
 
@@ -188,7 +188,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         latest_demix_results.export(results_path)
         if remove_intermediates:
             self.drop_compression(results_path)
-        return latest_demix_results
+        return Path(results_path).parent
 
 
 
