@@ -256,7 +256,7 @@ class SingleSessionDemixingVis:
             for candidate in (Path(self._results_path), folder / "motion_correction.hdf5"):
                 if candidate.is_file():
                     with h5py.File(candidate, "r") as f:
-                        found_shifts = "PiecewiseRigidRegistrationArray" in f or "RigidRegistrationArray" in f
+                        found_shifts = "PiecewiseRigidRegistrationArray" in f or "RigidRegistrationArray" in f or "GradientRegistrationArray" in f
                     if found_shifts:
                         shifts = candidate
                         break
@@ -268,6 +268,7 @@ class SingleSessionDemixingVis:
                     for g in (
                         "PiecewiseRigidRegistrationArray",
                         "RigidRegistrationArray",
+                        "GradientRegistrationArray",
                     )
                     if g in f
                 ]
