@@ -30,6 +30,7 @@ class BasePipeline(ABC):
         self._output_folder = output_folder
         self._frame_batch_size = frame_batch_size
         self._device = device
+        self._run_folder = None
 
     @property
     @abstractmethod
@@ -59,6 +60,11 @@ class BasePipeline(ABC):
         return self._device
 
     @property
+    def run_folder(self) -> Path | None:
+        """The folder the last create_run_folder made, or None before one was made."""
+        return self._run_folder
+
+    @property
     def torch_device(self) -> str:
         """``device`` with "auto" resolved to the device pytorch will use."""
         return torch_select_device(self.device)
@@ -82,6 +88,7 @@ class BasePipeline(ABC):
         with open(candidate / "config.json", "w") as f:
             json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__, **self.config}, f, indent=2,
                       default=config_json_value)
+        self._run_folder = candidate
         return candidate
 
     def results_path(self, resume: bool = False) -> str:

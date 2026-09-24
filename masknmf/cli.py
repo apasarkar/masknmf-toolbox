@@ -20,6 +20,7 @@ from typing import Any, Optional
 import argparse
 import dataclasses
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -469,7 +470,17 @@ def command_run(args: argparse.Namespace) -> None:
         if kwargs_run.get(p.field) is not None
     )
     print(f"{spec.cls.__name__} on {shapes or 'stored results'}")
-    run_folder = pipeline.run(**kwargs_run)
+    try:
+        run_folder = pipeline.run(**kwargs_run)
+    except BaseException:
+        # a failed run keeps its folder only when a later run can resume from its compression
+        folder = pipeline.run_folder
+        if folder is not None and not has_stage(
+            filepath_results=str(folder / "results.hdf5"), name_group=group_name_compression()
+        ):
+            shutil.rmtree(folder)
+            print(f"removed {folder}", file=sys.stderr)
+        raise
     print(f"done: {run_folder}")
 
 
