@@ -462,20 +462,14 @@ def command_run(args: argparse.Namespace) -> None:
         except ValueError as error:
             fail(str(error))
 
-    try:
-        pipeline = spec.cls(**kwargs_init)
-    except ValueError as error:
-        fail(str(error))
+    pipeline = spec.cls(**kwargs_init)
     shapes = ", ".join(
         str(kwargs_run[p.field].shape)
         for p in spec.movie_params
         if kwargs_run.get(p.field) is not None
     )
     print(f"{spec.cls.__name__} on {shapes or 'stored results'}")
-    try:
-        run_folder = pipeline.run(**kwargs_run)
-    except ValueError as error:
-        fail(str(error))
+    run_folder = pipeline.run(**kwargs_run)
     print(f"done: {run_folder}")
 
 
