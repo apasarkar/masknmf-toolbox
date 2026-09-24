@@ -20,8 +20,6 @@ class WidefieldSinglechannelPipeline(BasePipeline):
                  device: Literal["auto", "cuda", "cpu"] = "auto"
                  ):
         """
-        The pipeline takes the compressed data and filters to suppress background and identify signal. After demixing
-        this filtered data, it returns to the unfiltered data to further demix.
         Args:
             motion_correct_config: Config object specifying parameters for motion correcting the data. If None,
                 uses the one from default_configs(). If "skip", skips motion correction entirely.
@@ -32,10 +30,8 @@ class WidefieldSinglechannelPipeline(BasePipeline):
             frame_batch_size (int): Number of frames to load into GPU at a time for processing
             device (str): Indicates which device pytorch runs on
         """
-        defaults = self.default_configs()
-        self._motion_correct_config = defaults['motion_correct_config'] if motion_correct_config is None else motion_correct_config
-        self._compress_config = defaults['compress_config'] if compress_config is None else compress_config
-        super().__init__(output_folder, frame_batch_size, device)
+        super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         motion_correct_config=motion_correct_config, compress_config=compress_config)
 
     @classmethod
     def default_configs(cls) -> dict:
@@ -44,22 +40,6 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         """
         return {'motion_correct_config': RigidMotionCorrectionConfig(),
                 'compress_config': CompressDenoiseConfig()}
-
-    @property
-    def motion_correct_config(self) -> MotionCorrectionConfigs | Literal["skip"]:
-        return self._motion_correct_config
-
-    @property
-    def compress_config(self) -> CompressionConfigs:
-        return self._compress_config
-
-    @property
-    def config(self):
-        return {'motion_correct_config': self.motion_correct_config,
-                'compress_config': self.compress_config,
-                'output_folder': self.output_folder,
-                'frame_batch_size': self.frame_batch_size,
-                'device': self.device}
 
     def run(self, data: np.ndarray | ArrayLike, exclude_border_radius: int = 0) -> Path:
         """

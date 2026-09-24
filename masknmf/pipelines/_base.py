@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
+import inspect
 import json
 import os
 import numpy as np
@@ -23,19 +24,30 @@ from masknmf.utils import display, has_group, drop_group, torch_select_device
 
 
 class BasePipeline(ABC):
+    """
+    Motion correction, compression (and optional demixing) of one session.
+    """
+
     def __init__(self,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
-                 device: Literal["auto", "cuda", "cpu"] = "auto"):
-        self._output_folder = output_folder
-        self._frame_batch_size = frame_batch_size
-        self._device = device
-        self._run_folder = None
-
-    @property
-    @abstractmethod
-    def config(self):
-        pass
+                 device: Literal["auto", "cuda", "cpu"] = "auto",
+                 **configs):
+        if output_folder is not None:
+            output_folder = Path(output_folder).expanduser().resolve()
+            if output_folder.exists() and not output_folder.is_dir():
+                raise NotADirectoryError(f"output_folder exists and is not a directory: {output_folder}")
+        self.output_folder = output_folder
+        self.frame_batch_size = frame_batch_size
+        self.device = device
+        # the folder the last create_run_folder made
+        self.run_folder = None
+        defaults = self.default_configs()
+        unknown = set(configs) - set(defaults)
+        if len(unknown) > 0:
+            raise TypeError(f"{type(self).__name__}.default_configs() has no entry for {', '.join(sorted(unknown))}")
+        for name, default in defaults.items():
+            setattr(self, name, default if configs.get(name) is None else configs[name])
 
     @classmethod
     @abstractmethod
@@ -48,21 +60,9 @@ class BasePipeline(ABC):
         pass
 
     @property
-    def output_folder(self) -> str | Path | None:
-        return self._output_folder
-
-    @property
-    def frame_batch_size(self) -> int:
-        return self._frame_batch_size
-
-    @property
-    def device(self) -> Literal["auto", "cuda", "cpu"]:
-        return self._device
-
-    @property
-    def run_folder(self) -> Path | None:
-        """The folder the last create_run_folder made, or None before one was made."""
-        return self._run_folder
+    def config(self) -> dict:
+        """Every __init__ argument by name, as constructed."""
+        return {name: getattr(self, name) for name in inspect.signature(type(self).__init__).parameters if name != "self"}
 
     @property
     def torch_device(self) -> str:
@@ -74,7 +74,7 @@ class BasePipeline(ABC):
         Make ``<output_folder>/<YYYYmmdd_HHMMSS>_<pipeline slug>/`` (the working directory when output_folder is None),
         adding a numeric suffix when a run started in the same second, and write the pipeline's config to config.json in it.
         """
-        base = Path.cwd() if self.output_folder is None else Path(self.output_folder).expanduser().resolve()
+        base = Path.cwd() if self.output_folder is None else self.output_folder
         name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{slugify(name_class=type(self).__name__)}"
         candidate = base / name
         suffix = 0
@@ -88,7 +88,7 @@ class BasePipeline(ABC):
         with open(candidate / "config.json", "w") as f:
             json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__, **self.config}, f, indent=2,
                       default=config_json_value)
-        self._run_folder = candidate
+        self.run_folder = candidate
         return candidate
 
     def results_path(self, resume: bool = False) -> str:
@@ -182,6 +182,8 @@ class BasePipeline(ABC):
         Run the passes of config in order, stopping at the first that finds no signals, and return the results of
         the last pass that ran. Raises when the first pass finds none.
         """
+        if len(config.DemixingConfigs) < 1:
+            raise ValueError("Demixing needs at least one pass")
         results = None
         for singlepass in config.DemixingConfigs:
             try:

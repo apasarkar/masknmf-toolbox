@@ -273,15 +273,10 @@ class OnePhotonCulturePipeline(BasePipeline):
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"
                  ):
-        """
-        Every config left as None takes its value from default_configs().
-        """
-        defaults = self.default_configs()
-        self._motion_correct_config = defaults['motion_correct_config'] if motion_correct_config is None else motion_correct_config
-        self._compress_config = defaults['compress_config'] if compress_config is None else compress_config
-        self._demixing_config = defaults['demixing_config'] if demixing_config is None else demixing_config
-        self._load_into_ram = load_into_ram
-        super().__init__(output_folder, frame_batch_size, device)
+        super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         motion_correct_config=motion_correct_config, compress_config=compress_config,
+                         demixing_config=demixing_config)
+        self.load_into_ram = load_into_ram
 
     @classmethod
     def default_configs(cls) -> dict:
@@ -305,31 +300,6 @@ class OnePhotonCulturePipeline(BasePipeline):
         return {'motion_correct_config': GradientMotionCorrectionConfig(),
                 'compress_config': CompressDenoiseConfig(),
                 'demixing_config': MultipassDemixingConfig(conf_list)}
-
-    @property
-    def motion_correct_config(self) -> GradientMotionCorrectionConfig | Literal["skip"]:
-        return self._motion_correct_config
-
-    @property
-    def compress_config(self) -> CompressionConfigs | Literal["skip"]:
-        return self._compress_config
-
-    @property
-    def demixing_config(self) -> MultipassDemixingConfigs:
-        return self._demixing_config
-
-    @property
-    def load_into_ram(self) -> bool:
-        return self._load_into_ram
-
-    @property
-    def config(self):
-        return {'motion_correct_config': self.motion_correct_config,
-                'compress_config': self.compress_config,
-                'demixing_config': self.demixing_config,
-                'output_folder': self.output_folder,
-                'frame_batch_size': self.frame_batch_size,
-                'device': self.device}
 
     def run(self,
             data: np.ndarray | ArrayLike,

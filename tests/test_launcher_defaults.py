@@ -55,24 +55,14 @@ class OddPipeline(BasePipeline):
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"):
-        defaults = self.default_configs()
-        self._stage_config = defaults['stage_config'] if stage_config is None else stage_config
-        self._empty_config = defaults['empty_config'] if empty_config is None else empty_config
-        super().__init__(output_folder, frame_batch_size, device)
+        super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         stage_config=stage_config, empty_config=empty_config)
 
     @classmethod
     def default_configs(cls) -> dict:
         with_template = OddInitConfig(template=np.ones((4, 4)))
         return {'stage_config': OddMultipassConfig([OddPassConfig(with_template), OddPassConfig(OtherInitConfig())]),
                 'empty_config': OddMultipassConfig([])}
-
-    @property
-    def config(self):
-        return {'stage_config': self._stage_config,
-                'empty_config': self._empty_config,
-                'output_folder': self.output_folder,
-                'frame_batch_size': self.frame_batch_size,
-                'device': self.device}
 
     def run(self, data: np.ndarray | None, frame_rate: float) -> Path:
         return Path(".")

@@ -48,18 +48,9 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                  demixing_config: MultipassDemixingConfigs | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"):
-
-        if output_folder is not None:
-            output_folder = Path(output_folder).expanduser().resolve()
-            if output_folder.exists() and not output_folder.is_dir():
-                raise NotADirectoryError(
-                    f"output_folder exists and is not a directory: {output_folder}"
-                )
-        super().__init__(output_folder, frame_batch_size, device)
-
-        self.motion_correct_config = motion_correct_config
-        self.compress_config = compress_config
-        self.demixing_config = demixing_config
+        super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         motion_correct_config=motion_correct_config, compress_config=compress_config,
+                         demixing_config=demixing_config)
 
     @classmethod
     def default_configs(cls) -> dict:
@@ -80,51 +71,6 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         return {'motion_correct_config': RigidMotionCorrectionConfig(max_shifts=(40, 40)),
                 'compress_config': CompressDenoiseConfig(block_sizes=(10, 10), temporal_avg_factor=10),
                 'demixing_config': MultipassDemixingConfig(passes)}
-
-    @property
-    def motion_correct_config(self) -> RigidMotionCorrectionConfig | None:
-        return self._motion_correct_config
-
-    @motion_correct_config.setter
-    def motion_correct_config(self, updated_config: RigidMotionCorrectionConfig | None):
-        if updated_config is None:
-            self._motion_correct_config = self.default_configs()['motion_correct_config']
-        else:
-            self._motion_correct_config = updated_config
-
-    @property
-    def compress_config(self) -> CompressConfig | CompressDenoiseConfig | None:
-        return self._compress_config
-
-    @compress_config.setter
-    def compress_config(self, updated_config: CompressDenoiseConfig | None):
-        if updated_config is None:
-            self._compress_config = self.default_configs()['compress_config']
-        else:
-            self._compress_config = updated_config
-
-    @property
-    def demixing_config(self) -> MultipassDemixingConfig | None:
-        return self._demixing_config
-
-    @demixing_config.setter
-    def demixing_config(self, updated_config: MultipassDemixingConfigs | None):
-        if updated_config is None:
-            self._demixing_config = self.default_configs()['demixing_config']
-        else:
-            if len(updated_config.DemixingConfigs) < 1:
-                raise ValueError("Must have sufficient configs for at least one pass of NMF in demixing configs")
-            self._demixing_config = updated_config
-
-    @property
-    def config(self):
-        return {'output_folder': self.output_folder,
-                'motion_correct_config': self.motion_correct_config,
-                'compress_config': self.compress_config,
-                'demixing_config': self.demixing_config,
-                'frame_batch_size': self.frame_batch_size,
-                'device': self.device}
-
 
     def run(self,
             glutamate_channel: np.ndarray | ArrayLike | None,

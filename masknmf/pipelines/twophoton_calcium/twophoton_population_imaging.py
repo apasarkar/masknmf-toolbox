@@ -24,16 +24,11 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"
                  ):
-        """
-        Every config left as None takes its value from default_configs().
-        """
-        defaults = self.default_configs()
-        self._motion_correct_config = defaults['motion_correct_config'] if motion_correct_config is None else motion_correct_config
-        self._compress_config = defaults['compress_config'] if compress_config is None else compress_config
-        self._spatial_highpass_config = defaults['spatial_highpass_config'] if spatial_highpass_config is None else spatial_highpass_config
-        self._filtered_demixing_config = defaults['filtered_demixing_config'] if filtered_demixing_config is None else filtered_demixing_config
-        self._unfiltered_demixing_config = defaults['unfiltered_demixing_config'] if unfiltered_demixing_config is None else unfiltered_demixing_config
-        super().__init__(output_folder, frame_batch_size, device)
+        super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         motion_correct_config=motion_correct_config, compress_config=compress_config,
+                         spatial_highpass_config=spatial_highpass_config,
+                         filtered_demixing_config=filtered_demixing_config,
+                         unfiltered_demixing_config=unfiltered_demixing_config)
 
     @classmethod
     def default_configs(cls) -> dict:
@@ -63,37 +58,6 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 'spatial_highpass_config': SpatialHighpassConfig(),
                 'filtered_demixing_config': MultipassDemixingConfig(filtered_passes),
                 'unfiltered_demixing_config': MultipassDemixingConfig(unfiltered_passes)}
-
-    @property
-    def motion_correct_config(self) -> MotionCorrectionConfigs | Literal["skip"]:
-        return self._motion_correct_config
-
-    @property
-    def compress_config(self) -> CompressionConfigs | Literal["skip"]:
-        return self._compress_config
-
-    @property
-    def spatial_highpass_config(self) -> SpatialHighpassConfigs:
-        return self._spatial_highpass_config
-
-    @property
-    def filtered_demixing_config(self) -> MultipassDemixingConfigs:
-        return self._filtered_demixing_config
-
-    @property
-    def unfiltered_demixing_config(self) -> MultipassDemixingConfigs:
-        return self._unfiltered_demixing_config
-
-    @property
-    def config(self):
-        return {'motion_correct_config': self.motion_correct_config,
-                'compress_config': self.compress_config,
-                'spatial_highpass_config': self.spatial_highpass_config,
-                'filtered_demixing_config': self.filtered_demixing_config,
-                'unfiltered_demixing_config': self.unfiltered_demixing_config,
-                'output_folder': self.output_folder,
-                'frame_batch_size': self.frame_batch_size,
-                'device': self.device}
 
     def run(self,
             data: np.ndarray | ArrayLike | None,
