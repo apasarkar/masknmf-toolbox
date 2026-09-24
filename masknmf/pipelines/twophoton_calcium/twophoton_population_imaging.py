@@ -1,7 +1,6 @@
 import masknmf
-from masknmf.compression import CompressionArray
 from masknmf.arrays import LazyFrameLoader, ArrayLike
-from masknmf.utils import display, drop_group
+from masknmf.utils import display
 
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
@@ -188,8 +187,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
         latest_demix_results.export(results_path)
         if remove_intermediates:
-            display("Removing intermediates")
-            drop_group(results_path, CompressionArray.__name__)
+            self.drop_compression(results_path)
         return latest_demix_results
 
 

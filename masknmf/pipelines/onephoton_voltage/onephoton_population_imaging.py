@@ -1,8 +1,7 @@
 import masknmf
-from masknmf.compression import CompressionArray
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector, GradientMotionCorrector, GradientRegistrationArray
-from masknmf.utils import display, drop_group
+from masknmf.utils import display
 import torch
 import math
 from tqdm import tqdm
@@ -453,8 +452,7 @@ class OnePhotonCulturePipeline(BasePipeline):
 
         curr_demix_results.export(results_path)
         if remove_intermediates:
-            display("Removing intermediates")
-            drop_group(results_path, CompressionArray.__name__)
+            self.drop_compression(results_path)
 
         return curr_demix_results, a_rawdata_scale, full_c_estimate_denoised, c_regressed_on_raw
 

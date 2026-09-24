@@ -17,7 +17,7 @@ from masknmf.motion_correction.moco_preprocessing import construct_moco_template
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig
-from masknmf.utils import display, has_group, torch_select_device
+from masknmf.utils import display, has_group, drop_group, torch_select_device
 
 class BasePipeline(ABC):
     def __init__(self,
@@ -171,6 +171,11 @@ class BasePipeline(ABC):
             results = demixer.results
             torch.cuda.empty_cache()
         return results
+
+    def drop_compression(self, results_path: str):
+        """Remove the CompressionArray group once demixing is done; the demixing results carry the pmd."""
+        display("Removing intermediates")
+        drop_group(results_path, CompressionArray.__name__)
 
     @abstractmethod
     def run(self, data):
