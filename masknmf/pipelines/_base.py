@@ -1,12 +1,14 @@
 from abc import ABC, abstractmethod
-from dataclasses import asdict
+from dataclasses import asdict, fields, is_dataclass
 from datetime import datetime
 from pathlib import Path
+import json
 import os
 import numpy as np
 import torch
 from typing import *
 
+from masknmf._version import __version__
 from masknmf.pipelines.scraper import slugify
 from masknmf.arrays import ArrayLike
 from masknmf.compression import CompressionArray, CompressStrategy, CompressDenoiseStrategy
@@ -18,6 +20,16 @@ from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorre
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig
 from masknmf.utils import display, has_group, drop_group, torch_select_device
+
+
+def config_json_value(value):
+    """What json cannot write itself: dataclasses as dicts, paths as strings, anything else (arrays, detrenders) as "*"."""
+    if is_dataclass(value):
+        return {f.name: getattr(value, f.name) for f in fields(value)}
+    if isinstance(value, Path):
+        return str(value)
+    return "*"
+
 
 class BasePipeline(ABC):
     def __init__(self,
@@ -53,7 +65,7 @@ class BasePipeline(ABC):
     def create_run_folder(self) -> Path:
         """
         Make ``<output_folder>/<YYYYmmdd_HHMMSS>_<pipeline slug>/`` (the working directory when output_folder is None),
-        adding a numeric suffix when a run started in the same second.
+        adding a numeric suffix when a run started in the same second, and write the pipeline's config to config.json in it.
         """
         base = Path.cwd() if self.output_folder is None else Path(self.output_folder).expanduser().resolve()
         name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{slugify(name_class=type(self).__name__)}"
@@ -62,10 +74,14 @@ class BasePipeline(ABC):
         while True:
             try:
                 candidate.mkdir(parents=True, exist_ok=False)
-                return candidate
+                break
             except FileExistsError:
                 suffix += 1
                 candidate = base / f"{name}_{suffix}"
+        with open(candidate / "config.json", "w") as f:
+            json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__, **self.config}, f, indent=2,
+                      default=config_json_value)
+        return candidate
 
     def results_path(self, resume: bool = False) -> str:
         """
