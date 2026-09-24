@@ -1,10 +1,8 @@
-from dataclasses import asdict
 import masknmf
 from masknmf.compression import CompressionArray
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector, GradientMotionCorrector, GradientRegistrationArray
 from masknmf.utils import display, drop_group
-from masknmf.demixing import NoSignalsDetectedError, DemixingError
 import torch
 import math
 from tqdm import tqdm
@@ -265,20 +263,6 @@ def expand_traces_to_all_frames(c: torch.Tensor,
     return updated_c
 
 
-def run_singlepass_demixing(demixing_obj: masknmf.SignalDemixer,
-                            singlepass_config: SinglepassDemixingConfig) -> None | masknmf.SignalDemixer:
-    init_config = singlepass_config.InitConfig
-    nmf_config = singlepass_config.NMFConfig
-
-    try:
-        demixing_obj.initialize_signals(**asdict(init_config))
-    except NoSignalsDetectedError:
-        return None
-    else:
-        demixing_obj.demix(**asdict(nmf_config))
-        return demixing_obj
-
-
 class OnePhotonCulturePipeline(BasePipeline):
     def __init__(self,
                  motion_correct_config: Literal["skip"] | None = None,
@@ -460,19 +444,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                                                                               frame_batch_size=self.frame_batch_size)
 
 
-        # Run demixing
-        curr_demix_results = None
-        for k in range(len(self.demixing_config.DemixingConfigs)):
-            truncated_pmd_demixer = run_singlepass_demixing(truncated_pmd_demixer,
-                                                           self.demixing_config.DemixingConfigs[k])
-            if truncated_pmd_demixer is not None:
-                curr_demix_results = truncated_pmd_demixer.results
-            if truncated_pmd_demixer is None:
-                if curr_demix_results is None:
-                    raise ValueError("The demixer did not identify any signals. Lower thresholds or inspect "
-                                     "data to resolve this issue.")
-                else:
-                    break
+        curr_demix_results = self.run_multipass(truncated_pmd_demixer, self.demixing_config)
 
         """
         The rest of the pipeline involves: 

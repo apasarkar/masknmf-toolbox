@@ -4,15 +4,18 @@ from datetime import datetime
 from pathlib import Path
 import os
 import numpy as np
+import torch
 from typing import *
 
 from masknmf.pipelines.scraper import slugify
 from masknmf.arrays import ArrayLike
 from masknmf.compression import CompressionArray, CompressStrategy, CompressDenoiseStrategy
+from masknmf.demixing import SignalDemixer, DemixingResults, NoSignalsDetectedError
 from masknmf.motion_correction import BaseRegistrationArray, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.motion_correction.moco_preprocessing import construct_moco_template
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
+from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig
 from masknmf.utils import display, has_group, torch_select_device
 
 class BasePipeline(ABC):
@@ -135,6 +138,25 @@ class BasePipeline(ABC):
         if isinstance(config, CompressDenoiseConfig):
             return CompressDenoiseStrategy(device=self.device, **kwargs)
         raise ValueError("Invalid compression config")
+
+    def run_multipass(self, demixer: SignalDemixer, config: MultipassDemixingConfig) -> DemixingResults:
+        """
+        Run the passes of config in order, stopping at the first that finds no signals, and return the results of
+        the last pass that ran. Raises when the first pass finds none.
+        """
+        results = None
+        for singlepass in config.DemixingConfigs:
+            try:
+                demixer.initialize_signals(**asdict(singlepass.InitConfig))
+            except NoSignalsDetectedError:
+                if results is None:
+                    raise ValueError("The demixer did not identify any signals. Lower thresholds or inspect the data "
+                                     "to resolve this issue.")
+                break
+            demixer.demix(**asdict(singlepass.NMFConfig))
+            results = demixer.results
+            torch.cuda.empty_cache()
+        return results
 
     @abstractmethod
     def run(self, data):

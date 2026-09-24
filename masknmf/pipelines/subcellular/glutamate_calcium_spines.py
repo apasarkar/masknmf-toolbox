@@ -4,7 +4,6 @@ from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.utils import display
-from masknmf.demixing import NoSignalsDetectedError, DemixingError
 
 from masknmf.compression.preprocessing import MaximinSplineDetrend
 
@@ -61,18 +60,6 @@ def get_std_based_mask(stack):
     std_img = np.std(stack[:], axis = 0)
     mask = otsu_threshold(std_img)
     return mask
-
-def run_singlepass_demixing(demixing_obj: masknmf.SignalDemixer,
-                            singlepass_config: SinglepassDemixingConfig) -> None | masknmf.SignalDemixer:
-    init_config = singlepass_config.InitConfig
-    nmf_config = singlepass_config.NMFConfig
-    try:
-        demixing_obj.initialize_signals(**asdict(init_config))
-    except NoSignalsDetectedError:
-        return None
-    else:
-        demixing_obj.demix(**asdict(nmf_config))
-        return demixing_obj
 
 class GlutamateCalciumSpinePipeline(BasePipeline):
 
@@ -268,20 +255,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 pmd_glu,
                 device=device)
 
-            for k in range(len(self.demixing_config.DemixingConfigs)):
-                glu_pmd_demixer = run_singlepass_demixing(glu_pmd_demixer,
-                                                           self.demixing_config.DemixingConfigs[k])
-                if k == 0:
-                    if glu_pmd_demixer is None:
-                        raise ValueError("With this set of demixing parameters, the glu demixer did not find any signals")
-                    else:
-                        curr_results = glu_pmd_demixer.results
-                else:
-                    if glu_pmd_demixer is None:
-                        break ## curr_results from previous round will return
-                    else:
-                        curr_results = glu_pmd_demixer.results
-            glu_pmd_demixer_results = curr_results
+            glu_pmd_demixer_results = self.run_multipass(glu_pmd_demixer, self.demixing_config)
 
             ## Now pull out "whole dendrite" events. Can refactor this to a helper function to keep the "run" function readable
             glu_pmd_demixer_global= masknmf.demixing.signal_demixer.SignalDemixer(
@@ -330,20 +304,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 pmd_ca,
                 device=device)
 
-            for k in range(len(self.demixing_config.DemixingConfigs)):
-                ca_pmd_demixer = run_singlepass_demixing(ca_pmd_demixer,
-                                                          self.demixing_config.DemixingConfigs[k])
-                if k == 0:
-                    if ca_pmd_demixer is None:
-                        raise ValueError("With this set of demixing parameters, the calcium demixer did not find any signals")
-                    else:
-                        curr_results = ca_pmd_demixer.results
-                else:
-                    if ca_pmd_demixer is None:
-                        break ## curr_results from previous round will return
-                    else:
-                        curr_results = ca_pmd_demixer.results
-            ca_pmd_demixer_results = curr_results
+            ca_pmd_demixer_results = self.run_multipass(ca_pmd_demixer, self.demixing_config)
 
 
             ## Now pull out "whole dendrite" events. Can refactor this to a helper function to keep the "run" function readable
