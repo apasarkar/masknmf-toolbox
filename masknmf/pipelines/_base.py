@@ -178,11 +178,6 @@ class BasePipeline(ABC):
         drop_group(results_path, CompressionArray.__name__)
 
     @abstractmethod
-    def run(self, data):
-        """
-        Run the analysis pipeline
-
-        Args:
-            data: input dataset
-        """
+    def run(self, **kwargs) -> Path:
+        """Run the pipeline on its movie(s) and return the run folder it wrote to."""
         raise NotImplementedError
