@@ -9,14 +9,17 @@ here enumerates a parameter by hand:
     masknmf pipelines
     masknmf params --pipeline two-photon-calcium
     masknmf run --pipeline two-photon-calcium movie.tif --fs 30
-    masknmf run --pipeline two-photon-calcium movie.tif --fs 30 \\
-        --motion-correct-kind piecewise-rigid --set compress.max_components=30
+    masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --motion-correct-kind piecewise-rigid
+    masknmf params --pipeline two-photon-calcium --json > configs.json
+    masknmf run movie.tif --fs 30 --config configs.json
     masknmf view results.hdf5 --raw movie.tif
 """
 
 from typing import Any, Optional
 
 import argparse
+import dataclasses
+import json
 import sys
 from pathlib import Path
 
@@ -31,7 +34,7 @@ SUFFIXES_HDF5 = (".h5", ".hdf5")
 
 NAMES_ALIAS = {"frame_rate": "--fs"}
 
-CHARACTERS_NEEDING_QUOTES = set(" 	'&|;<>()$`!*?[]{}~#")
+CHARACTERS_NEEDING_QUOTES = set(" \t\\'&|;<>()$`!*?[]{}~#")
 
 
 def group_names_registration() -> tuple[str, ...]:
@@ -160,10 +163,80 @@ def spec_for(slug: str) -> scraper.PipelineSpec:
     return scraper.scrape(cls_pipeline=registry[slug])
 
 
-def is_constructible(spec: scraper.PipelineSpec, section: scraper.Section, kind: str) -> bool:
-    """Whether every required field of a section's config can be set from the command line."""
-    params = spec.params_for(section=section, kind=kind)
-    return all(param.settable for param in params if param.required)
+def kinds_buildable(section: scraper.Section) -> list[str]:
+    """The kinds of a section that can be built without Python, which leaves out configs requiring arrays."""
+    kinds = []
+    for kind in section.kinds:
+        try:
+            section.value_for(kind=kind)
+        except ValueError:
+            continue
+        kinds.append(kind)
+    return kinds
+
+
+def read_config_file(filepath: str) -> dict:
+    """
+    Read a --config file: the json `masknmf params --json` prints, or a run folder's config.json.
+
+    Args:
+        filepath (str): The file
+    Returns:
+        dict: Argument name to value
+    Raises:
+        SystemExit: If the file is missing or is not a json object
+    """
+    path = Path(filepath).expanduser()
+    if not path.is_file():
+        fail(f"no such config file: {path}")
+    try:
+        loaded = json.loads(path.read_text())
+    except json.JSONDecodeError as error:
+        fail(f"{path.name} is not valid json: {error}")
+    if not isinstance(loaded, dict):
+        fail(f"{path.name} should hold a json object of argument names to values")
+    return loaded
+
+
+def slug_of(name_class: str) -> str:
+    """The --pipeline value of the pipeline class a config file names."""
+    for slug, cls in scraper.pipeline_registry().items():
+        if cls.__name__ == name_class:
+            return slug
+    fail(f"the config file names {name_class!r}, which is not a masknmf pipeline")
+
+
+def section_value(section: scraper.Section, kind: Optional[str], value_file: Any) -> tuple[bool, Any]:
+    """
+    The value a pipeline's config argument receives from --<section>-kind and a --config file.
+
+    The file's value builds on the pipeline's default, so a file may give only the fields it
+    changes. A --<section>-kind naming another config than the file's replaces it with that
+    config's defaults.
+
+    Args:
+        section (Section): The section
+        kind (str | None): The --<section>-kind value, or None when not given
+        value_file (Any): The file's value for the argument, or None when it has none
+    Returns:
+        bool: Whether the argument should be passed at all
+        Any: The value, when it should be passed
+    Raises:
+        SystemExit: If the file's value names a config the section does not take, or a field the config does not have
+    """
+    if value_file is None:
+        return (False, None) if kind is None else (True, section.value_for(kind=kind))
+    kind_file = value_file if isinstance(value_file, str) else value_file.get("kind", section.default_kind)
+    if kind_file not in section.kinds:
+        fail(f"{section.argument} in the config file is {kind_file!r}; {section.name} takes {', '.join(section.kinds)}")
+    if kind is not None and kind != kind_file:
+        return True, section.value_for(kind=kind)
+    try:
+        return True, scraper.config_from_json(
+            value=value_file, annotation=section.annotation, base=section.value_for(kind=kind_file)
+        )
+    except ValueError as error:
+        fail(f"{section.argument} in the config file: {error}")
 
 
 def flag_for(param: scraper.Param) -> str:
@@ -177,9 +250,10 @@ def option_name(flag: str) -> str:
 
 
 def build_bootstrap_parser() -> argparse.ArgumentParser:
-    """A parser that reads only --pipeline, so the real parser can be built from it."""
+    """A parser that reads only --pipeline and --config, so the real parser can be built from them."""
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--pipeline", default=None)
+    parser.add_argument("--config", default=None)
     return parser
 
 
@@ -233,18 +307,16 @@ def add_pipeline_options(parser: argparse.ArgumentParser, spec: scraper.Pipeline
     for section in spec.sections:
         parser.add_argument(
             f"--{section.name}-kind",
-            choices=list(section.kinds),
+            choices=kinds_buildable(section=section),
             default=None,
-            help=f"which config {section.argument} receives",
+            help=f"which config {section.argument} receives, at its defaults; default {section.default_kind}",
         )
 
     parser.add_argument(
-        "--set",
-        dest="overrides",
-        action="append",
-        default=[],
-        metavar="SECTION.FIELD=VALUE",
-        help="set any parameter `masknmf params` lists; repeatable",
+        "--config",
+        default=None,
+        metavar="JSON",
+        help="config values to run with: `masknmf params --json` output, or a run folder's config.json",
     )
 
 
@@ -260,94 +332,6 @@ def describe(param: scraper.Param) -> str:
     return "; ".join(pieces)
 
 
-def parse_overrides(texts: list[str]) -> dict[str, str]:
-    """
-    Read --set section.field=value strings into a mapping.
-
-    Args:
-        texts (list[str]): The raw --set entries
-    Returns:
-        dict[str, str]: Dotted name to unparsed value
-    Raises:
-        SystemExit: If an entry has no "="
-    """
-    overrides = {}
-    for text in texts:
-        if "=" not in text:
-            fail(f"--set expects SECTION.FIELD=VALUE, got {text!r}")
-        key, value = text.split("=", 1)
-        overrides[key.strip()] = value.strip()
-    return overrides
-
-
-def build_section_value(
-    spec: scraper.PipelineSpec,
-    section: scraper.Section,
-    kind: Optional[str],
-    overrides: dict[str, str],
-) -> tuple[bool, Any]:
-    """
-    Build the value a pipeline's config argument should receive.
-
-    Args:
-        spec (PipelineSpec): The scraped pipeline
-        section (Section): The section being built
-        kind (str | None): The --<section>-kind value, or None when the user did not choose
-        overrides (dict[str, str]): Every --set entry, keyed by dotted name
-    Returns:
-        bool: Whether the caller should pass this value at all
-        Any: The value, when it should be passed
-    Raises:
-        SystemExit: If a kind was chosen whose config cannot be built from the command
-            line, or an override names a field the chosen config does not have
-    """
-    mine = {k: v for k, v in overrides.items() if k.startswith(f"{section.name}.")}
-
-    if kind == "skip":
-        return True, "skip"
-    if kind is None and len(mine) == 0:
-        return False, None
-
-    if kind is None:
-        kinds_real = [k for k in section.kinds if k != "skip"]
-        if len(kinds_real) != 1:
-            fail(
-                f"--set touches {section.name} but several configs fit it; "
-                f"pass --{section.name}-kind ({', '.join(kinds_real)})"
-            )
-        kind = kinds_real[0]
-
-    if not is_constructible(spec=spec, section=section, kind=kind):
-        required = [
-            p.field
-            for p in spec.params_for(section=section, kind=kind)
-            if p.required and not p.settable
-        ]
-        fail(
-            f"--{section.name}-kind {kind} cannot be built from the command line; "
-            f"it requires {', '.join(required)}. Drive it from Python."
-        )
-
-    params = {p.field: p for p in spec.params_for(section=section, kind=kind)}
-    kwargs = {}
-    for key, text in mine.items():
-        field = key.split(".", 1)[1]
-        if field not in params:
-            fail(
-                f"{key} is not a field of --{section.name}-kind {kind}; "
-                f"try `masknmf params --pipeline {spec.slug}`"
-            )
-        param = params[field]
-        if not param.settable:
-            fail(f"{key} cannot be set from the command line")
-        try:
-            kwargs[field] = scraper.coerce(param=param, text=text)
-        except ValueError as error:
-            fail(str(error))
-
-    return True, section.configs_by_kind[kind](**kwargs)
-
-
 def command_pipelines(args: argparse.Namespace) -> None:
     """List the pipelines masknmf exports."""
     for slug, cls in sorted(scraper.pipeline_registry().items()):
@@ -356,9 +340,43 @@ def command_pipelines(args: argparse.Namespace) -> None:
         print(f"{slug}\n    {cls.__name__}\n    sections: {sections}")
 
 
+def print_config(value: Any, depth: int) -> None:
+    """
+    Print a config's fields, nested configs and lists of configs indented under their field.
+
+    Args:
+        value (Any): A config dataclass
+        depth (int): How many levels to indent
+    """
+    pad = "  " * depth
+    hints = scraper.resolve_hints(cls=type(value))
+    for field in dataclasses.fields(value):
+        if not field.init:
+            continue
+        current = getattr(value, field.name)
+        annotation = hints.get(field.name, field.type)
+        if dataclasses.is_dataclass(current):
+            print(f"{pad}  {field.name}")
+            print_config(value=current, depth=depth + 1)
+        elif scraper.item_dataclass_of(annotation=annotation) is not None:
+            for i, item in enumerate(current):
+                print(f"{pad}  {field.name}[{i}]")
+                print_config(value=item, depth=depth + 1)
+        elif scraper.is_settable(annotation=annotation):
+            print(f"{pad}  {field.name:34} {current!r}")
+        else:
+            shown = "None" if current is None else type(current).__name__
+            print(f"{pad}* {field.name:34} {shown}")
+
+
 def command_params(args: argparse.Namespace) -> None:
-    """List every parameter the scraper found for one pipeline."""
+    """List every parameter the scraper found for one pipeline, with the values it uses by default."""
     spec = spec_for(slug=args.pipeline)
+    if args.json:
+        configs = {section.argument: section.default for section in spec.sections}
+        print(json.dumps({"pipeline": spec.cls.__name__, **configs}, indent=2, default=scraper.config_json_value))
+        return
+
     print(f"{spec.slug}  ({spec.cls.__name__})\n")
 
     print("run arguments")
@@ -371,35 +389,36 @@ def command_params(args: argparse.Namespace) -> None:
         print(f"  {param.field:28} {describe(param=param)}")
 
     for section in spec.sections:
+        print(f"\n[{section.name}] --{section.name}-kind {' | '.join(kinds_buildable(section=section))}")
         for kind in section.kinds:
             if kind == "skip":
                 continue
-            buildable = is_constructible(spec=spec, section=section, kind=kind)
-            head = f"\n[{section.name}] --{section.name}-kind {kind}"
-            print(head if buildable else f"{head}   (not constructible from the CLI)")
-            for param in spec.params_for(section=section, kind=kind):
-                mark = " " if param.settable else "*"
-                print(f"  {mark} {param.name:34} {describe(param=param)}")
-        if section.allows_skip:
-            print(f"\n[{section.name}] --{section.name}-kind skip")
-    print("\n(*) cannot be set from the command line")
+            try:
+                value = section.value_for(kind=kind)
+            except ValueError:
+                print(f"  {kind}   (not constructible from the CLI)")
+                continue
+            print(f"  {kind}{'   (default)' if kind == section.default_kind else ''}")
+            print_config(value=value, depth=1)
+    print("\n(*) set from Python only")
 
 
 def command_run(args: argparse.Namespace) -> None:
     """Build the pipeline the scraper described and run it."""
     spec = spec_for(slug=args.pipeline)
-    overrides = parse_overrides(texts=args.overrides)
+    values_file = read_config_file(filepath=args.config) if args.config is not None else {}
 
-    known = {s.name for s in spec.sections}
-    for key in overrides:
-        if "." not in key or key.split(".", 1)[0] not in known:
-            fail(
-                f"--set {key} does not name a section of {spec.slug}; "
-                f"sections are {', '.join(sorted(known))}"
-            )
+    if values_file.get("pipeline", spec.cls.__name__) != spec.cls.__name__:
+        fail(f"the config file is for {values_file['pipeline']}, not {spec.cls.__name__}")
+    names_known = {s.argument for s in spec.sections} | {p.field for p in spec.scalars}
+    unknown = set(values_file) - names_known - {"pipeline", "masknmf_version"}
+    if len(unknown) > 0:
+        fail(f"the config file sets {', '.join(sorted(unknown))}, which {spec.slug} does not take")
 
     kwargs_init = {}
     for param in spec.scalars:
+        if param.field in values_file:
+            kwargs_init[param.field] = values_file[param.field]
         text = getattr(args, option_name(param.name), None)
         if text is not None:
             try:
@@ -409,9 +428,7 @@ def command_run(args: argparse.Namespace) -> None:
 
     for section in spec.sections:
         kind = getattr(args, option_name(f"{section.name}-kind"), None)
-        passes, value = build_section_value(
-            spec=spec, section=section, kind=kind, overrides=overrides
-        )
+        passes, value = section_value(section=section, kind=kind, value_file=values_file.get(section.argument))
         if passes:
             kwargs_init[section.argument] = value
 
@@ -569,6 +586,9 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
         "params", help="list every parameter a pipeline accepts"
     )
     parser_params.add_argument("--pipeline", required=True)
+    parser_params.add_argument(
+        "--json", action="store_true", help="print the default configs as a --config file instead"
+    )
     parser_params.set_defaults(handler=command_params)
 
     parser_run = subparsers.add_parser("run", help="run a pipeline")
@@ -611,6 +631,12 @@ def main(argv: Optional[list[str]] = None) -> None:
         print(f"masknmf {format_command(argv=argv)}")
 
     bootstrap, _ = build_bootstrap_parser().parse_known_args(argv)
+    if argv[:1] == ["run"] and bootstrap.pipeline is None and bootstrap.config is not None:
+        name_class = read_config_file(filepath=bootstrap.config).get("pipeline")
+        if name_class is None:
+            fail("the config file names no pipeline; pass --pipeline")
+        bootstrap.pipeline = slug_of(name_class=name_class)
+        argv = ["run", "--pipeline", bootstrap.pipeline, *argv[1:]]
 
     spec = None
     if bootstrap.pipeline is not None and bootstrap.pipeline in scraper.pipeline_registry():

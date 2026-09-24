@@ -2,11 +2,15 @@
 The window `masknmf` opens when it is run with no arguments.
 
 Every value in it becomes an argument of `masknmf run`, so a run started here is a
-command line run, and the equivalent command is printed before it starts.
+command line run, and the equivalent command is printed before it starts. Stage configs
+that differ from the pipeline's defaults are written to a json file passed as --config.
 """
 
-from typing import Optional
+from typing import Any, Optional
 
+import copy
+import dataclasses
+import json
 import typing
 from pathlib import Path
 
@@ -21,10 +25,9 @@ from masknmf.pipelines import scraper
 
 
 DIR_CONFIG = Path.home() / ".config" / "masknmf"
+FILEPATH_RUN_CONFIGS = DIR_CONFIG / "launcher_configs.json"
 
 PIPELINE_INITIAL = "two-photon-calcium"
-
-KIND_DEFAULT = "pipeline default"
 
 FILETYPES_MOVIE = [
     idl.FileType("Movies", "*.tif *.tiff *.h5 *.hdf5"),
@@ -48,6 +51,8 @@ WIDTH_INPUT_EM = 7.5
 WIDTH_MIN_EM = 24
 WIDTH_RUN_EM = 15
 
+NO_DEFAULT = object()
+
 
 def text_default(param: scraper.Param) -> str:
     """The text a parameter's input starts with: its default, spelled as the command line takes it."""
@@ -58,6 +63,15 @@ def text_default(param: scraper.Param) -> str:
     if isinstance(param.default, tuple):
         return ",".join(str(value) for value in param.default)
     return str(param.default)
+
+
+def text_of(value: Any) -> str:
+    """A config field's value as the text box editing it shows it."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(f"{v:.6g}" if isinstance(v, float) else str(v) for v in value)
+    return str(value)
 
 
 def widget_for(param: scraper.Param) -> str:
@@ -89,6 +103,28 @@ def widget_for(param: scraper.Param) -> str:
     return "text"
 
 
+def widget_for_field(param: scraper.Param, value: Any) -> str:
+    """
+    Which widget edits a config field, judged by its annotation and the value it holds.
+
+    Args:
+        param (Param): The field
+        value (Any): Its current value
+    Returns:
+        str: "bool", "choice", "int", "float", "int2", "float2", "sequence" or "text"
+    """
+    widget = widget_for(param=param)
+    if widget in ("bool", "choice", "int", "float", "int2"):
+        return widget
+    if isinstance(value, (list, tuple)) and len(value) == 2 and all(isinstance(v, int) for v in value):
+        return "int2"
+    if isinstance(value, (list, tuple)) and len(value) == 2 and all(isinstance(v, (int, float)) for v in value):
+        return "float2"
+    if isinstance(value, (list, tuple)):
+        return "sequence"
+    return "text"
+
+
 def is_hdf5(filepath: str) -> bool:
     """Whether a path names an hdf5 file."""
     return Path(filepath).suffix.lower() in cli.SUFFIXES_HDF5
@@ -97,6 +133,11 @@ def is_hdf5(filepath: str) -> bool:
 def title_of(section: scraper.Section) -> str:
     """A section's heading, e.g. "Motion correct" for motion-correct."""
     return section.name.replace("-", " ").capitalize()
+
+
+def label_of(kind: str, section: scraper.Section) -> str:
+    """A config's name in a stage's dropdown, marking the pipeline's default."""
+    return f"{kind} (default)" if kind == section.default_kind else kind
 
 
 def width_visible() -> float:
@@ -143,6 +184,43 @@ def draw_divider() -> None:
     imgui.spacing()
 
 
+def diff_config(current: Any, default: Any, path: str, rows: list) -> None:
+    """
+    Append a row for every field of current that differs from default, descending into nested
+    configs and lists of configs.
+
+    Args:
+        current (Any): A config field's value
+        default (Any): The pipeline default's value at the same place, or NO_DEFAULT when it has none
+        path (str): Where the value sits, e.g. filtered_demixing_config.DemixingConfigs[0].NMFConfig
+        rows (list): Receives (path, current, default) text triples
+    """
+    if default is NO_DEFAULT:
+        return
+    if dataclasses.is_dataclass(current) and type(current) is type(default):
+        for field in dataclasses.fields(current):
+            if field.init:
+                diff_config(
+                    current=getattr(current, field.name),
+                    default=getattr(default, field.name),
+                    path=f"{path}.{field.name}",
+                    rows=rows,
+                )
+        return
+    if dataclasses.is_dataclass(current) or dataclasses.is_dataclass(default):
+        if scraper.kind_of(value=current) != scraper.kind_of(value=default):
+            rows.append((path, scraper.kind_of(value=current), scraper.kind_of(value=default)))
+        return
+    if isinstance(current, list) and len(current) > 0 and dataclasses.is_dataclass(current[0]):
+        if len(current) != len(default):
+            rows.append((f"{path} passes", str(len(current)), str(len(default))))
+        for i, item in enumerate(current):
+            diff_config(current=item, default=default[i] if i < len(default) else NO_DEFAULT, path=f"{path}[{i}]", rows=rows)
+        return
+    if current != default:
+        rows.append((path, text_of(value=current) or "none", text_of(value=default) or "none"))
+
+
 class Launcher:
     """
     State behind the launcher window: the chosen pipeline and every value typed into it.
@@ -157,7 +235,9 @@ class Launcher:
         self.spec: Optional[scraper.PipelineSpec] = None
         self.paths: dict[str, str] = {}
         self.texts: dict[str, str] = {}
-        self.kinds: dict[str, str] = {}
+        self.values: dict[str, Any] = {}
+        self.buffers: dict[str, str] = {}
+        self.errors: dict[str, str] = {}
         self.dataset = ""
         self.picker = None
         self.target_picker: Optional[tuple[dict, str]] = None
@@ -187,34 +267,25 @@ class Launcher:
             param.name: text_default(param=param)
             for param in (*self.spec.run_scalars, *self.spec.scalars)
         }
-        self.kinds = {section.name: KIND_DEFAULT for section in self.spec.sections}
+        self.values = {section.argument: section.value_for(kind=section.default_kind) for section in self.spec.sections}
+        self.buffers = {}
+        self.errors = {}
         for param in (*self.spec.movie_params, *self.spec.array_params):
             self.paths.setdefault(param.field, "")
 
     def select_kind(self, section: scraper.Section, kind: str) -> None:
-        """Choose the config a section receives, resetting its fields to that config's defaults."""
-        self.kinds[section.name] = kind
-        prefix = f"{section.name}."
-        self.texts = {k: v for k, v in self.texts.items() if not k.startswith(prefix)}
-        for param in self.spec.params_for(section=section, kind=kind):
-            self.texts[param.name] = text_default(param=param)
+        """Give a section another config, at the pipeline's default when it is the default's kind."""
+        self.values[section.argument] = section.value_for(kind=kind)
+        self.forget(path=section.argument)
 
-    def kinds_offered(self, section: scraper.Section) -> list[str]:
-        """The configs a section can be given from here: those the command line can build."""
-        kinds = [
-            kind
-            for kind in section.kinds
-            if kind == "skip" or cli.is_constructible(spec=self.spec, section=section, kind=kind)
-        ]
-        return [KIND_DEFAULT, *kinds]
+    def forget(self, path: str) -> None:
+        """Drop the typed text and errors of every field under path, so they are read again from the values."""
+        self.buffers = {k: v for k, v in self.buffers.items() if not k.startswith(path)}
+        self.errors = {k: v for k, v in self.errors.items() if not k.startswith(path)}
 
-    def params_config(self, section: scraper.Section) -> list[scraper.Param]:
-        """The settable fields of the config a section currently receives."""
-        return [
-            param
-            for param in self.spec.params_for(section=section, kind=self.kinds[section.name])
-            if param.settable
-        ]
+    def sections_changed(self) -> list[scraper.Section]:
+        """The sections whose config differs from the pipeline's default."""
+        return [s for s in self.spec.sections if self.values[s.argument] != s.default]
 
     def params_folder(self) -> list[scraper.Param]:
         """Constructor arguments that name a folder, shown with the output section."""
@@ -276,9 +347,8 @@ class Launcher:
             elif path != "" and not Path(path).expanduser().exists():
                 problems.append(f"not found: {path}")
         params = [*self.spec.run_scalars, *self.spec.scalars]
-        for section in self.spec.sections:
-            params += self.params_config(section=section)
         problems += [e for e in (self.error_for(param=p) for p in params) if e is not None]
+        problems += list(self.errors.values())
         return problems
 
     def modified(self) -> list[tuple[str, str, str]]:
@@ -288,17 +358,11 @@ class Launcher:
             if self.is_modified(param=param):
                 rows.append((param.field, self.texts[param.name], text_default(param=param) or "none"))
         for section in self.spec.sections:
-            kind = self.kinds[section.name]
-            if kind == KIND_DEFAULT:
-                continue
-            rows.append((f"{section.name} config", kind, KIND_DEFAULT))
-            for param in self.params_config(section=section):
-                if self.is_changed(param=param):
-                    rows.append((param.name, self.texts[param.name], text_default(param=param) or "none"))
+            diff_config(current=self.values[section.argument], default=section.default, path=section.argument, rows=rows)
         return rows
 
     def build_argv(self) -> list[str]:
-        """The `masknmf` arguments the window's values amount to."""
+        """The `masknmf` arguments the window's values amount to, writing changed configs to a json file."""
         spec = self.spec
         argv = ["run", "--pipeline", spec.slug]
         for param in spec.movie_params:
@@ -318,14 +382,13 @@ class Launcher:
         for param in spec.scalars:
             if self.is_changed(param=param):
                 argv += [f"--{param.name}", self.texts[param.name]]
-        for section in spec.sections:
-            kind = self.kinds[section.name]
-            if kind == KIND_DEFAULT:
-                continue
-            argv += [f"--{section.name}-kind", kind]
-            for param in self.params_config(section=section):
-                if self.is_changed(param=param):
-                    argv += ["--set", f"{param.name}={self.texts[param.name]}"]
+        sections = self.sections_changed()
+        if len(sections) > 0:
+            configs = {section.argument: self.values[section.argument] for section in sections}
+            FILEPATH_RUN_CONFIGS.write_text(
+                json.dumps({"pipeline": spec.cls.__name__, **configs}, indent=2, default=scraper.config_json_value)
+            )
+            argv += ["--config", str(FILEPATH_RUN_CONFIGS)]
         return argv
 
     def quit(self) -> None:
@@ -454,45 +517,199 @@ class Launcher:
         """One bordered box per pipeline stage."""
         draw_subsection(
             text="Pipeline stages",
-            hint="Each stage runs with the pipeline's own settings unless you pick a config. "
-            "Changed values show orange and are listed under Modified parameters.",
+            hint="Every config a stage accepts is listed; the pipeline's own is selected and shows the values it "
+            "runs with. Changed values show orange and are listed under Modified parameters.",
         )
         imgui.spacing()
         for section in self.spec.sections:
             self.draw_stage(section=section)
 
     def draw_stage(self, section: scraper.Section) -> None:
-        """A stage's box: a radio button per config it can take, then that config's fields."""
+        """A stage's box: which config it takes, then that config's fields."""
         flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_use_window_padding
         with imgui_ctx.begin_child(f"##stage_{section.name}", imgui.ImVec2(0, 0), flags):
             imgui.text_colored(COLOR_TITLE, title_of(section=section))
-            kinds = self.kinds_offered(section=section)
-            if len(kinds) == 1:
-                draw_wrapped(text="Runs with the pipeline's own settings; set it from Python to change it.", color=COLOR_DIM)
-                return
-            self.draw_kind_radios(section=section, kinds=kinds)
+            kinds = cli.kinds_buildable(section=section)
+            value = self.values[section.argument]
+            kind = scraper.kind_of(value=value)
+            labels = [label_of(kind=k, section=section) for k in kinds]
+            changed_kind = kind != section.default_kind
+            if changed_kind:
+                imgui.push_style_color(imgui.Col_.text, COLOR_MODIFIED)
+            imgui.set_next_item_width(max(self.width_combo(items=labels), hello_imgui.em_size(WIDTH_INPUT_EM)))
+            edited, index = imgui.combo(f"##kind_{section.name}", kinds.index(kind), labels)
+            if changed_kind:
+                imgui.pop_style_color()
+            if edited:
+                self.select_kind(section=section, kind=kinds[index])
+            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+            draw_wrapped(text="config", color=COLOR_MODIFIED if changed_kind else None)
             imgui.separator()
-            kind = self.kinds[section.name]
-            if kind == KIND_DEFAULT:
-                draw_wrapped(text="Runs with the pipeline's own settings.", color=COLOR_DIM)
-                return
-            if kind == "skip":
+            value = self.values[section.argument]
+            if isinstance(value, str):
                 draw_wrapped(text="Skipped.", color=COLOR_DIM)
                 return
-            for param in self.params_config(section=section):
-                self.draw_param(param=param)
+            default = section.default if type(section.default) is type(value) else NO_DEFAULT
+            self.draw_config(config=value, default=default, path=section.argument)
 
-    def draw_kind_radios(self, section: scraper.Section, kinds: list[str]) -> None:
-        """A radio button per config, continuing on the next line rather than past the box's edge."""
-        style = imgui.get_style()
-        right = imgui.get_window_pos().x + imgui.get_window_size().x - style.window_padding.x
-        for i, kind in enumerate(kinds):
-            label = "default" if kind == KIND_DEFAULT else kind
-            width = imgui.get_frame_height() + style.item_inner_spacing.x + imgui.calc_text_size(label).x
-            if i > 0 and imgui.get_item_rect_max().x + style.item_spacing.x + width <= right:
-                imgui.same_line()
-            if imgui.radio_button(f"{label}##{section.name}", self.kinds[section.name] == kind):
-                self.select_kind(section=section, kind=kind)
+    def draw_config(self, config: Any, default: Any, path: str) -> None:
+        """
+        A config's editable fields; nested configs under their name, lists of configs one box per item.
+
+        Args:
+            config (Any): The config dataclass being edited
+            default (Any): The pipeline's default at the same place, or NO_DEFAULT when it has none
+            path (str): Where config sits, naming its fields' widgets and errors
+        """
+        hints = scraper.resolve_hints(cls=type(config))
+        params = {param.field: param for param in scraper.scrape_dataclass(cls_config=type(config), name_section=path)}
+        for field in dataclasses.fields(config):
+            if not field.init:
+                continue
+            annotation = hints.get(field.name, field.type)
+            current = getattr(config, field.name)
+            default_field = NO_DEFAULT if default is NO_DEFAULT else getattr(default, field.name)
+            path_field = f"{path}.{field.name}"
+            if dataclasses.is_dataclass(current):
+                imgui.spacing()
+                imgui.text_colored(COLOR_SUBSECTION, field.name)
+                imgui.indent(hello_imgui.em_size(0.8))
+                matches = default_field is not NO_DEFAULT and type(default_field) is type(current)
+                self.draw_config(config=current, default=default_field if matches else NO_DEFAULT, path=path_field)
+                imgui.unindent(hello_imgui.em_size(0.8))
+            elif scraper.item_dataclass_of(annotation=annotation) is not None:
+                self.draw_items(
+                    items=current,
+                    defaults=[] if default_field is NO_DEFAULT else default_field,
+                    cls_item=scraper.item_dataclass_of(annotation=annotation),
+                    path=path_field,
+                )
+            elif params[field.name].settable:
+                self.draw_field(config=config, param=params[field.name], default=default_field, path=path_field)
+
+    def draw_items(self, items: list, defaults: list, cls_item: type, path: str) -> None:
+        """
+        A list of configs, such as a multipass config's passes: a box per item with a remove button,
+        then a button adding a copy of the last item.
+
+        Args:
+            items (list): The configs, edited in place
+            defaults (list): The pipeline's default list at the same place
+            cls_item (type): The config class the list holds
+            path (str): Where the list sits
+        """
+        flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_use_window_padding
+        removed = None
+        for i, item in enumerate(items):
+            with imgui_ctx.begin_child(f"##{path}[{i}]", imgui.ImVec2(0, 0), flags):
+                added = i >= len(defaults)
+                imgui.text_colored(COLOR_MODIFIED if added else COLOR_SUBSECTION, f"Pass {i + 1}{' (added)' if added else ''}")
+                if len(items) > 1:
+                    same_line_if_fits(width=self.width_frame(text="Remove"))
+                    if imgui.small_button(f"Remove##{path}[{i}]"):
+                        removed = i
+                self.draw_config(config=item, default=NO_DEFAULT if added else defaults[i], path=f"{path}[{i}]")
+        if removed is not None:
+            del items[removed]
+            self.forget(path=path)
+        if imgui.button(f"{fa.ICON_FA_PLUS}  Add pass##{path}"):
+            items.append(copy.deepcopy(items[-1]) if len(items) > 0 else scraper.build_default(cls_config=cls_item))
+        if imgui.is_item_hovered():
+            idl.wrapped_tooltip("Adds a pass copying the last one")
+
+    def draw_field(self, config: Any, param: scraper.Param, default: Any, path: str) -> None:
+        """A fixed width widget for one config field with its name to the right, orange once it differs from the default."""
+        name = param.field
+        current = getattr(config, name)
+        modified = default is not NO_DEFAULT and current != default
+        widget = widget_for_field(param=param, value=current)
+        width = hello_imgui.em_size(WIDTH_INPUT_EM)
+        if modified:
+            imgui.push_style_color(imgui.Col_.text, COLOR_MODIFIED)
+        if widget == "bool":
+            edited, value = imgui.checkbox(f"##{path}", current is True)
+            if edited:
+                setattr(config, name, value)
+        elif widget == "choice":
+            items = [str(choice) for choice in param.choices]
+            index = items.index(str(current)) if str(current) in items else -1
+            imgui.set_next_item_width(max(width, self.width_combo(items=items)))
+            edited, index = imgui.combo(f"##{path}", index, items)
+            if edited:
+                setattr(config, name, param.choices[index])
+        elif widget == "int":
+            imgui.set_next_item_width(max(width, self.width_stepped(text=str(current))))
+            edited, value = imgui.input_int(f"##{path}", int(current))
+            if edited:
+                setattr(config, name, value)
+        elif widget == "float":
+            imgui.set_next_item_width(max(width, self.width_frame(text=f"{current:.6g}") + hello_imgui.em_size(1)))
+            edited, value = imgui.input_float(f"##{path}", float(current), 0.0, 0.0, "%.6g")
+            if edited:
+                setattr(config, name, float(f"{value:.6g}"))
+        elif widget in ("int2", "float2"):
+            texts = [f"{v:.6g}" if isinstance(v, float) else str(v) for v in current]
+            widest = max(self.width_frame(text=t) for t in texts)
+            imgui.set_next_item_width(max(width, 2 * (widest + hello_imgui.em_size(1)) + imgui.get_style().item_inner_spacing.x))
+            if widget == "int2":
+                edited, values = imgui.input_int2(f"##{path}", list(current))
+            else:
+                edited, values = imgui.input_float2(f"##{path}", [float(v) for v in current], "%.6g")
+                values = [float(f"{v:.6g}") for v in values]
+            if edited:
+                setattr(config, name, type(current)(values))
+        else:
+            self.draw_field_text(config=config, param=param, path=path, wrap=widget == "sequence")
+        if modified:
+            imgui.pop_style_color()
+
+        imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+        error = self.errors.get(path)
+        if error is not None:
+            draw_wrapped(text=name, color=COLOR_ERROR)
+        elif modified:
+            draw_wrapped(text=name, color=COLOR_MODIFIED)
+        else:
+            draw_wrapped(text=name)
+        if imgui.is_item_hovered():
+            idl.wrapped_tooltip(error or f"pipeline default: {text_of(value=default) or 'none'}" if default is not NO_DEFAULT else error or name)
+
+    def draw_field_text(self, config: Any, param: scraper.Param, path: str, wrap: bool) -> None:
+        """
+        A text box for a field no numeric widget fits, such as an optional value or a long list,
+        keeping what was typed until it parses.
+
+        Args:
+            config (Any): The config holding the field
+            param (Param): The field
+            path (str): Where the field sits
+            wrap (bool): Whether to wrap the text over lines filling the row, for long lists
+        """
+        name = param.field
+        current = getattr(config, name)
+        text = self.buffers.get(path, text_of(value=current))
+        if wrap:
+            padding = imgui.get_style().frame_padding
+            width = max(imgui.get_content_region_avail().x - hello_imgui.em_size(12), hello_imgui.em_size(WIDTH_INPUT_EM))
+            width_wrap = width - 2 * padding.x - imgui.get_style().scrollbar_size
+            height = imgui.calc_text_size(text or " ", wrap_width=width_wrap).y + 2 * padding.y
+            edited, text = imgui.input_text_multiline(
+                f"##{path}", text, imgui.ImVec2(width, height), imgui.InputTextFlags_.word_wrap
+            )
+            text = text.replace("\n", "").replace("\r", "")
+        else:
+            imgui.set_next_item_width(max(hello_imgui.em_size(WIDTH_INPUT_EM), self.width_frame(text=text)))
+            edited, text = imgui.input_text_with_hint(f"##{path}", "none", text)
+        if not edited:
+            return
+        self.buffers[path] = text
+        try:
+            value = scraper.coerce(param=param, text=text)
+        except ValueError as error:
+            self.errors[path] = f"{path}: {error}"
+            return
+        self.errors.pop(path, None)
+        setattr(config, name, list(value) if isinstance(current, list) and isinstance(value, tuple) else value)
 
     def draw_runtime(self) -> None:
         """The constructor arguments that are neither configs nor folders."""
