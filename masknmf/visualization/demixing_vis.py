@@ -148,11 +148,13 @@ class SingleSessionDemixingVis:
     Delete (or the Signals tab's delete button) marks it like any other selection. Nothing is removed until the
     next Demix. line-select is a placeholder, not implemented yet.
 
-    ``raw`` (a movie, or a .tif path) shows the raw movie in place of the signals panel and ``shifts`` (an
-    array, or a motion correction hdf5 path) adds the registration shifts as a panel above the traces
-    (piecewise rigid: the largest block shift per frame). With ``results_path`` set, a lone .tif beside the
-    results, and the registration shifts from the results file itself or from a motion_correction.hdf5 beside
-    it, are picked up when their frames match the results; given ones must match.
+    ``raw`` (a movie, or a .tif path) adds a raw movie panel and ``shifts`` (an array, or a motion correction
+    hdf5 path) adds the registration shifts as a panel above the traces (piecewise rigid: the largest block
+    shift per frame). With ``results_path`` set, a lone .tif beside the results, and the registration shifts
+    from the results file itself or from a motion_correction.hdf5 beside it, are picked up when their frames
+    match the results; given ones must match. The panels are what the results hold, three to a row: the raw
+    movie when there is one, the compressed movie, then with demixed signals the signals, background (when the
+    demixer fit one), residual and colorful signals, and last the summary image.
 
     The Signals table always carries the results' own stats (:meth:`CellStats.from_results`: mean, std, snr
     and skew of each demixed trace; fit, resid and bkgd from the roi averages the results hold), hidden until
@@ -320,23 +322,13 @@ class SingleSessionDemixingVis:
             self._shape[0], frame_timings, ref_range
         )
 
-        # TODO: make these a variable at the top of the file when the names for these visualizations are set
-        # raw takes the place of the signals panel, so the grid stays three by two
-        self._video_panels = (
-            ("raw", "compressed+denoised")
-            if self._raw is not None
-            else ("compressed+denoised", "signals")
-        ) + (
-            "background",
-            "residual",
-            "colorful_signals",
-            "summary img",
-        )
-
         self._bind_arrays()
 
+        panels = {name: array for name, array in self._panel_arrays().items() if array is not None}
+        self._video_panels = (*panels, "summary img")
+        rows = (len(self._video_panels) + 2) // 3
         self._video_extents = {
-            name: ((i % 3) / 3, (i % 3 + 1) / 3, (i // 3) / 2, (i // 3) / 2 + 0.5)
+            name: ((i % 3) / 3, (i % 3 + 1) / 3, (i // 3) / rows, (i // 3 + 1) / rows)
             for i, name in enumerate(self._video_panels)
         }
 
@@ -353,76 +345,17 @@ class SingleSessionDemixingVis:
         self._reference_index = self._ndw_fov.indices
         self._panel_graphics = OrderedDict()
 
-        movie_dims = ["time", "m", "n"]
-        movie_display_dims = ["m", "n"]
-        movie_index_mapping = {"time": frame_timings}
-        self._pmd_graphic = self._ndw_fov["compressed+denoised"].add_nd_image(
-            self._pmd_array,
-            movie_dims,
-            movie_display_dims,
-            slider_maps=movie_index_mapping.copy(),
-            name="compressed+denoised",
-        )
-        self._panel_graphics["compressed+denoised"] = self._pmd_graphic
-
-        self._raw_graphic = None
-        if self._raw is not None:
-            self._raw_graphic = self._ndw_fov["raw"].add_nd_image(
-                self._raw,
-                movie_dims,
-                movie_display_dims,
-                slider_maps=movie_index_mapping.copy(),
-                name="raw",
+        for name, array in panels.items():
+            # colorful signals carry a color axis
+            color = ["c"] if len(array.shape) == 4 else []
+            self._panel_graphics[name] = self._ndw_fov[name].add_nd_image(
+                array,
+                ["time", "m", "n", *color],
+                ["m", "n", *color],
+                slider_maps={"time": frame_timings},
+                name=name,
+                **({"rgb_dim": "c"} if color else {}),
             )
-            self._panel_graphics["raw"] = self._raw_graphic
-
-        self._ac_graphic = None
-        if self._ac_array is not None:
-            if "signals" in self._video_panels:
-                self._ac_graphic = self._ndw_fov["signals"].add_nd_image(
-                    self._ac_array,
-                    movie_dims,
-                    movie_display_dims,
-                    slider_maps=movie_index_mapping.copy(),
-                    name="signals",
-                )
-                self._panel_graphics["signals"] = self._ac_graphic
-
-            self._background_graphic = self._ndw_fov["background"].add_nd_image(
-                self._fluctuating_background_array,
-                movie_dims,
-                movie_display_dims,
-                slider_maps=movie_index_mapping.copy(),
-                name="background",
-            )
-
-            self._residual_graphic = self._ndw_fov["residual"].add_nd_image(
-                self._residual_array,
-                movie_dims,
-                movie_display_dims,
-                slider_maps=movie_index_mapping.copy(),
-                name="residual",
-            )
-
-            movie_dims_rgb = ["time", "m", "n", "c"]
-            movie_display_dims_rgb = ["m", "n", "c"]
-            self._colorful_signal_graphic = self._ndw_fov[
-                "colorful_signals"
-            ].add_nd_image(
-                self._colorful_ac_array,
-                movie_dims_rgb,
-                movie_display_dims_rgb,
-                slider_maps=movie_index_mapping.copy(),
-                rgb_dim="c",
-                name="colorful_signals",
-            )
-            self._panel_graphics["background"] = self._background_graphic
-            self._panel_graphics["residual"] = self._residual_graphic
-            self._panel_graphics["colorful_signals"] = self._colorful_signal_graphic
-        else:
-            self._background_graphic = None
-            self._residual_graphic = None
-            self._colorful_signal_graphic = None
 
         self._own_summary = summary_img is None and self._has_ac
         if summary_img is not None:
@@ -609,12 +542,26 @@ class SingleSessionDemixingVis:
             self._residual_array = self.demixing_results.residual_array
             self._colorful_ac_array = self.demixing_results.colorful_signals_array
             self._ac_array = self.demixing_results.signals_array
+            # an all-zero background term means the demixer never fit one
+            self._has_background = bool(torch.count_nonzero(self.demixing_results.factorized_background_term1))
         else:
             self._pmd_array = self.demixing_results
             self._fluctuating_background_array = None
             self._residual_array = None
             self._colorful_ac_array = None
             self._ac_array = None
+            self._has_background = False
+
+    def _panel_arrays(self) -> dict:
+        """The movie panels in grid order, name to the array shown; None is a panel the results cannot fill."""
+        return {
+            "raw": self._raw,
+            "compressed+denoised": self._pmd_array,
+            "signals": self._ac_array,
+            "background": self._fluctuating_background_array if self._has_background else None,
+            "residual": self._residual_array,
+            "colorful_signals": self._colorful_ac_array,
+        }
 
     def _bind_click_handlers(self):
         """Re-attach the click handlers to every video panel: NDGraphic.data= replaces the graphic instance."""
@@ -688,21 +635,15 @@ class SingleSessionDemixingVis:
 
     def _set_gray_cmaps(self):
         """NDGraphic.data= replaces the graphic instance, dropping its cmap too."""
-        for g in self._panel_graphics.values():
-            if g is not self._colorful_signal_graphic:
+        arrays = self._panel_arrays()
+        for name, g in self._panel_graphics.items():
+            array = arrays.get(name)
+            if array is None or len(array.shape) != 4:
                 g.graphic.cmap = "gray"
 
     def _video_graphics(self):
         """The NDImage wrapper for every video panel, in ``_video_panels`` order."""
-        return (
-            self._pmd_graphic,
-            self._ac_graphic,
-            self._background_graphic,
-            self._residual_graphic,
-            self._colorful_signal_graphic,
-            self._summary_image,
-            self._raw_graphic,
-        )
+        return tuple(self._panel_graphics.values())
 
     def _make_selectors(self):
         """(Re)build the footprint selectors over the current signals."""
@@ -732,15 +673,10 @@ class SingleSessionDemixingVis:
         self._selected_signals = None
         self._clear_traces()
         self._pixels.clear()
-        self._pmd_graphic.data = self._pmd_array
-        if self._ac_graphic is not None:
-            self._ac_graphic.data = self._ac_array
-        self._background_graphic.data = self._fluctuating_background_array
-        self._residual_graphic.data = self._residual_array
-        self._colorful_signal_graphic.data = self._colorful_ac_array
-        if self._raw_graphic is not None:
-            # same movie, new graphic instance: keeps the re-bound click handlers from doubling up
-            self._raw_graphic.data = self._raw
+        # same movies, new graphic instances: keeps the re-bound click handlers from doubling up
+        for name, array in self._panel_arrays().items():
+            if name in self._panel_graphics and array is not None:
+                self._panel_graphics[name].data = array
         if self._own_summary:
             self._summary_image.data = (
                 results.global_residual_correlation_image.cpu().numpy()
