@@ -1,4 +1,5 @@
 from dataclasses import asdict
+import copy
 import masknmf
 from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
 from masknmf.arrays import LazyFrameLoader, ArrayLike
@@ -10,7 +11,7 @@ from masknmf.compression.preprocessing import MaximinSplineDetrend
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
-from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig
+from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig, MultipassDemixingConfigs
 from pathlib import Path
 from typing import *
 import numpy as np
@@ -67,7 +68,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                  output_folder: str | Path | None = None,
                  motion_correct_config: RigidMotionCorrectionConfig | None = None,
                  compress_config: CompressDenoiseConfig | None = None,
-                 demixing_config: MultipassDemixingConfig | None = None,
+                 demixing_config: MultipassDemixingConfigs | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"):
 
@@ -83,6 +84,18 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         self.compress_config = compress_config
         self.demixing_config = demixing_config
 
+    @classmethod
+    def default_configs(cls) -> dict:
+        """
+        Rigid motion correction with 40 pixel shifts, compression with denoising in 10 pixel blocks, and two
+        positive-signed demixing passes tuned for spines.
+        """
+        return {'motion_correct_config': copy.deepcopy(DEFAULT_MOTION_CORRECTION_CONFIG),
+                'compress_config': copy.deepcopy(DEFAULT_COMPRESSION_CONFIG),
+                'demixing_config': MultipassDemixingConfig(
+                    [SinglepassDemixingConfig(copy.deepcopy(DEFAULT_SPINE_SUPERPIXEL_CONFIG),
+                                              copy.deepcopy(DEFAULT_SPINE_NMF_CONFIG)) for _ in range(2)])}
+
     @property
     def motion_correct_config(self) -> RigidMotionCorrectionConfig | None:
         return self._motion_correct_config
@@ -90,7 +103,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
     @motion_correct_config.setter
     def motion_correct_config(self, updated_config: RigidMotionCorrectionConfig | None):
         if updated_config is None:
-            self._motion_correct_config = DEFAULT_MOTION_CORRECTION_CONFIG
+            self._motion_correct_config = self.default_configs()['motion_correct_config']
         else:
             self._motion_correct_config = updated_config
 
@@ -101,7 +114,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
     @compress_config.setter
     def compress_config(self, updated_config: CompressDenoiseConfig | None):
         if updated_config is None:
-            self._compress_config = DEFAULT_COMPRESSION_CONFIG
+            self._compress_config = self.default_configs()['compress_config']
         else:
             self._compress_config = updated_config
 
@@ -110,13 +123,9 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         return self._demixing_config
 
     @demixing_config.setter
-    def demixing_config(self, updated_config: MultipassDemixingConfig | None):
+    def demixing_config(self, updated_config: MultipassDemixingConfigs | None):
         if updated_config is None:
-            conf_list = []
-            curr_demix_conf = SinglepassDemixingConfig(DEFAULT_SPINE_SUPERPIXEL_CONFIG, DEFAULT_SPINE_NMF_CONFIG)
-            for _ in range(2):
-                conf_list.append(curr_demix_conf)
-            self._demixing_config = MultipassDemixingConfig(conf_list)
+            self._demixing_config = self.default_configs()['demixing_config']
         else:
             if len(updated_config.DemixingConfigs) < 1:
                 raise ValueError("Must have sufficient configs for at least one pass of NMF in demixing configs")

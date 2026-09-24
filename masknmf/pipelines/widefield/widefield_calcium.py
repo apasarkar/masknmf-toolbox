@@ -3,8 +3,8 @@ from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.utils import display
 
 from masknmf.pipelines._base import BasePipeline
-from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
-from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
+from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, MotionCorrectionConfigs
+from masknmf.pipelines.configs.compression_configs import CompressDenoiseConfig, CompressionConfigs
 import torch
 from typing import *
 import numpy as np
@@ -13,9 +13,8 @@ from pathlib import Path
 
 class WidefieldSinglechannelPipeline(BasePipeline):
     def __init__(self,
-                 motion_correct_config: RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig | Literal[
-                     "skip"] | None = None,
-                 compress_config: CompressConfig | CompressDenoiseConfig | None = None,
+                 motion_correct_config: MotionCorrectionConfigs | Literal["skip"] | None = None,
+                 compress_config: CompressionConfigs | None = None,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"
@@ -25,25 +24,33 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         this filtered data, it returns to the unfiltered data to further demix.
         Args:
             motion_correct_config: Config object specifying parameters for motion correcting the data. If None,
-                uses RigidMotionCorrectionConfig defaults. If "skip", skips motion correction entirely.
-            compress_config: Config object specifying parameters for compressing the data.
-                If None is specified, the joint compression + denoising code is run
+                uses the one from default_configs(). If "skip", skips motion correction entirely.
+            compress_config: Config object specifying parameters for compressing the data. If None, uses the one from
+                default_configs()
             output_folder: Every stage is written to ``<output_folder>/<timestamp>_widefield-singlechannel/results.hdf5``,
                 one hdf5 group per stage. None uses the working directory
             frame_batch_size (int): Number of frames to load into GPU at a time for processing
             device (str): Indicates which device pytorch runs on
         """
-        self._motion_correct_config = motion_correct_config
-        self._compress_config = compress_config
+        defaults = self.default_configs()
+        self._motion_correct_config = defaults['motion_correct_config'] if motion_correct_config is None else motion_correct_config
+        self._compress_config = defaults['compress_config'] if compress_config is None else compress_config
         super().__init__(output_folder, frame_batch_size, device)
 
+    @classmethod
+    def default_configs(cls) -> dict:
+        """
+        Rigid motion correction and compression with denoising.
+        """
+        return {'motion_correct_config': RigidMotionCorrectionConfig(),
+                'compress_config': CompressDenoiseConfig()}
+
     @property
-    def motion_correct_config(self) -> RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig | Literal[
-        "skip"] | None:
+    def motion_correct_config(self) -> MotionCorrectionConfigs | Literal["skip"]:
         return self._motion_correct_config
 
     @property
-    def compress_config(self) -> CompressConfig | CompressDenoiseConfig | None:
+    def compress_config(self) -> CompressionConfigs:
         return self._compress_config
 
     @property

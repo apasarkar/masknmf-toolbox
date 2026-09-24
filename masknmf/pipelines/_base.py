@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from dataclasses import asdict, fields, is_dataclass
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 import json
@@ -9,7 +9,7 @@ import torch
 from typing import *
 
 from masknmf._version import __version__
-from masknmf.pipelines.scraper import slugify
+from masknmf.pipelines.scraper import slugify, config_json_value
 from masknmf.arrays import ArrayLike
 from masknmf.compression import CompressionArray, CompressStrategy, CompressDenoiseStrategy
 from masknmf.compression.preprocessing import MaximinSplineDetrend
@@ -18,17 +18,8 @@ from masknmf.motion_correction import BaseRegistrationArray, RigidMotionCorrecto
 from masknmf.motion_correction.moco_preprocessing import construct_moco_template
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
-from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig
+from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig, SinglepassDemixingConfig, SuperpixelInitConfig
 from masknmf.utils import display, has_group, drop_group, torch_select_device
-
-
-def config_json_value(value):
-    """What json cannot write itself: dataclasses as dicts, paths as strings, anything else (arrays, detrenders) as "*"."""
-    if is_dataclass(value):
-        return {f.name: getattr(value, f.name) for f in fields(value)}
-    if isinstance(value, Path):
-        return str(value)
-    return "*"
 
 
 class BasePipeline(ABC):
@@ -43,6 +34,15 @@ class BasePipeline(ABC):
     @property
     @abstractmethod
     def config(self):
+        pass
+
+    @classmethod
+    @abstractmethod
+    def default_configs(cls) -> dict:
+        """
+        The value each config argument of __init__ takes when it is None, keyed by argument name. Built fresh on every
+        call, so callers may change what they get back.
+        """
         pass
 
     @property
@@ -187,6 +187,19 @@ class BasePipeline(ABC):
             results = demixer.results
             torch.cuda.empty_cache()
         return results
+
+    def with_detrender(self, config: MultipassDemixingConfig, detrender: MaximinSplineDetrend) -> MultipassDemixingConfig:
+        """A copy of config whose superpixel initializations and NMF steps without a detrender use detrender."""
+        passes = []
+        for singlepass in config.DemixingConfigs:
+            init_config = singlepass.InitConfig
+            if isinstance(init_config, SuperpixelInitConfig) and init_config.detrender is None:
+                init_config = replace(init_config, detrender=detrender)
+            nmf_config = singlepass.NMFConfig
+            if nmf_config.detrender is None:
+                nmf_config = replace(nmf_config, detrender=detrender)
+            passes.append(SinglepassDemixingConfig(init_config, nmf_config))
+        return MultipassDemixingConfig(passes)
 
     def drop_compression(self, results_path: str):
         """Remove the CompressionArray group once demixing is done; the demixing results carry the pmd."""
