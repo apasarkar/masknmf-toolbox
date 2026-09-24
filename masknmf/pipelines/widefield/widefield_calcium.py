@@ -1,10 +1,7 @@
 import torch
 from dataclasses import asdict
-import masknmf
-from masknmf.motion_correction import RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
 from masknmf.arrays import LazyFrameLoader, ArrayLike
-from masknmf.motion_correction import BaseRegistrationArray
 from masknmf.utils import display
 
 from masknmf.pipelines._base import BasePipeline
@@ -64,48 +61,8 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         Uses the API to run rigid motion correction, compression (with denoising)
         """
         results_path = self.results_path()
-        ## Decide whether to motion correct data or not
-        if self.motion_correct_config is None:
-            moco_strategy = RigidMotionCorrector(**asdict(RigidMotionCorrectionConfig()), device=self.device,
-                                                 batch_size=self.frame_batch_size)
-
-        elif isinstance(self.motion_correct_config, RigidMotionCorrectionConfig):
-            moco_strategy = RigidMotionCorrector(**asdict(self.motion_correct_config), device=self.device,
-                                                 batch_size=self.frame_batch_size)
-        elif isinstance(self.motion_correct_config, PiecewiseRigidMotionCorrectionConfig):
-            moco_strategy = PiecewiseRigidMotionCorrector(**asdict(self.motion_correct_config), device=self.device,
-                                                          batch_size=self.frame_batch_size)
-        else:
-            moco_strategy = None
-
-        if isinstance(self.motion_correct_config, str):
-            if self.motion_correct_config.lower() == "skip":
-                moco_data = data
-                display("Not Running Motion Correction")
-            else:
-                raise ValueError("Invalid MotionCorrectionConfig input")
-        elif moco_strategy is None:
-            raise ValueError("Invalid MotionCorrectionConfig input")
-        else:  ## If motion correction is meant to be run, this branch must execute
-            ##Compute template if one is not provided
-            if moco_strategy.template is None:
-                moco_strategy.compute_template(data)
-            moco_data = moco_strategy.motion_correct(data)
-            moco_data.output_device = moco_data.strategy.device
-            moco_data.export(results_path)
-
-        if isinstance(moco_data, BaseRegistrationArray):
-            shift_mask = masknmf.motion_correction.moco_preprocessing.construct_moco_template(
-                moco_data.shifts.cpu().numpy(),
-                moco_data.shape[1:]).astype(
-                "float")
-        else:
-            shift_mask = np.ones((moco_data.shape[1], moco_data.shape[2])).astype("float")
-        if exclude_border_radius > 0:
-            shift_mask[:exclude_border_radius, :] = 0
-            shift_mask[:, :exclude_border_radius] = 0
-            shift_mask[-1 * exclude_border_radius:, :] = 0
-            shift_mask[:, -1 * exclude_border_radius:] = 0
+        moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
+                                                    exclude_border_radius)
 
         display("Running Compression")
         if self.compress_config is None:

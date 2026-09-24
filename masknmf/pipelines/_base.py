@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 import os
@@ -6,7 +7,11 @@ import numpy as np
 from typing import *
 
 from masknmf.pipelines.scraper import slugify
+from masknmf.arrays import ArrayLike
 from masknmf.compression import CompressionArray
+from masknmf.motion_correction import BaseRegistrationArray, RigidMotionCorrector, PiecewiseRigidMotionCorrector
+from masknmf.motion_correction.moco_preprocessing import construct_moco_template
+from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.utils import display, has_group, torch_select_device
 
 class BasePipeline(ABC):
@@ -70,6 +75,47 @@ class BasePipeline(ABC):
         if not has_group(path, CompressionArray.__name__):
             raise ValueError(f"You specified that compression should be skipped but {path} holds no compression")
         return path
+
+    def motion_correct(self,
+                       data: np.ndarray | ArrayLike,
+                       config: RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig | Literal["skip"] | None,
+                       results_path: str,
+                       exclude_border_radius: int = 0) -> tuple[np.ndarray | ArrayLike, np.ndarray]:
+        """
+        Register data with a rigid (the default when config is None) or piecewise rigid corrector and export it to
+        results_path, or pass it through for "skip". Also returns a pixel weighting that is 0 where the shifts
+        moved pixels in from outside the fov and on the outer exclude_border_radius pixels.
+        """
+        if isinstance(config, str):
+            if config.lower() != "skip":
+                raise ValueError("Invalid MotionCorrectionConfig input")
+            display("Not Running Motion Correction")
+            moco_data = data
+        else:
+            if config is None or isinstance(config, RigidMotionCorrectionConfig):
+                moco_strategy = RigidMotionCorrector(**asdict(RigidMotionCorrectionConfig() if config is None else config),
+                                                     device=self.device, batch_size=self.frame_batch_size)
+            elif isinstance(config, PiecewiseRigidMotionCorrectionConfig):
+                moco_strategy = PiecewiseRigidMotionCorrector(**asdict(config), device=self.device,
+                                                              batch_size=self.frame_batch_size)
+            else:
+                raise ValueError("Invalid MotionCorrectionConfig input")
+            if moco_strategy.template is None:
+                moco_strategy.compute_template(data)
+            moco_data = moco_strategy.motion_correct(data)
+            moco_data.output_device = moco_data.strategy.device
+            moco_data.export(results_path)
+
+        if isinstance(moco_data, BaseRegistrationArray):
+            shift_mask = construct_moco_template(moco_data.shifts.cpu().numpy(), moco_data.shape[1:]).astype("float")
+        else:
+            shift_mask = np.ones((moco_data.shape[1], moco_data.shape[2])).astype("float")
+        if exclude_border_radius > 0:
+            shift_mask[:exclude_border_radius, :] = 0
+            shift_mask[:, :exclude_border_radius] = 0
+            shift_mask[-1 * exclude_border_radius:, :] = 0
+            shift_mask[:, -1 * exclude_border_radius:] = 0
+        return moco_data, shift_mask
 
     @abstractmethod
     def run(self, data):
