@@ -13,7 +13,6 @@ from masknmf.pipelines.configs.compression_configs import CompressConfig, Compre
 import torch
 from typing import *
 import numpy as np
-import os
 from pathlib import Path
 
 
@@ -64,8 +63,7 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         """
         Uses the API to run rigid motion correction, compression (with denoising)
         """
-        results_path = os.path.join(self.create_run_folder(), "results.hdf5")
-        display(f"Writing results to {results_path}")
+        results_path = self.results_path()
         ## Decide whether to motion correct data or not
         if self.motion_correct_config is None:
             moco_strategy = RigidMotionCorrector(**asdict(RigidMotionCorrectionConfig()), device=self.device,

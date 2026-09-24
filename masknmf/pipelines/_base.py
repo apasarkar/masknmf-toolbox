@@ -1,11 +1,13 @@
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
+import os
 import numpy as np
 from typing import *
 
 from masknmf.pipelines.scraper import slugify
-from masknmf.utils import torch_select_device
+from masknmf.compression import CompressionArray
+from masknmf.utils import display, has_group, torch_select_device
 
 class BasePipeline(ABC):
     def __init__(self,
@@ -54,6 +56,20 @@ class BasePipeline(ABC):
             except FileExistsError:
                 suffix += 1
                 candidate = base / f"{name}_{suffix}"
+
+    def results_path(self, resume: bool = False) -> str:
+        """
+        ``results.hdf5`` in a new run folder. With ``resume``, the one in output_folder itself, an earlier run
+        folder whose compression is reused.
+        """
+        if not resume:
+            path = os.path.join(self.create_run_folder(), "results.hdf5")
+            display(f"Writing results to {path}")
+            return path
+        path = os.path.join(Path.cwd() if self.output_folder is None else self.output_folder, "results.hdf5")
+        if not has_group(path, CompressionArray.__name__):
+            raise ValueError(f"You specified that compression should be skipped but {path} holds no compression")
+        return path
 
     @abstractmethod
     def run(self, data):

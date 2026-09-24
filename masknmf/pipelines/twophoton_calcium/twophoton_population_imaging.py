@@ -3,7 +3,7 @@ import masknmf
 from masknmf.compression import CompressStrategy, CompressDenoiseStrategy, CompressionArray
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector
-from masknmf.utils import display, has_group, drop_group
+from masknmf.utils import display, drop_group
 from masknmf.demixing import NoSignalsDetectedError, DemixingError
 
 from masknmf.compression.preprocessing import MaximinSplineDetrend
@@ -15,7 +15,6 @@ from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConf
 
 from typing import *
 import numpy as np
-import os
 from pathlib import Path
 import torch
 
@@ -112,14 +111,11 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
-                results_path = os.path.join(Path.cwd() if self.output_folder is None else self.output_folder, "results.hdf5")
-                if not has_group(results_path, CompressionArray.__name__):
-                    raise ValueError(f"You specified that compression should be skipped but {results_path} holds no compression")
+                results_path = self.results_path(resume=True)
             else:
                 raise ValueError(f"If compress_config is a string, it can only be `skip`")
         else:
-            results_path = os.path.join(self.create_run_folder(), "results.hdf5")
-            display(f"Writing results to {results_path}")
+            results_path = self.results_path()
             ## Decide whether to motion correct data or not
             if data is None:
                 raise ValueError("data is None starting from the motion correction step. Specify a dataset")
