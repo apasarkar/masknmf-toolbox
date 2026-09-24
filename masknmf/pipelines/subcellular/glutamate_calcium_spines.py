@@ -20,7 +20,7 @@ import os
 from numbers import Integral
 import torch
 import cv2
-from datetime import datetime
+import h5py
 
 DEFAULT_MOTION_CORRECTION_CONFIG = RigidMotionCorrectionConfig(max_shifts=(40, 40))
 DEFAULT_COMPRESSION_CONFIG = CompressDenoiseConfig(block_sizes=(10, 10),
@@ -141,10 +141,6 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             self._demixing_config = updated_config
 
     @property
-    def output_folder(self) -> Path | None:
-        return self._output_folder
-
-    @property
     def frame_batch_size(self) -> int:
         return self._frame_batch_size
 
@@ -160,20 +156,6 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 'demixing_config': self.demixing_config,
                 'frame_batch_size': self.frame_batch_size,
                 'device': self.device}
-
-    def create_run_folder(self) -> Path:
-        base = Path.cwd() if self._output_folder is None else self._output_folder
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        candidate = base / f"{stamp}_glutamate_calcium_spine_results"
-        suffix = 0
-        while True:
-            try:
-                candidate.mkdir(parents=True, exist_ok=False)
-                break
-            except FileExistsError:
-                suffix += 1
-                candidate = base / f"{stamp}_glutamate_calcium_spine_results_{suffix}"
-        return candidate
 
 
     def run(self,
@@ -192,7 +174,10 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             calcium_channel (np.ndarray | ArrayLike | None):
         """
         device = torch_select_device(self.device)
-        final_output_folder = self.create_run_folder()
+        run_folder = self.create_run_folder()
+        glu_path = os.path.join(run_folder, "results.glutamate.hdf5")
+        ca_path = os.path.join(run_folder, "results.calcium.hdf5")
+        display(f"Writing results to {run_folder}")
         if not isinstance(exclude_initial_frames, Integral):
             raise ValueError("exclude_initial_frames should be a positive integer, 200 is likely to be a good default.")
         else:
@@ -220,8 +205,11 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             reference_input = calcium
         else:
             reference_input = glu
-        np.save(os.path.join(final_output_folder, "retained_frames.npy"),
-                np.arange(exclude_initial_frames, exclude_initial_frames + reference_input.shape[0]))
+        retained_frames = np.arange(exclude_initial_frames, exclude_initial_frames + reference_input.shape[0])
+        for channel, path in ((glu, glu_path), (calcium, ca_path)):
+            if channel is not None:
+                with h5py.File(path, "w") as f:
+                    f["retained_frames"] = retained_frames
 
         pre_moco_strategy = masknmf.CompressStrategy(block_sizes=self.compress_config.block_sizes,
                                                max_components=self.compress_config.max_components,
@@ -242,7 +230,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         if glu is not None:
             glu_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
                                                   target_movie=glu)
-            glu_moco_array.export(os.path.join(final_output_folder, "glutamate_moco.hdf5"))
+            glu_moco_array.export(glu_path)
             glu_moco_array_dense = glu_moco_array[:].cpu().numpy() #Loads it all into RAM
         else:
             glu_moco_array = None
@@ -251,7 +239,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         if calcium is not None:
             calcium_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
                                                       target_movie=calcium)
-            calcium_moco_array.export(os.path.join(final_output_folder, "calcium_moco.hdf5"))
+            calcium_moco_array.export(ca_path)
             calcium_moco_array_dense = calcium_moco_array[:].cpu().numpy() #Loads it all into RAM
         else:
             calcium_moco_array = None
@@ -276,13 +264,13 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
         if glu_video is not None:
             pmd_glu = compress_strat.compress(glu_video)
-            pmd_glu.export(os.path.join(final_output_folder, "pmd_glutamate.hdf5"))
+            pmd_glu.export(glu_path)
         else:
             pmd_glu = None
 
         if calcium_video is not None:
             pmd_ca = compress_strat.compress(calcium_video)
-            pmd_ca.export(os.path.join(final_output_folder, "pmd_calcium.hdf5"))
+            pmd_ca.export(ca_path)
         else:
             pmd_ca = None
 
@@ -319,8 +307,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
             glu_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
-            glu_pmd_demixer_results.export(os.path.join(final_output_folder, "glutamate_spine_demixing.hdf5"))
-            glu_pmd_demixer_global.results.export(os.path.join(final_output_folder, "glutamate_global_activity_demixing.hdf5"))
+            glu_pmd_demixer_results.export(glu_path)
+            glu_pmd_demixer_global.results.export(glu_path, prefix="global")
 
             if pmd_ca is not None:
                 ## Pull out the spatial/temporal footprints from the glutamate movie
@@ -346,9 +334,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
                 ca_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
-                ca_pmd_demixer.results.export(os.path.join(final_output_folder, "calcium_spine_demixing.hdf5"))
-                ca_pmd_demixer_global.results.export(
-                    os.path.join(final_output_folder, "calcium_global_activity_demixing.hdf5"))
+                ca_pmd_demixer.results.export(ca_path)
+                ca_pmd_demixer_global.results.export(ca_path, prefix="global")
 
 
         else: #In this case there is only a calcium channel
@@ -383,9 +370,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
             ca_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
-            ca_pmd_demixer_results.export(os.path.join(final_output_folder, "calcium_spine_demixing.hdf5"))
-            ca_pmd_demixer_global.results.export(
-                os.path.join(final_output_folder, "calcium_global_activity_demixing.hdf5"))
+            ca_pmd_demixer_results.export(ca_path)
+            ca_pmd_demixer_global.results.export(ca_path, prefix="global")
 
 
 

@@ -20,6 +20,7 @@ from masknmf.utils import torch_select_device
 from typing import *
 import numpy as np
 import os
+from pathlib import Path
 
 
 
@@ -285,8 +286,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                  motion_correct_config: Literal["skip"] | None = None,
                  compress_config: CompressConfig | CompressDenoiseConfig | Literal["skip"] | None = None,
                  demixing_config: MultipassDemixingConfig | None = None,
-                 outpath_compression: Optional[str] = "results.hdf5",
-                 outpath_demixing: Optional[str] = "results.hdf5",
+                 output_folder: str | Path | None = None,
                  load_into_ram: bool = False,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"
@@ -300,8 +300,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             curr_config = compress_config
 
         self._compress_config = curr_config
-        self._outpath_compression = outpath_compression
-        self._outpath_demixing = outpath_demixing
+        self._output_folder = output_folder
         self._load_into_ram = load_into_ram
         self._frame_batch_size = frame_batch_size
         self._device = device
@@ -339,14 +338,6 @@ class OnePhotonCulturePipeline(BasePipeline):
         return self._demixing_config
 
     @property
-    def outpath_compression(self) -> Optional[str]:
-        return self._outpath_compression
-
-    @property
-    def outpath_demixing(self) -> Optional[str]:
-        return self._outpath_demixing
-
-    @property
     def load_into_ram(self) -> bool:
         return self._load_into_ram
 
@@ -363,8 +354,7 @@ class OnePhotonCulturePipeline(BasePipeline):
         return {'motion_correct_config': self.motion_correct_config,
                 'compress_config': self.compress_config,
                 'demixing_config': self.demixing_config,
-                'outpath_compression': self.outpath_compression,
-                'outpath_demixing': self.outpath_demixing,
+                'output_folder': self.output_folder,
                 'frame_batch_size': self.frame_batch_size,
                 'device': self.device}
 
@@ -386,13 +376,12 @@ class OnePhotonCulturePipeline(BasePipeline):
                     compress_config: Config object specifying parameters for compressing the data.
                         If None is specified, the joint compression + denoising code is run
                     DemixConfig: Config object specifying parameters for demixing the data
-                    outpath_motion_correction (Optional[str]): Where to write out the motion corrected stack
-                    outpath_compression (Optional[str]): Where to write out the compression + results
-                    outpath_demixing (Optional[str]): Where to write out the demixing results. The two outpaths
-                        default to one file holding one hdf5 group per stage; give them different names for one file per stage
+                    output_folder: Every stage is written to ``<output_folder>/<timestamp>_one-photon-culture/results.hdf5``,
+                        one hdf5 group per stage. With compress_config "skip", output_folder is instead an existing run
+                        folder whose results.hdf5 holds the compression; demixing is written into that same file
                     load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
-                    remove_intermediates (bool): delete the compression file once demixing is done; in one results
-                        file, drop its PMDArray group instead (the demixing results carry the pmd)
+                    remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
+                        results carry the pmd)
                 """
 
         device = torch_select_device(self.device)
@@ -419,18 +408,16 @@ class OnePhotonCulturePipeline(BasePipeline):
             moco_array = corrector.motion_correct(mov)
             moco_array.output_device=device
 
-        pmd_source = os.path.abspath(self.outpath_compression)
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
-                # a previous run's compression: at outpath_compression, else an old compression.hdf5 beside it
-                if not has_group(pmd_source, CompressionArray.__name__):
-                    pmd_source = os.path.join(os.path.dirname(pmd_source), "compression.hdf5")
-                if not has_group(pmd_source, CompressionArray.__name__):
-                    raise ValueError("You specified that compression should be skipped but there is no compression at "
-                                     "outpath_compression or in a compression.hdf5 beside it")
+                results_path = os.path.join(Path.cwd() if self.output_folder is None else self.output_folder, "results.hdf5")
+                if not has_group(results_path, CompressionArray.__name__):
+                    raise ValueError(f"You specified that compression should be skipped but {results_path} holds no compression")
             else:
                 raise ValueError(f"If compress_config is a string, it can only be `skip`")
         else:
+            results_path = os.path.join(self.create_run_folder(), "results.hdf5")
+            display(f"Writing results to {results_path}")
 
             display("Running Compression")
 
@@ -470,7 +457,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             compress_strategy.detrender = detrender
             compress_strategy.frame_batch_size = self.frame_batch_size
             compressed_results = compress_strategy.compress(moco_array)
-            compressed_results.export(self.outpath_compression)
+            compressed_results.export(results_path)
 
         if self.device == "auto":
             device = torch_select_device()
@@ -478,7 +465,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             device = self.device
         display("Running demixing analysis")
 
-        pmd_denoise = masknmf.CompressionArray.from_hdf5(pmd_source)
+        pmd_denoise = masknmf.CompressionArray.from_hdf5(results_path)
 
         v = pmd_denoise.temporal_compressed[:, active_frames.astype('bool')]
         new_shape = (v.shape[1], pmd_denoise.shape[1], pmd_denoise.shape[2])
@@ -535,15 +522,10 @@ class OnePhotonCulturePipeline(BasePipeline):
 
 
 
-        final = os.path.abspath(self.outpath_demixing)
-        if remove_intermediates and os.path.abspath(self.outpath_compression) != final:
-            display("Removing intermediates")
-            if os.path.exists(os.path.abspath(self.outpath_compression)):
-                os.remove(os.path.abspath(self.outpath_compression))
-        curr_demix_results.export(final)
+        curr_demix_results.export(results_path)
         if remove_intermediates:
-            # in one results file the pmd group only duplicates what the demixing results carry
-            drop_group(final, CompressionArray.__name__)
+            display("Removing intermediates")
+            drop_group(results_path, CompressionArray.__name__)
 
         return curr_demix_results, a_rawdata_scale, full_c_estimate_denoised, c_regressed_on_raw
 
