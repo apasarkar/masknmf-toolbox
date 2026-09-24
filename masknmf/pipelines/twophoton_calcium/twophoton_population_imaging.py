@@ -13,7 +13,6 @@ from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorre
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig
 
-from masknmf.utils import torch_select_device
 from typing import *
 import numpy as np
 import os
@@ -194,9 +193,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             sigma = max(2.0, 0.3 * frame_rate)  # 0.3s smoothing
             num_knots = max(4, int(recording_seconds / 25))  # one knot per ~25s
 
-            detrender_device = (
-                torch_select_device() if self.device == "auto" else self.device
-            )
+            detrender_device = self.torch_device
 
             detrender = MaximinSplineDetrend(
                 num_frames=num_frames,
@@ -211,10 +208,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             compressed_results = compress_strategy.compress(moco_data)
             compressed_results.export(results_path)
 
-        if self.device == "auto":
-            device = torch_select_device()
-        else:
-            device = self.device
+        device = self.torch_device
         display("Running demixing analysis")
 
         pmd_denoise = masknmf.CompressionArray.from_hdf5(results_path)
@@ -240,9 +234,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         sigma = max(2.0, 0.3 * frame_rate)  # 0.3s smoothing
         num_knots = max(4, int(recording_seconds / 20))  # one knot per ~20s
 
-        detrender_device = (
-            torch_select_device() if self.device == "auto" else self.device
-        )
+        detrender_device = self.torch_device
 
         detrender = MaximinSplineDetrend(
             num_frames=num_frames,

@@ -16,7 +16,6 @@ from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig
 
-from masknmf.utils import torch_select_device
 from typing import *
 import numpy as np
 import os
@@ -374,7 +373,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                         results carry the pmd)
                 """
 
-        device = torch_select_device(self.device)
+        device = self.torch_device
 
         ## Decide whether to motion correct data or not. You must have access to raw data
         negative_indicator = True if indicator_sign == "negative" else False
@@ -432,9 +431,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             sigma = max(2.0, 0.01 * frame_rate)  # less smoothing
             num_knots = max(4, int(recording_seconds / 0.05))  # one knot per 0.1 seconds
 
-            detrender_device = (
-                torch_select_device() if self.device == "auto" else self.device
-            )
+            detrender_device = self.torch_device
 
             detrender = MaximinSplineDetrend(
                 num_frames=num_frames,
@@ -449,10 +446,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             compressed_results = compress_strategy.compress(moco_array)
             compressed_results.export(results_path)
 
-        if self.device == "auto":
-            device = torch_select_device()
-        else:
-            device = self.device
+        device = self.torch_device
         display("Running demixing analysis")
 
         pmd_denoise = masknmf.CompressionArray.from_hdf5(results_path)

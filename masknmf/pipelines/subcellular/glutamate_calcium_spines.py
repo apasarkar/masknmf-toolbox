@@ -13,7 +13,6 @@ from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorre
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig
 from pathlib import Path
-from masknmf.utils import torch_select_device
 from typing import *
 import numpy as np
 import os
@@ -161,7 +160,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             glutamate_channel (np.ndarray | ArrayLike | None):
             calcium_channel (np.ndarray | ArrayLike | None):
         """
-        device = torch_select_device(self.device)
+        device = self.torch_device
         run_folder = self.create_run_folder()
         glu_path = os.path.join(run_folder, "results.glutamate.hdf5")
         ca_path = os.path.join(run_folder, "results.calcium.hdf5")

@@ -5,6 +5,7 @@ import numpy as np
 from typing import *
 
 from masknmf.pipelines.scraper import slugify
+from masknmf.utils import torch_select_device
 
 class BasePipeline(ABC):
     def __init__(self,
@@ -31,6 +32,11 @@ class BasePipeline(ABC):
     @property
     def device(self) -> Literal["auto", "cuda", "cpu"]:
         return self._device
+
+    @property
+    def torch_device(self) -> str:
+        """``device`` with "auto" resolved to the device pytorch will use."""
+        return torch_select_device(self.device)
 
     def create_run_folder(self) -> Path:
         """
