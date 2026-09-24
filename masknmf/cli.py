@@ -5,6 +5,7 @@ Every option a pipeline accepts is discovered at runtime by
 masknmf.pipelines.scraper, so --pipeline decides which flags exist and nothing
 here enumerates a parameter by hand:
 
+    masknmf
     masknmf pipelines
     masknmf params --pipeline two-photon-calcium
     masknmf run --pipeline two-photon-calcium movie.tif --fs 30
@@ -29,6 +30,8 @@ SUFFIXES_TIFF = (".tif", ".tiff")
 SUFFIXES_HDF5 = (".h5", ".hdf5")
 
 NAMES_ALIAS = {"frame_rate": "--fs"}
+
+CHARACTERS_NEEDING_QUOTES = set(" 	'&|;<>()$`!*?[]{}~#")
 
 
 def group_names_registration() -> tuple[str, ...]:
@@ -116,6 +119,22 @@ def groups_present(filepath_results: str) -> list[str]:
         for name in names_known
         if has_stage(filepath_results=filepath_results, name_group=name)
     ]
+
+
+def format_command(argv: list[str]) -> str:
+    """
+    Spell arguments as a command line, double quoting any that a shell would split or expand.
+
+    Args:
+        argv (list[str]): The arguments, without the program name
+    Returns:
+        str: The arguments joined by spaces
+    """
+    pieces = []
+    for arg in argv:
+        needs_quotes = arg == "" or any(c in CHARACTERS_NEEDING_QUOTES for c in arg)
+        pieces.append(f'"{arg}"' if needs_quotes else arg)
+    return " ".join(pieces)
 
 
 def fail(message: str) -> None:
@@ -583,6 +602,14 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
 def main(argv: Optional[list[str]] = None) -> None:
     """Parse the command line and dispatch."""
     argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) == 0:
+        from masknmf import launcher
+
+        argv = launcher.run_launcher()
+        if argv is None:
+            return
+        print(f"masknmf {format_command(argv=argv)}")
+
     bootstrap, _ = build_bootstrap_parser().parse_known_args(argv)
 
     spec = None
