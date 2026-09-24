@@ -2,6 +2,7 @@ import masknmf
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector, GradientMotionCorrector, GradientRegistrationArray
 from masknmf.utils import display
+from masknmf.utils._serialization import save_dict
 import torch
 import math
 from tqdm import tqdm
@@ -351,6 +352,9 @@ class OnePhotonCulturePipeline(BasePipeline):
                     load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
                     remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
                         results carry the pmd)
+
+                The raw-scale footprints and the denoised and raw-regressed traces over all frames are written to the
+                RawScaleEstimates group as a, c_denoised and c_raw.
                 """
 
         device = self.torch_device
@@ -451,6 +455,8 @@ class OnePhotonCulturePipeline(BasePipeline):
 
 
         curr_demix_results.export(results_path)
+        save_dict({"a": a_rawdata_scale, "c_denoised": full_c_estimate_denoised, "c_raw": c_regressed_on_raw},
+                  filename=results_path, group="RawScaleEstimates", exists_ok=True)
         if remove_intermediates:
             self.drop_compression(results_path)
 
