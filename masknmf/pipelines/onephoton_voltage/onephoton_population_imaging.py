@@ -3,6 +3,7 @@ from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector, GradientMotionCorrector, GradientRegistrationArray
 from masknmf.utils import display
 from masknmf.utils._serialization import save_dict
+from dataclasses import replace
 import torch
 import math
 from tqdm import tqdm
@@ -392,13 +393,13 @@ class OnePhotonCulturePipeline(BasePipeline):
 
             display("Running Compression")
 
-            ## First add in the run-specific parameters to the config object:
+            ## Add the run-specific frame weighting to a copy of the config, so the pipeline's own is untouched
             if self.compress_config.frame_weighting is not None:
-                self.compress_config.frame_weighting *= active_frames.astype(self.compress_config.frame_weighting.dtype)
+                frame_weighting = self.compress_config.frame_weighting * active_frames.astype(self.compress_config.frame_weighting.dtype)
             else:
-                self.compress_config.frame_weighting = active_frames
+                frame_weighting = active_frames
 
-            compress_strategy = self.compress_strategy(self.compress_config)
+            compress_strategy = self.compress_strategy(replace(self.compress_config, frame_weighting=frame_weighting))
 
             compress_strategy.detrender = self.spline_detrender(moco_array.shape[0], frame_rate, window_seconds=0.05,
                                                                 knot_seconds=0.05, sigma_seconds=0.01)
