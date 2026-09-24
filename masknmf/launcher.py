@@ -14,11 +14,14 @@ import json
 import typing
 from pathlib import Path
 
+import imgui_bundle
 import imgui_data_loader as idl
 import numpy as np
+import wgpu
 from imgui_bundle import hello_imgui, imgui, imgui_ctx
 from imgui_bundle import icons_fontawesome_6 as fa
 from imgui_bundle import portable_file_dialogs as pfd
+from wgpu.utils.imgui import ImguiRenderer
 
 import masknmf
 from masknmf import cli
@@ -52,6 +55,11 @@ COLORS_DEFAULTS = (
     imgui.ImVec4(0.70, 0.42, 0.14, 1.0),
     imgui.ImVec4(0.50, 0.28, 0.08, 1.0),
 )
+
+DIR_FONTS = Path(imgui_bundle.__file__).parent / "assets" / "fonts"
+FONT_SIZE = 14
+SIZE_WINDOW = (600, 860)
+SIZE_MIN = (26 * FONT_SIZE, 34 * FONT_SIZE)
 
 WIDTH_INPUT_EM = 7.5
 WIDTH_MIN_EM = 24
@@ -173,6 +181,23 @@ def widget_for_field(param: scraper.Param, value: Any) -> str:
     return "text"
 
 
+def load_fonts() -> imgui.ImFont:
+    """Roboto with Font Awesome 6 merged in, at FONT_SIZE: the font fastplotlib's imgui figures use."""
+    io = imgui.get_io()
+    io.fonts.add_font_from_file_ttf(str(DIR_FONTS / "Roboto" / "Roboto-Regular.ttf"), FONT_SIZE, imgui.ImFontConfig())
+    config_icons = imgui.ImFontConfig()
+    config_icons.merge_mode = True
+    return io.fonts.add_font_from_file_ttf(str(DIR_FONTS / "Font_Awesome_6_Free-Solid-900.otf"), FONT_SIZE, config_icons)
+
+
+def apply_theme() -> None:
+    """hello_imgui's darcula-darker colors on the current imgui style, which its runner would otherwise apply."""
+    themed = hello_imgui.theme_to_style(hello_imgui.ImGuiTheme_.darcula_darker)
+    style = imgui.get_style()
+    for i in range(imgui.Col_.count):
+        style.set_color_(i, themed.color_(i))
+
+
 def is_hdf5(filepath: str) -> bool:
     """Whether a path names an hdf5 file."""
     return Path(filepath).suffix.lower() in cli.SUFFIXES_HDF5
@@ -290,6 +315,10 @@ class Launcher:
         self.picker = None
         self.target_picker: Optional[tuple[dict, str]] = None
         self.argv: Optional[list[str]] = None
+        self.canvas = None
+        self.loop = None
+        self.dialog: Optional[idl.FileDialog] = None
+        self.font: Optional[imgui.ImFont] = None
 
         self.store = idl.JsonPreferenceStore(path=str(DIR_CONFIG / "recent.json"))
         self.config = idl.FileDialogConfig(
@@ -300,9 +329,6 @@ class Launcher:
             footer_draw=self.draw_footer,
             show_options_button=False,
             close_on_select=False,
-            window_title="masknmf",
-            window_size=(600, 900),
-            ini_path=str(DIR_CONFIG / "launcher.ini"),
             on_cancel=self.quit,
         )
         self.select_pipeline(index=self.index_pipeline)
@@ -481,8 +507,50 @@ class Launcher:
         return argv
 
     def quit(self) -> None:
-        """Close the window without running; Esc and Quit cancel the dialog, which leaves exiting to its host."""
-        hello_imgui.get_runner_params().app_shall_exit = True
+        """Close the window once the current frame is done; Run sets argv first, while Esc and Quit leave it None."""
+        if self.canvas is not None:
+            self.loop.call_soon(self.canvas.close)
+
+    def attach(self, canvas, loop) -> None:
+        """
+        Draw the launcher into a rendercanvas the way fastplotlib draws its imgui figures.
+
+        Closing and resizing are handed to the loop, because doing either while a frame is being drawn
+        destroys the texture the frame is drawn into.
+
+        Args:
+            canvas (BaseRenderCanvas): The canvas; its logical size is kept at least SIZE_MIN
+            loop (BaseLoop): The loop running the canvas
+        """
+        self.canvas = canvas
+        self.loop = loop
+        self.dialog = idl.FileDialog(self.config)
+        renderer = ImguiRenderer(wgpu.utils.get_default_device(), canvas)
+        self.font = load_fonts()
+        apply_theme()
+        renderer.set_gui(self.draw_window)
+        canvas.add_event_handler(self.keep_minimum_size, "resize")
+        canvas.request_draw(renderer.render)
+
+    def keep_minimum_size(self, event: dict) -> None:
+        """Resize the canvas back up to SIZE_MIN when it is made smaller."""
+        width, height = event["width"], event["height"]
+        if width < SIZE_MIN[0] or height < SIZE_MIN[1]:
+            self.loop.call_soon(self.canvas.set_logical_size, max(width, SIZE_MIN[0]), max(height, SIZE_MIN[1]))
+
+    def draw_window(self) -> None:
+        """One frame: the dialog in a borderless imgui window covering the canvas."""
+        viewport = imgui.get_main_viewport()
+        imgui.push_font(self.font, self.font.legacy_size)
+        imgui.set_next_window_pos(viewport.pos)
+        imgui.set_next_window_size(viewport.size)
+        imgui.push_style_color(imgui.Col_.window_bg, idl.to_vec4(self.dialog.theme.bg))
+        flags = imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.no_move | imgui.WindowFlags_.no_saved_settings
+        imgui.begin("##masknmf_launcher", None, flags)
+        imgui.pop_style_color()
+        self.dialog.render()
+        imgui.end()
+        imgui.pop_font()
 
     def open_picker(self, target: dict, key: str, filetypes: Optional[list] = None) -> None:
         """Open a native picker whose choice lands in target[key]; a folder picker without filetypes."""
@@ -1071,12 +1139,15 @@ class Launcher:
 
 def run_launcher() -> Optional[list[str]]:
     """
-    Open the launcher and block until the user runs or quits.
+    Open the launcher in a fastplotlib canvas and block until the user runs or quits.
 
     Returns:
         list[str] | None: The `masknmf` arguments to run, or None when the user quit
     """
+    from fastplotlib.utils.gui import RenderCanvas, loop
+
     DIR_CONFIG.mkdir(parents=True, exist_ok=True)
-    launcher = Launcher()
-    idl.run_file_dialog(launcher.config)
-    return launcher.argv
+    window = Launcher()
+    window.attach(canvas=RenderCanvas(title="masknmf", size=SIZE_WINDOW, update_mode="continuous", max_fps=60), loop=loop)
+    loop.run()
+    return window.argv
