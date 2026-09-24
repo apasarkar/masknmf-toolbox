@@ -196,22 +196,3 @@ masknmf view results.hdf5                         # demixing (or compression-onl
 masknmf view results.hdf5 --raw movie.tif --fs 30 # + motion and compression viewers (need the raw movie)
 masknmf view results.hdf5 --raw raw.h5 --dataset /mov --device cpu
 ```
-
----
-
-## Evaluation
-
-What works:
-- Argument discovery is generic. Adding a pipeline to `masknmf.pipelines.__all__` exposes it with no CLI changes.
-- Error messages for bad input are clear: unknown slug, unknown section/field, `--set` without the kind it needs, missing required run args, missing `--dataset` for hdf5.
-- Widefield ran end to end. `view --list` read back `PiecewiseRigidRegistrationArray` and `CompressionArray`.
-
-- Bad choice values name the allowed set: `error: device: expected one of auto, cuda, cpu, got 'gpu'`.
-- `ValueError`s raised by a pipeline print as `error: ...` and exit 2, without a traceback.
-
-Open problems:
-1. **Demixing is not configurable at all.** `MultipassDemixingConfig.DemixingConfigs` is `list[SinglepassDemixingConfig]`, so every `*-demixing-kind multipass` choice is listed in `--help` but always fails with "Drive it from Python". Either hide the flag or accept a JSON/YAML file for nested configs.
-2. **Short movies crash inside torch.** Two-photon on a 400-frame movie fails in `torch.nn.functional.pad` (padding 600 > 400 frames) with a `RuntimeError` traceback.
-3. **`--dataset` is shared.** Glutamate's two channels (and `view --raw`) must use the same hdf5 dataset name.
-4. `--motion-correct-kind` for one-photon only offers `skip`. Gradient moco runs when the flag is omitted, and nothing on the CLI says so.
-5. Every `run`/init flag is untyped `VALUE` in `--help`, and bools need an explicit `true/false` (no `--no-remove-intermediates` style flags).
