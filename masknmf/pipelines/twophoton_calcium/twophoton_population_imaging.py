@@ -3,9 +3,9 @@ from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.utils import display
 
 from masknmf.pipelines._base import BasePipeline
-from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
-from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
-from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig
+from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, MotionCorrectionConfigs
+from masknmf.pipelines.configs.compression_configs import CompressDenoiseConfig, CompressionConfigs
+from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig, SpatialHighpassConfigs, MultipassDemixingConfigs
 
 from typing import *
 import numpy as np
@@ -15,42 +15,73 @@ import torch
 
 class TwoPhotonCalciumPipeline(BasePipeline):
     def __init__(self,
-                 motion_correct_config: RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig | Literal[
-                     "skip"] | None = None,
-                 compress_config: CompressConfig | CompressDenoiseConfig | Literal["skip"] | None = None,
-                 spatial_highpass_config: SpatialHighpassConfig | None = None,
-                 filtered_demixing_config: MultipassDemixingConfig | None = None,
-                 unfiltered_demixing_config: MultipassDemixingConfig | None = None,
+                 motion_correct_config: MotionCorrectionConfigs | Literal["skip"] | None = None,
+                 compress_config: CompressionConfigs | Literal["skip"] | None = None,
+                 spatial_highpass_config: SpatialHighpassConfigs | None = None,
+                 filtered_demixing_config: MultipassDemixingConfigs | None = None,
+                 unfiltered_demixing_config: MultipassDemixingConfigs | None = None,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"
                  ):
-        self._motion_correct_config = motion_correct_config
-        self._compress_config = compress_config
-        self._spatial_highpass_config = spatial_highpass_config
-        self._filtered_demixing_config = filtered_demixing_config
-        self._unfiltered_demixing_config = unfiltered_demixing_config
+        """
+        Every config left as None takes its value from default_configs().
+        """
+        defaults = self.default_configs()
+        self._motion_correct_config = defaults['motion_correct_config'] if motion_correct_config is None else motion_correct_config
+        self._compress_config = defaults['compress_config'] if compress_config is None else compress_config
+        self._spatial_highpass_config = defaults['spatial_highpass_config'] if spatial_highpass_config is None else spatial_highpass_config
+        self._filtered_demixing_config = defaults['filtered_demixing_config'] if filtered_demixing_config is None else filtered_demixing_config
+        self._unfiltered_demixing_config = defaults['unfiltered_demixing_config'] if unfiltered_demixing_config is None else unfiltered_demixing_config
         super().__init__(output_folder, frame_batch_size, device)
 
+    @classmethod
+    def default_configs(cls) -> dict:
+        """
+        Rigid motion correction, compression with denoising, and positive-signed demixing: two passes over the spatially
+        highpassed data, then three over the unfiltered data. The demixing passes get the run's spline detrender, built
+        from its frame rate.
+        """
+        filtered_passes = []
+        for corr_threshold in [0.8, 0.8]:
+            curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
+                                                  sign="positive") #Only prioritize positive deviations for 2p calcium imaging
+            curr_nmf_conf = NMFConfig(support_threshold=(0.95, corr_threshold),
+                                      ring_model_start_pt=None)
+            filtered_passes.append(SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf))
+
+        unfiltered_passes = []
+        for corr_threshold, support_threshold in [(0.8, 0.4), (0.8, 0.4), (0.8, 0.4)]:
+            curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
+                                                  sign="positive")
+            curr_nmf_conf = NMFConfig(support_threshold=(0.95, support_threshold),
+                                      ring_model_start_pt=0)
+            unfiltered_passes.append(SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf))
+
+        return {'motion_correct_config': RigidMotionCorrectionConfig(),
+                'compress_config': CompressDenoiseConfig(),
+                'spatial_highpass_config': SpatialHighpassConfig(),
+                'filtered_demixing_config': MultipassDemixingConfig(filtered_passes),
+                'unfiltered_demixing_config': MultipassDemixingConfig(unfiltered_passes)}
+
     @property
-    def motion_correct_config(self) -> RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig | Literal[
-                     "skip"] | None:
+    def motion_correct_config(self) -> MotionCorrectionConfigs | Literal["skip"]:
         return self._motion_correct_config
 
     @property
-    def compress_config(self) -> CompressConfig | CompressDenoiseConfig | None:
+    def compress_config(self) -> CompressionConfigs | Literal["skip"]:
         return self._compress_config
 
     @property
-    def spatial_highpass_config(self) -> SpatialHighpassConfig | None:
+    def spatial_highpass_config(self) -> SpatialHighpassConfigs:
         return self._spatial_highpass_config
 
     @property
-    def filtered_demixing_config(self) -> MultipassDemixingConfig:
+    def filtered_demixing_config(self) -> MultipassDemixingConfigs:
         return self._filtered_demixing_config
 
     @property
-    def unfiltered_demixing_config(self) -> MultipassDemixingConfig | None:
+    def unfiltered_demixing_config(self) -> MultipassDemixingConfigs:
         return self._unfiltered_demixing_config
 
     @property
@@ -115,12 +146,9 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
         pmd_denoise = masknmf.CompressionArray.from_hdf5(results_path)
         pmd_denoise.to(device)
-        spatial_highpass_config = self.spatial_highpass_config
-        if spatial_highpass_config is None:
-            spatial_highpass_config = SpatialHighpassConfig()
         spatial_filt_pmd = masknmf.demixing.filters.spatial_filter_compressed_array(pmd_denoise,
                                                                                     batch_size=self.frame_batch_size,
-                                                                                    filter_sigma=spatial_highpass_config.filter_sigma)
+                                                                                    filter_sigma=self.spatial_highpass_config.filter_sigma)
 
         torch.cuda.empty_cache()
 
@@ -134,35 +162,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                                           sigma_seconds=0.3)
 
         ## Use spline detrending to more effectively pick out signals. 1 knot point per 20 seconds of data
-        if self.filtered_demixing_config is None:
-            conf_list = []
-            for corr_threshold in [0.8, 0.8]:
-                curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
-                                                      detrender=detrender,
-                                                      sign="positive") #Only prioritize positive deviations for 2p calcium imaging
-                curr_nmf_conf = NMFConfig(support_threshold=(0.95, corr_threshold),
-                                          ring_model_start_pt=None,
-                                          detrender=detrender)
-                curr_demix_conf = SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf)
-                conf_list.append(curr_demix_conf)
-            filtered_demixing_config_used = MultipassDemixingConfig(conf_list)
-        else:
-            filtered_demixing_config_used = self.filtered_demixing_config
-
-        if self.unfiltered_demixing_config is None:
-            conf_list = []
-            for corr_threshold, support_threshold in [(0.8, 0.4), (0.8, 0.4), (0.8, 0.4)]:
-                curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
-                                                      detrender=detrender,
-                                                      sign="positive")
-                curr_nmf_conf = NMFConfig(support_threshold=(0.95, support_threshold),
-                                          ring_model_start_pt=0,
-                                          detrender=detrender)
-                curr_demix_conf = SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf)
-                conf_list.append(curr_demix_conf)
-            unfiltered_demixing_config_used = MultipassDemixingConfig(conf_list)
-        else:
-            unfiltered_demixing_config_used = self.unfiltered_demixing_config
+        filtered_demixing_config_used = self.with_detrender(self.filtered_demixing_config, detrender)
+        unfiltered_demixing_config_used = self.with_detrender(self.unfiltered_demixing_config, detrender)
 
         curr_demix_results = self.run_multipass(highpass_pmd_demixer, filtered_demixing_config_used)
 

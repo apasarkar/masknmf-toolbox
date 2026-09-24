@@ -6,11 +6,13 @@ Turns a pipeline class into a "PipelineSpec" with each value a caller can set.
 
 from typing import Any, Literal, Optional, Union
 
+import copy
 import dataclasses
 import inspect
 import re
 import types
 import typing
+from pathlib import Path
 
 import numpy as np
 
@@ -45,9 +47,11 @@ class Section:
 
     name: str
     argument: str
+    annotation: Any
     configs_by_kind: dict[str, type]
     allows_skip: bool
     allows_none: bool
+    default: Any
 
     @property
     def kinds(self) -> tuple[str, ...]:
@@ -56,6 +60,27 @@ class Section:
         if self.allows_skip:
             names.append("skip")
         return tuple(names)
+
+    @property
+    def default_kind(self) -> str:
+        """The kind of the config the pipeline uses when the argument is not given."""
+        return kind_of(value=self.default)
+
+    def value_for(self, kind: str) -> Any:
+        """
+        A fresh value for one of the section's kinds.
+
+        Args:
+            kind (str): One of the section's kinds
+        Returns:
+            Any: "skip", a copy of the pipeline's default when kind is the default's kind, or
+                else the kind's config built from its own field defaults
+        """
+        if kind == "skip":
+            return "skip"
+        if kind == self.default_kind:
+            return copy.deepcopy(self.default)
+        return build_default(cls_config=self.configs_by_kind[kind])
 
 
 @dataclasses.dataclass
@@ -99,22 +124,6 @@ class PipelineSpec:
                 return section
         raise KeyError(f"{self.slug} has no section {name!r}")
 
-    def params_for(self, section: Section, kind: str) -> list[Param]:
-        """
-        Every field of the config dataclass that a kind selects, settable or not.
-
-        Args:
-            section (Section): The section being inspected
-            kind (str): One of the section's kinds
-        Returns:
-            list[Param]: One per field, empty when the kind names no dataclass
-        """
-        if kind not in section.configs_by_kind:
-            return []
-        return scrape_dataclass(
-            cls_config=section.configs_by_kind[kind], name_section=section.name
-        )
-
 
 def slugify(name_class: str) -> str:
     """
@@ -131,6 +140,13 @@ def slugify(name_class: str) -> str:
         else name_class
     )
     return re.sub(r"(?<!^)(?=[A-Z])", "-", stem).lower()
+
+
+def kind_of(value: Any) -> str:
+    """The kind a config argument's value is: "skip", or the command line name of its dataclass."""
+    if isinstance(value, str):
+        return value
+    return config_kind(cls_config=type(value))
 
 
 def pipeline_registry() -> dict[str, type]:
@@ -321,6 +337,115 @@ def classify_run_param(name: str, annotation: Any) -> str:
     return "scalar"
 
 
+def dataclass_of(annotation: Any) -> Optional[type]:
+    """The dataclass an annotation names, or None when it names anything else."""
+    return annotation if dataclasses.is_dataclass(annotation) else None
+
+
+def item_dataclass_of(annotation: Any) -> Optional[type]:
+    """The dataclass a list[...] annotation holds, or None when it holds anything else."""
+    if typing.get_origin(annotation) is not list:
+        return None
+    args = typing.get_args(annotation)
+    return dataclass_of(annotation=args[0]) if len(args) == 1 else None
+
+
+def build_default(cls_config: type) -> Any:
+    """
+    A config built from its field defaults, with required nested configs built the same way and
+    required lists of configs left empty.
+
+    Args:
+        cls_config (type): A config dataclass
+    Returns:
+        Any: The config
+    Raises:
+        ValueError: If a required field is neither a config nor a list of configs, e.g. an array
+    """
+    hints = resolve_hints(cls=cls_config)
+    kwargs = {}
+    for field in dataclasses.fields(cls_config):
+        has_default = field.default is not dataclasses.MISSING or field.default_factory is not dataclasses.MISSING
+        if not field.init or has_default:
+            continue
+        annotation = hints.get(field.name, field.type)
+        if dataclass_of(annotation=annotation) is not None:
+            kwargs[field.name] = build_default(cls_config=annotation)
+        elif item_dataclass_of(annotation=annotation) is not None:
+            kwargs[field.name] = []
+        else:
+            raise ValueError(f"{cls_config.__name__}.{field.name} has no default and cannot be built")
+    return cls_config(**kwargs)
+
+
+def config_json_value(value):
+    """What json cannot write itself: configs as dicts tagged with their kind, paths as strings, numpy scalars as
+    numbers, anything else (arrays, detrenders) as "*"."""
+    if dataclasses.is_dataclass(value):
+        return {"kind": config_kind(cls_config=type(value)),
+                **{f.name: getattr(value, f.name) for f in dataclasses.fields(value)}}
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    return "*"
+
+
+def config_from_json(value: Any, annotation: Any, base: Any = None) -> Any:
+    """
+    Read a value written with config_json_value back into the type an annotation names.
+
+    Fields a dict leaves out keep base's values, as does "*", which stands for what json could not
+    write. A list's items build on base's items at the same position, or on its last item past its end.
+
+    Args:
+        value (Any): The decoded json
+        annotation (Any): The type the value should become
+        base (Any): The value to build on, when there is one
+    Returns:
+        Any: The value
+    Raises:
+        ValueError: If a dict names a kind or a field its annotation does not have
+    """
+    if isinstance(value, str) and value == "*":
+        return base
+    if value is None or isinstance(value, str):
+        return value
+    members, _ = annotation_members(annotation=annotation)
+    configs = [m for m in members if dataclasses.is_dataclass(m)]
+    if isinstance(value, dict) and len(configs) > 0:
+        by_kind = {config_kind(cls_config=m): m for m in configs}
+        kind = value.get("kind", config_kind(cls_config=configs[0]) if len(configs) == 1 else None)
+        if kind not in by_kind:
+            raise ValueError(f"{kind!r} is not one of {', '.join(by_kind)}")
+        cls_config = by_kind[kind]
+        if base is None or type(base) is not cls_config:
+            base = build_default(cls_config=cls_config)
+        hints = resolve_hints(cls=cls_config)
+        names = {f.name for f in dataclasses.fields(cls_config) if f.init}
+        unknown = set(value) - names - {"kind"}
+        if len(unknown) > 0:
+            raise ValueError(f"{cls_config.__name__} has no field {', '.join(sorted(unknown))}")
+        changes = {
+            name: config_from_json(value=value[name], annotation=hints.get(name), base=getattr(base, name))
+            for name in names & set(value)
+        }
+        return dataclasses.replace(base, **changes)
+    for member in members:
+        origin = typing.get_origin(member)
+        if origin is list and isinstance(value, list):
+            args = typing.get_args(member)
+            item = args[0] if len(args) == 1 else Any
+            bases = base if isinstance(base, list) else []
+            return [
+                config_from_json(value=v, annotation=item, base=bases[min(i, len(bases) - 1)] if bases else None)
+                for i, v in enumerate(value)
+            ]
+        if origin is tuple and isinstance(value, list):
+            return list(value) if isinstance(base, list) else tuple(value)
+    return value
+
+
 def scrape(cls_pipeline: type) -> PipelineSpec:
     """
     Describe a pipeline class.
@@ -332,6 +457,7 @@ def scrape(cls_pipeline: type) -> PipelineSpec:
     """
     sections = []
     scalars = []
+    defaults = cls_pipeline.default_configs()
 
     signature_init = inspect.signature(cls_pipeline.__init__)
     for name, parameter in signature_init.parameters.items():
@@ -354,9 +480,11 @@ def scrape(cls_pipeline: type) -> PipelineSpec:
                 Section(
                     name=section_name(name_argument=name),
                     argument=name,
+                    annotation=annotation,
                     configs_by_kind=configs_by_kind,
                     allows_skip=allows_skip,
                     allows_none=allows_none,
+                    default=defaults[name],
                 )
             )
             continue
