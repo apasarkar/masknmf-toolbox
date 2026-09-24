@@ -23,7 +23,7 @@ class CustomInitConfig:
 @dataclass
 class NMFConfig:
     maxiter: int = 40
-    support_threshold: tuple[int, int] = (0.95, 0.8)
+    support_threshold: tuple[float, float] = (0.95, 0.8)
     deletion_threshold: float = 0.2
     min_brightness: float = 1
     ring_model_start_pt: Optional[int] = 0

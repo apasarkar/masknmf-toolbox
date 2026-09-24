@@ -362,6 +362,7 @@ class OnePhotonCulturePipeline(BasePipeline):
     def config(self):
         return {'motion_correct_config': self.motion_correct_config,
                 'compress_config': self.compress_config,
+                'demixing_config': self.demixing_config,
                 'outpath_compression': self.outpath_compression,
                 'outpath_demixing': self.outpath_demixing,
                 'frame_batch_size': self.frame_batch_size,
@@ -394,7 +395,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                         file, drop its PMDArray group instead (the demixing results carry the pmd)
                 """
 
-        device = torch_select_device()
+        device = torch_select_device(self.device)
 
         ## Decide whether to motion correct data or not. You must have access to raw data
         negative_indicator = True if indicator_sign == "negative" else False
@@ -466,10 +467,8 @@ class OnePhotonCulturePipeline(BasePipeline):
                 device=detrender_device,
             )
 
-            print(f'compress strategy frame weighting is {compress_strategy._frame_weighting}')
             compress_strategy.detrender = detrender
             compress_strategy.frame_batch_size = self.frame_batch_size
-            # raise ValueError("Just a test")
             compressed_results = compress_strategy.compress(moco_array)
             compressed_results.export(self.outpath_compression)
 
@@ -509,7 +508,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                 curr_demix_results = truncated_pmd_demixer.results
             if truncated_pmd_demixer is None:
                 if curr_demix_results is None:
-                    raise ValueError("The demixer did not identify any signals in the highpass filtered movie. Lower thresholds or inspect"
+                    raise ValueError("The demixer did not identify any signals. Lower thresholds or inspect "
                                      "data to resolve this issue.")
                 else:
                     break

@@ -11,7 +11,6 @@ from masknmf.compression.preprocessing import MaximinSplineDetrend
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
-from masknmf.pipelines.configs.demixing_configs import SuperpixelInitConfig, SinglepassDemixingConfig, NMFConfig
 from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig
 from pathlib import Path
 from masknmf.utils import torch_select_device
@@ -155,7 +154,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
     @property
     def config(self):
-        return {'motion_correct_config': self.motion_correct_config,
+        return {'output_folder': self.output_folder,
+                'motion_correct_config': self.motion_correct_config,
                 'compress_config': self.compress_config,
                 'demixing_config': self.demixing_config,
                 'frame_batch_size': self.frame_batch_size,
