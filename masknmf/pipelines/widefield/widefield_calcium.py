@@ -146,7 +146,7 @@ class WidefieldSinglechannelPipeline(BasePipeline):
                 curr_config['pixel_weighting'] = curr_config['pixel_weighting'] * shift_mask
             else:
                 curr_config['pixel_weighting'] = shift_mask
-            compress_strategy = CompressDenoiseStrategy(device=self.device, **asdict(self.compress_config))
+            compress_strategy = CompressDenoiseStrategy(device=self.device, **curr_config)
         else:
             raise ValueError("Invalid compression config")
 
