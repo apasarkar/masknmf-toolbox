@@ -50,7 +50,6 @@ class Section:
     annotation: Any
     configs_by_kind: dict[str, type]
     allows_skip: bool
-    allows_none: bool
     default: Any
 
     @property
@@ -464,7 +463,7 @@ def scrape(cls_pipeline: type) -> PipelineSpec:
         if name == "self" or parameter.kind in KINDS_VARIADIC:
             continue
         annotation = parameter.annotation
-        members, allows_none = annotation_members(annotation=annotation)
+        members, _ = annotation_members(annotation=annotation)
 
         configs_by_kind = {
             config_kind(cls_config=member): member
@@ -475,6 +474,7 @@ def scrape(cls_pipeline: type) -> PipelineSpec:
             literal_choices(annotation=member) == ("skip",) for member in members
         )
 
+        # None on a config argument means the pipeline's default, not a value the section takes
         if len(configs_by_kind) > 0 or allows_skip:
             sections.append(
                 Section(
@@ -483,7 +483,6 @@ def scrape(cls_pipeline: type) -> PipelineSpec:
                     annotation=annotation,
                     configs_by_kind=configs_by_kind,
                     allows_skip=allows_skip,
-                    allows_none=allows_none,
                     default=defaults[name],
                 )
             )

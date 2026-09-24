@@ -35,7 +35,5 @@ class CompressDenoiseConfig:
     num_epochs: int = 10
     detrender: SplineDetrenderBase | None = None
 
-"""
-Every config a pipeline's compression step can take; see MotionCorrectionConfigs.
-"""
+# every config a pipeline's compression step can take; see MotionCorrectionConfigs
 CompressionConfigs = CompressConfig | CompressDenoiseConfig

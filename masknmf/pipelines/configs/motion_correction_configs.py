@@ -24,9 +24,6 @@ class PiecewiseRigidMotionCorrectionConfig:
 class GradientMotionCorrectionConfig:
     num_frames_template: int = 300
 
-"""
-Every config a pipeline's motion correction step can take. A pipeline annotating its argument with this alias offers
-any config added here without further changes.
-"""
+# every config a pipeline's motion correction step can take; a pipeline annotating its argument with this alias offers any config added here
 MotionCorrectionConfigs = RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig
 

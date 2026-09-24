@@ -1,5 +1,4 @@
 from dataclasses import asdict
-import copy
 import masknmf
 from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
 from masknmf.arrays import LazyFrameLoader, ArrayLike
@@ -20,28 +19,6 @@ from numbers import Integral
 import torch
 import cv2
 import h5py
-
-DEFAULT_MOTION_CORRECTION_CONFIG = RigidMotionCorrectionConfig(max_shifts=(40, 40))
-DEFAULT_COMPRESSION_CONFIG = CompressDenoiseConfig(block_sizes=(10, 10),
-                                                   max_components=20,
-                                                   sim_conf=5,
-                                                   spatial_avg_factor=1,
-                                                   temporal_avg_factor=10,
-                                                   num_epochs=10)
-
-DEFAULT_SPINE_SUPERPIXEL_CONFIG = SuperpixelInitConfig(residual_threshold=0.1,
-                                                       sign="positive")
-DEFAULT_SPINE_NMF_CONFIG = NMFConfig(maxiter=40,
-                                     support_threshold=np.linspace(0.95, 0.7, 40).tolist(),
-                                     ring_model_start_pt=41,
-                                     min_brightness=0.0,
-                                     merge_threshold=0.7,
-                                     merge_overlap_threshold=0.6,
-                                     update_frequency=4,
-                                     c_nonneg=True,
-                                     denoise=False,
-                                     plot_en=False,
-                                     reassign_background=False)
 
 NMF_JUST_HALS = {'maxiter': 40,
                 'deletion_threshold': 0.2,
@@ -87,14 +64,22 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
     @classmethod
     def default_configs(cls) -> dict:
         """
-        Rigid motion correction with 40 pixel shifts, compression with denoising in 10 pixel blocks, and two
-        positive-signed demixing passes tuned for spines.
+        Rigid motion correction allowing large shifts, compression with denoising in small blocks over temporally
+        averaged frames, and two positive-signed demixing passes tuned for spines.
         """
-        return {'motion_correct_config': copy.deepcopy(DEFAULT_MOTION_CORRECTION_CONFIG),
-                'compress_config': copy.deepcopy(DEFAULT_COMPRESSION_CONFIG),
-                'demixing_config': MultipassDemixingConfig(
-                    [SinglepassDemixingConfig(copy.deepcopy(DEFAULT_SPINE_SUPERPIXEL_CONFIG),
-                                              copy.deepcopy(DEFAULT_SPINE_NMF_CONFIG)) for _ in range(2)])}
+        passes = []
+        for _ in range(2):
+            init_config = SuperpixelInitConfig(residual_threshold=0.1, sign="positive")
+            # ring_model_start_pt past maxiter keeps the ring model off
+            nmf_config = NMFConfig(support_threshold=(0.95, 0.7),
+                                   ring_model_start_pt=41,
+                                   min_brightness=0.0,
+                                   merge_threshold=0.7,
+                                   reassign_background=False)
+            passes.append(SinglepassDemixingConfig(init_config, nmf_config))
+        return {'motion_correct_config': RigidMotionCorrectionConfig(max_shifts=(40, 40)),
+                'compress_config': CompressDenoiseConfig(block_sizes=(10, 10), temporal_avg_factor=10),
+                'demixing_config': MultipassDemixingConfig(passes)}
 
     @property
     def motion_correct_config(self) -> RigidMotionCorrectionConfig | None:

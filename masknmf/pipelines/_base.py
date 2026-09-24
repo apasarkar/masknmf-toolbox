@@ -41,7 +41,8 @@ class BasePipeline(ABC):
     def default_configs(cls) -> dict:
         """
         The value each config argument of __init__ takes when it is None, keyed by argument name. Built fresh on every
-        call, so callers may change what they get back.
+        call, so callers may change what they get back. Gives only what differs from each config's own defaults, so
+        changes to those carry through.
         """
         pass
 
