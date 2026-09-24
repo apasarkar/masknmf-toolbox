@@ -1,6 +1,6 @@
 from dataclasses import asdict
 import masknmf
-from masknmf.compression import CompressStrategy, CompressDenoiseStrategy, CompressionArray
+from masknmf.compression import CompressionArray
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.utils import display, drop_group
 from masknmf.demixing import NoSignalsDetectedError, DemixingError
@@ -122,26 +122,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                                                         exclude_border_radius)
 
             display("Running Compression")
-            if self.compress_config is None:
-                curr_config = CompressDenoiseConfig()
-                curr_config.pixel_weighting = shift_mask
-                compress_strategy = CompressDenoiseStrategy(device=self.device, **asdict(curr_config))
-            elif isinstance(self.compress_config, CompressConfig):
-                curr_config = asdict(self.compress_config)
-                if self.compress_config.pixel_weighting is not None:
-                    curr_config['pixel_weighting'] = curr_config['pixel_weighting'] * shift_mask
-                else:
-                    curr_config['pixel_weighting'] = shift_mask
-                compress_strategy = CompressStrategy(device=self.device, **curr_config)
-            elif isinstance(self.compress_config, CompressDenoiseConfig):
-                curr_config = asdict(self.compress_config)
-                if self.compress_config.pixel_weighting is not None:
-                    curr_config['pixel_weighting'] = curr_config['pixel_weighting'] * shift_mask
-                else:
-                    curr_config['pixel_weighting'] = shift_mask
-                compress_strategy = CompressDenoiseStrategy(device=self.device, **curr_config)
-            else:
-                raise ValueError("Invalid compression config")
+            compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
 
 
             num_frames = data.shape[0]

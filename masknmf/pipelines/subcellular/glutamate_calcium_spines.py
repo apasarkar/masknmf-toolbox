@@ -247,7 +247,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         else:
             calcium_video = None
 
-        compress_strat = masknmf.CompressDenoiseStrategy(**asdict(self.compress_config), device=device)
+        compress_strat = self.compress_strategy(self.compress_config)
 
         if glu_video is not None:
             pmd_glu = compress_strat.compress(glu_video)

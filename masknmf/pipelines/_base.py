@@ -8,10 +8,11 @@ from typing import *
 
 from masknmf.pipelines.scraper import slugify
 from masknmf.arrays import ArrayLike
-from masknmf.compression import CompressionArray
+from masknmf.compression import CompressionArray, CompressStrategy, CompressDenoiseStrategy
 from masknmf.motion_correction import BaseRegistrationArray, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.motion_correction.moco_preprocessing import construct_moco_template
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
+from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.utils import display, has_group, torch_select_device
 
 class BasePipeline(ABC):
@@ -116,6 +117,24 @@ class BasePipeline(ABC):
             shift_mask[-1 * exclude_border_radius:, :] = 0
             shift_mask[:, -1 * exclude_border_radius:] = 0
         return moco_data, shift_mask
+
+    def compress_strategy(self,
+                          config: CompressConfig | CompressDenoiseConfig | None,
+                          pixel_weighting: np.ndarray | None = None) -> CompressStrategy:
+        """
+        The strategy for config (CompressDenoiseConfig defaults when None) on this pipeline's device, with
+        pixel_weighting multiplied into the config's own.
+        """
+        if config is None:
+            config = CompressDenoiseConfig()
+        kwargs = asdict(config)
+        if pixel_weighting is not None:
+            kwargs["pixel_weighting"] = pixel_weighting if config.pixel_weighting is None else config.pixel_weighting * pixel_weighting
+        if isinstance(config, CompressConfig):
+            return CompressStrategy(device=self.device, **kwargs)
+        if isinstance(config, CompressDenoiseConfig):
+            return CompressDenoiseStrategy(device=self.device, **kwargs)
+        raise ValueError("Invalid compression config")
 
     @abstractmethod
     def run(self, data):

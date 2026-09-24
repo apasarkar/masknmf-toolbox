@@ -1,6 +1,6 @@
 from dataclasses import asdict
 import masknmf
-from masknmf.compression import CompressStrategy, CompressDenoiseStrategy, CompressionArray
+from masknmf.compression import CompressionArray
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector, GradientMotionCorrector, GradientRegistrationArray
 from masknmf.utils import display, drop_group
@@ -413,13 +413,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                 self.compress_config.frame_weighting = active_frames
             self.compress_config.frame_batch_size = self.frame_batch_size
 
-            ## Make the strategy object
-            if isinstance(self.compress_config, CompressConfig):
-                compress_strategy = CompressStrategy(device=device, **asdict(self.compress_config))
-            elif isinstance(self.compress_config, CompressDenoiseConfig):
-                compress_strategy = CompressDenoiseStrategy(device=device, **asdict(self.compress_config))
-            else:
-                raise ValueError("Invalid config")
+            compress_strategy = self.compress_strategy(self.compress_config)
 
             num_frames = moco_array.shape[0]
             recording_seconds = num_frames / frame_rate
