@@ -437,7 +437,7 @@ class OnePhotonCulturePipeline(BasePipeline):
         pmd_denoise.to(device)
         curr_demix_results.to(device)
 
-        c_all_frames = expand_traces_to_all_frames(curr_demix_results.c,
+        c_all_frames = expand_traces_to_all_frames(curr_demix_results.temporal_demixed,
                                                    active_frames)
 
         a_rawdata_scale, full_c_estimate_denoised = compute_final_denoised_c_estimates(pmd_denoise,
