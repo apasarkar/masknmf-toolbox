@@ -13,6 +13,7 @@ here enumerates a parameter by hand:
     masknmf params --pipeline two-photon-calcium --json > configs.json
     masknmf run movie.tif --fs 30 --config configs.json
     masknmf view results.hdf5 --raw movie.tif
+    masknmf view results.hdf5 --raw movie.tif --compression
 """
 
 from typing import Any, Optional
@@ -526,19 +527,31 @@ def command_view(args: argparse.Namespace) -> None:
     viewers = []
     raw = None if args.raw is None else load_movie(filepath_movie=args.raw, name_dataset=args.dataset)
 
-    if group_name_compression() in names_present and raw is not None:
+    # the compression viewer when asked for, or when compression is the file's last stage; it compares
+    # the movie that was compressed, the raw one with the file's shifts applied, to the compressed one
+    has_compression = group_name_compression() in names_present
+    if args.compression and not has_compression:
+        fail(f"{args.results} holds no {group_name_compression()}")
+    if args.compression and raw is None:
+        fail("the compression viewer needs --raw")
+    if has_compression and raw is not None and (args.compression or name_demixing not in names_present):
         compressed = masknmf.CompressionArray.from_hdf5(args.results)
-        # with registration skipped, the raw movie is what was compressed
+        name_registration = next((n for n in group_names_registration() if n in names_present), None)
+        registered = (
+            raw
+            if name_registration is None
+            else getattr(masknmf, name_registration).from_hdf5(args.results, input_movie=raw)
+        )
         viewers.append(
             masknmf.CompressionVis(
-                moco_stack=raw,
+                moco_stack=registered,
                 pmd_stack=compressed,
                 frame_timings=timings(compressed.shape[0], args.fs),
                 device=device,
             )
         )
-    elif group_name_compression() in names_present:
-        print(f"skipping the {group_name_compression()} viewer; it needs --raw")
+    elif has_compression and name_demixing not in names_present:
+        print("the compression viewer needs --raw")
 
     if name_demixing in names_present:
         results = masknmf.DemixingResults.from_hdf5(args.results, prefix=args.prefix, device=device)
@@ -626,6 +639,11 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
         "--prefix", default="", help="group the demixing results sit under, e.g. global for the glutamate pipeline's whole-dendrite result"
     )
     parser_view.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
+    parser_view.add_argument(
+        "--compression",
+        action="store_true",
+        help="also open the compression viewer (needs --raw); opened on its own when the file holds no demixing results",
+    )
     parser_view.add_argument(
         "--list", action="store_true", help="print what the file holds and exit"
     )
