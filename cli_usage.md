@@ -33,6 +33,9 @@ Pipelines: `two-photon-calcium`, `one-photon-culture`, `glutamate-calcium-spine`
 | `__init__(motion_correct_config="skip")` | `--motion-correct-kind skip` |
 | any field of any config, including each pass of a multipass config | `--config configs.json` |
 
+Without `--output-folder`, the run folder goes next to the movie (inside it when the movie is a directory of tiffs),
+or in the working directory when no movie is given.
+
 Every config argument left out takes the value in the pipeline's `default_configs()`, which `masknmf params` prints.
 A `--<section>-kind` naming the default's kind keeps the pipeline's default values; naming another kind gives that
 config's own field defaults.
@@ -96,7 +99,7 @@ Init args: `--output-folder`, `--frame-batch-size`, `--device {auto,cuda,cpu}`.
 Demixing passes without a detrender get the spline detrender the run builds from `--fs`.
 
 ```bash
-# minimal: all defaults (rigid moco, denoised compression, default demixing) -> ./<timestamp>_two-photon-calcium/results.hdf5
+# minimal: all defaults (rigid moco, denoised compression, default demixing) -> <movie's folder>/<timestamp>_two-photon-calcium/results.hdf5
 masknmf run --pipeline two-photon-calcium movie.tif --fs 30
 
 # directory of tiffs, run folder under ./session1_out, keep intermediate groups

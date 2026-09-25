@@ -472,6 +472,15 @@ def command_run(args: argparse.Namespace) -> None:
         except ValueError as error:
             fail(str(error))
 
+    filepaths_movie = [
+        getattr(args, p.field if len(spec.movie_params) == 1 else option_name(flag_for(p)), None)
+        for p in spec.movie_params
+    ]
+    filepaths_movie = [Path(f).expanduser().resolve() for f in filepaths_movie if f is not None]
+    if kwargs_init.get("output_folder") is None and len(filepaths_movie) > 0:
+        first = filepaths_movie[0]
+        kwargs_init["output_folder"] = str(first if first.is_dir() else first.parent)
+
     pipeline = spec.cls(**kwargs_init)
     shapes = ", ".join(
         str(kwargs_run[p.field].shape)
