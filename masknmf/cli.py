@@ -525,31 +525,13 @@ def command_view(args: argparse.Namespace) -> None:
     )
     viewers = []
     raw = None if args.raw is None else load_movie(filepath_movie=args.raw, name_dataset=args.dataset)
-    registered = None
-
-    name_registration = next(
-        (n for n in group_names_registration() if n in names_present), None
-    )
-    if name_registration is not None and raw is not None:
-        registered = getattr(masknmf, name_registration).from_hdf5(
-            args.results, input_movie=raw
-        )
-        viewers.append(
-            masknmf.MotionCorrectionVis(
-                registration_array=registered,
-                frame_timings=timings(registered.shape[0], args.fs),
-                mean_subtract=True,
-            )
-        )
-    elif name_registration is not None:
-        print(f"skipping the {name_registration} viewer; it needs --raw")
 
     if group_name_compression() in names_present and raw is not None:
         compressed = masknmf.CompressionArray.from_hdf5(args.results)
         # with registration skipped, the raw movie is what was compressed
         viewers.append(
             masknmf.CompressionVis(
-                moco_stack=raw if registered is None else registered,
+                moco_stack=raw,
                 pmd_stack=compressed,
                 frame_timings=timings(compressed.shape[0], args.fs),
                 device=device,
