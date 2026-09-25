@@ -158,7 +158,7 @@ class SingleSessionDemixingVis:
 
     The Signals table always carries the results' own stats (:meth:`CellStats.from_results`: mean, std, snr
     and skew of each demixed trace; fit, resid and bkgd from the roi averages the results hold), hidden until
-    the Signals tab's "columns" button shows them; click a header to order the signals by a stat, then step
+    a right-click on a table header shows them; click a header to order the signals by a stat, then step
     through the top or bottom of the order. ``cell_stats`` (a :class:`CellStats`, or a .npy / .npz / .csv /
     .tsv it reads, one row per signal) joins more columns, shown, replacing same-named ones. ``cell_order``
     (signal ids in a custom order, or a
@@ -219,7 +219,7 @@ class SingleSessionDemixingVis:
         num_signals = demixing_results.spatial_demixed.shape[1] if self._has_ac else 0
         # the results' own stats, hidden; given stats join them, shown, replacing same-named columns
         self._cell_stats = CellStats.from_results(demixing_results) if self._has_ac else None
-        self._shown_stats = set()
+        self._hidden_stats = set() if self._cell_stats is None else set(self._cell_stats.names)
         if isinstance(cell_stats, (str, os.PathLike)):
             cell_stats = CellStats.read(cell_stats)
         if cell_stats is not None:
@@ -228,9 +228,9 @@ class SingleSessionDemixingVis:
             if set(cell_stats.names) & {"id", "area", "peak", "del"}:
                 raise ValueError(f"cell stat names clash with the table's own columns: {cell_stats.names}")
             self._cell_stats = cell_stats if self._cell_stats is None else self._cell_stats.join(cell_stats)
-            self._shown_stats = set(cell_stats.names)
+            self._hidden_stats -= set(cell_stats.names)
         if self._cell_stats is not None:
-            display(f"cell stats: {', '.join(self._cell_stats.names)}; the Signals tab's columns button shows them")
+            display(f"cell stats: {', '.join(self._cell_stats.names)}; right-click a Signals table header to show them")
 
         # raw movie and shifts: data or a path, or found beside the results; a found mismatch is skipped, a given one raises
         found_raw = found_shifts = False
@@ -663,7 +663,7 @@ class SingleSessionDemixingVis:
         results.to(self.device)
         self._demixing_results = results
         self._cell_stats = CellStats.from_results(results)
-        self._shown_stats.clear()
+        self._hidden_stats = set(self._cell_stats.names)
         self._bind_arrays()
         self._clear_rois()
         self._drop_poly()
@@ -1532,6 +1532,10 @@ class SingleSessionDemixingVis:
             if imgui.begin_tab_item("Signals")[0]:
                 self._draw_signal_tab()
                 imgui.end_tab_item()
+            if imgui.tab_item_button("?", imgui.TabItemFlags_.trailing | imgui.TabItemFlags_.no_tooltip):
+                self._keybinds_open = not self._keybinds_open
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("press k for keybinds")
             imgui.end_tab_bar()
         self._keybinds_open = draw_keybinds_popup(_KEYBINDS, self._keybinds_open)
         self._export_popup, self._export_path, go = draw_path_popup(
@@ -1640,10 +1644,6 @@ class SingleSessionDemixingVis:
         if changed and self._follow and self._active_component is not None:
             self._center_on(self._active_component)
         help_mark("pan every panel to the selected signal, and keep following it (f)")
-        g.cell(1)
-        if imgui.button("keys", imgui.ImVec2(g.w, 0)):
-            self._keybinds_open = not self._keybinds_open
-        help_mark("the keybinds (k)")
         if self._order is not None:
             g.row("stats")
             if imgui.button("load stats", imgui.ImVec2(g.w, 0)):
@@ -1655,25 +1655,9 @@ class SingleSessionDemixingVis:
                 "- .csv / .tsv: a header row of names, then one row per signal\n"
                 "- .txt: signal ids in a custom order, becomes the 'order' column"
             )
-            if names:
-                g.cell(1)
-                if imgui.button("columns", imgui.ImVec2(g.w, 0)):
-                    imgui.open_popup("##columns")
-                help_mark("which stat columns the table shows")
-                if imgui.begin_popup("##columns"):
-                    for name in names:
-                        changed, on = imgui.checkbox(name, name in self._shown_stats)
-                        if changed and on:
-                            self._shown_stats.add(name)
-                        elif changed:
-                            self._shown_stats.discard(name)
-                            if self._order is not None and self._order.sort_by == name:
-                                self._order.sort_by = None
-                                self._order.rebuild()
-                    imgui.end_popup()
         footer = imgui.get_frame_height_with_spacing() * 2.5
         if imgui.begin_child("##signal_table", imgui.ImVec2(0, -footer)):
-            columns = ("id", "area", "peak", *[n for n in names if n in self._shown_stats], "del")
+            columns = ("id", "area", "peak", *names, "del")
             formatters = {name: partial(self._format_cell, name) for name in columns[1:]}
             colors = self._group_colors()
             self._scroll_to_current = draw_roi_table(
@@ -1682,6 +1666,7 @@ class SingleSessionDemixingVis:
                 formatters,
                 self._scroll_to_current,
                 table_id="signals",
+                hidden=self._hidden_stats,
                 cursor=self._active_component is not None,
                 on_select=self._table_select,
                 is_grouped=self._group.__contains__,
@@ -1941,7 +1926,7 @@ class SingleSessionDemixingVis:
             raise ValueError(f"cell stat names clash with the table's own columns: {stats.names}")
         new = stats
         self._cell_stats = new if self._cell_stats is None else self._cell_stats.join(new)
-        self._shown_stats |= set(new.names)
+        self._hidden_stats -= set(new.names)
         columns = {"area": self._order.columns["area"], "peak": self._order.columns["peak"]}
         columns.update(zip(stats.names, stats.values.T))
         columns["del"] = self._order.columns["del"]

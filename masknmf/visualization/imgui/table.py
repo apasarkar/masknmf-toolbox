@@ -1,6 +1,6 @@
 """Sortable, filterable ROI table shared by the ROI viewers."""
 
-from typing import Callable, Optional, Sequence
+from typing import Callable, Container, Optional, Sequence
 
 import numpy as np
 from imgui_bundle import imgui
@@ -103,13 +103,15 @@ def draw_roi_table(
     on_shift_select: Optional[Callable[[int], None]] = None,
     row_color: Optional[Callable[[int], Optional[tuple]]] = None,
     prefix_rows: Sequence[tuple] = (),
+    hidden: Container[str] = (),
 ) -> bool:
     """
     Sortable, clipped ROI table. Returns the new ``scroll_to_current`` flag.
 
     ``column_names[0]`` is the id column; every other name is rendered by
     ``formatters[name](item)`` and is sortable when it is a key of
-    ``order.columns``. ``cursor`` highlights the row under ``order.pos`` (off: nothing is
+    ``order.columns``; a right-click on a header shows or hides columns, those in ``hidden`` start
+    hidden. ``cursor`` highlights the row under ``order.pos`` (off: nothing is
     selected, the cursor only seeds up / down); ``is_grouped`` highlights rows beyond it; ctrl and
     shift clicks route to ``on_ctrl_select`` / ``on_shift_select`` when given,
     else to ``on_select``. ``row_color`` tints the id cell (rgb in 0-1).
@@ -120,6 +122,7 @@ def draw_roi_table(
         imgui.TableFlags_.sortable
         | imgui.TableFlags_.row_bg
         | imgui.TableFlags_.resizable
+        | imgui.TableFlags_.hideable
         | imgui.TableFlags_.scroll_y
     )
     avail = imgui.get_content_region_avail()
@@ -129,13 +132,17 @@ def draw_roi_table(
     # the current sort seeds imgui's default, so it survives a change of columns
     descending = 0 if order.ascending else imgui.TableColumnFlags_.prefer_sort_descending
     imgui.table_setup_column(
-        column_names[0], imgui.TableColumnFlags_.default_sort | descending if order.sort_by is None else 0
+        column_names[0],
+        imgui.TableColumnFlags_.no_hide
+        | (imgui.TableColumnFlags_.default_sort | descending if order.sort_by is None else 0),
     )
     for name in column_names[1:]:
         sortable = name in order.columns
         flags = 0 if sortable else imgui.TableColumnFlags_.no_sort
         if name == order.sort_by:
             flags |= imgui.TableColumnFlags_.default_sort | descending
+        if name in hidden:
+            flags |= imgui.TableColumnFlags_.default_hide
         imgui.table_setup_column(name, flags)
     imgui.table_headers_row()
 
