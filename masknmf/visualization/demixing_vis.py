@@ -466,7 +466,8 @@ class SingleSessionDemixingVis:
             set()
         )  # signal indices "Delete" has marked; removed on the next "Demix"
         self._poly_hits = []  # the signals the poly-select polygon holds
-        self._show_traces = False  # plot the selection's traces; off, selecting only highlights
+        self._show_traces = True  # plot the selection's traces; off, selecting only highlights
+        self._roi_radius = 1  # a double-click splits the square this far around the pixel into its sources
         self._undo = []  # curation snapshots for ctrl+z, newest last
         self._group: list = []  # signals selected together; their traces share the plot
         self._order = None  # RoiOrder over the signals, built with the footprints
@@ -621,6 +622,61 @@ class SingleSessionDemixingVis:
                 partial(self._pointer_down, name), "pointer_down"
             )
             graphic.graphic.add_event_handler(self._click_update, "click")
+            graphic.graphic.add_event_handler(self._source_click, "double_click")
+
+    def _source_click(self, ev: pygfx.PointerEvent):
+        """
+        emulate click_update from https://github.com/apasarkar/masknmf-toolbox/blob/f5c22fa01d6a1c87ab120592c0ec7cd5a1a01567/masknmf/visualization/demixing_vis.py#L328
+        split the compressed average over the square around a double-clicked pixel into its sources.
+        """
+
+        if self._ac_array is None or not self._show_traces or self._drawing():
+            return
+        num_frames, height, width = self._shape
+        col, row = ev.pick_info["index"]
+
+        col_start, col_stop = (
+            max(0, col - self._roi_radius),
+            min(width, col + self._roi_radius + 1),
+        )
+        row_start, row_stop = (
+            max(0, row - self._roi_radius),
+            min(height, row + self._roi_radius + 1),
+        )
+
+        pmd_trace = np.mean(
+            self._pmd_array[:, row_start:row_stop, col_start:col_stop], axis=(1, 2)
+        )
+        residual_trace = np.mean(
+            self._residual_array[:, row_start:row_stop, col_start:col_stop], axis=(1, 2)
+        )
+        background_trace = np.mean(
+            self._fluctuating_background_array[
+                :, row_start:row_stop, col_start:col_stop
+            ],
+            axis=(1, 2),
+        )
+
+        separated_ac_signals, separated_colors, unique_signals = (
+            extract_per_trace_roi_averages(
+                self._colorful_ac_array,
+                slice(row_start, row_stop),
+                slice(col_start, col_stop),
+            )
+        )
+        self._selected_signals = None
+        lines = [("compressed", pmd_trace, _BASE_LINE_COLORS[0])]
+        if separated_ac_signals is not None:
+            lines += [
+                (f"signal {k}", trace, tuple(float(v) for v in rgb))
+                for k, trace, rgb in zip(
+                    unique_signals, separated_ac_signals, separated_colors
+                )
+            ]
+        lines.append(("background", background_trace, _BASE_LINE_COLORS[2]))
+        lines.append(("residual", residual_trace, _BASE_LINE_COLORS[3]))
+        self._traces.set("traces", lines)
+        self._status = f"sources over the {row_stop - row_start}x{col_stop - col_start} square at ({row}, {col})"
 
     def _pointer_down(self, name: str, ev: pygfx.PointerEvent):
         self._press = (ev.x, ev.y)
@@ -1522,7 +1578,7 @@ class SingleSessionDemixingVis:
             return f"signal {self._active_component} selected{marked}"
         if self._active_roi in self._rois:
             return f"roi {list(self._rois).index(self._active_roi)} selected"
-        return "double-click a mask or roi to see its trace"
+        return "click a mask or roi to see its trace; double-click any pixel to split it into its sources"
 
     def _draw_side_panel(self):
         """Docked at "right" (the NDWidget owns "bottom"): the roi tools and the signal table as tabs."""
@@ -1972,6 +2028,62 @@ class SingleSessionDemixingVis:
 
     def close(self):
         self._ndw_fov.close()
+
+
+def extract_per_trace_roi_averages(
+    colorful_ac_array: masknmf.ColorfulSignalsArray, rowslice: slice, colslice: slice
+):
+    """
+
+    Args:
+        colorful_ac_array (masknmf.ColorfulSignalsArray): The signal array that contains the factorized signals
+        rowslice (slice): rows of the region
+        colslice (slice): columns of the region
+    """
+    device = colorful_ac_array.device
+    num_frames, height, width, _ = colorful_ac_array.shape
+    a = colorful_ac_array.spatial_demixed.coalesce()  # Shape (num_pixels, num_signals)
+    c = colorful_ac_array.temporal_demixed  # Shape (num_frames, num_signals)
+
+    pixel_space = (
+        torch.arange(height * width, device=device).reshape(height, width).long()
+    )
+    good_row_values = pixel_space[rowslice, colslice].flatten()
+    num_pixels = good_row_values.shape[0]
+
+    row, col = a.indices()
+    values = a.values()
+
+    valid_indices = torch.isin(row, good_row_values)
+    if torch.count_nonzero(valid_indices) == 0:
+        return None, None, None
+    else:
+        valid_columns = col[valid_indices]
+        unique_signals = torch.unique(valid_columns)
+
+        a_subset = torch.index_select(a, 1, unique_signals).coalesce()
+        filtered_rows, filtered_col = a_subset.indices()
+        filtered_values = a_subset.values()
+
+        valid_indices = torch.isin(filtered_rows, good_row_values)
+        filtered_rows = filtered_rows[valid_indices]
+        filtered_col = filtered_col[valid_indices]
+        filtered_values = filtered_values[valid_indices]
+
+        reduce_tensor = torch.zeros(a_subset.shape[1], device=device)
+        reduce_tensor.scatter_reduce_(0, filtered_col, filtered_values, reduce="sum")
+        reduce_tensor = reduce_tensor / num_pixels
+
+        weighted_signals = (
+            reduce_tensor[None, :] * c[:, unique_signals]
+        )  # Shape (num_frames, neural_signals)
+        colors = colorful_ac_array.colors[unique_signals, :]  # (neural_signals, 3)
+
+        return (
+            weighted_signals.T.cpu().numpy(),
+            colors.cpu().numpy(),
+            unique_signals.cpu().numpy(),
+        )
 
 
 def visualize_superpixels_peaks(init_results: masknmf.InitializationResults):

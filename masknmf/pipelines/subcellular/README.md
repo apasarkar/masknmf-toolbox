@@ -11,32 +11,47 @@ pipe = GlutamateCalciumSpinePipeline(output_folder="results/")
 pipe.run(glutamate_channel=glu, calcium_channel=calcium)
 ```
 
-Writes `results/<YYYYMMDD_HHMMSS>_glutamate_calcium_spine_results/`. 
-- Either channel may be `None`.
+Writes `results/<YYYYMMDD_HHMMSS>_glutamate-calcium-spine/results.<channel>.hdf5`, one file per channel.
+- Either channel may be `None`; its file is then absent.
 - `run` drops the first 200 frames (`exclude_initial_frames`);
 - every output has `frames - 200` frames.
-- `retained_frames.npy` lists the raw frame indices that were kept; index the raw stack with it.
+- the `retained_frames` dataset lists the raw frame indices that were kept; index the raw stack with it.
+
+```
+results.glutamate.hdf5, results.calcium.hdf5
+  retained_frames
+  RigidRegistrationArray, RigidMotionCorrector
+  CompressionArray
+  DemixingResults           spines
+  global/DemixingResults    whole-dendrite component
+```
+
+`masknmf.utils.results_files(run)` maps channel to file: `{"calcium": run / "results.calcium.hdf5", ...}`.
 
 ```python
 from pathlib import Path
+import h5py
 import numpy as np
 import masknmf
 
-run = Path("results/20260908_112158_glutamate_calcium_spine_results")
-calcium = tifffile.imread("red.tif")[np.load(run / "retained_frames.npy")]
+run = Path("results/20260908_112158_glutamate-calcium-spine")
+results = masknmf.utils.results_files(run)["calcium"]
+with h5py.File(results, "r") as f:
+    retained_frames = f["retained_frames"][()]
+calcium = tifffile.imread("red.tif")[retained_frames]
 timings = np.arange(calcium.shape[0]) / 19.66  # optional seconds axis
 ```
 
 ## 1. Motion correction
 
-| file | hdf5 groups |
-|---|---|
-| `calcium_moco.hdf5`, `glutamate_moco.hdf5` | `RigidRegistrationArray` (shifts, sinc_margin), `RigidMotionCorrector` (template, max_shifts, batch_size) |
+| hdf5 groups |
+|---|
+| `RigidRegistrationArray` (shifts, sinc_margin), `RigidMotionCorrector` (template, max_shifts, batch_size) |
 
-The registered movie is recreated from the raw frames and the shifts stored in `*_moco.hdf5`.
+The registered movie is recreated from the raw frames and the stored shifts.
 
 ```python
-reg = masknmf.RigidRegistrationArray.from_hdf5(run / "calcium_moco.hdf5", input_movie=calcium)
+reg = masknmf.RigidRegistrationArray.from_hdf5(results, input_movie=calcium)
 ```
 
 | attribute | shape / type |
@@ -52,12 +67,12 @@ masknmf.MotionCorrectionVis(reg, frame_timings=timings, mean_subtract=True).show
 
 ## 2. Compression
 
-| file | hdf5 groups |
-|---|---|
-| `pmd_calcium.hdf5`, `pmd_glutamate.hdf5` | `PMDArray` (spatial_compressed, temporal_compressed, mean_image, noise_variance_image, spatial_compressed_local_projector, shape) |
+| hdf5 groups |
+|---|
+| `CompressionArray` (spatial_compressed, temporal_compressed, mean_image, noise_variance_image, spatial_compressed_local_projector, shape) |
 
 ```python
-pmd = masknmf.CompressionArray.from_hdf5(run / "pmd_calcium.hdf5")
+pmd = masknmf.CompressionArray.from_hdf5(results)
 ```
 
 | attribute | shape / type |
@@ -76,16 +91,15 @@ masknmf.CompressionVis(moco, pmd, frame_timings=timings, device="cuda").show()
 
 ## 3. Demixing
 
-| file | contents |
+| file / hdf5 group | contents |
 |---|---|
-| `glutamate_spine_demixing.hdf5` | spines found in glutamate |
-| `calcium_spine_demixing.hdf5` | same footprints, traces refit on calcium |
-| `glutamate_global_activity_demixing.hdf5`, `calcium_global_activity_demixing.hdf5` | one whole-dendrite component |
-
-All are `DemixingResults` (hdf5 group `DemixingResults`).
+| `results.glutamate.hdf5` `DemixingResults` | spines found in glutamate |
+| `results.calcium.hdf5` `DemixingResults` | same footprints, traces refit on calcium |
+| either file, `global/DemixingResults` | one whole-dendrite component |
 
 ```python
-res = masknmf.DemixingResults.from_hdf5(run / "glutamate_spine_demixing.hdf5", device="cuda")
+res = masknmf.DemixingResults.from_hdf5(results, device="cuda")
+global_res = masknmf.DemixingResults.from_hdf5(results, prefix="global", device="cuda")
 ```
 
 | attribute | shape / type |
