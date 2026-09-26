@@ -535,15 +535,22 @@ def command_view(args: argparse.Namespace) -> None:
     viewers = []
     raw = None if args.raw is None else load_movie(filepath_movie=args.raw, name_dataset=args.dataset)
 
-    # the compression viewer when asked for, or when compression is the file's last stage; it compares
-    # the movie that was compressed, the raw one with the file's shifts applied, to the compressed one
-    has_compression = group_name_compression() in names_present
-    if args.compression and not has_compression:
-        fail(f"{args.results} holds no {group_name_compression()}")
+    if name_demixing in names_present:
+        results = masknmf.DemixingResults.from_hdf5(args.results, prefix=args.prefix, device=device)
+    elif group_name_compression() in names_present:
+        results = masknmf.CompressionArray.from_hdf5(args.results)
+    else:
+        results = None
+
+    # the compression viewer when asked for, or when compression is the file's last stage; it compares the
+    # movie that was compressed, the raw one with the file's shifts applied, to the compressed one, which the
+    # demixing results carry once the pipeline has dropped the CompressionArray group
+    if args.compression and results is None:
+        fail(f"{args.results} holds no compression")
     if args.compression and raw is None:
         fail("the compression viewer needs --raw")
-    if has_compression and raw is not None and (args.compression or name_demixing not in names_present):
-        compressed = masknmf.CompressionArray.from_hdf5(args.results)
+    if results is not None and raw is not None and (args.compression or name_demixing not in names_present):
+        compressed = results.compression_array if isinstance(results, masknmf.DemixingResults) else results
         name_registration = next((n for n in group_names_registration() if n in names_present), None)
         registered = (
             raw
@@ -558,15 +565,9 @@ def command_view(args: argparse.Namespace) -> None:
                 device=device,
             )
         )
-    elif has_compression and name_demixing not in names_present:
+    elif results is not None and name_demixing not in names_present:
         print("the compression viewer needs --raw")
 
-    if name_demixing in names_present:
-        results = masknmf.DemixingResults.from_hdf5(args.results, prefix=args.prefix, device=device)
-    elif group_name_compression() in names_present:
-        results = masknmf.CompressionArray.from_hdf5(args.results)
-    else:
-        results = None
     if results is not None:
         # a raw movie the pipeline trimmed (the glutamate pipeline drops its first frames) no longer lines up
         if raw is not None and tuple(raw.shape) != tuple(results.shape):
