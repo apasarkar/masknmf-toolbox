@@ -10,7 +10,6 @@ class CompressConfig:
     frame_range: int | None = None
     max_components: int = 20
     sim_conf: int = 5
-    frame_batch_size: int = 10000
     max_consecutive_failures: int = 1
     spatial_avg_factor: int = 1
     temporal_avg_factor: int = 1
@@ -34,3 +33,6 @@ class CompressDenoiseConfig:
     noise_variance_quantile: float = 0.3
     num_epochs: int = 10
     detrender: SplineDetrenderBase | None = None
+
+# every config a pipeline's compression step can take; see MotionCorrectionConfigs
+CompressionConfigs = CompressConfig | CompressDenoiseConfig

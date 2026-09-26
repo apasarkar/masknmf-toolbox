@@ -314,6 +314,8 @@ class MaximinSplineDetrend(SplineDetrenderBase):
             raise ValueError(f"num_knots must be >= 1, got {num_knots}")
         if window < 3:
             raise ValueError(f"window must be >= 3, got {window}")
+        # a recording shorter than the window is one window
+        window = min(window, num_frames)
         if window % 2 == 0:
             window += 1
         if sigma <= 0:

@@ -15,7 +15,6 @@ once a demixed result is loaded.
 """
 
 import argparse
-from dataclasses import replace
 from pathlib import Path
 
 import fastplotlib as fpl
@@ -25,7 +24,7 @@ import tifffile
 import masknmf
 from masknmf.visualization import CompressionVis, MotionCorrectionVis, SingleSessionDemixingVis
 from masknmf.pipelines.configs.demixing_configs import NMFConfig
-from masknmf.pipelines.subcellular.glutamate_calcium_spines import DEFAULT_SPINE_NMF_CONFIG, NMF_JUST_HALS
+from masknmf.pipelines.subcellular.glutamate_calcium_spines import GlutamateCalciumSpinePipeline, NMF_JUST_HALS
 from masknmf.utils import torch_select_device
 
 def registration(run, channel, raw_path):
@@ -72,7 +71,7 @@ def main():
         demix_timings = np.arange(res.shape[0]) / args.fps
         # the pass the pipeline ran on this file: ring model off (ring_model_start_pt > maxiter), so Demix adds no background
         nmf_config = (
-            replace(DEFAULT_SPINE_NMF_CONFIG)
+            GlutamateCalciumSpinePipeline.default_configs()["demixing_config"].DemixingConfigs[0].NMFConfig
             if (args.channel, args.which) == ("glutamate", "spine")
             else NMFConfig(**NMF_JUST_HALS)
         )

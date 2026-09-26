@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-from dataclasses import asdict, fields, is_dataclass
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
+import inspect
 import json
 import os
 import numpy as np
@@ -9,7 +10,7 @@ import torch
 from typing import *
 
 from masknmf._version import __version__
-from masknmf.pipelines.scraper import slugify
+from masknmf.pipelines.scraper import slugify, config_json_value
 from masknmf.arrays import ArrayLike
 from masknmf.compression import CompressionArray, CompressStrategy, CompressDenoiseStrategy
 from masknmf.compression.preprocessing import MaximinSplineDetrend
@@ -18,44 +19,52 @@ from masknmf.motion_correction import BaseRegistrationArray, RigidMotionCorrecto
 from masknmf.motion_correction.moco_preprocessing import construct_moco_template
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
-from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig
+from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig, SinglepassDemixingConfig, SuperpixelInitConfig
 from masknmf.utils import display, has_group, drop_group, torch_select_device
 
 
-def config_json_value(value):
-    """What json cannot write itself: dataclasses as dicts, paths as strings, anything else (arrays, detrenders) as "*"."""
-    if is_dataclass(value):
-        return {f.name: getattr(value, f.name) for f in fields(value)}
-    if isinstance(value, Path):
-        return str(value)
-    return "*"
-
-
 class BasePipeline(ABC):
+    """
+    Motion correction, compression (and optional demixing) of one session.
+    """
+
     def __init__(self,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
-                 device: Literal["auto", "cuda", "cpu"] = "auto"):
-        self._output_folder = output_folder
-        self._frame_batch_size = frame_batch_size
-        self._device = device
+                 device: Literal["auto", "cuda", "cpu"] = "auto",
+                 **configs):
+        if output_folder is not None:
+            output_folder = Path(output_folder).expanduser().resolve()
+            if output_folder.exists() and not output_folder.is_dir():
+                raise NotADirectoryError(f"output_folder exists and is not a directory: {output_folder}")
+        self.output_folder = output_folder
+        self.frame_batch_size = frame_batch_size
+        self.device = device
+        # the folder the last create_run_folder made
+        self.run_folder = None
+        # the scalar arguments of the run in progress, saved to config.json beside the __init__ ones
+        self.run_config = {}
+        defaults = self.default_configs()
+        unknown = set(configs) - set(defaults)
+        if len(unknown) > 0:
+            raise TypeError(f"{type(self).__name__}.default_configs() has no entry for {', '.join(sorted(unknown))}")
+        for name, default in defaults.items():
+            setattr(self, name, default if configs.get(name) is None else configs[name])
 
-    @property
+    @classmethod
     @abstractmethod
-    def config(self):
+    def default_configs(cls) -> dict:
+        """
+        The value each config argument of __init__ takes when it is None, keyed by argument name. Built fresh on every
+        call, so callers may change what they get back. Gives only what differs from each config's own defaults, so
+        changes to those carry through.
+        """
         pass
 
     @property
-    def output_folder(self) -> str | Path | None:
-        return self._output_folder
-
-    @property
-    def frame_batch_size(self) -> int:
-        return self._frame_batch_size
-
-    @property
-    def device(self) -> Literal["auto", "cuda", "cpu"]:
-        return self._device
+    def config(self) -> dict:
+        """Every __init__ argument by name, as constructed."""
+        return {name: getattr(self, name) for name in inspect.signature(type(self).__init__).parameters if name != "self"}
 
     @property
     def torch_device(self) -> str:
@@ -65,9 +74,10 @@ class BasePipeline(ABC):
     def create_run_folder(self) -> Path:
         """
         Make ``<output_folder>/<YYYYmmdd_HHMMSS>_<pipeline slug>/`` (the working directory when output_folder is None),
-        adding a numeric suffix when a run started in the same second, and write the pipeline's config to config.json in it.
+        adding a numeric suffix when a run started in the same second, and write the pipeline's config and the run's
+        scalar arguments to config.json in it.
         """
-        base = Path.cwd() if self.output_folder is None else Path(self.output_folder).expanduser().resolve()
+        base = Path.cwd() if self.output_folder is None else self.output_folder
         name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{slugify(name_class=type(self).__name__)}"
         candidate = base / name
         suffix = 0
@@ -79,8 +89,9 @@ class BasePipeline(ABC):
                 suffix += 1
                 candidate = base / f"{name}_{suffix}"
         with open(candidate / "config.json", "w") as f:
-            json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__, **self.config}, f, indent=2,
-                      default=config_json_value)
+            json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__, **self.config, **self.run_config},
+                      f, indent=2, default=config_json_value)
+        self.run_folder = candidate
         return candidate
 
     def results_path(self, resume: bool = False) -> str:
@@ -142,8 +153,8 @@ class BasePipeline(ABC):
                           config: CompressConfig | CompressDenoiseConfig | None,
                           pixel_weighting: np.ndarray | None = None) -> CompressStrategy:
         """
-        The strategy for config (CompressDenoiseConfig defaults when None) on this pipeline's device, with
-        pixel_weighting multiplied into the config's own.
+        The strategy for config (CompressDenoiseConfig defaults when None) on this pipeline's device and
+        frame_batch_size, with pixel_weighting multiplied into the config's own.
         """
         if config is None:
             config = CompressDenoiseConfig()
@@ -151,9 +162,9 @@ class BasePipeline(ABC):
         if pixel_weighting is not None:
             kwargs["pixel_weighting"] = pixel_weighting if config.pixel_weighting is None else config.pixel_weighting * pixel_weighting
         if isinstance(config, CompressConfig):
-            return CompressStrategy(device=self.device, **kwargs)
+            return CompressStrategy(device=self.device, frame_batch_size=self.frame_batch_size, **kwargs)
         if isinstance(config, CompressDenoiseConfig):
-            return CompressDenoiseStrategy(device=self.device, **kwargs)
+            return CompressDenoiseStrategy(device=self.device, frame_batch_size=self.frame_batch_size, **kwargs)
         raise ValueError("Invalid compression config")
 
     def spline_detrender(self,
@@ -174,6 +185,8 @@ class BasePipeline(ABC):
         Run the passes of config in order, stopping at the first that finds no signals, and return the results of
         the last pass that ran. Raises when the first pass finds none.
         """
+        if len(config.DemixingConfigs) < 1:
+            raise ValueError("Demixing needs at least one pass")
         results = None
         for singlepass in config.DemixingConfigs:
             try:
@@ -187,6 +200,19 @@ class BasePipeline(ABC):
             results = demixer.results
             torch.cuda.empty_cache()
         return results
+
+    def with_detrender(self, config: MultipassDemixingConfig, detrender: MaximinSplineDetrend) -> MultipassDemixingConfig:
+        """A copy of config whose superpixel initializations and NMF steps without a detrender use detrender."""
+        passes = []
+        for singlepass in config.DemixingConfigs:
+            init_config = singlepass.InitConfig
+            if isinstance(init_config, SuperpixelInitConfig) and init_config.detrender is None:
+                init_config = replace(init_config, detrender=detrender)
+            nmf_config = singlepass.NMFConfig
+            if nmf_config.detrender is None:
+                nmf_config = replace(nmf_config, detrender=detrender)
+            passes.append(SinglepassDemixingConfig(init_config, nmf_config))
+        return MultipassDemixingConfig(passes)
 
     def drop_compression(self, results_path: str):
         """Remove the CompressionArray group once demixing is done; the demixing results carry the pmd."""

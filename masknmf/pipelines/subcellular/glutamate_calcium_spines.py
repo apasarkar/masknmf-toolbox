@@ -10,7 +10,7 @@ from masknmf.compression.preprocessing import MaximinSplineDetrend
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
-from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig
+from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig, MultipassDemixingConfigs
 from pathlib import Path
 from typing import *
 import numpy as np
@@ -19,28 +19,6 @@ from numbers import Integral
 import torch
 import cv2
 import h5py
-
-DEFAULT_MOTION_CORRECTION_CONFIG = RigidMotionCorrectionConfig(max_shifts=(40, 40))
-DEFAULT_COMPRESSION_CONFIG = CompressDenoiseConfig(block_sizes=(10, 10),
-                                                   max_components=20,
-                                                   sim_conf=5,
-                                                   spatial_avg_factor=1,
-                                                   temporal_avg_factor=10,
-                                                   num_epochs=10)
-
-DEFAULT_SPINE_SUPERPIXEL_CONFIG = SuperpixelInitConfig(residual_threshold=0.1,
-                                                       sign="positive")
-DEFAULT_SPINE_NMF_CONFIG = NMFConfig(maxiter=40,
-                                     support_threshold=np.linspace(0.95, 0.7, 40).tolist(),
-                                     ring_model_start_pt=41,
-                                     min_brightness=0.0,
-                                     merge_threshold=0.7,
-                                     merge_overlap_threshold=0.6,
-                                     update_frequency=4,
-                                     c_nonneg=True,
-                                     denoise=False,
-                                     plot_en=False,
-                                     reassign_background=False)
 
 NMF_JUST_HALS = {'maxiter': 40,
                 'deletion_threshold': 0.2,
@@ -67,70 +45,32 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                  output_folder: str | Path | None = None,
                  motion_correct_config: RigidMotionCorrectionConfig | None = None,
                  compress_config: CompressDenoiseConfig | None = None,
-                 demixing_config: MultipassDemixingConfig | None = None,
+                 demixing_config: MultipassDemixingConfigs | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"):
+        super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         motion_correct_config=motion_correct_config, compress_config=compress_config,
+                         demixing_config=demixing_config)
 
-        if output_folder is not None:
-            output_folder = Path(output_folder).expanduser().resolve()
-            if output_folder.exists() and not output_folder.is_dir():
-                raise NotADirectoryError(
-                    f"output_folder exists and is not a directory: {output_folder}"
-                )
-        super().__init__(output_folder, frame_batch_size, device)
-
-        self.motion_correct_config = motion_correct_config
-        self.compress_config = compress_config
-        self.demixing_config = demixing_config
-
-    @property
-    def motion_correct_config(self) -> RigidMotionCorrectionConfig | None:
-        return self._motion_correct_config
-
-    @motion_correct_config.setter
-    def motion_correct_config(self, updated_config: RigidMotionCorrectionConfig | None):
-        if updated_config is None:
-            self._motion_correct_config = DEFAULT_MOTION_CORRECTION_CONFIG
-        else:
-            self._motion_correct_config = updated_config
-
-    @property
-    def compress_config(self) -> CompressConfig | CompressDenoiseConfig | None:
-        return self._compress_config
-
-    @compress_config.setter
-    def compress_config(self, updated_config: CompressDenoiseConfig | None):
-        if updated_config is None:
-            self._compress_config = DEFAULT_COMPRESSION_CONFIG
-        else:
-            self._compress_config = updated_config
-
-    @property
-    def demixing_config(self) -> MultipassDemixingConfig | None:
-        return self._demixing_config
-
-    @demixing_config.setter
-    def demixing_config(self, updated_config: MultipassDemixingConfig | None):
-        if updated_config is None:
-            conf_list = []
-            curr_demix_conf = SinglepassDemixingConfig(DEFAULT_SPINE_SUPERPIXEL_CONFIG, DEFAULT_SPINE_NMF_CONFIG)
-            for _ in range(2):
-                conf_list.append(curr_demix_conf)
-            self._demixing_config = MultipassDemixingConfig(conf_list)
-        else:
-            if len(updated_config.DemixingConfigs) < 1:
-                raise ValueError("Must have sufficient configs for at least one pass of NMF in demixing configs")
-            self._demixing_config = updated_config
-
-    @property
-    def config(self):
-        return {'output_folder': self.output_folder,
-                'motion_correct_config': self.motion_correct_config,
-                'compress_config': self.compress_config,
-                'demixing_config': self.demixing_config,
-                'frame_batch_size': self.frame_batch_size,
-                'device': self.device}
-
+    @classmethod
+    def default_configs(cls) -> dict:
+        """
+        Rigid motion correction allowing large shifts, compression with denoising in small blocks over temporally
+        averaged frames, and two positive-signed demixing passes tuned for spines.
+        """
+        passes = []
+        for _ in range(2):
+            init_config = SuperpixelInitConfig(residual_threshold=0.1, sign="positive")
+            # ring_model_start_pt past maxiter keeps the ring model off
+            nmf_config = NMFConfig(support_threshold=(0.95, 0.7),
+                                   ring_model_start_pt=41,
+                                   min_brightness=0.0,
+                                   merge_threshold=0.7,
+                                   reassign_background=False)
+            passes.append(SinglepassDemixingConfig(init_config, nmf_config))
+        return {'motion_correct_config': RigidMotionCorrectionConfig(max_shifts=(40, 40)),
+                'compress_config': CompressDenoiseConfig(block_sizes=(10, 10), temporal_avg_factor=10),
+                'demixing_config': MultipassDemixingConfig(passes)}
 
     def run(self,
             glutamate_channel: np.ndarray | ArrayLike | None,
@@ -148,6 +88,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             calcium_channel (np.ndarray | ArrayLike | None):
         """
         device = self.torch_device
+        self.run_config = {"exclude_initial_frames": exclude_initial_frames}
         run_folder = self.create_run_folder()
         glu_path = os.path.join(run_folder, "results.glutamate.hdf5")
         ca_path = os.path.join(run_folder, "results.calcium.hdf5")
