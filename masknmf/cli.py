@@ -421,7 +421,7 @@ def command_run(args: argparse.Namespace) -> None:
 
     if values_file.get("pipeline", spec.cls.__name__) != spec.cls.__name__:
         fail(f"the config file is for {values_file['pipeline']}, not {spec.cls.__name__}")
-    names_known = {s.argument for s in spec.sections} | {p.field for p in spec.scalars}
+    names_known = {s.argument for s in spec.sections} | {p.field for p in spec.scalars} | {p.field for p in spec.run_scalars}
     unknown = set(values_file) - names_known - {"pipeline", "masknmf_version"}
     if len(unknown) > 0:
         fail(f"the config file sets {', '.join(sorted(unknown))}, which {spec.slug} does not take")
@@ -463,9 +463,11 @@ def command_run(args: argparse.Namespace) -> None:
             kwargs_run[param.field] = np.load(filepath)
 
     for param in spec.run_scalars:
+        if param.field in values_file:
+            kwargs_run[param.field] = values_file[param.field]
         text = getattr(args, option_name(flag_for(param)), None)
         if text is None:
-            if param.required:
+            if param.required and param.field not in values_file:
                 fail(f"--{param.field.replace('_', '-')} is required for {spec.slug}")
             continue
         try:

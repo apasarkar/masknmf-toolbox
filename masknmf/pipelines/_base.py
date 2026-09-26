@@ -42,6 +42,8 @@ class BasePipeline(ABC):
         self.device = device
         # the folder the last create_run_folder made
         self.run_folder = None
+        # the scalar arguments of the run in progress, saved to config.json beside the __init__ ones
+        self.run_config = {}
         defaults = self.default_configs()
         unknown = set(configs) - set(defaults)
         if len(unknown) > 0:
@@ -72,7 +74,8 @@ class BasePipeline(ABC):
     def create_run_folder(self) -> Path:
         """
         Make ``<output_folder>/<YYYYmmdd_HHMMSS>_<pipeline slug>/`` (the working directory when output_folder is None),
-        adding a numeric suffix when a run started in the same second, and write the pipeline's config to config.json in it.
+        adding a numeric suffix when a run started in the same second, and write the pipeline's config and the run's
+        scalar arguments to config.json in it.
         """
         base = Path.cwd() if self.output_folder is None else self.output_folder
         name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{slugify(name_class=type(self).__name__)}"
@@ -86,8 +89,8 @@ class BasePipeline(ABC):
                 suffix += 1
                 candidate = base / f"{name}_{suffix}"
         with open(candidate / "config.json", "w") as f:
-            json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__, **self.config}, f, indent=2,
-                      default=config_json_value)
+            json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__, **self.config, **self.run_config},
+                      f, indent=2, default=config_json_value)
         self.run_folder = candidate
         return candidate
 

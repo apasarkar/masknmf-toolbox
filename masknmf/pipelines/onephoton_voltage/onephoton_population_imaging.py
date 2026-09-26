@@ -353,6 +353,8 @@ class OnePhotonCulturePipeline(BasePipeline):
             moco_array = corrector.motion_correct(mov)
             moco_array.output_device=device
 
+        self.run_config = {"frame_rate": frame_rate, "indicator_sign": indicator_sign,
+                           "remove_intermediates": remove_intermediates}
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
                 results_path = self.results_path(resume=True)

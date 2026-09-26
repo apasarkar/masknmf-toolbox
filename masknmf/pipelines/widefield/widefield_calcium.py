@@ -45,6 +45,7 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         """
         Uses the API to run rigid motion correction, compression (with denoising)
         """
+        self.run_config = {"exclude_border_radius": exclude_border_radius}
         results_path = self.results_path()
         moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
                                                     exclude_border_radius)

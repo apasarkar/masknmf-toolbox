@@ -85,6 +85,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                         results carry the pmd); the registration shifts stay
                 """
 
+        self.run_config = {"frame_rate": frame_rate, "exclude_border_radius": exclude_border_radius,
+                           "remove_intermediates": remove_intermediates}
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
                 results_path = self.results_path(resume=True)

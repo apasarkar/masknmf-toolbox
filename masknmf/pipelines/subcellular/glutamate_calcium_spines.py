@@ -88,6 +88,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             calcium_channel (np.ndarray | ArrayLike | None):
         """
         device = self.torch_device
+        self.run_config = {"exclude_initial_frames": exclude_initial_frames}
         run_folder = self.create_run_folder()
         glu_path = os.path.join(run_folder, "results.glutamate.hdf5")
         ca_path = os.path.join(run_folder, "results.calcium.hdf5")
