@@ -182,8 +182,8 @@ class CompressionArray(ArrayLike, Serializer):
                    include_trend=include_trend)
 
     @classmethod
-    def from_hdf5(cls, path, **kwargs):
-        d = load_dict(path, cls.__name__)
+    def from_hdf5(cls, path, prefix: str = "", **kwargs):
+        d = load_dict(path, f"{prefix}/{cls.__name__}" if prefix else cls.__name__)
         return cls.from_tensors(**d, **kwargs)
 
     @property

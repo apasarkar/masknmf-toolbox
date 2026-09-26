@@ -1,25 +1,20 @@
-from dataclasses import asdict
 import masknmf
-from masknmf.compression import CompressStrategy, CompressDenoiseStrategy, CompressionArray
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector, GradientMotionCorrector, GradientRegistrationArray
-from masknmf.utils import display, has_group, drop_group
-from masknmf.demixing import NoSignalsDetectedError, DemixingError
+from masknmf.utils import display
+from masknmf.utils._serialization import save_dict
 import torch
 import math
 from tqdm import tqdm
-
-from masknmf.compression.preprocessing import MaximinSplineDetrend
 
 from masknmf.motion_correction.registration_arrays import OphysArray
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig
 
-from masknmf.utils import torch_select_device
 from typing import *
 import numpy as np
-import os
+from pathlib import Path
 
 
 
@@ -266,27 +261,12 @@ def expand_traces_to_all_frames(c: torch.Tensor,
     return updated_c
 
 
-def run_singlepass_demixing(demixing_obj: masknmf.SignalDemixer,
-                            singlepass_config: SinglepassDemixingConfig) -> None | masknmf.SignalDemixer:
-    init_config = singlepass_config.InitConfig
-    nmf_config = singlepass_config.NMFConfig
-
-    try:
-        demixing_obj.initialize_signals(**asdict(init_config))
-    except NoSignalsDetectedError:
-        return None
-    else:
-        demixing_obj.demix(**asdict(nmf_config))
-        return demixing_obj
-
-
 class OnePhotonCulturePipeline(BasePipeline):
     def __init__(self,
                  motion_correct_config: Literal["skip"] | None = None,
                  compress_config: CompressConfig | CompressDenoiseConfig | Literal["skip"] | None = None,
                  demixing_config: MultipassDemixingConfig | None = None,
-                 outpath_compression: Optional[str] = "results.hdf5",
-                 outpath_demixing: Optional[str] = "results.hdf5",
+                 output_folder: str | Path | None = None,
                  load_into_ram: bool = False,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"
@@ -300,11 +280,8 @@ class OnePhotonCulturePipeline(BasePipeline):
             curr_config = compress_config
 
         self._compress_config = curr_config
-        self._outpath_compression = outpath_compression
-        self._outpath_demixing = outpath_demixing
         self._load_into_ram = load_into_ram
-        self._frame_batch_size = frame_batch_size
-        self._device = device
+        super().__init__(output_folder, frame_batch_size, device)
 
         if demixing_config is None:
             conf_list = []
@@ -339,31 +316,15 @@ class OnePhotonCulturePipeline(BasePipeline):
         return self._demixing_config
 
     @property
-    def outpath_compression(self) -> Optional[str]:
-        return self._outpath_compression
-
-    @property
-    def outpath_demixing(self) -> Optional[str]:
-        return self._outpath_demixing
-
-    @property
     def load_into_ram(self) -> bool:
         return self._load_into_ram
-
-    @property
-    def frame_batch_size(self) -> int:
-        return self._frame_batch_size
-
-    @property
-    def device(self) -> Literal["auto", "cuda", "cpu"]:
-        return self._device
 
     @property
     def config(self):
         return {'motion_correct_config': self.motion_correct_config,
                 'compress_config': self.compress_config,
-                'outpath_compression': self.outpath_compression,
-                'outpath_demixing': self.outpath_demixing,
+                'demixing_config': self.demixing_config,
+                'output_folder': self.output_folder,
                 'frame_batch_size': self.frame_batch_size,
                 'device': self.device}
 
@@ -372,7 +333,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             frame_rate: float,
             indicator_sign: Literal["negative", "positive"],
             active_frames: np.ndarray,
-            remove_intermediates: bool = True):
+            remove_intermediates: bool = True) -> Path:
         """
                 Uses the API to run rigid motion correction, compression (with denoising), and demixing.
 
@@ -385,16 +346,18 @@ class OnePhotonCulturePipeline(BasePipeline):
                     compress_config: Config object specifying parameters for compressing the data.
                         If None is specified, the joint compression + denoising code is run
                     DemixConfig: Config object specifying parameters for demixing the data
-                    outpath_motion_correction (Optional[str]): Where to write out the motion corrected stack
-                    outpath_compression (Optional[str]): Where to write out the compression + results
-                    outpath_demixing (Optional[str]): Where to write out the demixing results. The two outpaths
-                        default to one file holding one hdf5 group per stage; give them different names for one file per stage
+                    output_folder: Every stage is written to ``<output_folder>/<timestamp>_one-photon-culture/results.hdf5``,
+                        one hdf5 group per stage. With compress_config "skip", output_folder is instead an existing run
+                        folder whose results.hdf5 holds the compression; demixing is written into that same file
                     load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
-                    remove_intermediates (bool): delete the compression file once demixing is done; in one results
-                        file, drop its PMDArray group instead (the demixing results carry the pmd)
+                    remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
+                        results carry the pmd)
+
+                The raw-scale footprints and the denoised and raw-regressed traces over all frames are written to the
+                RawScaleEstimates group as a, c_denoised and c_raw.
                 """
 
-        device = torch_select_device()
+        device = self.torch_device
 
         ## Decide whether to motion correct data or not. You must have access to raw data
         negative_indicator = True if indicator_sign == "negative" else False
@@ -418,18 +381,13 @@ class OnePhotonCulturePipeline(BasePipeline):
             moco_array = corrector.motion_correct(mov)
             moco_array.output_device=device
 
-        pmd_source = os.path.abspath(self.outpath_compression)
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
-                # a previous run's compression: at outpath_compression, else an old compression.hdf5 beside it
-                if not has_group(pmd_source, CompressionArray.__name__):
-                    pmd_source = os.path.join(os.path.dirname(pmd_source), "compression.hdf5")
-                if not has_group(pmd_source, CompressionArray.__name__):
-                    raise ValueError("You specified that compression should be skipped but there is no compression at "
-                                     "outpath_compression or in a compression.hdf5 beside it")
+                results_path = self.results_path(resume=True)
             else:
                 raise ValueError(f"If compress_config is a string, it can only be `skip`")
         else:
+            results_path = self.results_path()
 
             display("Running Compression")
 
@@ -440,46 +398,18 @@ class OnePhotonCulturePipeline(BasePipeline):
                 self.compress_config.frame_weighting = active_frames
             self.compress_config.frame_batch_size = self.frame_batch_size
 
-            ## Make the strategy object
-            if isinstance(self.compress_config, CompressConfig):
-                compress_strategy = CompressStrategy(device=device, **asdict(self.compress_config))
-            elif isinstance(self.compress_config, CompressDenoiseConfig):
-                compress_strategy = CompressDenoiseStrategy(device=device, **asdict(self.compress_config))
-            else:
-                raise ValueError("Invalid config")
+            compress_strategy = self.compress_strategy(self.compress_config)
 
-            num_frames = moco_array.shape[0]
-            recording_seconds = num_frames / frame_rate
-            window = int(0.05 * frame_rate)  # rolling window time interval
-            sigma = max(2.0, 0.01 * frame_rate)  # less smoothing
-            num_knots = max(4, int(recording_seconds / 0.05))  # one knot per 0.1 seconds
-
-            detrender_device = (
-                torch_select_device() if self.device == "auto" else self.device
-            )
-
-            detrender = MaximinSplineDetrend(
-                num_frames=num_frames,
-                num_knots=num_knots,
-                window=window,
-                sigma=sigma,
-                device=detrender_device,
-            )
-
-            print(f'compress strategy frame weighting is {compress_strategy._frame_weighting}')
-            compress_strategy.detrender = detrender
+            compress_strategy.detrender = self.spline_detrender(moco_array.shape[0], frame_rate, window_seconds=0.05,
+                                                                knot_seconds=0.05, sigma_seconds=0.01)
             compress_strategy.frame_batch_size = self.frame_batch_size
-            # raise ValueError("Just a test")
             compressed_results = compress_strategy.compress(moco_array)
-            compressed_results.export(self.outpath_compression)
+            compressed_results.export(results_path)
 
-        if self.device == "auto":
-            device = torch_select_device()
-        else:
-            device = self.device
+        device = self.torch_device
         display("Running demixing analysis")
 
-        pmd_denoise = masknmf.CompressionArray.from_hdf5(pmd_source)
+        pmd_denoise = masknmf.CompressionArray.from_hdf5(results_path)
 
         v = pmd_denoise.temporal_compressed[:, active_frames.astype('bool')]
         new_shape = (v.shape[1], pmd_denoise.shape[1], pmd_denoise.shape[2])
@@ -500,19 +430,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                                                                               frame_batch_size=self.frame_batch_size)
 
 
-        # Run demixing
-        curr_demix_results = None
-        for k in range(len(self.demixing_config.DemixingConfigs)):
-            truncated_pmd_demixer = run_singlepass_demixing(truncated_pmd_demixer,
-                                                           self.demixing_config.DemixingConfigs[k])
-            if truncated_pmd_demixer is not None:
-                curr_demix_results = truncated_pmd_demixer.results
-            if truncated_pmd_demixer is None:
-                if curr_demix_results is None:
-                    raise ValueError("The demixer did not identify any signals in the highpass filtered movie. Lower thresholds or inspect"
-                                     "data to resolve this issue.")
-                else:
-                    break
+        curr_demix_results = self.run_multipass(truncated_pmd_demixer, self.demixing_config)
 
         """
         The rest of the pipeline involves: 
@@ -523,7 +441,7 @@ class OnePhotonCulturePipeline(BasePipeline):
         pmd_denoise.to(device)
         curr_demix_results.to(device)
 
-        c_all_frames = expand_traces_to_all_frames(curr_demix_results.c,
+        c_all_frames = expand_traces_to_all_frames(curr_demix_results.temporal_demixed,
                                                    active_frames)
 
         a_rawdata_scale, full_c_estimate_denoised = compute_final_denoised_c_estimates(pmd_denoise,
@@ -536,17 +454,13 @@ class OnePhotonCulturePipeline(BasePipeline):
 
 
 
-        final = os.path.abspath(self.outpath_demixing)
-        if remove_intermediates and os.path.abspath(self.outpath_compression) != final:
-            display("Removing intermediates")
-            if os.path.exists(os.path.abspath(self.outpath_compression)):
-                os.remove(os.path.abspath(self.outpath_compression))
-        curr_demix_results.export(final)
+        curr_demix_results.export(results_path)
+        save_dict({"a": a_rawdata_scale, "c_denoised": full_c_estimate_denoised, "c_raw": c_regressed_on_raw},
+                  filename=results_path, group="RawScaleEstimates", exists_ok=True)
         if remove_intermediates:
-            # in one results file the pmd group only duplicates what the demixing results carry
-            drop_group(final, CompressionArray.__name__)
+            self.drop_compression(results_path)
 
-        return curr_demix_results, a_rawdata_scale, full_c_estimate_denoised, c_regressed_on_raw
+        return Path(results_path).parent
 
 
 

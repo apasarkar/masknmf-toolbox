@@ -238,7 +238,7 @@ class Serializer:
 
         return d
 
-    def export(self, path: str | Path):
+    def export(self, path: str | Path, prefix: str = ""):
         """
         Export to an HDF5 file, as the group named after this class.
         Requires ``h5py`` http://docs.h5py.org/
@@ -246,16 +246,23 @@ class Serializer:
         Args:
             path (str): Full file path. Created if missing; in an existing file the other groups are kept
                 and this class's group is replaced, so one file can hold every stage of a pipeline.
+            prefix (str): Parent group, e.g. "calcium" writes "calcium/<class name>"; empty writes at the root.
         """
 
         d = self._to_dict()
-        save_dict(d, filename=path, group=self.__class__.__name__, exists_ok=True)
+        group = f"{prefix}/{self.__class__.__name__}" if prefix else self.__class__.__name__
+        save_dict(d, filename=path, group=group, exists_ok=True)
 
     @classmethod
-    def from_hdf5(cls, path, **kwargs):
-        """Load result from an hdf5 file. Any additional kwargs are passed to the constructor"""
-        d = load_dict(path, cls.__name__)
+    def from_hdf5(cls, path, prefix: str = "", **kwargs):
+        """Load result from an hdf5 file, from ``<prefix>/<class name>``. Any additional kwargs are passed to the constructor"""
+        d = load_dict(path, f"{prefix}/{cls.__name__}" if prefix else cls.__name__)
         return cls(**d, **kwargs)
+
+
+def results_files(folder: str | Path) -> dict[str, Path]:
+    """The ``results.<name>.hdf5`` files of a run folder keyed by name, e.g. ``{"calcium": <folder>/results.calcium.hdf5}``."""
+    return {p.name.split(".")[1]: p for p in sorted(Path(folder).glob("results.*.hdf5")) if p.name.count(".") == 2}
 
 
 def has_group(filename, group: str) -> bool:
