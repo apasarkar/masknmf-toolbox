@@ -18,7 +18,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                  motion_correct_config: MotionCorrectionConfigs | Literal["skip"] | None = None,
                  compress_config: CompressionConfigs | Literal["skip"] | None = None,
                  spatial_highpass_config: SpatialHighpassConfigs | None = None,
-                 filtered_demixing_config: MultipassDemixingConfigs | None = None,
+                 filtered_demixing_config: MultipassDemixingConfigs | Literal["skip"] | None = None,
                  unfiltered_demixing_config: MultipassDemixingConfigs | None = None,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
@@ -75,7 +75,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                         uses RigidMotionCorrectionConfig defaults. If "skip", skips motion correction entirely.
                     compress_config: Config object specifying parameters for compressing the data.
                         If None is specified, the joint compression + denoising code is run
-                    DemixConfig: Config object specifying parameters for demixing the data
+                    DemixConfig: Config object specifying parameters for demixing the data. With filtered_demixing_config
+                        "skip", the run ends after compression, kept for a later run with compress_config "skip"
                     output_folder: Every stage is written to ``<output_folder>/<timestamp>_two-photon-calcium/results.hdf5``,
                         one hdf5 group per stage. With compress_config "skip", output_folder is instead an existing run
                         folder whose results.hdf5 holds the compression; demixing is written into that same file
@@ -104,6 +105,11 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
             compressed_results = compress_strategy.compress(moco_data)
             compressed_results.export(results_path)
+
+        if isinstance(self.filtered_demixing_config, str):
+            if self.filtered_demixing_config.lower() != "skip":
+                raise ValueError(f"If filtered_demixing_config is a string, it can only be `skip`")
+            return Path(results_path).parent
 
         device = self.torch_device
         display("Running demixing analysis")
