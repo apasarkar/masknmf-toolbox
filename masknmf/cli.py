@@ -493,10 +493,11 @@ def command_run(args: argparse.Namespace) -> None:
     try:
         run_folder = pipeline.run(**kwargs_run)
     except BaseException:
-        # a failed run keeps its folder only when a later run can resume from its compression
+        # a failed run keeps its folder only when one of its results files holds a finished compression
         folder = pipeline.run_folder
-        if folder is not None and not has_stage(
-            filepath_results=str(folder / "results.hdf5"), name_group=group_name_compression()
+        if folder is not None and not any(
+            has_stage(filepath_results=str(filepath), name_group=group_name_compression())
+            for filepath in folder.glob("*.hdf5")
         ):
             shutil.rmtree(folder)
             print(f"removed {folder}", file=sys.stderr)
