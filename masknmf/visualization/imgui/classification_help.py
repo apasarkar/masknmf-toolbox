@@ -1,6 +1,6 @@
 """
-The Classification window's (?) page: the steps, its windows, the backgrounds, what a label does, train and
-classify, the keys and the files, as diagrams and tables. Only imgui_bundle at import:
+The Classification window's (?) page: the steps, how a label is decided, its windows, the backgrounds, what a
+label does, train and classify, the keys and the files, as diagrams and tables. Only imgui_bundle at import:
 ``python classification_help.py`` opens it in a window of its own.
 """
 
@@ -36,7 +36,8 @@ FONT_SIZE = 14
 
 TITLE = "Classification"
 TOOLTIP = (
-    "the steps, the windows, the backgrounds, what a label does, train and classify, the keys, the files"
+    "the steps, how a label is decided, the windows, the backgrounds, what a label does, train and classify, "
+    "the keys, the files"
 )
 STEPS = (
     (fa.ICON_FA_FOLDER_OPEN, "Load", "sessions: results files or a folder"),
@@ -44,6 +45,12 @@ STEPS = (
     (fa.ICON_FA_IMAGE, "View", "backgrounds, the full FOV"),
     (fa.ICON_FA_GRADUATION_CAP, "Train", "every ROI labeled, 2 per class"),
     (fa.ICON_FA_WAND_MAGIC_SPARKLES, "Classify", "new sessions; fix, train again"),
+)
+# the three looks a label rests on
+DECIDE = (
+    (fa.ICON_FA_MAGNIFYING_GLASS_PLUS, "Zoom in", "the ROI over any background"),
+    (fa.ICON_FA_MAGNIFYING_GLASS_MINUS, "Zoom out", "where it sits in the full FOV"),
+    (fa.ICON_FA_FILM, "Over time", "its demixed movie"),
 )
 # the ROI view's layers, each with its key, followed by the operator drawn after it
 PARTS = (("background (b)", TEXT, "+"), ("mask (m)", ACCENT, "=" ), ("ROI view", KEY, ""))
@@ -233,6 +240,46 @@ def table(name: str, rows: tuple) -> None:
     imgui.end_table()
 
 
+def cards(dl, items: tuple) -> None:
+    """A row of numbered cards, an icon over a name and a hint, arrows between, sized five to the width."""
+    em = imgui.get_font_size()
+    gap = 1.4 * em
+    card_w = (WIDTH_EM * em - 4 * gap) / 5
+    card_h = 6.8 * em
+    imgui.push_style_color(imgui.Col_.child_bg, CARD)
+    imgui.push_style_color(imgui.Col_.border, EDGE)
+    imgui.push_style_var(imgui.StyleVar_.child_rounding, 5.0)
+    imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(0.5 * em, 0.6 * em))
+    for i, (icon, name, hint) in enumerate(items):
+        if i:
+            right = imgui.get_item_rect_max()
+            mid = imgui.get_item_rect_min().y + card_h / 2
+            arrow(dl, right.x + 0.25 * em, right.x + gap - 0.25 * em, mid)
+            imgui.same_line(0, gap)
+        imgui.begin_child(
+            f"##{name}",
+            imgui.ImVec2(card_w, card_h),
+            child_flags=imgui.ChildFlags_.borders,
+            window_flags=imgui.WindowFlags_.no_scrollbar,
+        )
+        imgui.push_font(None, 1.8 * em)
+        imgui.set_cursor_pos_x((card_w - imgui.calc_text_size(icon).x) / 2)
+        imgui.text_colored(ACCENT, icon)
+        imgui.pop_font()
+        imgui.dummy(imgui.ImVec2(0, 0.2 * em))
+        label = f"{i + 1}  {name}"
+        imgui.set_cursor_pos_x((card_w - imgui.calc_text_size(label).x) / 2)
+        imgui.text_colored(DIM, f"{i + 1}")
+        imgui.same_line(0, 0.5 * em)
+        imgui.text_colored(KEY, name)
+        imgui.push_text_wrap_pos(card_w - 0.5 * em)
+        imgui.text_colored(DIM, hint)
+        imgui.pop_text_wrap_pos()
+        imgui.end_child()
+    imgui.pop_style_var(2)
+    imgui.pop_style_color(2)
+
+
 def draw_classification_help(is_open: bool) -> bool:
     """The page as a centered window. Returns whether it is still open."""
     if not is_open:
@@ -263,41 +310,23 @@ def draw_classification_help(is_open: bool) -> bool:
     imgui.separator()
     imgui.dummy(imgui.ImVec2(0, 0.5 * em))
 
+    cards(dl, STEPS)
+
+    heading(fa.ICON_FA_SCALE_BALANCED, "Deciding a label")
+    cards(dl, DECIDE)
+    # the label box after the three, on the cards' midline
     gap = 1.4 * em
-    card_w = (w - 4 * gap) / 5
-    card_h = 6.8 * em
-    imgui.push_style_color(imgui.Col_.child_bg, CARD)
-    imgui.push_style_color(imgui.Col_.border, EDGE)
-    imgui.push_style_var(imgui.StyleVar_.child_rounding, 5.0)
-    imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(0.5 * em, 0.6 * em))
-    for i, (icon, name, hint) in enumerate(STEPS):
-        if i:
-            right = imgui.get_item_rect_max()
-            mid = imgui.get_item_rect_min().y + card_h / 2
-            arrow(dl, right.x + 0.25 * em, right.x + gap - 0.25 * em, mid)
-            imgui.same_line(0, gap)
-        imgui.begin_child(
-            f"##step{i}",
-            imgui.ImVec2(card_w, card_h),
-            child_flags=imgui.ChildFlags_.borders,
-            window_flags=imgui.WindowFlags_.no_scrollbar,
-        )
-        imgui.push_font(None, 1.8 * em)
-        imgui.set_cursor_pos_x((card_w - imgui.calc_text_size(icon).x) / 2)
-        imgui.text_colored(ACCENT, icon)
-        imgui.pop_font()
-        imgui.dummy(imgui.ImVec2(0, 0.2 * em))
-        label = f"{i + 1}  {name}"
-        imgui.set_cursor_pos_x((card_w - imgui.calc_text_size(label).x) / 2)
-        imgui.text_colored(DIM, f"{i + 1}")
-        imgui.same_line(0, 0.5 * em)
-        imgui.text_colored(KEY, name)
-        imgui.push_text_wrap_pos(card_w - 0.5 * em)
-        imgui.text_colored(DIM, hint)
-        imgui.pop_text_wrap_pos()
-        imgui.end_child()
-    imgui.pop_style_var(2)
-    imgui.pop_style_color(2)
+    right, mid = imgui.get_item_rect_max(), (imgui.get_item_rect_min().y + imgui.get_item_rect_max().y) / 2
+    arrow(dl, right.x + 0.25 * em, right.x + gap - 0.25 * em, mid)
+    imgui.same_line(0, gap)
+    p = imgui.get_cursor_screen_pos()
+    box(dl, p.x, mid - 0.95 * em, 7 * em, 1.9 * em, "label", KEY, 0.18)
+    imgui.dummy(imgui.ImVec2(7 * em, 2 * (mid - p.y)))
+    imgui.text_colored(
+        DIM,
+        "with these three you decide the label; the more labels the better: the classifier trains with 2 per "
+        "class, but more labels make good results likelier",
+    )
 
     # the Windows heading with the ROI view's layers centered beside it, over the window sketch
     imgui.dummy(imgui.ImVec2(0, 0.7 * em))
