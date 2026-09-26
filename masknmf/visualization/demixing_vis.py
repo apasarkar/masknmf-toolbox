@@ -34,7 +34,7 @@ from masknmf.visualization.imgui import (
     right_aligned_text,
     button_colors,
 )
-from masknmf.visualization.rois import MARKED_COLOR, FootprintSet
+from masknmf.visualization.rois import MARKED_COLOR, SELECTED_ALPHA, FootprintSet
 from masknmf.demixing import CellStats, update_signals, write_curated
 from masknmf.pipelines.configs.demixing_configs import NMFConfig
 
@@ -56,7 +56,7 @@ _CLICK_SLOP = (
 _UNDO_DEPTH = 50  # ctrl+z snapshots kept
 # every grid's captions, so the caption column is one width across the sections and the tabs
 _CAPTIONS = (
-    "masks", "contours", "color by", "traces",
+    "masks", "contours", "sel masks", "sel contours", "color by", "traces",
     "rois", "on disk", "polygon", "side", "run", "options",
     "filter", "in view", "selection", "merge", "view", "stats",
 )
@@ -130,8 +130,9 @@ class SingleSessionDemixingVis:
     Clicking the selected mask, its trace or its table row again deselects it; a pan or drag on a panel
     leaves the selection alone. Esc deselects everything, ctrl+a groups every signal the table shows, and
     ctrl+z undoes the last mark, drawn roi, pixel average or deselect (a Demix empties the undo stack; roi
-    vertex drags are not undone). The selection's contour always shows; the Overlay "contours" checkbox
-    adds every other footprint's.
+    vertex drags are not undone). The Overlay section shows masks and contours in two pairs, each a checkbox
+    and an opacity: "masks" / "contours" over every footprint, "sel masks" / "sel contours" over the selection
+    and its group, which take their signal's mask color so a contour matches its trace.
     With "pixel traces" on (Curation tab checkbox or the p key, off by default), clicking an empty pixel adds the compressed movie's 5x5
     average there to the plot as if it were a grouped signal, and lists it at the top of the Signals table,
     marked. Pixel averages are diagnostic only: Demix and export ignore them, Delete drops them.
@@ -147,11 +148,13 @@ class SingleSessionDemixingVis:
     Delete (or the Signals tab's delete button) marks it like any other selection. Nothing is removed until the
     next Demix. line-select is a placeholder, not implemented yet.
 
-    ``raw`` (a movie, or a .tif path) shows the raw movie in place of the signals panel and ``shifts`` (an
-    array, or a motion correction hdf5 path) adds the registration shifts as a panel above the traces
-    (piecewise rigid: the largest block shift per frame). With ``results_path`` set, a lone .tif beside the
-    results, and the registration shifts from the results file itself or from a motion_correction.hdf5 beside
-    it, are picked up when their frames match the results; given ones must match.
+    ``raw`` (a movie, or a .tif path) adds a raw movie panel and ``shifts`` (an array, or a motion correction
+    hdf5 path) adds the registration shifts as a panel above the traces (piecewise rigid: the largest block
+    shift per frame). With ``results_path`` set, a lone .tif beside the results, and the registration shifts
+    from the results file itself or from a motion_correction.hdf5 beside it, are picked up when their frames
+    match the results; given ones must match. The panels are what the results hold, three to a row: the raw
+    movie when there is one, the compressed movie, then with demixed signals the signals, background (when the
+    demixer fit one), residual and colorful signals, and last the summary image.
 
     The Signals table always carries the results' own stats (:meth:`CellStats.from_results`: mean, std, snr
     and skew of each demixed trace; fit, resid and bkgd from the roi averages the results hold), hidden until
@@ -255,7 +258,7 @@ class SingleSessionDemixingVis:
             for candidate in (Path(self._results_path), folder / "motion_correction.hdf5"):
                 if candidate.is_file():
                     with h5py.File(candidate, "r") as f:
-                        found_shifts = "PiecewiseRigidRegistrationArray" in f or "RigidRegistrationArray" in f
+                        found_shifts = "PiecewiseRigidRegistrationArray" in f or "RigidRegistrationArray" in f or "GradientRegistrationArray" in f
                     if found_shifts:
                         shifts = candidate
                         break
@@ -267,6 +270,7 @@ class SingleSessionDemixingVis:
                     for g in (
                         "PiecewiseRigidRegistrationArray",
                         "RigidRegistrationArray",
+                        "GradientRegistrationArray",
                     )
                     if g in f
                 ]
@@ -318,23 +322,13 @@ class SingleSessionDemixingVis:
             self._shape[0], frame_timings, ref_range
         )
 
-        # TODO: make these a variable at the top of the file when the names for these visualizations are set
-        # raw takes the place of the signals panel, so the grid stays three by two
-        self._video_panels = (
-            ("raw", "compressed+denoised")
-            if self._raw is not None
-            else ("compressed+denoised", "signals")
-        ) + (
-            "background",
-            "residual",
-            "colorful_signals",
-            "summary img",
-        )
-
         self._bind_arrays()
 
+        panels = {name: array for name, array in self._panel_arrays().items() if array is not None}
+        self._video_panels = (*panels, "summary img")
+        rows = (len(self._video_panels) + 2) // 3
         self._video_extents = {
-            name: ((i % 3) / 3, (i % 3 + 1) / 3, (i // 3) / 2, (i // 3) / 2 + 0.5)
+            name: ((i % 3) / 3, (i % 3 + 1) / 3, (i // 3) / rows, (i // 3 + 1) / rows)
             for i, name in enumerate(self._video_panels)
         }
 
@@ -351,76 +345,17 @@ class SingleSessionDemixingVis:
         self._reference_index = self._ndw_fov.indices
         self._panel_graphics = OrderedDict()
 
-        movie_dims = ["time", "m", "n"]
-        movie_display_dims = ["m", "n"]
-        movie_index_mapping = {"time": frame_timings}
-        self._pmd_graphic = self._ndw_fov["compressed+denoised"].add_nd_image(
-            self._pmd_array,
-            movie_dims,
-            movie_display_dims,
-            slider_maps=movie_index_mapping.copy(),
-            name="compressed+denoised",
-        )
-        self._panel_graphics["compressed+denoised"] = self._pmd_graphic
-
-        self._raw_graphic = None
-        if self._raw is not None:
-            self._raw_graphic = self._ndw_fov["raw"].add_nd_image(
-                self._raw,
-                movie_dims,
-                movie_display_dims,
-                slider_maps=movie_index_mapping.copy(),
-                name="raw",
+        for name, array in panels.items():
+            # colorful signals carry a color axis
+            color = ["c"] if len(array.shape) == 4 else []
+            self._panel_graphics[name] = self._ndw_fov[name].add_nd_image(
+                array,
+                ["time", "m", "n", *color],
+                ["m", "n", *color],
+                slider_maps={"time": frame_timings},
+                name=name,
+                **({"rgb_dim": "c"} if color else {}),
             )
-            self._panel_graphics["raw"] = self._raw_graphic
-
-        self._ac_graphic = None
-        if self._ac_array is not None:
-            if "signals" in self._video_panels:
-                self._ac_graphic = self._ndw_fov["signals"].add_nd_image(
-                    self._ac_array,
-                    movie_dims,
-                    movie_display_dims,
-                    slider_maps=movie_index_mapping.copy(),
-                    name="signals",
-                )
-                self._panel_graphics["signals"] = self._ac_graphic
-
-            self._background_graphic = self._ndw_fov["background"].add_nd_image(
-                self._fluctuating_background_array,
-                movie_dims,
-                movie_display_dims,
-                slider_maps=movie_index_mapping.copy(),
-                name="background",
-            )
-
-            self._residual_graphic = self._ndw_fov["residual"].add_nd_image(
-                self._residual_array,
-                movie_dims,
-                movie_display_dims,
-                slider_maps=movie_index_mapping.copy(),
-                name="residual",
-            )
-
-            movie_dims_rgb = ["time", "m", "n", "c"]
-            movie_display_dims_rgb = ["m", "n", "c"]
-            self._colorful_signal_graphic = self._ndw_fov[
-                "colorful_signals"
-            ].add_nd_image(
-                self._colorful_ac_array,
-                movie_dims_rgb,
-                movie_display_dims_rgb,
-                slider_maps=movie_index_mapping.copy(),
-                rgb_dim="c",
-                name="colorful_signals",
-            )
-            self._panel_graphics["background"] = self._background_graphic
-            self._panel_graphics["residual"] = self._residual_graphic
-            self._panel_graphics["colorful_signals"] = self._colorful_signal_graphic
-        else:
-            self._background_graphic = None
-            self._residual_graphic = None
-            self._colorful_signal_graphic = None
 
         self._own_summary = summary_img is None and self._has_ac
         if summary_img is not None:
@@ -465,7 +400,8 @@ class SingleSessionDemixingVis:
             set()
         )  # signal indices "Delete" has marked; removed on the next "Demix"
         self._poly_hits = []  # the signals the poly-select polygon holds
-        self._show_traces = False  # plot the selection's traces; off, selecting only highlights
+        self._show_traces = True  # plot the selection's traces; off, selecting only highlights
+        self._roi_radius = 1  # a double-click splits the square this far around the pixel into its sources
         self._undo = []  # curation snapshots for ctrl+z, newest last
         self._group: list = []  # signals selected together; their traces share the plot
         self._order = None  # RoiOrder over the signals, built with the footprints
@@ -474,6 +410,8 @@ class SingleSessionDemixingVis:
         self._keybinds_open = False
         self._show_masks = show_masks
         self._mask_opacity = mask_opacity
+        self._show_selected_masks = True
+        self._selected_mask_opacity = SELECTED_ALPHA
         self._footprints = None
         self._mask_overlays = {}
         if self._has_ac:
@@ -519,6 +457,8 @@ class SingleSessionDemixingVis:
         self._image_selector = None
         self._show_contours = show_contours
         self._contour_opacity = 0.9
+        self._show_selected_contours = True
+        self._selected_contour_opacity = 0.7
         if self._ac_array is not None:
             self._make_selectors()
 
@@ -574,13 +514,16 @@ class SingleSessionDemixingVis:
             self._footprints.rgba(
                 tuple(self._shape[1:3]),
                 self._mask_opacity,
-                self._active_component,
+                self._active_component if self._show_selected_masks else None,
                 self._marked,
                 {
                     k: rgb
                     for k, rgb in self._group_colors().items()
                     if isinstance(k, int)
-                },
+                }
+                if self._show_selected_masks
+                else {},
+                self._selected_mask_opacity,
             )
             if self._show_masks
             else None
@@ -599,12 +542,26 @@ class SingleSessionDemixingVis:
             self._residual_array = self.demixing_results.residual_array
             self._colorful_ac_array = self.demixing_results.colorful_signals_array
             self._ac_array = self.demixing_results.signals_array
+            # an all-zero background term means the demixer never fit one
+            self._has_background = bool(torch.count_nonzero(self.demixing_results.factorized_background_term1))
         else:
             self._pmd_array = self.demixing_results
             self._fluctuating_background_array = None
             self._residual_array = None
             self._colorful_ac_array = None
             self._ac_array = None
+            self._has_background = False
+
+    def _panel_arrays(self) -> dict:
+        """The movie panels in grid order, name to the array shown; None is a panel the results cannot fill."""
+        return {
+            "raw": self._raw,
+            "compressed+denoised": self._pmd_array,
+            "signals": self._ac_array,
+            "background": self._fluctuating_background_array if self._has_background else None,
+            "residual": self._residual_array,
+            "colorful_signals": self._colorful_ac_array,
+        }
 
     def _bind_click_handlers(self):
         """Re-attach the click handlers to every video panel: NDGraphic.data= replaces the graphic instance."""
@@ -613,6 +570,61 @@ class SingleSessionDemixingVis:
                 partial(self._pointer_down, name), "pointer_down"
             )
             graphic.graphic.add_event_handler(self._click_update, "click")
+            graphic.graphic.add_event_handler(self._source_click, "double_click")
+
+    def _source_click(self, ev: pygfx.PointerEvent):
+        """
+        emulate click_update from https://github.com/apasarkar/masknmf-toolbox/blob/f5c22fa01d6a1c87ab120592c0ec7cd5a1a01567/masknmf/visualization/demixing_vis.py#L328
+        split the compressed average over the square around a double-clicked pixel into its sources.
+        """
+
+        if self._ac_array is None or not self._show_traces or self._drawing():
+            return
+        num_frames, height, width = self._shape
+        col, row = ev.pick_info["index"]
+
+        col_start, col_stop = (
+            max(0, col - self._roi_radius),
+            min(width, col + self._roi_radius + 1),
+        )
+        row_start, row_stop = (
+            max(0, row - self._roi_radius),
+            min(height, row + self._roi_radius + 1),
+        )
+
+        pmd_trace = np.mean(
+            self._pmd_array[:, row_start:row_stop, col_start:col_stop], axis=(1, 2)
+        )
+        residual_trace = np.mean(
+            self._residual_array[:, row_start:row_stop, col_start:col_stop], axis=(1, 2)
+        )
+        background_trace = np.mean(
+            self._fluctuating_background_array[
+                :, row_start:row_stop, col_start:col_stop
+            ],
+            axis=(1, 2),
+        )
+
+        separated_ac_signals, separated_colors, unique_signals = (
+            extract_per_trace_roi_averages(
+                self._colorful_ac_array,
+                slice(row_start, row_stop),
+                slice(col_start, col_stop),
+            )
+        )
+        self._selected_signals = None
+        lines = [("compressed", pmd_trace, _BASE_LINE_COLORS[0])]
+        if separated_ac_signals is not None:
+            lines += [
+                (f"signal {k}", trace, tuple(float(v) for v in rgb))
+                for k, trace, rgb in zip(
+                    unique_signals, separated_ac_signals, separated_colors
+                )
+            ]
+        lines.append(("background", background_trace, _BASE_LINE_COLORS[2]))
+        lines.append(("residual", residual_trace, _BASE_LINE_COLORS[3]))
+        self._traces.set("traces", lines)
+        self._status = f"sources over the {row_stop - row_start}x{col_stop - col_start} square at ({row}, {col})"
 
     def _pointer_down(self, name: str, ev: pygfx.PointerEvent):
         self._press = (ev.x, ev.y)
@@ -623,33 +635,26 @@ class SingleSessionDemixingVis:
 
     def _set_gray_cmaps(self):
         """NDGraphic.data= replaces the graphic instance, dropping its cmap too."""
-        for g in self._panel_graphics.values():
-            if g is not self._colorful_signal_graphic:
+        arrays = self._panel_arrays()
+        for name, g in self._panel_graphics.items():
+            array = arrays.get(name)
+            if array is None or len(array.shape) != 4:
                 g.graphic.cmap = "gray"
 
     def _video_graphics(self):
         """The NDImage wrapper for every video panel, in ``_video_panels`` order."""
-        return (
-            self._pmd_graphic,
-            self._ac_graphic,
-            self._background_graphic,
-            self._residual_graphic,
-            self._colorful_signal_graphic,
-            self._summary_image,
-            self._raw_graphic,
-        )
+        return tuple(self._panel_graphics.values())
 
     def _make_selectors(self):
         """(Re)build the footprint selectors over the current signals."""
         show = self._show_contours
         # the selected and grouped components' contours; the roi panel's "contours" adds every footprint's
         self._image_selector = fpl.ImageHighlightSelector(
-            lut="tab10",
             lut_wrap="repeat",
             selection_options={"pixels": self._ac_array.contours},
             options_color="w",
             options_alpha=self._contour_opacity,
-            alpha=0.7,
+            alpha=self._selected_contour_opacity if self._show_selected_contours else 0.0,
         )
         self._set_contours(show)
 
@@ -668,15 +673,10 @@ class SingleSessionDemixingVis:
         self._selected_signals = None
         self._clear_traces()
         self._pixels.clear()
-        self._pmd_graphic.data = self._pmd_array
-        if self._ac_graphic is not None:
-            self._ac_graphic.data = self._ac_array
-        self._background_graphic.data = self._fluctuating_background_array
-        self._residual_graphic.data = self._residual_array
-        self._colorful_signal_graphic.data = self._colorful_ac_array
-        if self._raw_graphic is not None:
-            # same movie, new graphic instance: keeps the re-bound click handlers from doubling up
-            self._raw_graphic.data = self._raw
+        # same movies, new graphic instances: keeps the re-bound click handlers from doubling up
+        for name, array in self._panel_arrays().items():
+            if name in self._panel_graphics and array is not None:
+                self._panel_graphics[name].data = array
         if self._own_summary:
             self._summary_image.data = (
                 results.global_residual_correlation_image.cpu().numpy()
@@ -890,15 +890,34 @@ class SingleSessionDemixingVis:
         return picks
 
     def _sync_highlight(self):
-        """The contour selector and the mask overlay both show the group plus the selection."""
+        """The contour selector and the mask overlay both show the group plus the selection, in the same colors."""
         if self._image_selector is not None:
-            self._image_selector.selection = self._highlighted()
+            picks = self._highlighted()
+            grouped = self._group_colors()
+            if picks:
+                # the contour of a highlighted signal takes its mask's color, so it matches its trace too
+                self._image_selector.lut = np.array(
+                    [
+                        (
+                            *(
+                                MARKED_COLOR
+                                if k in self._marked
+                                else grouped.get(k, self._footprints.color(k))
+                            ),
+                            1.0,
+                        )
+                        for k in picks
+                    ],
+                    np.float32,
+                )
+            self._image_selector.selection = picks
         self._refresh_masks()
 
     def _update_traces(self):
         """
         One signal: its compressed / signal / background / residual roi averages. A group, or any pixel
-        average or drawn roi: every member's compressed average, colored like its mask or table row.
+        average or drawn roi: one line per member, colored like its mask or table row - a signal's
+        demixed trace, a pixel average or drawn roi's compressed average.
         Nothing unless "show selected traces" is on.
         """
         if not self._show_traces:
@@ -926,9 +945,10 @@ class SingleSessionDemixingVis:
                         )
                     )
                 else:
-                    lines.append(
-                        (f"signal {k}", results.compression_array_roi_averages[k].cpu().numpy(), rgb)
-                    )
+                    # lam to scale
+                    _y, _x, lam = self._footprints.footprints[k]
+                    trace = float(lam.mean()) * results.temporal_demixed[:, k]
+                    lines.append((f"signal {k}", trace.cpu().numpy(), rgb))
                 self._selected_signals.append(k)
         elif self._active_component is not None:
             k = self._active_component
@@ -1079,7 +1099,7 @@ class SingleSessionDemixingVis:
             self._select_component(self._order.current)
 
     def _set_contours(self, show: bool):
-        """The selection's contour is always drawn; ``show`` adds every other footprint's at the contour opacity."""
+        """``show`` draws every other footprint's contour at the contour opacity; the selection's has its own pair."""
         self._show_contours = show
         if self._image_selector is None:
             return
@@ -1495,7 +1515,7 @@ class SingleSessionDemixingVis:
             return f"signal {self._active_component} selected{marked}"
         if self._active_roi in self._rois:
             return f"roi {list(self._rois).index(self._active_roi)} selected"
-        return "double-click a mask or roi to see its trace"
+        return "click a mask or roi to see its trace; double-click any pixel to split it into its sources"
 
     def _draw_side_panel(self):
         """Docked at "right" (the NDWidget owns "bottom"): the roi tools and the signal table as tabs."""
@@ -1696,27 +1716,52 @@ class SingleSessionDemixingVis:
                 self._show_masks = show
                 self._refresh_masks()
             g.cell(0)
-            imgui.set_next_item_width(g.span)
+            imgui.set_next_item_width(g.w)
             changed, self._mask_opacity = imgui.slider_float(
-                "##mask-opacity", self._mask_opacity, 0.05, 1.0, "opacity %.2f"
+                "##mask-opacity", self._mask_opacity, 0.05, 1.0, "%.2f"
             )
             if changed and self._show_masks:
                 self._refresh_masks()
+            help_mark("every footprint's mask at this opacity")
+            changed, show = imgui.checkbox("sel masks", self._show_selected_masks)
+            if changed:
+                self._show_selected_masks = show
+                self._refresh_masks()
+            g.cell(0)
+            imgui.set_next_item_width(g.w)
+            changed, self._selected_mask_opacity = imgui.slider_float(
+                "##selected-mask-opacity", self._selected_mask_opacity, 0.05, 1.0, "%.2f"
+            )
+            if changed and self._show_selected_masks:
+                self._refresh_masks()
+            help_mark("the selected and grouped masks, filled at this opacity with a white rim")
             changed, show = imgui.checkbox("contours", self._show_contours)
             if changed:
                 self._set_contours(show)
             g.cell(0)
-            imgui.set_next_item_width(g.span)
+            imgui.set_next_item_width(g.w)
             changed, self._contour_opacity = imgui.slider_float(
-                "##contour-opacity", self._contour_opacity, 0.05, 1.0, "opacity %.2f"
+                "##contour-opacity", self._contour_opacity, 0.05, 1.0, "%.2f"
             )
             if changed and self._show_contours:
                 self._image_selector.options_alpha = self._contour_opacity
-            help_mark("every footprint's contour at this opacity; the selection's contour always shows")
+            help_mark("every other footprint's contour at this opacity")
+            changed, show = imgui.checkbox("sel contours", self._show_selected_contours)
+            if changed:
+                self._show_selected_contours = show
+                self._image_selector.alpha = self._selected_contour_opacity if show else 0.0
+            g.cell(0)
+            imgui.set_next_item_width(g.w)
+            changed, self._selected_contour_opacity = imgui.slider_float(
+                "##selected-contour-opacity", self._selected_contour_opacity, 0.05, 1.0, "%.2f"
+            )
+            if changed and self._show_selected_contours:
+                self._image_selector.alpha = self._selected_contour_opacity
+            help_mark("the selected and grouped contours, in their mask's color at this opacity")
         if self._order is not None:
             g.row("color by")
             names = ["signal id", *[n for n in self._order.columns if n != "del"]]
-            imgui.set_next_item_width(g.span)
+            imgui.set_next_item_width(g.w)
             changed, index = imgui.combo("##color_by", names.index(self._color_by) if self._color_by in names else 0, names)
             if changed:
                 self._color_by = names[index]
@@ -1737,8 +1782,9 @@ class SingleSessionDemixingVis:
         if changed:
             self._update_traces()
         help_mark(
-            "plot whatever is selected: a signal's four averages, or one compressed average per grouped "
-            "signal, pixel average and drawn roi. off, selecting only highlights, however big the selection"
+            "plot whatever is selected: a signal's four averages, or one line per group member - a "
+            "grouped signal's demixed trace, a pixel average's or drawn roi's compressed average. "
+            "off, selecting only highlights, however big the selection"
         )
 
         section("ROIS")
@@ -1919,6 +1965,62 @@ class SingleSessionDemixingVis:
 
     def close(self):
         self._ndw_fov.close()
+
+
+def extract_per_trace_roi_averages(
+    colorful_ac_array: masknmf.ColorfulSignalsArray, rowslice: slice, colslice: slice
+):
+    """
+
+    Args:
+        colorful_ac_array (masknmf.ColorfulSignalsArray): The signal array that contains the factorized signals
+        rowslice (slice): rows of the region
+        colslice (slice): columns of the region
+    """
+    device = colorful_ac_array.device
+    num_frames, height, width, _ = colorful_ac_array.shape
+    a = colorful_ac_array.spatial_demixed.coalesce()  # Shape (num_pixels, num_signals)
+    c = colorful_ac_array.temporal_demixed  # Shape (num_frames, num_signals)
+
+    pixel_space = (
+        torch.arange(height * width, device=device).reshape(height, width).long()
+    )
+    good_row_values = pixel_space[rowslice, colslice].flatten()
+    num_pixels = good_row_values.shape[0]
+
+    row, col = a.indices()
+    values = a.values()
+
+    valid_indices = torch.isin(row, good_row_values)
+    if torch.count_nonzero(valid_indices) == 0:
+        return None, None, None
+    else:
+        valid_columns = col[valid_indices]
+        unique_signals = torch.unique(valid_columns)
+
+        a_subset = torch.index_select(a, 1, unique_signals).coalesce()
+        filtered_rows, filtered_col = a_subset.indices()
+        filtered_values = a_subset.values()
+
+        valid_indices = torch.isin(filtered_rows, good_row_values)
+        filtered_rows = filtered_rows[valid_indices]
+        filtered_col = filtered_col[valid_indices]
+        filtered_values = filtered_values[valid_indices]
+
+        reduce_tensor = torch.zeros(a_subset.shape[1], device=device)
+        reduce_tensor.scatter_reduce_(0, filtered_col, filtered_values, reduce="sum")
+        reduce_tensor = reduce_tensor / num_pixels
+
+        weighted_signals = (
+            reduce_tensor[None, :] * c[:, unique_signals]
+        )  # Shape (num_frames, neural_signals)
+        colors = colorful_ac_array.colors[unique_signals, :]  # (neural_signals, 3)
+
+        return (
+            weighted_signals.T.cpu().numpy(),
+            colors.cpu().numpy(),
+            unique_signals.cpu().numpy(),
+        )
 
 
 def visualize_superpixels_peaks(init_results: masknmf.InitializationResults):

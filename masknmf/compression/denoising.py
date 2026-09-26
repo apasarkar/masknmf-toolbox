@@ -258,16 +258,17 @@ class MultivariateTimeSeriesDataset(torch.utils.data.Dataset):
 
 
         self.num_series = self.data.shape[0]
-        self.input_size = input_size
+        # a series shorter than input_size is one window
+        self.input_size = min(input_size, self.data.shape[1])
         self.overlap = overlap
-        self.stride = input_size - overlap  # Effective step size for sliding windows
+        self.stride = max(1, self.input_size - overlap)  # Effective step size for sliding windows
         self.num_windows = (
-                                   data.shape[1] - input_size
+                                   data.shape[1] - self.input_size
                            ) // self.stride + 1  # Number of windows per time series
         self.provide_indices = provide_indices
 
         # Check if we need to add a final window at the end
-        if (data.shape[1] - input_size) % self.stride != 0:
+        if (data.shape[1] - self.input_size) % self.stride != 0:
             self.num_windows += 1
 
     def __len__(self):

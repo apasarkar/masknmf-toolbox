@@ -48,23 +48,26 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
         including empty selections.
         """
 
-    def export(self, path: str | Path):
+    def export(self, path: str | Path, prefix: str = ""):
         d_array = self._to_dict()
         d_strategy = self.strategy._to_dict()
-        save_dict(d_array, filename=path, exists_ok=True, group=self.__class__.__name__)
-        save_dict(d_strategy, filename=path, exists_ok=True, group=self._strategy_cls.__name__)
+        prefix = f"{prefix}/" if prefix else ""
+        save_dict(d_array, filename=path, exists_ok=True, group=prefix + self.__class__.__name__)
+        save_dict(d_strategy, filename=path, exists_ok=True, group=prefix + self._strategy_cls.__name__)
 
     @classmethod
     def from_hdf5(cls,
                   path,
                   input_movie: ArrayLike,
+                  prefix: str = "",
                   **kwargs):
         if cls._strategy_cls is None:
             raise NotImplementedError(
                 f"{cls.__name__} must set `_strategy_cls` to enable from_hdf5"
             )
-        strat = cls._strategy_cls(**load_dict(path, cls._strategy_cls.__name__))
-        reg_arr_dict = load_dict(path, cls.__name__)
+        prefix = f"{prefix}/" if prefix else ""
+        strat = cls._strategy_cls(**load_dict(path, prefix + cls._strategy_cls.__name__))
+        reg_arr_dict = load_dict(path, prefix + cls.__name__)
         return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict, **kwargs)
 
 

@@ -20,3 +20,10 @@ class PiecewiseRigidMotionCorrectionConfig:
     pixel_weighting: Optional[np.ndarray] = None
     template: Optional[np.ndarray] = None
 
+@dataclass
+class GradientMotionCorrectionConfig:
+    num_frames_template: int = 300
+
+# every config a pipeline's motion correction step can take; a pipeline annotating its argument with this alias offers any config added here
+MotionCorrectionConfigs = RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig
+

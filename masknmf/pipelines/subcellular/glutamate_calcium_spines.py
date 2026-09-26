@@ -4,46 +4,21 @@ from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
 from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.utils import display
-from masknmf.demixing import NoSignalsDetectedError, DemixingError
 
 from masknmf.compression.preprocessing import MaximinSplineDetrend
 
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
-from masknmf.pipelines.configs.demixing_configs import SuperpixelInitConfig, SinglepassDemixingConfig, NMFConfig
-from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig
+from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig, MultipassDemixingConfigs
 from pathlib import Path
-from masknmf.utils import torch_select_device
 from typing import *
 import numpy as np
 import os
 from numbers import Integral
 import torch
 import cv2
-from datetime import datetime
-
-DEFAULT_MOTION_CORRECTION_CONFIG = RigidMotionCorrectionConfig(max_shifts=(40, 40))
-DEFAULT_COMPRESSION_CONFIG = CompressDenoiseConfig(block_sizes=(10, 10),
-                                                   max_components=20,
-                                                   sim_conf=5,
-                                                   spatial_avg_factor=1,
-                                                   temporal_avg_factor=10,
-                                                   num_epochs=10)
-
-DEFAULT_SPINE_SUPERPIXEL_CONFIG = SuperpixelInitConfig(residual_threshold=0.1,
-                                                       sign="positive")
-DEFAULT_SPINE_NMF_CONFIG = NMFConfig(maxiter=40,
-                                     support_threshold=np.linspace(0.95, 0.7, 40).tolist(),
-                                     ring_model_start_pt=41,
-                                     min_brightness=0.0,
-                                     merge_threshold=0.7,
-                                     merge_overlap_threshold=0.6,
-                                     update_frequency=4,
-                                     c_nonneg=True,
-                                     denoise=False,
-                                     plot_en=False,
-                                     reassign_background=False)
+import h5py
 
 NMF_JUST_HALS = {'maxiter': 40,
                 'deletion_threshold': 0.2,
@@ -64,122 +39,43 @@ def get_std_based_mask(stack):
     mask = otsu_threshold(std_img)
     return mask
 
-def run_singlepass_demixing(demixing_obj: masknmf.SignalDemixer,
-                            singlepass_config: SinglepassDemixingConfig) -> None | masknmf.SignalDemixer:
-    init_config = singlepass_config.InitConfig
-    nmf_config = singlepass_config.NMFConfig
-    try:
-        demixing_obj.initialize_signals(**asdict(init_config))
-    except NoSignalsDetectedError:
-        return None
-    else:
-        demixing_obj.demix(**asdict(nmf_config))
-        return demixing_obj
-
 class GlutamateCalciumSpinePipeline(BasePipeline):
 
     def __init__(self,
                  output_folder: str | Path | None = None,
                  motion_correct_config: RigidMotionCorrectionConfig | None = None,
                  compress_config: CompressDenoiseConfig | None = None,
-                 demixing_config: MultipassDemixingConfig | None = None,
+                 demixing_config: MultipassDemixingConfigs | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"):
+        super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         motion_correct_config=motion_correct_config, compress_config=compress_config,
+                         demixing_config=demixing_config)
 
-        if output_folder is None:
-            self._output_folder = None
-        else:
-            output_folder = Path(output_folder).expanduser().resolve()
-            if output_folder.exists() and not output_folder.is_dir():
-                raise NotADirectoryError(
-                    f"output_folder exists and is not a directory: {output_folder}"
-                )
-            self._output_folder = output_folder
-
-        self.motion_correct_config = motion_correct_config
-        self.compress_config = compress_config
-        self.demixing_config = demixing_config
-        self._frame_batch_size = frame_batch_size
-        self._device = device
-
-    @property
-    def motion_correct_config(self) -> RigidMotionCorrectionConfig | None:
-        return self._motion_correct_config
-
-    @motion_correct_config.setter
-    def motion_correct_config(self, updated_config: RigidMotionCorrectionConfig | None):
-        if updated_config is None:
-            self._motion_correct_config = DEFAULT_MOTION_CORRECTION_CONFIG
-        else:
-            self._motion_correct_config = updated_config
-
-    @property
-    def compress_config(self) -> CompressConfig | CompressDenoiseConfig | None:
-        return self._compress_config
-
-    @compress_config.setter
-    def compress_config(self, updated_config: CompressDenoiseConfig | None):
-        if updated_config is None:
-            self._compress_config = DEFAULT_COMPRESSION_CONFIG
-        else:
-            self._compress_config = updated_config
-
-    @property
-    def demixing_config(self) -> MultipassDemixingConfig | None:
-        return self._demixing_config
-
-    @demixing_config.setter
-    def demixing_config(self, updated_config: MultipassDemixingConfig | None):
-        if updated_config is None:
-            conf_list = []
-            curr_demix_conf = SinglepassDemixingConfig(DEFAULT_SPINE_SUPERPIXEL_CONFIG, DEFAULT_SPINE_NMF_CONFIG)
-            for _ in range(2):
-                conf_list.append(curr_demix_conf)
-            self._demixing_config = MultipassDemixingConfig(conf_list)
-        else:
-            if len(updated_config.DemixingConfigs) < 1:
-                raise ValueError("Must have sufficient configs for at least one pass of NMF in demixing configs")
-            self._demixing_config = updated_config
-
-    @property
-    def output_folder(self) -> Path | None:
-        return self._output_folder
-
-    @property
-    def frame_batch_size(self) -> int:
-        return self._frame_batch_size
-
-    @property
-    def device(self) -> Literal["auto", "cuda", "cpu"]:
-        return self._device
-
-    @property
-    def config(self):
-        return {'motion_correct_config': self.motion_correct_config,
-                'compress_config': self.compress_config,
-                'demixing_config': self.demixing_config,
-                'frame_batch_size': self.frame_batch_size,
-                'device': self.device}
-
-    def create_run_folder(self) -> Path:
-        base = Path.cwd() if self._output_folder is None else self._output_folder
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        candidate = base / f"{stamp}_glutamate_calcium_spine_results"
-        suffix = 0
-        while True:
-            try:
-                candidate.mkdir(parents=True, exist_ok=False)
-                break
-            except FileExistsError:
-                suffix += 1
-                candidate = base / f"{stamp}_glutamate_calcium_spine_results_{suffix}"
-        return candidate
-
+    @classmethod
+    def default_configs(cls) -> dict:
+        """
+        Rigid motion correction allowing large shifts, compression with denoising in small blocks over temporally
+        averaged frames, and two positive-signed demixing passes tuned for spines.
+        """
+        passes = []
+        for _ in range(2):
+            init_config = SuperpixelInitConfig(residual_threshold=0.1, sign="positive")
+            # ring_model_start_pt past maxiter keeps the ring model off
+            nmf_config = NMFConfig(support_threshold=(0.95, 0.7),
+                                   ring_model_start_pt=41,
+                                   min_brightness=0.0,
+                                   merge_threshold=0.7,
+                                   reassign_background=False)
+            passes.append(SinglepassDemixingConfig(init_config, nmf_config))
+        return {'motion_correct_config': RigidMotionCorrectionConfig(max_shifts=(40, 40)),
+                'compress_config': CompressDenoiseConfig(block_sizes=(10, 10), temporal_avg_factor=10),
+                'demixing_config': MultipassDemixingConfig(passes)}
 
     def run(self,
             glutamate_channel: np.ndarray | ArrayLike | None,
             calcium_channel: np.ndarray | ArrayLike | None,
-            exclude_initial_frames: int = 200):
+            exclude_initial_frames: int = 200) -> Path:
         """
         This routine runs the pipeline for processing single-plane glutamate and calcium imaging videos.
         It can analyze joint calcium/glutamate recordings or just process a single channel of either glutamate or calcium data
@@ -191,8 +87,12 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             glutamate_channel (np.ndarray | ArrayLike | None):
             calcium_channel (np.ndarray | ArrayLike | None):
         """
-        device = torch_select_device(self.device)
-        final_output_folder = self.create_run_folder()
+        device = self.torch_device
+        self.run_config = {"exclude_initial_frames": exclude_initial_frames}
+        run_folder = self.create_run_folder()
+        glu_path = os.path.join(run_folder, "results.glutamate.hdf5")
+        ca_path = os.path.join(run_folder, "results.calcium.hdf5")
+        display(f"Writing results to {run_folder}")
         if not isinstance(exclude_initial_frames, Integral):
             raise ValueError("exclude_initial_frames should be a positive integer, 200 is likely to be a good default.")
         else:
@@ -220,8 +120,11 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             reference_input = calcium
         else:
             reference_input = glu
-        np.save(os.path.join(final_output_folder, "retained_frames.npy"),
-                np.arange(exclude_initial_frames, exclude_initial_frames + reference_input.shape[0]))
+        retained_frames = np.arange(exclude_initial_frames, exclude_initial_frames + reference_input.shape[0])
+        for channel, path in ((glu, glu_path), (calcium, ca_path)):
+            if channel is not None:
+                with h5py.File(path, "w") as f:
+                    f["retained_frames"] = retained_frames
 
         pre_moco_strategy = masknmf.CompressStrategy(block_sizes=self.compress_config.block_sizes,
                                                max_components=self.compress_config.max_components,
@@ -242,7 +145,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         if glu is not None:
             glu_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
                                                   target_movie=glu)
-            glu_moco_array.export(os.path.join(final_output_folder, "glutamate_moco.hdf5"))
+            glu_moco_array.export(glu_path)
             glu_moco_array_dense = glu_moco_array[:].cpu().numpy() #Loads it all into RAM
         else:
             glu_moco_array = None
@@ -251,7 +154,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         if calcium is not None:
             calcium_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
                                                       target_movie=calcium)
-            calcium_moco_array.export(os.path.join(final_output_folder, "calcium_moco.hdf5"))
+            calcium_moco_array.export(ca_path)
             calcium_moco_array_dense = calcium_moco_array[:].cpu().numpy() #Loads it all into RAM
         else:
             calcium_moco_array = None
@@ -272,17 +175,17 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         else:
             calcium_video = None
 
-        compress_strat = masknmf.CompressDenoiseStrategy(**asdict(self.compress_config), device=device)
+        compress_strat = self.compress_strategy(self.compress_config)
 
         if glu_video is not None:
             pmd_glu = compress_strat.compress(glu_video)
-            pmd_glu.export(os.path.join(final_output_folder, "pmd_glutamate.hdf5"))
+            pmd_glu.export(glu_path)
         else:
             pmd_glu = None
 
         if calcium_video is not None:
             pmd_ca = compress_strat.compress(calcium_video)
-            pmd_ca.export(os.path.join(final_output_folder, "pmd_calcium.hdf5"))
+            pmd_ca.export(ca_path)
         else:
             pmd_ca = None
 
@@ -293,20 +196,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 pmd_glu,
                 device=device)
 
-            for k in range(len(self.demixing_config.DemixingConfigs)):
-                glu_pmd_demixer = run_singlepass_demixing(glu_pmd_demixer,
-                                                           self.demixing_config.DemixingConfigs[k])
-                if k == 0:
-                    if glu_pmd_demixer is None:
-                        raise ValueError("With this set of demixing parameters, the glu demixer did not find any signals")
-                    else:
-                        curr_results = glu_pmd_demixer.results
-                else:
-                    if glu_pmd_demixer is None:
-                        break ## curr_results from previous round will return
-                    else:
-                        curr_results = glu_pmd_demixer.results
-            glu_pmd_demixer_results = curr_results
+            glu_pmd_demixer_results = self.run_multipass(glu_pmd_demixer, self.demixing_config)
 
             ## Now pull out "whole dendrite" events. Can refactor this to a helper function to keep the "run" function readable
             glu_pmd_demixer_global= masknmf.demixing.signal_demixer.SignalDemixer(
@@ -319,8 +209,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
             glu_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
-            glu_pmd_demixer_results.export(os.path.join(final_output_folder, "glutamate_spine_demixing.hdf5"))
-            glu_pmd_demixer_global.results.export(os.path.join(final_output_folder, "glutamate_global_activity_demixing.hdf5"))
+            glu_pmd_demixer_results.export(glu_path)
+            glu_pmd_demixer_global.results.export(glu_path, prefix="global")
 
             if pmd_ca is not None:
                 ## Pull out the spatial/temporal footprints from the glutamate movie
@@ -346,9 +236,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
                 ca_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
-                ca_pmd_demixer.results.export(os.path.join(final_output_folder, "calcium_spine_demixing.hdf5"))
-                ca_pmd_demixer_global.results.export(
-                    os.path.join(final_output_folder, "calcium_global_activity_demixing.hdf5"))
+                ca_pmd_demixer.results.export(ca_path)
+                ca_pmd_demixer_global.results.export(ca_path, prefix="global")
 
 
         else: #In this case there is only a calcium channel
@@ -356,20 +245,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 pmd_ca,
                 device=device)
 
-            for k in range(len(self.demixing_config.DemixingConfigs)):
-                ca_pmd_demixer = run_singlepass_demixing(ca_pmd_demixer,
-                                                          self.demixing_config.DemixingConfigs[k])
-                if k == 0:
-                    if ca_pmd_demixer is None:
-                        raise ValueError("With this set of demixing parameters, the calcium demixer did not find any signals")
-                    else:
-                        curr_results = ca_pmd_demixer.results
-                else:
-                    if ca_pmd_demixer is None:
-                        break ## curr_results from previous round will return
-                    else:
-                        curr_results = ca_pmd_demixer.results
-            ca_pmd_demixer_results = curr_results
+            ca_pmd_demixer_results = self.run_multipass(ca_pmd_demixer, self.demixing_config)
 
 
             ## Now pull out "whole dendrite" events. Can refactor this to a helper function to keep the "run" function readable
@@ -383,9 +259,10 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
             ca_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
-            ca_pmd_demixer_results.export(os.path.join(final_output_folder, "calcium_spine_demixing.hdf5"))
-            ca_pmd_demixer_global.results.export(
-                os.path.join(final_output_folder, "calcium_global_activity_demixing.hdf5"))
+            ca_pmd_demixer_results.export(ca_path)
+            ca_pmd_demixer_global.results.export(ca_path, prefix="global")
+
+        return run_folder
 
 
 
