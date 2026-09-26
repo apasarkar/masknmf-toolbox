@@ -262,7 +262,9 @@ class Serializer:
 
 def results_files(folder: str | Path) -> dict[str, Path]:
     """The ``results.<name>.hdf5`` files of a run folder keyed by name, e.g. ``{"calcium": <folder>/results.calcium.hdf5}``."""
-    return {p.name.split(".")[1]: p for p in sorted(Path(folder).glob("results.*.hdf5")) if p.name.count(".") == 2}
+    # the classification tool keeps its label sidecars beside the results as results.labels.hdf5
+    return {p.name.split(".")[1]: p for p in sorted(Path(folder).glob("results.*.hdf5"))
+            if p.name.count(".") == 2 and not p.name.endswith(".labels.hdf5")}
 
 
 def has_group(filename, group: str) -> bool:

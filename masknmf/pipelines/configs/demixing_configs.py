@@ -56,3 +56,7 @@ class SpatialHighpassConfig:
     """
     filter_sigma: float=4.0
 
+# every config a pipeline's spatial highpass and multipass demixing steps can take; see MotionCorrectionConfigs
+SpatialHighpassConfigs = SpatialHighpassConfig
+MultipassDemixingConfigs = MultipassDemixingConfig
+

@@ -3,14 +3,16 @@ from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector, GradientMotionCorrector, GradientRegistrationArray
 from masknmf.utils import display
 from masknmf.utils._serialization import save_dict
+from dataclasses import replace
 import torch
 import math
 from tqdm import tqdm
 
 from masknmf.motion_correction.registration_arrays import OphysArray
 from masknmf.pipelines._base import BasePipeline
-from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
-from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig
+from masknmf.pipelines.configs.motion_correction_configs import GradientMotionCorrectionConfig
+from masknmf.pipelines.configs.compression_configs import CompressDenoiseConfig, CompressionConfigs
+from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig, MultipassDemixingConfigs
 
 from typing import *
 import numpy as np
@@ -263,70 +265,41 @@ def expand_traces_to_all_frames(c: torch.Tensor,
 
 class OnePhotonCulturePipeline(BasePipeline):
     def __init__(self,
-                 motion_correct_config: Literal["skip"] | None = None,
-                 compress_config: CompressConfig | CompressDenoiseConfig | Literal["skip"] | None = None,
-                 demixing_config: MultipassDemixingConfig | None = None,
+                 motion_correct_config: GradientMotionCorrectionConfig | Literal["skip"] | None = None,
+                 compress_config: CompressionConfigs | Literal["skip"] | None = None,
+                 demixing_config: MultipassDemixingConfigs | None = None,
                  output_folder: str | Path | None = None,
                  load_into_ram: bool = False,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"
                  ):
-        self._motion_correct_config = motion_correct_config
+        super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         motion_correct_config=motion_correct_config, compress_config=compress_config,
+                         demixing_config=demixing_config)
+        self.load_into_ram = load_into_ram
 
-        ## Set the compress config
-        if compress_config is None:
-            curr_config = CompressDenoiseConfig()
-        else:
-            curr_config = compress_config
-
-        self._compress_config = curr_config
-        self._load_into_ram = load_into_ram
-        super().__init__(output_folder, frame_batch_size, device)
-
-        if demixing_config is None:
-            conf_list = []
-            for corr_threshold, support_threshold in [(0.8, 0.7), (0.8, 0.5)]:
-                curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
-                                                      detrender=None,  # If we truncate the frames, detrending should be off
-                                                      sign="positive",
-                                                      residual_threshold=0.1)  # Only prioritize positive deviations to pick spikes
-                curr_nmf_conf = NMFConfig(support_threshold=(0.95, support_threshold),
-                                          ring_model_start_pt=None,
-                                          merge_overlap_threshold=0.9,
-                                          detrender=None)
-                curr_demix_conf = SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf)
-                conf_list.append(curr_demix_conf)
-            self._demixing_config = MultipassDemixingConfig(conf_list)
-        else:
-            self._demixing_config = demixing_config
-
-    @property
-    def motion_correct_config(self) -> Literal["skip"] | None:
+    @classmethod
+    def default_configs(cls) -> dict:
         """
-        For now the config here is hard coded -- either you skip it or run the gradient corrector out of the box
+        Gradient motion correction, compression with denoising, and two positive-signed demixing passes without
+        detrending.
         """
-        return self._motion_correct_config
+        conf_list = []
+        for corr_threshold, support_threshold in [(0.8, 0.7), (0.8, 0.5)]:
+            curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
+                                                  detrender=None,  # If we truncate the frames, detrending should be off
+                                                  sign="positive",
+                                                  residual_threshold=0.1)  # Only prioritize positive deviations to pick spikes
+            curr_nmf_conf = NMFConfig(support_threshold=(0.95, support_threshold),
+                                      ring_model_start_pt=None,
+                                      merge_overlap_threshold=0.9,
+                                      detrender=None)
+            curr_demix_conf = SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf)
+            conf_list.append(curr_demix_conf)
 
-    @property
-    def compress_config(self) -> CompressConfig | CompressDenoiseConfig | None:
-        return self._compress_config
-
-    @property
-    def demixing_config(self) -> MultipassDemixingConfig:
-        return self._demixing_config
-
-    @property
-    def load_into_ram(self) -> bool:
-        return self._load_into_ram
-
-    @property
-    def config(self):
-        return {'motion_correct_config': self.motion_correct_config,
-                'compress_config': self.compress_config,
-                'demixing_config': self.demixing_config,
-                'output_folder': self.output_folder,
-                'frame_batch_size': self.frame_batch_size,
-                'device': self.device}
+        return {'motion_correct_config': GradientMotionCorrectionConfig(),
+                'compress_config': CompressDenoiseConfig(),
+                'demixing_config': MultipassDemixingConfig(conf_list)}
 
     def run(self,
             data: np.ndarray | ArrayLike,
@@ -375,12 +348,13 @@ class OnePhotonCulturePipeline(BasePipeline):
                              include_mean=True,
                              device=device)
 
-            ## TODO: The template estimation should be something the user can more cleanly specify
-            mean_img = torch.mean(mov[:300], dim=0)
+            mean_img = torch.mean(mov[:self.motion_correct_config.num_frames_template], dim=0)
             corrector = GradientMotionCorrector(template=mean_img)
             moco_array = corrector.motion_correct(mov)
             moco_array.output_device=device
 
+        self.run_config = {"frame_rate": frame_rate, "indicator_sign": indicator_sign,
+                           "remove_intermediates": remove_intermediates}
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
                 results_path = self.results_path(resume=True)
@@ -391,18 +365,16 @@ class OnePhotonCulturePipeline(BasePipeline):
 
             display("Running Compression")
 
-            ## First add in the run-specific parameters to the config object:
+            ## Add the run-specific frame weighting to a copy of the config, so the pipeline's own is untouched
             if self.compress_config.frame_weighting is not None:
-                self.compress_config.frame_weighting *= active_frames.astype(self.compress_config.frame_weighting.dtype)
+                frame_weighting = self.compress_config.frame_weighting * active_frames.astype(self.compress_config.frame_weighting.dtype)
             else:
-                self.compress_config.frame_weighting = active_frames
-            self.compress_config.frame_batch_size = self.frame_batch_size
+                frame_weighting = active_frames
 
-            compress_strategy = self.compress_strategy(self.compress_config)
+            compress_strategy = self.compress_strategy(replace(self.compress_config, frame_weighting=frame_weighting))
 
             compress_strategy.detrender = self.spline_detrender(moco_array.shape[0], frame_rate, window_seconds=0.05,
                                                                 knot_seconds=0.05, sigma_seconds=0.01)
-            compress_strategy.frame_batch_size = self.frame_batch_size
             compressed_results = compress_strategy.compress(moco_array)
             compressed_results.export(results_path)
 
