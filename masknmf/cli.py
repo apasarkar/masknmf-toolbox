@@ -14,6 +14,7 @@ here enumerates a parameter by hand:
     masknmf run movie.tif --fs 30 --config configs.json
     masknmf view results.hdf5 --raw movie.tif
     masknmf view results.hdf5 --raw movie.tif --compression
+    masknmf view results.hdf5 --classify --labels soma,dendrite,junk
 """
 
 from typing import Any, Optional
@@ -518,6 +519,10 @@ def command_view(args: argparse.Namespace) -> None:
     name_demixing = f"{args.prefix}/{group_name_demixing()}" if args.prefix else group_name_demixing()
     if name_demixing not in names_present and args.prefix:
         fail(f"{args.results} holds no {name_demixing}")
+    if args.classify and args.prefix:
+        fail("--classify reads only the top-level demixing results; drop --prefix")
+    if args.classify and name_demixing not in names_present:
+        fail(f"--classify needs {group_name_demixing()}, which {args.results} does not hold")
 
     import fastplotlib as fpl
 
@@ -572,6 +577,16 @@ def command_view(args: argparse.Namespace) -> None:
                 raw=raw if raw is not None and tuple(raw.shape) == tuple(results.shape) else None,
             )
         )
+
+    if args.classify:
+        classification = masknmf.ClassificationVis.from_masknmf(
+            [args.results], label_names=args.labels.split(",") if args.labels else ()
+        )
+        if args.classifier is not None:
+            classification.classifier_path = args.classifier
+            if Path(args.classifier).is_file():
+                classification.select_classifier(args.classifier)
+        viewers.append(classification)
 
     if len(viewers) == 0:
         fail(f"nothing to show for {args.results}")
@@ -643,6 +658,19 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
         "--compression",
         action="store_true",
         help="also open the compression viewer (needs --raw); opened on its own when the file holds no demixing results",
+    )
+    parser_view.add_argument(
+        "--classify",
+        action="store_true",
+        help="also open the ROI labeling and classification viewer; labels are saved next to the results file",
+    )
+    parser_view.add_argument(
+        "--labels", default=None, help="with --classify, comma-separated class names, e.g. soma,dendrite,junk"
+    )
+    parser_view.add_argument(
+        "--classifier",
+        default=None,
+        help="with --classify, the .roicat_classifier path; train saves here, and an existing file is selected for classify",
     )
     parser_view.add_argument(
         "--list", action="store_true", help="print what the file holds and exit"
