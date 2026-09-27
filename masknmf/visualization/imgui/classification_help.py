@@ -1,7 +1,8 @@
 """
 The Classification window's (?) page: the steps, how a label is decided, its windows, the backgrounds, what a
-label does, train and classify, the keys and the files, as diagrams and tables. Only imgui_bundle at import:
-``python classification_help.py`` opens it in a window of its own.
+label does, train and classify and the files, as diagrams and tables, with the viewer's keybinds behind a
+button. From the repo root, ``python -m masknmf.visualization.imgui.classification_help`` opens it in a window
+of its own.
 """
 
 import math
@@ -13,6 +14,9 @@ import wgpu
 from imgui_bundle import icons_fontawesome_6 as fa
 from imgui_bundle import imgui
 from wgpu.utils.imgui import ImguiRenderer
+
+from masknmf.visualization.imgui.keybinds import CLASSIFICATION
+from masknmf.visualization.imgui.panels import draw_keybinds_button
 
 ACCENT = imgui.ImVec4(0.40, 0.68, 1.00, 1.0)
 KEY = imgui.ImVec4(1.00, 0.80, 0.20, 1.0)
@@ -37,7 +41,7 @@ FONT_SIZE = 14
 TITLE = "Classification"
 TOOLTIP = (
     "the steps, how a label is decided, the windows, the backgrounds, what a label does, train and classify, "
-    "the keys, the files"
+    "the files, the keybinds"
 )
 STEPS = (
     (fa.ICON_FA_FOLDER_OPEN, "Load", "sessions: results files or a folder"),
@@ -150,15 +154,6 @@ CLASSIFY = (
         "then train again",
     ),
     ("classify on load", "runs the selected classifier on each session as it arrives"),
-)
-KEYS = (
-    ("key", "does"),
-    ("up / down", "previous / next ROI; shift: ten at a time"),
-    ("left / right", "previous / next background; shift: the previous / next class's first ROI"),
-    ("1-9", "label the current ROI; 0 clears"),
-    ("u", "next unlabeled ROI"),
-    ("m / b", "the mask / the background on or off"),
-    ("h / k", "the help / the keybinds"),
 )
 
 
@@ -280,10 +275,10 @@ def cards(dl, items: tuple) -> None:
     imgui.pop_style_color(2)
 
 
-def draw_classification_help(is_open: bool) -> bool:
-    """The page as a centered window. Returns whether it is still open."""
+def draw_classification_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
+    """The page as a centered window with its keybinds button; returns (page open, popup open)."""
     if not is_open:
-        return False
+        return False, False
     em = imgui.get_font_size()
     w = WIDTH_EM * em
     viewport = imgui.get_main_viewport()
@@ -301,12 +296,14 @@ def draw_classification_help(is_open: bool) -> bool:
     imgui.pop_style_var(2)
     if not opened:
         imgui.end()
-        return is_open
+        return is_open, keys_open
     dl = imgui.get_window_draw_list()
     # the current ROI of the made-up run, the next one every 1.5 s
     cur = int(imgui.get_time() / 1.5) % len(ROIS)
     imgui.push_text_wrap_pos(w)
     imgui.text_colored(ACCENT, f"{fa.ICON_FA_CIRCLE_QUESTION}  {TITLE}")
+    imgui.same_line(w - 4.8 * em)
+    keys_open = draw_keybinds_button(CLASSIFICATION, keys_open, f"{TITLE} keybinds")
     imgui.separator()
     imgui.dummy(imgui.ImVec2(0, 0.5 * em))
 
@@ -467,9 +464,6 @@ def draw_classification_help(is_open: bool) -> bool:
     )
     table("classify", CLASSIFY)
 
-    heading(fa.ICON_FA_KEYBOARD, "Keys")
-    table("keys", KEYS)
-
     heading(fa.ICON_FA_FLOPPY_DISK, "Files")
     p = imgui.get_cursor_screen_pos()
     y = p.y + 1.4 * em
@@ -495,7 +489,7 @@ def draw_classification_help(is_open: bool) -> bool:
     if imgui.button("Close", imgui.ImVec2(6 * em, 0)):
         is_open = False
     imgui.end()
-    return is_open
+    return is_open, keys_open
 
 
 def draw_window(state: dict) -> None:
@@ -516,7 +510,7 @@ def draw_window(state: dict) -> None:
     if imgui.is_item_hovered():
         imgui.set_tooltip(TOOLTIP)
     imgui.end()
-    state["open"] = draw_classification_help(state["open"])
+    state["open"], state["keys"] = draw_classification_help(state["open"], state["keys"])
 
 
 def load_fonts() -> None:
@@ -535,7 +529,7 @@ def main() -> None:
     canvas = RenderCanvas(title="classification help", size=(760, 1000), update_mode="continuous", max_fps=60)
     renderer = ImguiRenderer(wgpu.utils.get_default_device(), canvas)
     load_fonts()
-    renderer.set_gui(partial(draw_window, {"open": True}))
+    renderer.set_gui(partial(draw_window, {"open": True, "keys": False}))
     canvas.request_draw(renderer.render)
     loop.run()
 

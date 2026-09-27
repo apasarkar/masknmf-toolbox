@@ -1,7 +1,7 @@
 """
 The Curation tab's (?) page: the steps, the panels, the motion shifts, what a click and a group plot, and what
-Demix does, as diagrams and tables. Only imgui_bundle at import: ``python curation_help.py`` opens it in a
-window of its own.
+Demix does, as diagrams and tables, with the viewer's keybinds behind a button. From the repo root,
+``python -m masknmf.visualization.imgui.curation_help`` opens it in a window of its own.
 """
 
 import math
@@ -13,6 +13,9 @@ import wgpu
 from imgui_bundle import icons_fontawesome_6 as fa
 from imgui_bundle import imgui
 from wgpu.utils.imgui import ImguiRenderer
+
+from masknmf.visualization.imgui.keybinds import DEMIXING
+from masknmf.visualization.imgui.panels import draw_keybinds_button
 
 ACCENT = imgui.ImVec4(0.40, 0.68, 1.00, 1.0)
 KEY = imgui.ImVec4(1.00, 0.80, 0.20, 1.0)
@@ -44,7 +47,9 @@ WIDTH_EM = 44
 FONT_SIZE = 14
 
 TITLE = "Curation"
-TOOLTIP = "the steps, the panels, the motion shifts, what a click and a group plot, and what Demix does"
+TOOLTIP = (
+    "the steps, the panels, the motion shifts, what a click and a group plot, what Demix does, the keybinds"
+)
 STEPS = (
     (fa.ICON_FA_ARROW_POINTER, "Click", "a signal: its parts"),
     (fa.ICON_FA_OBJECT_GROUP, "Group", "ctrl / shift: compare"),
@@ -116,7 +121,6 @@ MOUSE = (
     ("shift + click", "add it; in the table, every row up to it"),
     ("double-click", "show demixed sources for selected pixels", SOURCES),
     ("drag", "pan; the selection stays"),
-    ("k", "every key"),
 )
 
 
@@ -232,10 +236,10 @@ def table(name: str, rows: tuple) -> None:
     imgui.end_table()
 
 
-def draw_curation_help(is_open: bool) -> bool:
-    """The page as a centered window. Returns whether it is still open."""
+def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
+    """The page as a centered window with its keybinds button; returns (page open, popup open)."""
     if not is_open:
-        return False
+        return False, False
     em = imgui.get_font_size()
     w = WIDTH_EM * em
     viewport = imgui.get_main_viewport()
@@ -253,12 +257,14 @@ def draw_curation_help(is_open: bool) -> bool:
     imgui.pop_style_var(2)
     if not opened:
         imgui.end()
-        return is_open
+        return is_open, keys_open
     dl = imgui.get_window_draw_list()
     # the frame slider, sweeping the sketches' 60 frames every 7.5 s
     frame = imgui.get_time() * 8.0 % 60
     imgui.push_text_wrap_pos(w)
     imgui.text_colored(ACCENT, f"{fa.ICON_FA_CIRCLE_QUESTION}  {TITLE}")
+    imgui.same_line(w - 4.8 * em)
+    keys_open = draw_keybinds_button(DEMIXING, keys_open, f"{TITLE} keybinds")
     imgui.separator()
     imgui.dummy(imgui.ImVec2(0, 0.5 * em))
 
@@ -417,7 +423,7 @@ def draw_curation_help(is_open: bool) -> bool:
     if imgui.button("Close", imgui.ImVec2(6 * em, 0)):
         is_open = False
     imgui.end()
-    return is_open
+    return is_open, keys_open
 
 
 def draw_window(state: dict) -> None:
@@ -438,7 +444,7 @@ def draw_window(state: dict) -> None:
     if imgui.is_item_hovered():
         imgui.set_tooltip(TOOLTIP)
     imgui.end()
-    state["open"] = draw_curation_help(state["open"])
+    state["open"], state["keys"] = draw_curation_help(state["open"], state["keys"])
 
 
 def load_fonts() -> None:
@@ -457,7 +463,7 @@ def main() -> None:
     canvas = RenderCanvas(title="curation help", size=(760, 1000), update_mode="continuous", max_fps=60)
     renderer = ImguiRenderer(wgpu.utils.get_default_device(), canvas)
     load_fonts()
-    renderer.set_gui(partial(draw_window, {"open": True}))
+    renderer.set_gui(partial(draw_window, {"open": True, "keys": False}))
     canvas.request_draw(renderer.render)
     loop.run()
 
