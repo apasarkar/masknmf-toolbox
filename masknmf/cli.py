@@ -592,7 +592,8 @@ def command_view(args: argparse.Namespace) -> None:
         print("the compression viewer needs --raw")
 
     # a raw movie the pipeline trimmed (the glutamate pipeline drops its first frames) no longer lines up
-    if raw is not None and tuple(raw.shape) != tuple(results.shape):
+    raw_fits = raw is not None and tuple(raw.shape) == tuple(results.shape)
+    if raw is not None and not raw_fits:
         print(f"raw movie is {tuple(raw.shape)}, the results {tuple(results.shape)}; no raw panel")
     viewers.append(
         masknmf.SingleSessionDemixingVis(
@@ -600,7 +601,8 @@ def command_view(args: argparse.Namespace) -> None:
             frame_timings=timings(results.shape[0], args.fs),
             device=device,
             results_path=args.results,
-            raw=raw if raw is not None and tuple(raw.shape) == tuple(results.shape) else None,
+            raw=raw if raw_fits else None,
+            registered=registered if raw_fits and registered is not results else None,
         )
     )
 
