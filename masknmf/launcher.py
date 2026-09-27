@@ -657,7 +657,7 @@ class Launcher:
         """Where the run folder is made."""
         draw_subsection(
             text="Output folder",
-            hint="Each run writes a timestamped folder here holding results.hdf5 and config.json. "
+            hint="Each run writes a timestamped folder here holding results.hdf5, config.json and its log. "
             "Empty uses the folder masknmf was started from.",
         )
         imgui.spacing()

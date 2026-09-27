@@ -271,9 +271,11 @@ class OnePhotonCulturePipeline(BasePipeline):
                  output_folder: str | Path | None = None,
                  load_into_ram: bool = False,
                  frame_batch_size: int = 300,
-                 device: Literal["auto", "cuda", "cpu"] = "auto"
+                 device: Literal["auto", "cuda", "cpu"] = "auto",
+                 log_level: Literal["debug", "info", "warning"] = "info"
                  ):
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         log_level=log_level,
                          motion_correct_config=motion_correct_config, compress_config=compress_config,
                          demixing_config=demixing_config)
         self.load_into_ram = load_into_ram

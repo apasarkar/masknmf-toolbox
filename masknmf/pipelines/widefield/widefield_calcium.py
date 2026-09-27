@@ -17,7 +17,8 @@ class WidefieldSinglechannelPipeline(BasePipeline):
                  compress_config: CompressionConfigs | None = None,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
-                 device: Literal["auto", "cuda", "cpu"] = "auto"
+                 device: Literal["auto", "cuda", "cpu"] = "auto",
+                 log_level: Literal["debug", "info", "warning"] = "info"
                  ):
         """
         Args:
@@ -29,8 +30,10 @@ class WidefieldSinglechannelPipeline(BasePipeline):
                 one hdf5 group per stage. None uses the working directory
             frame_batch_size (int): Number of frames to load into GPU at a time for processing
             device (str): Indicates which device pytorch runs on
+            log_level (str): How much the run logs, to the console and to the run folder's .log file
         """
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         log_level=log_level,
                          motion_correct_config=motion_correct_config, compress_config=compress_config)
 
     @classmethod

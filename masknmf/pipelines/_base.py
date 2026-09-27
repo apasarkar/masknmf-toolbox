@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 import inspect
 import json
+import logging
 import os
 import numpy as np
 import torch
@@ -22,6 +23,8 @@ from masknmf.pipelines.configs.compression_configs import CompressConfig, Compre
 from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig, SinglepassDemixingConfig, SuperpixelInitConfig
 from masknmf.utils import display, has_group, drop_group, torch_select_device
 
+logger = logging.getLogger(__name__)
+
 
 class BasePipeline(ABC):
     """
@@ -32,6 +35,7 @@ class BasePipeline(ABC):
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto",
+                 log_level: Literal["debug", "info", "warning"] = "info",
                  **configs):
         if output_folder is not None:
             output_folder = Path(output_folder).expanduser().resolve()
@@ -40,6 +44,10 @@ class BasePipeline(ABC):
         self.output_folder = output_folder
         self.frame_batch_size = frame_batch_size
         self.device = device
+        self.log_level = log_level
+        logging.getLogger("masknmf").setLevel(log_level.upper())
+        # the handler writing the run's log file, once log_to has opened one
+        self.log_handler = None
         # the folder the last create_run_folder made
         self.run_folder = None
         # the scalar arguments of the run in progress, saved to config.json beside the __init__ ones
@@ -92,7 +100,23 @@ class BasePipeline(ABC):
             json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__, **self.config, **self.run_config},
                       f, indent=2, default=config_json_value)
         self.run_folder = candidate
+        self.log_to(candidate)
         return candidate
+
+    def log_to(self, folder: Path) -> Path:
+        """
+        Write the masknmf log to ``<folder>/<folder name>.log`` from here on, appending to the file an earlier run
+        left there and closing the file of the run logged until now, and log this run's header line.
+        """
+        for handler in [h for h in logging.getLogger("masknmf").handlers if isinstance(h, logging.FileHandler)]:
+            logging.getLogger("masknmf").removeHandler(handler)
+            handler.close()
+        path = folder / f"{folder.name}.log"
+        self.log_handler = logging.FileHandler(path, encoding="utf-8")
+        self.log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.getLogger("masknmf").addHandler(self.log_handler)
+        logger.info(f"masknmf {__version__} {type(self).__name__} on {self.torch_device}, {self.log_level} log at {path}")
+        return path
 
     def results_path(self, resume: bool = False) -> str:
         """
@@ -103,9 +127,11 @@ class BasePipeline(ABC):
             path = os.path.join(self.create_run_folder(), "results.hdf5")
             display(f"Writing results to {path}")
             return path
-        path = os.path.join(Path.cwd() if self.output_folder is None else self.output_folder, "results.hdf5")
+        folder = Path.cwd() if self.output_folder is None else self.output_folder
+        path = os.path.join(folder, "results.hdf5")
         if not has_group(path, CompressionArray.__name__):
             raise ValueError(f"You specified that compression should be skipped but {path} holds no compression")
+        self.log_to(folder)
         return path
 
     def motion_correct(self,

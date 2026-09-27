@@ -22,9 +22,11 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                  unfiltered_demixing_config: MultipassDemixingConfigs | None = None,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
-                 device: Literal["auto", "cuda", "cpu"] = "auto"
+                 device: Literal["auto", "cuda", "cpu"] = "auto",
+                 log_level: Literal["debug", "info", "warning"] = "info"
                  ):
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         log_level=log_level,
                          motion_correct_config=motion_correct_config, compress_config=compress_config,
                          spatial_highpass_config=spatial_highpass_config,
                          filtered_demixing_config=filtered_demixing_config,

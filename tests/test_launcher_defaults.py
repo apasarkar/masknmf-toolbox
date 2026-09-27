@@ -54,9 +54,10 @@ class OddPipeline(BasePipeline):
                  empty_config: OddMultipassConfig | None = None,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
-                 device: Literal["auto", "cuda", "cpu"] = "auto"):
+                 device: Literal["auto", "cuda", "cpu"] = "auto",
+                 log_level: Literal["debug", "info", "warning"] = "info"):
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
-                         stage_config=stage_config, empty_config=empty_config)
+                         log_level=log_level, stage_config=stage_config, empty_config=empty_config)
 
     @classmethod
     def default_configs(cls) -> dict:

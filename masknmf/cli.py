@@ -10,6 +10,7 @@ here enumerates a parameter by hand:
     masknmf params --pipeline two-photon-calcium
     masknmf run --pipeline two-photon-calcium movie.tif --fs 30
     masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --motion-correct-kind piecewise-rigid
+    masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --log-level debug
     masknmf params --pipeline two-photon-calcium --json > configs.json
     masknmf run movie.tif --fs 30 --config configs.json
     masknmf view results.hdf5 --raw movie.tif
@@ -22,6 +23,7 @@ from typing import Any, Optional
 import argparse
 import dataclasses
 import json
+import logging
 import shutil
 import sys
 from pathlib import Path
@@ -39,6 +41,8 @@ SUFFIXES_HDF5 = (".h5", ".hdf5")
 NAMES_ALIAS = {"frame_rate": "--fs"}
 
 CHARACTERS_NEEDING_QUOTES = set(" \t\\'&|;<>()$`!*?[]{}~#")
+
+logger = logging.getLogger("masknmf")
 
 
 def group_names_registration() -> tuple[str, ...]:
@@ -495,16 +499,21 @@ def command_run(args: argparse.Namespace) -> None:
     try:
         run_folder = pipeline.run(**kwargs_run)
     except BaseException:
-        # a failed run keeps its folder only when one of its results files holds a finished compression
+        logger.exception("run failed")
+        # a failed run keeps its folder only when one of its results files holds a finished compression; its log
+        # file, closed first so windows lets the folder go, moves up to where the folder was
         folder = pipeline.run_folder
         if folder is not None and not any(
             has_stage(filepath_results=str(filepath), name_group=group_name_compression())
             for filepath in folder.glob("*.hdf5")
         ):
+            logger.removeHandler(pipeline.log_handler)
+            pipeline.log_handler.close()
+            shutil.move(pipeline.log_handler.baseFilename, folder.parent)
             shutil.rmtree(folder)
-            print(f"removed {folder}", file=sys.stderr)
-        raise
-    print(f"done: {run_folder}")
+            print(f"removed {folder}, its log is in {folder.parent}", file=sys.stderr)
+        raise SystemExit(1)
+    logger.info(f"done: {run_folder}")
 
 
 def command_view(args: argparse.Namespace) -> None:
