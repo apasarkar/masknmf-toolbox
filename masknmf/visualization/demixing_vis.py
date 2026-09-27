@@ -20,6 +20,7 @@ from functools import partial
 from masknmf.visualization.imgui import (
     THEME,
     RoiOrder,
+    SourceRightClickMenu,
     TracePlot,
     component_at_pixel,
     draw_keybinds_popup,
@@ -27,6 +28,7 @@ from masknmf.visualization.imgui import (
     draw_range_filter,
     draw_roi_table,
     em,
+    popup,
     resolve_time_reference,
     section,
     to_vec4,
@@ -158,9 +160,10 @@ class SingleSessionDemixingVis:
     largest block shift per frame). With ``results_path`` set, a lone .tif beside the results, and the
     registration shifts from the results file itself or from a motion_correction.hdf5 beside it, are picked up
     when their frames match the results; given ones must match. Up to three panels, one per movie the results
-    hold, each switchable to any of them in the array x panel matrix at the top of the Tools panel: raw,
-    registered, compressed+denoised, the residual, the fitted background (when the demixer fit one) and the
-    demixed signals under their masks, as available. They open on raw | compressed+denoised | signals, else
+    hold, each switchable to any of them: the Panels button at the top of the Tools panel opens the array x
+    panel matrix, and the top of a panel's right-click menu offers the same choice for that panel. The movies
+    are raw, registered, compressed+denoised, the residual, the fitted background (when the demixer fit one)
+    and the demixed signals under their masks, as available. They open on raw | compressed+denoised | signals, else
     compressed+denoised | signals | background, else whatever there is (raw | registered for a registration
     array, whose input movie is its raw and whose shifts are the shift traces). Switching keeps the zoom and
     the drawn rois. A registration array has no compressed movie to average, so pixel traces and drawn rois
@@ -371,6 +374,7 @@ class SingleSessionDemixingVis:
             )
             self._ndw_fov.figure[name].title = array.current
         self._fov_subplot = self._ndw_fov.figure[next(iter(self._panels))]
+        self._ndw_fov.figure.set_imgui_right_click(SourceRightClickMenu(self._panel_choices, self._set_source))
 
         self._active_component = None
         self._marked = (
@@ -449,6 +453,7 @@ class SingleSessionDemixingVis:
         self._export_path = os.path.join(os.getcwd(), "rois.npz")
         self._stats_popup = False
         self._stats_path = ""
+        self._panels_open = False
         self._summary = SummaryImageViewer(self._ndw_fov.figure, title="Static images")
         self._press = None  # screen position of the last pointer press on a video panel
         self._armed = None  # "roi" / "poly": the next press on any video panel starts that polygon there
@@ -558,6 +563,10 @@ class SingleSessionDemixingVis:
             stills["mean image"] = self._pmd_array.mean_image.cpu().numpy()
             stills["noise variance image"] = self._pmd_array.noise_variance_image.cpu().numpy()
         return stills
+
+    def _panel_choices(self, panel: str) -> tuple[list, str]:
+        """What ``panel`` can show and what it shows, for its right-click menu."""
+        return list(self._panels[panel].sources), self._panels[panel].current
 
     def _set_source(self, panel: str, name: str):
         """Show movie ``name`` in ``panel``: it re-slices and refits its color limits; zoom and rois stay."""
@@ -1521,13 +1530,18 @@ class SingleSessionDemixingVis:
         return "click a mask or roi to see its trace; double-click any pixel to split it into its sources"
 
     def _draw_side_panel(self):
-        """Docked at "right" (the NDWidget owns "bottom"): the Static images button and the array x panel matrix, then the roi tools and the signal table as tabs."""
+        """Docked at "right" (the NDWidget owns "bottom"): the Panels and Static images buttons, then the roi tools and the signal table as tabs."""
         self._poll_file_dialog()
         self._poll_order_dialog()
         self._poll_worker()
         self._poll_rois()
         self._poll_poly()
         self._handle_keys()
+        if imgui.button(f"{fa.ICON_FA_TABLE_CELLS_LARGE} Panels"):
+            self._panels_open = True
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("which movie each panel shows, as an array x panel matrix; a panel's right-click menu offers the same choice")
+        imgui.same_line()
         stills = self._stills
         imgui.begin_disabled(not stills)
         if imgui.button(f"{fa.ICON_FA_IMAGE} Static images"):
@@ -1540,24 +1554,6 @@ class SingleSessionDemixingVis:
                 if stills
                 else "the results hold no still images"
             )
-        # the array x panel matrix: one row per movie, one radio column per panel
-        section("PANELS")
-        movies = next(iter(self._panels.values())).sources
-        if imgui.begin_table("##panel_matrix", 1 + len(self._panels)):
-            imgui.table_setup_column("##array", imgui.TableColumnFlags_.width_stretch)
-            for name in self._panels:
-                imgui.table_setup_column(name, imgui.TableColumnFlags_.width_fixed, imgui.get_frame_height())
-            imgui.table_headers_row()
-            for movie in movies:
-                imgui.table_next_row()
-                imgui.table_next_column()
-                imgui.align_text_to_frame_padding()
-                imgui.text(movie)
-                for name, panel in self._panels.items():
-                    imgui.table_next_column()
-                    if imgui.radio_button(f"##{movie}-{name}", panel.current == movie) and panel.current != movie:
-                        self._set_source(name, movie)
-            imgui.end_table()
         if imgui.begin_tab_bar("##side"):
             if imgui.begin_tab_item("Curation")[0]:
                 self._draw_roi_tools()
@@ -1591,6 +1587,27 @@ class SingleSessionDemixingVis:
                 self._stats_popup = False
             except (OSError, ValueError, TypeError) as e:
                 self._status = f"cell stats failed: {e}"
+        if self._panels_open:
+            opened, self._panels_open = popup("Panels", self._panels_open)
+            if opened:
+                # the array x panel matrix: one row per movie, one radio column per panel
+                movies = next(iter(self._panels.values())).sources
+                if imgui.begin_table("##panel_matrix", 1 + len(self._panels), imgui.TableFlags_.sizing_fixed_fit):
+                    imgui.table_setup_column("##array")
+                    for name in self._panels:
+                        imgui.table_setup_column(name, imgui.TableColumnFlags_.width_fixed, imgui.get_frame_height())
+                    imgui.table_headers_row()
+                    for movie in movies:
+                        imgui.table_next_row()
+                        imgui.table_next_column()
+                        imgui.align_text_to_frame_padding()
+                        imgui.text(movie)
+                        for name, panel in self._panels.items():
+                            imgui.table_next_column()
+                            if imgui.radio_button(f"##{movie}-{name}", panel.current == movie) and panel.current != movie:
+                                self._set_source(name, movie)
+                    imgui.end_table()
+            imgui.end()
         self._summary.draw()
 
     def _table_select(self, component):
