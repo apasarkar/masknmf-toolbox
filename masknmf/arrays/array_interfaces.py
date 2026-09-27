@@ -232,3 +232,30 @@ class LazyFrameLoader(ArrayLike):
             np.ndarray: array at the indexed slice
         """
         pass
+
+
+class SwitchableArray:
+    """
+    One array-like over several same-shaped (frames, height, width) arrays, indexing whichever ``current``
+    names; a 2-D image among them plays as a still, the same on every frame. A viewer panel built on this
+    switches what it shows without replacing its graphic, which would reset the camera and drop the rois
+    drawn on it.
+    """
+
+    def __init__(self, sources: dict, shape: tuple):
+        self.sources = sources
+        self.current = next(iter(sources))
+        self.shape = tuple(int(s) for s in shape)
+        self.ndim = 3
+        self.dtype = np.dtype(np.float32)
+
+    def __getitem__(self, item):
+        source = self.sources[self.current]
+        key = item if isinstance(item, tuple) else (item,)
+        if source.ndim == 2:
+            picked = np.arange(self.shape[0])[key[0]]
+            out = source[key[1:]] if len(key) > 1 else source
+            out = np.asarray(out.cpu().numpy() if isinstance(out, torch.Tensor) else out, dtype=np.float32)
+            return out if np.ndim(picked) == 0 else np.broadcast_to(out, (len(picked), *out.shape))
+        out = source[item]
+        return np.asarray(out.cpu().numpy() if isinstance(out, torch.Tensor) else out, dtype=np.float32)
