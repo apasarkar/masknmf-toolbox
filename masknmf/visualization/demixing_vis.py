@@ -114,9 +114,9 @@ _BASE_LINE_COLORS = (
 
 class SingleSessionDemixingVis:
     """
-    View and curate demixing results. Can be used whether demixing has been ran (pass in DemixingResults) or not (PMDArray).
-    existing masknmf.DemixingResults (or a bare PMDArray before demixing has run), and draw
-    and export ROIs for a custom SignalDemixer.initialize_signals(is_custom=True) pass.
+    View and curate demixing results. Takes whatever stage a run got to: masknmf.DemixingResults, a bare
+    CompressionArray before demixing has run, or a registration array (with its raw input movie) before
+    compression. Draw and export ROIs for a custom SignalDemixer.initialize_signals(is_custom=True) pass.
     Footprints show as feathered masks and/or contours over the summary image.
 
     With ``results_path`` set, "Demix" runs the drawn ROIs and the signals marked with "Delete" through the
@@ -158,7 +158,10 @@ class SingleSessionDemixingVis:
     the demixed signals under their masks, and a context panel that switches between the fitted background,
     when the demixer fit one, and every still the results hold: ``summary_img`` when given (named by
     ``summary_img_name``), the residual correlation image once demixed, the mean image and the noise variance
-    image. Switching keeps the zoom and the drawn rois.
+    image. Switching keeps the zoom and the drawn rois. A registration array shows two panels, its input movie
+    as "raw" beside the registered movie, and its shifts as the shift traces; there is no compressed movie to
+    average, so pixel traces and drawn rois are off, and the panels the file has nothing for are left out (the
+    signals panel before demixing, the context panel before compression unless ``summary_img`` is given).
 
     The Signals table always carries the results' own stats (:meth:`CellStats.from_results`: mean, std, snr
     and skew of each demixed trace; fit, resid and bkgd from the roi averages the results hold), hidden until
@@ -172,18 +175,13 @@ class SingleSessionDemixingVis:
     and "Export" open a window with a typed path, so they work on a remote kernel; "browse" there is the
     native dialog for a local one. Marked signals always come first. A Demix pass recomputes the results'
     stats for the new signals and drops given ones.
-
-    TODO:
-    -----
-    - Could really support registration arrays?
-
     """
 
     def __init__(
         self,
         demixing_results: masknmf.DemixingResults
         | masknmf.CompressionArray
-        | List[masknmf.DemixingResults],
+        | masknmf.BaseRegistrationArray,
         frame_timings: Optional[np.ndarray | List[np.ndarray]] = None,
         ref_range: Optional[dict] = None,
         summary_img: np.ndarray | masknmf.ArrayLike | None = None,
@@ -215,8 +213,11 @@ class SingleSessionDemixingVis:
         self._demixing_results = demixing_results
         self._device = device
 
-        self._demixing_results.to(self.device)
         self._has_ac = isinstance(demixing_results, masknmf.DemixingResults)
+        self._is_registration = isinstance(demixing_results, masknmf.BaseRegistrationArray)
+        # a registration array computes on its strategy's device and hands frames over from output_device
+        if not self._is_registration:
+            self._demixing_results.to(self.device)
         self._shape = self.demixing_results.shape
 
         folder = None if self._results_path is None else Path(self._results_path).parent
@@ -238,6 +239,10 @@ class SingleSessionDemixingVis:
 
         # raw movie and shifts: data or a path, or found beside the results; a found mismatch is skipped, a given one raises
         found_raw = found_shifts = False
+        if raw is None and self._is_registration:
+            raw = demixing_results.input_movie
+        if shifts is None and self._is_registration:
+            shifts = demixing_results.shifts
         if raw is None and folder is not None:
             tifs = sorted(p for ext in ("*.tif", "*.tiff") for p in folder.glob(ext))
             if len(tifs) == 1:
@@ -332,7 +337,12 @@ class SingleSessionDemixingVis:
         movie, context = self._sources()
         self._movie = SwitchableArray(movie, self._shape)
         self._context = SwitchableArray(context, self._shape)
-        self._video_panels = ("movie", *(("signals",) if self._has_ac else ()), "context")
+        self._video_panels = (
+            *(("raw",) if self._is_registration and self._raw is not None else ()),
+            "movie",
+            *(("signals",) if self._has_ac else ()),
+            *(("context",) if context else ()),
+        )
         n = len(self._video_panels)
         self._video_extents = {name: (i / n, (i + 1) / n, 0.0, 1.0) for i, name in enumerate(self._video_panels)}
 
@@ -348,13 +358,14 @@ class SingleSessionDemixingVis:
 
         self._reference_index = self._ndw_fov.indices
         self._panel_graphics = OrderedDict()
-        for name, array in (("movie", self._movie), ("signals", self._ac_array), ("context", self._context)):
+        for name, array in (("raw", self._raw), ("movie", self._movie), ("signals", self._ac_array), ("context", self._context)):
             if name in self._video_panels:
                 self._panel_graphics[name] = self._ndw_fov[name].add_nd_image(
                     array, ["time", "m", "n"], ["m", "n"], slider_maps={"time": frame_timings}, name=name
                 )
         self._ndw_fov.figure["movie"].title = self._movie.current
-        self._ndw_fov.figure["context"].title = self._context.current
+        if "context" in self._video_panels:
+            self._ndw_fov.figure["context"].title = self._context.current
         self._fov_subplot = self._ndw_fov.figure["movie"]
 
         self._active_component = None
@@ -395,7 +406,7 @@ class SingleSessionDemixingVis:
 
         # no autofit: the zoom set on one signal's traces is kept while selecting others
         self._traces = TracePlot(
-            ("shift (px)", "traces") if self._shift_lines else ("traces",),
+            (*(("shift (px)",) if self._shift_lines else ()), *(("traces",) if self._pmd_array is not None else ())),
             self._shape[0],
             frame_timings,
             autofit=False,
@@ -506,7 +517,7 @@ class SingleSessionDemixingVis:
             # an all-zero background term means the demixer never fit one
             self._has_background = bool(torch.count_nonzero(self.demixing_results.factorized_background_term1))
         else:
-            self._pmd_array = self.demixing_results
+            self._pmd_array = None if self._is_registration else self.demixing_results
             self._fluctuating_background_array = None
             self._residual_array = None
             self._ac_array = None
@@ -514,8 +525,8 @@ class SingleSessionDemixingVis:
 
     def _sources(self) -> tuple[dict, dict]:
         """The movie panel's sources and the context panel's, name to array, from the bound arrays."""
-        movie = {"compressed+denoised": self._pmd_array}
-        if self._raw is not None:
+        movie = {"registered": self.demixing_results} if self._is_registration else {"compressed+denoised": self._pmd_array}
+        if self._raw is not None and not self._is_registration:
             movie["raw"] = self._raw
         if self._residual_array is not None:
             movie["residual"] = self._residual_array
@@ -527,8 +538,9 @@ class SingleSessionDemixingVis:
             context[self._summary_name] = self._summary_img
         if self._has_ac and self.demixing_results.global_residual_correlation_image is not None:
             context["residual correlation image"] = self.demixing_results.global_residual_correlation_image.cpu().numpy()
-        context["mean image"] = self._pmd_array.mean_image.cpu().numpy()
-        context["noise variance image"] = self._pmd_array.noise_variance_image.cpu().numpy()
+        if self._pmd_array is not None:
+            context["mean image"] = self._pmd_array.mean_image.cpu().numpy()
+            context["noise variance image"] = self._pmd_array.noise_variance_image.cpu().numpy()
         return movie, context
 
     def _set_source(self, panel: str, name: str):
@@ -1366,7 +1378,8 @@ class SingleSessionDemixingVis:
 
     def _clear_traces(self):
         self._active_pixel = None
-        self._traces.set("traces", [])
+        if self._pmd_array is not None:
+            self._traces.set("traces", [])
 
     @property
     def roi_masks(self) -> np.ndarray:
@@ -1469,7 +1482,7 @@ class SingleSessionDemixingVis:
             self._step(-stride)
         if imgui.is_key_pressed(imgui.Key.f, False):
             self._toggle_follow()
-        if imgui.is_key_pressed(imgui.Key.p, False):
+        if imgui.is_key_pressed(imgui.Key.p, False) and self._pmd_array is not None:
             self._set_pixel_traces(not self._pixel_traces)
         if imgui.is_key_pressed(imgui.Key.k, False):
             self._keybinds_open = not self._keybinds_open
@@ -1760,6 +1773,8 @@ class SingleSessionDemixingVis:
                 self._footprints.recolor(None if index == 0 else self._order.columns[self._color_by])
                 self._refresh_masks()
             help_mark("color the masks and the table's ids by a column's rank instead of by signal id")
+        if self._pmd_array is None:
+            return
         g.row("traces")
         changed, on = imgui.checkbox("quick pixel trace", self._pixel_traces)
         if changed:
@@ -1895,7 +1910,7 @@ class SingleSessionDemixingVis:
         return self._device
 
     @property
-    def demixing_results(self) -> masknmf.DemixingResults | masknmf.CompressionArray:
+    def demixing_results(self) -> masknmf.DemixingResults | masknmf.CompressionArray | masknmf.BaseRegistrationArray:
         return self._demixing_results
 
     @property

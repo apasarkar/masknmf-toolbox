@@ -244,7 +244,7 @@ class SwitchableArray:
 
     def __init__(self, sources: dict, shape: tuple):
         self.sources = sources
-        self.current = next(iter(sources))
+        self.current = next(iter(sources), None)
         self.shape = tuple(int(s) for s in shape)
         self.ndim = 3
         self.dtype = np.dtype(np.float32)
