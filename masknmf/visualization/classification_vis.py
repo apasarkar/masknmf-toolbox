@@ -6,10 +6,11 @@ import threading
 import time
 import numpy as np
 import fastplotlib as fpl
-from imgui_bundle import imgui, icons_fontawesome_6 as fa, portable_file_dialogs as pfd
+from imgui_bundle import imgui, icons_fontawesome_6 as fa
 
 from masknmf.visualization.imgui.movie_player import MoviePlayer
 from masknmf.visualization.imgui.panels import draw_keybinds_popup
+from masknmf.visualization.imgui.files import PathPrompt, draw_path_prompt
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, close_button
 from masknmf.demixing.labels import (
@@ -121,7 +122,17 @@ class ClassificationVis:
         self._label_colors: list[tuple] = []
         self._set_label_names(label_names)
         self._help_open = False
-        self._file_dialog = None
+        # typed-path windows, so they work on a remote kernel; browse there is the native dialog
+        self._results_prompt = PathPrompt(
+            "Load demixing results", "", "load", "one or more results.hdf5, ; separated", "open", _HDF5_FILTERS, multiple=True
+        )
+        self._folder_prompt = PathPrompt(
+            "Load a folder of results", "", "load", "a folder; every .hdf5 in it is a session", "folder"
+        )
+        self._classifier_prompt = PathPrompt(
+            "Select classifier", "", "select", "a saved .roicat_classifier to classify with", "open", _CLF_FILTERS
+        )
+        self._save_prompt = PathPrompt("Save classifier as", "", "set", "where train saves the classifier", "save", _CLF_FILTERS)
         self._placeholder = False
         self._clf_source: Optional[tuple[str, str]] = None  # ('trained' | 'file', path)
         self._classified_with = ""
@@ -1249,6 +1260,7 @@ class ClassificationVis:
         self._draw_classifier_card(h)
         self._draw_status()
         self._summary.draw()
+        self._draw_prompts()
         self._draw_help_popup()
         self._draw_keybinds_popup()
 
@@ -1495,47 +1507,42 @@ class ClassificationVis:
         self.load_masknmf(files, append=append)
 
     def open_file(self):
-        """Native picker for one or more demixing_results .hdf5 files; loaded when the dialog returns."""
-        if self._file_dialog is None:
-            start = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
-            self._file_dialog = (
-                "hdf5", pfd.open_file("Open demixing results", start, _HDF5_FILTERS, pfd.opt.multiselect)
-            )
+        """Ask for one or more demixing_results .hdf5 files, typed or browsed; loaded on load."""
+        start = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
+        self._results_prompt.start(start)
 
     def open_folder(self):
-        """Native picker for a folder; every .hdf5 in it is loaded as a session."""
-        if self._file_dialog is None:
-            start = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
-            self._file_dialog = ("folder", pfd.select_folder("Open a folder of demixing results", start))
+        """Ask for a folder; every .hdf5 in it is loaded as a session."""
+        start = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
+        self._folder_prompt.start(start)
 
     def browse(self):
-        """Native picker for a saved classifier to classify with; applied when the dialog returns."""
-        if self._file_dialog is None:
-            start = os.path.dirname(self._classifier_path or self._default_classifier_path())
-            self._file_dialog = ("open", pfd.open_file("Select a ROICaT classifier", start, _CLF_FILTERS))
+        """Ask for a saved classifier to classify with; applied on select."""
+        self._classifier_prompt.start(self._classifier_path or self._default_classifier_path())
 
     def browse_save(self):
-        """Native picker for where train saves the classifier."""
-        if self._file_dialog is None:
-            start = self._classifier_path or self._default_classifier_path() + CLASSIFIER_SUFFIX
-            self._file_dialog = ("save", pfd.save_file("Save classifier as", start, _CLF_FILTERS))
+        """Ask where train saves the classifier."""
+        self._save_prompt.start(self._classifier_path or self._default_classifier_path() + CLASSIFIER_SUFFIX)
 
-    def _poll_file_dialog(self):
-        if self._file_dialog is None or not self._file_dialog[1].ready(0):
-            return
-        kind, dialog = self._file_dialog
-        self._file_dialog = None
-        result = dialog.result()
-        if not result:
-            return
-        if kind == "open":
-            self.select_classifier(result[0])
-        elif kind == "hdf5":
-            self.open_paths(result)
-        elif kind == "folder":
-            self.open_paths([result])
-        else:
-            self._classifier_path = result
+    def _draw_prompts(self):
+        for prompt in (self._results_prompt, self._folder_prompt, self._classifier_prompt):
+            path = draw_path_prompt(prompt)
+            if path is None:
+                continue
+            paths = [p.strip() for p in path.split(";") if p.strip()] if prompt is self._results_prompt else [path]
+            missing = [p for p in paths if not os.path.exists(p)]
+            if missing:
+                prompt.status = f"not found on this machine: {missing[0]}"
+                continue
+            prompt.open = False
+            if prompt is self._classifier_prompt:
+                self.select_classifier(path)
+            else:
+                self.open_paths(paths)
+        path = draw_path_prompt(self._save_prompt)
+        if path is not None:
+            self._save_prompt.open = False
+            self._classifier_path = path
 
     def _classifier_hint(self) -> str:
         missing = self._adapter_missing()
@@ -1553,7 +1560,6 @@ class ClassificationVis:
         w = em(6.5)
         row_w = w * 2 + em(0.6)
         with card("##clf", "CLASSIFIER", h):
-            self._poll_file_dialog()
             imgui.text("save to")
             imgui.same_line(0, em(0.4))
             imgui.set_next_item_width(row_w - em(6.4))
