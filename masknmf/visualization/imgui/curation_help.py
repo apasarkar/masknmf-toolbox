@@ -15,7 +15,7 @@ from imgui_bundle import imgui
 from wgpu.utils.imgui import ImguiRenderer
 
 from masknmf.visualization.imgui.keybinds import DEMIXING
-from masknmf.visualization.imgui.panels import draw_keybinds_button
+from masknmf.visualization.imgui.panels import draw_keybinds_button, draw_keybinds_popup
 
 ACCENT = imgui.ImVec4(0.40, 0.68, 1.00, 1.0)
 KEY = imgui.ImVec4(1.00, 0.80, 0.20, 1.0)
@@ -237,9 +237,9 @@ def table(name: str, rows: tuple) -> None:
 
 
 def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
-    """The page as a centered window with its keybinds button; returns (page open, popup open)."""
+    """The page as a centered window with its keybinds button, whose popup the caller draws; returns (page open, popup open)."""
     if not is_open:
-        return False, False
+        return False, keys_open
     em = imgui.get_font_size()
     w = WIDTH_EM * em
     viewport = imgui.get_main_viewport()
@@ -264,7 +264,7 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     imgui.push_text_wrap_pos(w)
     imgui.text_colored(ACCENT, f"{fa.ICON_FA_CIRCLE_QUESTION}  {TITLE}")
     imgui.same_line(w - 4.8 * em)
-    keys_open = draw_keybinds_button(DEMIXING, keys_open, f"{TITLE} keybinds")
+    keys_open = draw_keybinds_button(keys_open)
     imgui.separator()
     imgui.dummy(imgui.ImVec2(0, 0.5 * em))
 
@@ -445,6 +445,7 @@ def draw_window(state: dict) -> None:
         imgui.set_tooltip(TOOLTIP)
     imgui.end()
     state["open"], state["keys"] = draw_curation_help(state["open"], state["keys"])
+    state["keys"] = draw_keybinds_popup(DEMIXING, state["keys"], f"{TITLE} keybinds")
 
 
 def load_fonts() -> None:
