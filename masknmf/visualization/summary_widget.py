@@ -152,8 +152,9 @@ class SummaryImageViewer:
     draw() every imgui frame (it is a no-op while closed).
     """
 
-    def __init__(self, figure, images: Optional[dict] = None):
+    def __init__(self, figure, images: Optional[dict] = None, title: str = "Full FOV"):
         self._figure = figure
+        self._title = title
         self._images: dict = images or {}
         self._movies: dict = {}
         self._movie_frame: Optional[np.ndarray] = None
@@ -399,7 +400,7 @@ class SummaryImageViewer:
         )
 
         opened, self._popup_open = imgui.begin(
-            "Full FOV###summary_image_popup",
+            f"{self._title}###summary_image_popup",
             self._popup_open,
             flags=imgui.WindowFlags_.no_saved_settings,
         )
