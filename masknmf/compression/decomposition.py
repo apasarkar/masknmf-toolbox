@@ -2,6 +2,7 @@ import torch
 
 import masknmf
 from masknmf.compression.compression_array import CompressionArray
+import logging
 import math
 import numpy as np
 from collections.abc import Callable
@@ -11,6 +12,8 @@ from tqdm import tqdm
 from masknmf import display
 from masknmf.utils import torch_select_device, SparseCOOTensor
 from masknmf.compression.preprocessing import SplineDetrend, SplineDetrenderBase
+
+logger = logging.getLogger(__name__)
 
 
 def truncated_random_svd(
@@ -477,12 +480,12 @@ def compute_factorized_svd_with_leftbasis(
         i.float() for i in torch.linalg.svd(mtm, full_matrices=True)
     ]
 
-    print(f"{torch.allclose(mtm, mtm.T)}")
-    print(
+    logger.debug(f"mtm symmetric: {torch.allclose(mtm, mtm.T)}")
+    logger.debug(
         f"When we ran the  leftbasis eigh routine, the smallest value we saw was {np.amin(eig_vals.cpu().numpy())}"
     )
 
-    print(
+    logger.debug(
         f"When we ran the eigh routine, the smallest value we saw was {np.amin(eig_vals.cpu().numpy())}"
     )
     good_components = eig_vals > 0

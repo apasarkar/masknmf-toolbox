@@ -1,6 +1,6 @@
+import logging
 import math
 import random
-import warnings
 
 import torch
 import numpy as np
@@ -12,6 +12,8 @@ import numbers
 from .registration_methods import register_frames_rigid, register_frames_pwrigid
 from masknmf.utils import Serializer
 from masknmf.arrays.array_interfaces import ArrayLike
+
+logger = logging.getLogger(__name__)
 
 
 class MotionCorrectionStrategy:
@@ -161,7 +163,7 @@ class MotionCorrectionStrategy:
         if self.template is None:
             # template not specified by user, estimate using just the first 500 frames of the movie
             if frames.shape[0] < 500:
-                warnings.warn("Using less than 500 frames to create registration template")
+                logger.warning("Using less than 500 frames to create registration template")
 
             # account for use cases with very few frames, ex: spatial transcriptomics
             num_frames_template = min(frames.shape[0], 500)
