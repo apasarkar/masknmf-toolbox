@@ -74,4 +74,4 @@ def test_log_level_selects_what_the_log_holds_and_round_trips_through_config(fol
     third, = (tmp_path / "third").iterdir()
     text = (third / f"{third.name}.log").read_text()
     assert "a debug line" in text and "an info line" in text and "a warning line" in text
-    assert "FolderPipeline" in text and "done:" in text
+    assert "FolderPipeline" in text and "done in 0:00:00" in text

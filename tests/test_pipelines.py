@@ -48,3 +48,20 @@ def test_log_level_sets_the_logger_and_a_run_folder_gets_a_log_beside_its_config
     pipeline.log_handler.close()
     cls()
     assert logging.getLogger("masknmf").level == logging.INFO
+
+
+def test_step_logs_its_start_and_how_long_it_took_or_that_it_failed(tmp_path):
+    cls = scraper.pipeline_registry()[SLUGS[0]]
+    pipeline = cls(output_folder=str(tmp_path))
+    folder = pipeline.create_run_folder()
+    with pipeline.step("a quick step"):
+        pass
+    with pytest.raises(RuntimeError):
+        with pipeline.step("a broken step"):
+            raise RuntimeError("broken")
+    text = (folder / f"{folder.name}.log").read_text()
+    assert "INFO masknmf.pipelines._base: a quick step\n" in text
+    assert "a quick step done in 0:00:00" in text
+    assert "ERROR masknmf.pipelines._base: a broken step failed after 0:00:00" in text
+    logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
+    pipeline.log_handler.close()

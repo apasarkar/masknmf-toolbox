@@ -1,11 +1,13 @@
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import asdict, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import inspect
 import json
 import logging
 import os
+import time
 import numpy as np
 import torch
 from typing import *
@@ -118,6 +120,18 @@ class BasePipeline(ABC):
         logger.info(f"masknmf {__version__} {type(self).__name__} on {self.torch_device}, {self.log_level} log at {path}")
         return path
 
+    @contextmanager
+    def step(self, name: str):
+        """Log that name starts and, once the block ends, how long it took, or that it failed and after how long."""
+        logger.info(name)
+        start = time.monotonic()
+        try:
+            yield
+        except BaseException:
+            logger.error(f"{name} failed after {timedelta(seconds=round(time.monotonic() - start))}")
+            raise
+        logger.info(f"{name} done in {timedelta(seconds=round(time.monotonic() - start))}")
+
     def results_path(self, resume: bool = False) -> str:
         """
         ``results.hdf5`` in a new run folder. With ``resume``, the one in output_folder itself, an earlier run
@@ -158,11 +172,12 @@ class BasePipeline(ABC):
                                                               batch_size=self.frame_batch_size)
             else:
                 raise ValueError("Invalid MotionCorrectionConfig input")
-            if moco_strategy.template is None:
-                moco_strategy.compute_template(data)
-            moco_data = moco_strategy.motion_correct(data)
-            moco_data.output_device = moco_data.strategy.device
-            moco_data.export(results_path)
+            with self.step("motion correction"):
+                if moco_strategy.template is None:
+                    moco_strategy.compute_template(data)
+                moco_data = moco_strategy.motion_correct(data)
+                moco_data.output_device = moco_data.strategy.device
+                moco_data.export(results_path)
 
         if isinstance(moco_data, BaseRegistrationArray):
             shift_mask = construct_moco_template(moco_data.shifts.cpu().numpy(), moco_data.shape[1:]).astype("float")
@@ -214,17 +229,20 @@ class BasePipeline(ABC):
         if len(config.DemixingConfigs) < 1:
             raise ValueError("Demixing needs at least one pass")
         results = None
-        for singlepass in config.DemixingConfigs:
-            try:
-                demixer.initialize_signals(**asdict(singlepass.InitConfig))
-            except NoSignalsDetectedError:
-                if results is None:
-                    raise ValueError("The demixer did not identify any signals. Lower thresholds or inspect the data "
-                                     "to resolve this issue.")
-                break
-            demixer.demix(**asdict(singlepass.NMFConfig))
-            results = demixer.results
-            torch.cuda.empty_cache()
+        for i, singlepass in enumerate(config.DemixingConfigs):
+            with self.step(f"demixing pass {i + 1} of {len(config.DemixingConfigs)}"):
+                try:
+                    demixer.initialize_signals(**asdict(singlepass.InitConfig))
+                except NoSignalsDetectedError:
+                    if results is None:
+                        raise ValueError("The demixer did not identify any signals. Lower thresholds or inspect the data "
+                                         "to resolve this issue.")
+                    logger.info("no signals detected, keeping the previous pass")
+                    break
+                demixer.demix(**asdict(singlepass.NMFConfig))
+                results = demixer.results
+                logger.info(f"{results.spatial_demixed.shape[1]} signals")
+                torch.cuda.empty_cache()
         return results
 
     def with_detrender(self, config: MultipassDemixingConfig, detrender: MaximinSplineDetrend) -> MultipassDemixingConfig:

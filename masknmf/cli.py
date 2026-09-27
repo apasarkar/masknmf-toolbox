@@ -26,6 +26,8 @@ import json
 import logging
 import shutil
 import sys
+import time
+from datetime import timedelta
 from pathlib import Path
 
 import h5py
@@ -496,6 +498,7 @@ def command_run(args: argparse.Namespace) -> None:
         if kwargs_run.get(p.field) is not None
     )
     print(f"{spec.cls.__name__} on {shapes or 'stored results'}")
+    start = time.monotonic()
     try:
         run_folder = pipeline.run(**kwargs_run)
     except BaseException:
@@ -513,7 +516,7 @@ def command_run(args: argparse.Namespace) -> None:
             shutil.rmtree(folder)
             print(f"removed {folder}, its log is in {folder.parent}", file=sys.stderr)
         raise SystemExit(1)
-    logger.info(f"done: {run_folder}")
+    logger.info(f"done in {timedelta(seconds=round(time.monotonic() - start))}: {run_folder}")
 
 
 def command_view(args: argparse.Namespace) -> None:

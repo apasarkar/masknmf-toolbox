@@ -1,6 +1,5 @@
 import torch
 from masknmf.arrays import LazyFrameLoader, ArrayLike
-from masknmf.utils import display
 
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, MotionCorrectionConfigs
@@ -53,11 +52,10 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
                                                     exclude_border_radius)
 
-        display("Running Compression")
         compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
 
-        compressed_results = compress_strategy.compress(moco_data)
-
-        compressed_results.export(results_path)
+        with self.step("compression"):
+            compressed_results = compress_strategy.compress(moco_data)
+            compressed_results.export(results_path)
         return Path(results_path).parent
 

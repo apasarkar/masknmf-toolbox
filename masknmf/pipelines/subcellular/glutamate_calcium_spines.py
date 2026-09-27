@@ -135,8 +135,9 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                                                spatial_avg_factor=4,
                                                frame_batch_size=self.frame_batch_size,
                                                 device=device)
-        pmd_pre_moco_reference = pre_moco_strategy.compress(reference_input)
-        pmd_pre_moco_reference.to(device) #Move it to the accelerator
+        with self.step("reference compression"):
+            pmd_pre_moco_reference = pre_moco_strategy.compress(reference_input)
+            pmd_pre_moco_reference.to(device) #Move it to the accelerator
 
         corrector = RigidMotionCorrector(**asdict(self.motion_correct_config),
                                          device=device,
@@ -145,19 +146,21 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         corrector.compute_template(pmd_pre_moco_reference)
 
         if glu is not None:
-            glu_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
-                                                  target_movie=glu)
-            glu_moco_array.export(glu_path)
-            glu_moco_array_dense = glu_moco_array[:].cpu().numpy() #Loads it all into RAM
+            with self.step("glutamate motion correction"):
+                glu_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
+                                                          target_movie=glu)
+                glu_moco_array.export(glu_path)
+                glu_moco_array_dense = glu_moco_array[:].cpu().numpy() #Loads it all into RAM
         else:
             glu_moco_array = None
             glu_moco_array_dense = None
 
         if calcium is not None:
-            calcium_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
-                                                      target_movie=calcium)
-            calcium_moco_array.export(ca_path)
-            calcium_moco_array_dense = calcium_moco_array[:].cpu().numpy() #Loads it all into RAM
+            with self.step("calcium motion correction"):
+                calcium_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
+                                                              target_movie=calcium)
+                calcium_moco_array.export(ca_path)
+                calcium_moco_array_dense = calcium_moco_array[:].cpu().numpy() #Loads it all into RAM
         else:
             calcium_moco_array = None
             calcium_moco_array_dense = None
@@ -180,14 +183,16 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         compress_strat = self.compress_strategy(self.compress_config)
 
         if glu_video is not None:
-            pmd_glu = compress_strat.compress(glu_video)
-            pmd_glu.export(glu_path)
+            with self.step("glutamate compression"):
+                pmd_glu = compress_strat.compress(glu_video)
+                pmd_glu.export(glu_path)
         else:
             pmd_glu = None
 
         if calcium_video is not None:
-            pmd_ca = compress_strat.compress(calcium_video)
-            pmd_ca.export(ca_path)
+            with self.step("calcium compression"):
+                pmd_ca = compress_strat.compress(calcium_video)
+                pmd_ca.export(ca_path)
         else:
             pmd_ca = None
 
@@ -205,11 +210,11 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 pmd_glu,
                 device=device
             )
-            glu_pmd_demixer_global.initialize_signals(is_custom=True,
-                                                      spatial_footprints=(cross_channel_mask[:,:, None].astype("float"))
-                                                      )
-
-            glu_pmd_demixer_global.demix(**NMF_JUST_HALS)
+            with self.step("glutamate whole-dendrite demixing"):
+                glu_pmd_demixer_global.initialize_signals(is_custom=True,
+                                                          spatial_footprints=(cross_channel_mask[:,:, None].astype("float"))
+                                                          )
+                glu_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
             glu_pmd_demixer_results.export(glu_path)
             glu_pmd_demixer_global.results.export(glu_path, prefix="global")
@@ -222,21 +227,22 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                     pmd_ca,
                     device=device)
 
-                ca_pmd_demixer.initialize_signals(is_custom=True,
-                                                  spatial_footprints=spatialfoot_spines_glu)
-                ca_pmd_demixer.demix(**NMF_JUST_HALS)
+                with self.step("calcium spine demixing"):
+                    ca_pmd_demixer.initialize_signals(is_custom=True,
+                                                      spatial_footprints=spatialfoot_spines_glu)
+                    ca_pmd_demixer.demix(**NMF_JUST_HALS)
 
                 ## Pull out global events from the calcium data
                 ca_pmd_demixer_global = masknmf.demixing.signal_demixer.SignalDemixer(
                     pmd_ca,
                     device=device)
 
-                ca_pmd_demixer_global.initialize_signals(is_custom=True,
-                                                         spatial_footprints=(
-                                                             cross_channel_mask[:, :, None].astype("float"))
-                                                         )
-
-                ca_pmd_demixer_global.demix(**NMF_JUST_HALS)
+                with self.step("calcium whole-dendrite demixing"):
+                    ca_pmd_demixer_global.initialize_signals(is_custom=True,
+                                                             spatial_footprints=(
+                                                                 cross_channel_mask[:, :, None].astype("float"))
+                                                             )
+                    ca_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
                 ca_pmd_demixer.results.export(ca_path)
                 ca_pmd_demixer_global.results.export(ca_path, prefix="global")
@@ -255,11 +261,11 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 pmd_ca,
                 device=device
             )
-            ca_pmd_demixer_global.initialize_signals(is_custom=True,
-                                                     spatial_footprints=(cross_channel_mask[:, :, None].astype("float"))
-                                                     )
-
-            ca_pmd_demixer_global.demix(**NMF_JUST_HALS)
+            with self.step("calcium whole-dendrite demixing"):
+                ca_pmd_demixer_global.initialize_signals(is_custom=True,
+                                                         spatial_footprints=(cross_channel_mask[:, :, None].astype("float"))
+                                                         )
+                ca_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
             ca_pmd_demixer_results.export(ca_path)
             ca_pmd_demixer_global.results.export(ca_path, prefix="global")

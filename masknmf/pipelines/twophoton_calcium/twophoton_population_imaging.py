@@ -102,13 +102,13 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
                                                         exclude_border_radius)
 
-            display("Running Compression")
             compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
             compress_strategy.detrender = self.spline_detrender(data.shape[0], frame_rate, window_seconds=40,
                                                                 knot_seconds=25, sigma_seconds=0.3)
 
-            compressed_results = compress_strategy.compress(moco_data)
-            compressed_results.export(results_path)
+            with self.step("compression"):
+                compressed_results = compress_strategy.compress(moco_data)
+                compressed_results.export(results_path)
 
         if isinstance(self.filtered_demixing_config, str):
             if self.filtered_demixing_config.lower() != "skip":
