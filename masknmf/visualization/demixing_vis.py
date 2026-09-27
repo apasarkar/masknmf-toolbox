@@ -279,6 +279,8 @@ class SingleSessionDemixingVis:
                         shifts = candidate
                         break
         shifts_src = shifts if isinstance(shifts, (str, os.PathLike)) else None
+        # the registration template, the still a registration stage leaves: beside the shifts in the file, or on the array
+        template = None
         if shifts_src is not None:
             with h5py.File(shifts_src, "r") as f:
                 groups = [
@@ -293,6 +295,9 @@ class SingleSessionDemixingVis:
                 if not groups:
                     raise ValueError(f"{shifts_src} holds no registration array")
                 shifts = f[groups[0]]["shifts"][()]
+                strategy = getattr(masknmf, groups[0])._strategy_cls.__name__
+                if strategy in f and "template" in f[strategy]:
+                    template = f[strategy]["template"][()]
         if shifts is not None:
             if isinstance(shifts, torch.Tensor):
                 shifts = shifts.cpu().numpy()
@@ -306,6 +311,7 @@ class SingleSessionDemixingVis:
                     f"skipping {shifts_src}: {shifts.shape[0]} shifts for {self._shape[0]} frames"
                 )
                 shifts = None
+                template = None
         # say what was picked up, and how to add what was not, so the panels are discoverable
         if raw is not None:
             display(f"raw panel: {raw_src if raw_src is not None else 'movie given'}")
@@ -329,6 +335,15 @@ class SingleSessionDemixingVis:
         if registered is not None and tuple(registered.shape) != tuple(self._shape):
             raise ValueError(f"registered movie has shape {tuple(registered.shape)}, the results have {tuple(self._shape)}")
         self._registered = registered
+        if self._is_registration:
+            template = demixing_results.strategy.template
+        elif registered is not None:
+            template = registered.strategy.template
+        self._template = (
+            None
+            if template is None
+            else np.asarray(template.cpu() if isinstance(template, torch.Tensor) else template, np.float32)
+        )
         self._shift_lines = None
         if shifts is not None:
             # piecewise rigid shifts are (frames, height blocks, width blocks, 2): show the largest block shift
@@ -555,6 +570,8 @@ class SingleSessionDemixingVis:
     def _static_images(self) -> dict:
         """The stills the results hold, name to 2-D image, for the Static images window."""
         stills = {}
+        if self._template is not None:
+            stills["registration template"] = self._template
         if self._summary_img is not None:
             stills[self._summary_name] = self._summary_img
         if self._has_ac and self.demixing_results.global_residual_correlation_image is not None:
