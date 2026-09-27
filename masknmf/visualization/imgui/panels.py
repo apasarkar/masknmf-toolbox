@@ -30,6 +30,15 @@ def draw_keybinds_popup(bindings: Sequence[tuple], is_open: bool, title: str = "
     return is_open
 
 
+def draw_keybinds_button(bindings: Sequence[tuple], is_open: bool, title: str = "Keybinds") -> bool:
+    """The keybinds button, k's twin, and the popup it toggles. Returns the popup's new open state."""
+    if imgui.button("keybinds"):
+        is_open = not is_open
+    if imgui.is_item_hovered():
+        imgui.set_tooltip("k")
+    return draw_keybinds_popup(bindings, is_open, title)
+
+
 def draw_path_popup(
     title: str, is_open: bool, path: str, hint: str, action: str, browse=None, note: str = ""
 ) -> tuple[bool, str, bool]:

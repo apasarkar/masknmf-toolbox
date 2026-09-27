@@ -9,7 +9,9 @@ Reusable GUI-layer building blocks shared by the interactive viewers
 - `picking.py` — data-space picking. `component_at_pixel` (was duplicated as `CurationVis._neuron_at` and `MultiSessionDemixingVis.neuron_selection`), `contours_to_bbox` / `zoom_to_bbox` (from `multisession_vis.py`).
 - `layout.py` — figure-level helpers. `resolve_time_reference` (frame_timings/ref_range block that was triplicated across curation/demixing/motion), `is_notebook_canvas` (canvas-class check in `show()` dispatch) and `draw_edge_handle` (resize/collapse handle for top/left edge windows, which fastplotlib only has for bottom/right).
 - `table.py` — `RoiOrder` (filter / sort / cursor over per-item columns) and `draw_roi_table` (clipped sortable table with ctrl / shift multi-select callbacks), `draw_range_filter`.
-- `panels.py` — `draw_keybinds_popup`: the (key, action) reference window.
+- `panels.py` — `draw_keybinds_popup`: the (key, action) reference window, and `draw_keybinds_button`, the button that toggles it.
+- `keybinds.py` — every viewer's (key, action) table in one place: `DEMIXING`, `CLASSIFICATION`; what the popup draws and where a custom mapping would go.
+- `curation_help.py`, `classification_help.py` — the viewers' (?) pages: diagrams, tables and the keybinds button; each runs standalone with `python -m`.
 - `trace_plot.py` — `TracePlot`: stacked implot panels docked on top of a figure, playhead linked to the NDWidget time index, stimulus marks/spans, double-click pick.
 - `movie_player.py` — `MoviePlayer`: imgui transport bar over a lazy (T, H, W) array.
 - `theme.py` — palette and card/section/popup helpers shared by the imgui panels.
