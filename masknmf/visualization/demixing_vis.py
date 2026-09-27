@@ -9,11 +9,12 @@ from imgui_bundle import imgui, icons_fontawesome_6 as fa, portable_file_dialogs
 from fastplotlib import ui
 from fastplotlib.graphics.selectors._polygon import point_in_polygon
 import pygfx
+from fastplotlib.widgets.nd_widget._async import run_sync
 import h5py
 import torch
 from collections import OrderedDict
 import masknmf.arrays
-from masknmf.arrays import TiffArray
+from masknmf.arrays import SwitchableArray, TiffArray
 from masknmf.utils import display
 from functools import partial
 from masknmf.visualization.imgui import (
@@ -56,7 +57,7 @@ _CLICK_SLOP = (
 _UNDO_DEPTH = 50  # ctrl+z snapshots kept
 # every grid's captions, so the caption column is one width across the sections and the tabs
 _CAPTIONS = (
-    "masks", "contours", "sel masks", "sel contours", "color by", "traces",
+    "movie", "context", "masks", "contours", "sel masks", "sel contours", "color by", "traces",
     "rois", "on disk", "polygon", "side", "run", "options",
     "filter", "in view", "selection", "merge", "view", "stats",
 )
@@ -152,9 +153,12 @@ class SingleSessionDemixingVis:
     hdf5 path) adds the registration shifts as a panel above the traces (piecewise rigid: the largest block
     shift per frame). With ``results_path`` set, a lone .tif beside the results, and the registration shifts
     from the results file itself or from a motion_correction.hdf5 beside it, are picked up when their frames
-    match the results; given ones must match. The panels are what the results hold, three to a row: the raw
-    movie when there is one, the compressed movie, then with demixed signals the signals, background (when the
-    demixer fit one), residual and colorful signals, and last the summary image.
+    match the results; given ones must match. Three panels: a movie panel that switches between the compressed
+    movie, the raw movie when there is one and the residual once demixed (the Curation tab's "movie" choice),
+    the demixed signals under their masks, and a context panel that switches between the fitted background,
+    when the demixer fit one, and every still the results hold: ``summary_img`` when given (named by
+    ``summary_img_name``), the residual correlation image once demixed, the mean image and the noise variance
+    image. Switching keeps the zoom and the drawn rois.
 
     The Signals table always carries the results' own stats (:meth:`CellStats.from_results`: mean, std, snr
     and skew of each demixed trace; fit, resid and bkgd from the roi averages the results hold), hidden until
@@ -323,14 +327,14 @@ class SingleSessionDemixingVis:
         )
 
         self._bind_arrays()
-
-        panels = {name: array for name, array in self._panel_arrays().items() if array is not None}
-        self._video_panels = (*panels, "summary img")
-        rows = (len(self._video_panels) + 2) // 3
-        self._video_extents = {
-            name: ((i % 3) / 3, (i % 3 + 1) / 3, (i // 3) / rows, (i // 3 + 1) / rows)
-            for i, name in enumerate(self._video_panels)
-        }
+        self._summary_img = summary_img
+        self._summary_name = "summary image" if summary_img_name is None else summary_img_name
+        movie, context = self._sources()
+        self._movie = SwitchableArray(movie, self._shape)
+        self._context = SwitchableArray(context, self._shape)
+        self._video_panels = ("movie", *(("signals",) if self._has_ac else ()), "context")
+        n = len(self._video_panels)
+        self._video_extents = {name: (i / n, (i + 1) / n, 0.0, 1.0) for i, name in enumerate(self._video_panels)}
 
         self._ndw_fov = fpl.NDWidget(
             ref_range,
@@ -339,61 +343,19 @@ class SingleSessionDemixingVis:
             controller_ids=[
                 tuple(self._video_panels),
             ],
-            size=(1200, 1200),
+            size=(1200, 800),
         )
 
         self._reference_index = self._ndw_fov.indices
         self._panel_graphics = OrderedDict()
-
-        for name, array in panels.items():
-            # colorful signals carry a color axis
-            color = ["c"] if len(array.shape) == 4 else []
-            self._panel_graphics[name] = self._ndw_fov[name].add_nd_image(
-                array,
-                ["time", "m", "n", *color],
-                ["m", "n", *color],
-                slider_maps={"time": frame_timings},
-                name=name,
-                **({"rgb_dim": "c"} if color else {}),
-            )
-
-        self._own_summary = summary_img is None and self._has_ac
-        if summary_img is not None:
-            dimension_data = ["m", "n"] if summary_img.ndim == 2 else ["time", "m", "n"]
-            self._summary_image = self._ndw_fov["summary img"].add_nd_image(
-                summary_img,
-                dimension_data,
-                ["m", "n"],
-                name="summary img",
-            )
-            self._ndw_fov.figure["summary img"].title = (
-                summary_img_name if summary_img_name is not None else "Summary Image"
-            )
-        elif self._has_ac:
-            self._summary_image = self._ndw_fov["summary img"].add_nd_image(
-                self.demixing_results.global_residual_correlation_image.cpu().numpy(),
-                ["m", "n"],
-                ["m", "n"],
-                name="summary img",
-            )
-            self._ndw_fov.figure["summary img"].title = (
-                summary_img_name
-                if summary_img_name is not None
-                else "Residual Correlation Image"
-            )
-        else:
-            self._summary_image = self._ndw_fov["summary img"].add_nd_image(
-                self._pmd_array.mean_image.cpu().numpy(),
-                ["m", "n"],
-                ["m", "n"],
-                name="summary img",
-            )
-            self._ndw_fov.figure["summary img"].title = (
-                summary_img_name if summary_img_name is not None else "Mean Image"
-            )
-
-        self._panel_graphics["summary img"] = self._summary_image
-        self._fov_subplot = self._ndw_fov.figure["summary img"]
+        for name, array in (("movie", self._movie), ("signals", self._ac_array), ("context", self._context)):
+            if name in self._video_panels:
+                self._panel_graphics[name] = self._ndw_fov[name].add_nd_image(
+                    array, ["time", "m", "n"], ["m", "n"], slider_maps={"time": frame_timings}, name=name
+                )
+        self._ndw_fov.figure["movie"].title = self._movie.current
+        self._ndw_fov.figure["context"].title = self._context.current
+        self._fov_subplot = self._ndw_fov.figure["movie"]
 
         self._active_component = None
         self._marked = (
@@ -540,7 +502,6 @@ class SingleSessionDemixingVis:
                 self.demixing_results.fluctuating_background_array
             )
             self._residual_array = self.demixing_results.residual_array
-            self._colorful_ac_array = self.demixing_results.colorful_signals_array
             self._ac_array = self.demixing_results.signals_array
             # an all-zero background term means the demixer never fit one
             self._has_background = bool(torch.count_nonzero(self.demixing_results.factorized_background_term1))
@@ -548,20 +509,39 @@ class SingleSessionDemixingVis:
             self._pmd_array = self.demixing_results
             self._fluctuating_background_array = None
             self._residual_array = None
-            self._colorful_ac_array = None
             self._ac_array = None
             self._has_background = False
 
-    def _panel_arrays(self) -> dict:
-        """The movie panels in grid order, name to the array shown; None is a panel the results cannot fill."""
-        return {
-            "raw": self._raw,
-            "compressed+denoised": self._pmd_array,
-            "signals": self._ac_array,
-            "background": self._fluctuating_background_array if self._has_background else None,
-            "residual": self._residual_array,
-            "colorful_signals": self._colorful_ac_array,
-        }
+    def _sources(self) -> tuple[dict, dict]:
+        """The movie panel's sources and the context panel's, name to array, from the bound arrays."""
+        movie = {"compressed+denoised": self._pmd_array}
+        if self._raw is not None:
+            movie["raw"] = self._raw
+        if self._residual_array is not None:
+            movie["residual"] = self._residual_array
+        # the background first, then every still the results hold; the panel opens on the first
+        context = {}
+        if self._has_background:
+            context["background"] = self._fluctuating_background_array
+        if self._summary_img is not None:
+            context[self._summary_name] = self._summary_img
+        if self._has_ac and self.demixing_results.global_residual_correlation_image is not None:
+            context["residual correlation image"] = self.demixing_results.global_residual_correlation_image.cpu().numpy()
+        context["mean image"] = self._pmd_array.mean_image.cpu().numpy()
+        context["noise variance image"] = self._pmd_array.noise_variance_image.cpu().numpy()
+        return movie, context
+
+    def _set_source(self, panel: str, name: str):
+        """Show ``name`` in the movie or context panel: it re-slices and refits its color limits; zoom and rois stay."""
+        sources = self._movie if panel == "movie" else self._context
+        sources.current = name
+        self._ndw_fov.figure[panel].title = name
+        # re-slice now, not on the scheduled fetch, so the color limits refit to the new frame; then what the
+        # spatial_func setter does after a change of what the slicer sees
+        graphic = self._panel_graphics[panel]
+        run_sync(graphic._set_indices_())
+        graphic.slicer._recompute_histogram()
+        graphic._reset_histogram()
 
     def _bind_click_handlers(self):
         """Re-attach the click handlers to every video panel: NDGraphic.data= replaces the graphic instance."""
@@ -605,21 +585,16 @@ class SingleSessionDemixingVis:
             axis=(1, 2),
         )
 
-        separated_ac_signals, separated_colors, unique_signals = (
-            extract_per_trace_roi_averages(
-                self._colorful_ac_array,
-                slice(row_start, row_stop),
-                slice(col_start, col_stop),
-            )
+        separated_ac_signals, unique_signals = extract_per_trace_roi_averages(
+            self._ac_array, slice(row_start, row_stop), slice(col_start, col_stop)
         )
         self._selected_signals = None
         lines = [("compressed", pmd_trace, _BASE_LINE_COLORS[0])]
         if separated_ac_signals is not None:
+            # each source in its mask's color, so the split reads against the panels and the table
             lines += [
-                (f"signal {k}", trace, tuple(float(v) for v in rgb))
-                for k, trace, rgb in zip(
-                    unique_signals, separated_ac_signals, separated_colors
-                )
+                (f"signal {k}", trace, self._footprints.color(int(k)))
+                for k, trace in zip(unique_signals, separated_ac_signals)
             ]
         lines.append(("background", background_trace, _BASE_LINE_COLORS[2]))
         lines.append(("residual", residual_trace, _BASE_LINE_COLORS[3]))
@@ -634,12 +609,8 @@ class SingleSessionDemixingVis:
             self._begin_poly(name)
 
     def _set_gray_cmaps(self):
-        """NDGraphic.data= replaces the graphic instance, dropping its cmap too."""
-        arrays = self._panel_arrays()
-        for name, g in self._panel_graphics.items():
-            array = arrays.get(name)
-            if array is None or len(array.shape) != 4:
-                g.graphic.cmap = "gray"
+        for g in self._panel_graphics.values():
+            g.graphic.cmap = "gray"
 
     def _video_graphics(self):
         """The NDImage wrapper for every video panel, in ``_video_panels`` order."""
@@ -673,14 +644,19 @@ class SingleSessionDemixingVis:
         self._selected_signals = None
         self._clear_traces()
         self._pixels.clear()
-        # same movies, new graphic instances: keeps the re-bound click handlers from doubling up
-        for name, array in self._panel_arrays().items():
-            if name in self._panel_graphics and array is not None:
+        # fresh wrappers, so every panel gets a new graphic instance: keeps the re-bound click handlers from doubling up
+        movie, context = self._sources()
+        keep_movie, keep_context = self._movie.current, self._context.current
+        self._movie, self._context = SwitchableArray(movie, self._shape), SwitchableArray(context, self._shape)
+        if keep_movie in movie:
+            self._movie.current = keep_movie
+        if keep_context in context:
+            self._context.current = keep_context
+        for name, array in (("movie", self._movie), ("signals", self._ac_array), ("context", self._context)):
+            if name in self._panel_graphics:
                 self._panel_graphics[name].data = array
-        if self._own_summary:
-            self._summary_image.data = (
-                results.global_residual_correlation_image.cpu().numpy()
-            )
+        self._ndw_fov.figure["movie"].title = self._movie.current
+        self._ndw_fov.figure["context"].title = self._context.current
         self._bind_click_handlers()
         self._set_gray_cmaps()
         self._make_selectors()
@@ -1709,6 +1685,22 @@ class SingleSessionDemixingVis:
         existing = len(self._footprints) if self._footprints is not None else 0
         g = grid(_CAPTIONS)
 
+        choices = [(panel, sources) for panel, sources in (("movie", self._movie), ("context", self._context)) if len(sources.sources) > 1]
+        if choices:
+            section("PANELS")
+            for panel, sources in choices:
+                g.row(panel)
+                names = list(sources.sources)
+                imgui.set_next_item_width(g.span)
+                changed, index = imgui.combo(f"##{panel}_source", names.index(sources.current), names)
+                if changed:
+                    self._set_source(panel, names[index])
+                help_mark(
+                    "what the movie panel shows: the compressed movie, the raw one, or the residual"
+                    if panel == "movie"
+                    else "what the context panel shows: the fitted background, or one of the stills the results hold"
+                )
+
         section("OVERLAY")
         if self._image_selector is not None:
             changed, show = imgui.checkbox("masks", self._show_masks)
@@ -1967,20 +1959,24 @@ class SingleSessionDemixingVis:
         self._ndw_fov.close()
 
 
-def extract_per_trace_roi_averages(
-    colorful_ac_array: masknmf.ColorfulSignalsArray, rowslice: slice, colslice: slice
-):
+def extract_per_trace_roi_averages(signals_array: masknmf.SignalsArray, rowslice: slice, colslice: slice):
     """
+    Split the region's demixed signal into its sources: each signal's trace weighted by its footprint's
+    average over the region.
 
     Args:
-        colorful_ac_array (masknmf.ColorfulSignalsArray): The signal array that contains the factorized signals
+        signals_array (masknmf.SignalsArray): The signal array that contains the factorized signals
         rowslice (slice): rows of the region
         colslice (slice): columns of the region
+
+    Returns:
+        (traces, signals): (signals, frames) weighted traces and the ids they belong to, or (None, None) when
+        no footprint touches the region
     """
-    device = colorful_ac_array.device
-    num_frames, height, width, _ = colorful_ac_array.shape
-    a = colorful_ac_array.spatial_demixed.coalesce()  # Shape (num_pixels, num_signals)
-    c = colorful_ac_array.temporal_demixed  # Shape (num_frames, num_signals)
+    device = signals_array.device
+    num_frames, height, width = signals_array.shape
+    a = signals_array.spatial_demixed.coalesce()  # Shape (num_pixels, num_signals)
+    c = signals_array.temporal_demixed  # Shape (num_frames, num_signals)
 
     pixel_space = (
         torch.arange(height * width, device=device).reshape(height, width).long()
@@ -1993,7 +1989,7 @@ def extract_per_trace_roi_averages(
 
     valid_indices = torch.isin(row, good_row_values)
     if torch.count_nonzero(valid_indices) == 0:
-        return None, None, None
+        return None, None
     else:
         valid_columns = col[valid_indices]
         unique_signals = torch.unique(valid_columns)
@@ -2014,13 +2010,8 @@ def extract_per_trace_roi_averages(
         weighted_signals = (
             reduce_tensor[None, :] * c[:, unique_signals]
         )  # Shape (num_frames, neural_signals)
-        colors = colorful_ac_array.colors[unique_signals, :]  # (neural_signals, 3)
 
-        return (
-            weighted_signals.T.cpu().numpy(),
-            colors.cpu().numpy(),
-            unique_signals.cpu().numpy(),
-        )
+        return weighted_signals.T.cpu().numpy(), unique_signals.cpu().numpy()
 
 
 def visualize_superpixels_peaks(init_results: masknmf.InitializationResults):
