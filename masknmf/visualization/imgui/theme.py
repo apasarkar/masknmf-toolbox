@@ -204,6 +204,14 @@ def popup(title: str, is_open: bool, theme: Theme = THEME) -> tuple[bool, bool]:
     return opened, is_open
 
 
+def opaque_popups() -> None:
+    """Make the current context's popups, menus and tooltips fully opaque."""
+    style = imgui.get_style()
+    color = style.color_(imgui.Col_.popup_bg)
+    if color.w < 1.0:
+        style.set_color_(imgui.Col_.popup_bg, imgui.ImVec4(color.x, color.y, color.z, 1.0))
+
+
 def close_button(theme: Theme = THEME) -> bool:
     imgui.dummy(imgui.ImVec2(0, em(0.3)))
     return imgui.button("Close", imgui.ImVec2(em(6), 0))

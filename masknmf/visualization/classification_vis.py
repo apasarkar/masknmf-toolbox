@@ -13,7 +13,7 @@ from masknmf.visualization.imgui.files import PathPrompt, draw_path_prompt
 from masknmf.visualization.imgui.classification_help import draw_classification_help
 from masknmf.visualization.imgui.keybinds import CLASSIFICATION, LABEL_KEYS, pressed
 from masknmf.visualization.summary_widget import SummaryImageViewer
-from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup
+from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, opaque_popups
 from masknmf.demixing.labels import (
     CLASSIFIER_SUFFIX,
     SIDECAR_SUFFIX,
@@ -1273,6 +1273,7 @@ class ClassificationVis:
                 )
 
     def _draw_panel(self):
+        opaque_popups()
         self._poll_load()
         self._poll_classifier()
         self._handle_keys()

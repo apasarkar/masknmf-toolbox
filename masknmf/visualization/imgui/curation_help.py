@@ -170,13 +170,13 @@ TOOLS = (
     ("center (f)", "every panel on the selected signal, following it as the selection moves"),
     (
         "inside / outside",
-        "the switch: which side of the polygon or range poly-select and the filter take; outside by default, "
-        "lit while one of them drives the selection",
+        "the switches: which side of the polygon poly-select takes (inside by default) and which side of the "
+        "range the filter takes (outside by default), each lit while its tool drives the selection",
     ),
     (
         "filter, range",
-        "a stats column and a range on it: the table shows what is inside; apply to selection makes the "
-        "switch's side the selection, live as the lines move, as ctrl+a does for the table",
+        "on the Signals tab, a stats column and a range on it: the table shows what is inside; apply makes "
+        "its switch's side the selection, live as the lines move, as ctrl+a does for the table",
     ),
     (
         "applied",

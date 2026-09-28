@@ -7,7 +7,7 @@ from fastplotlib.ui import ImguiWindow
 from imgui_bundle import imgui, implot
 
 from masknmf.visualization.imgui.layout import HANDLE_THICKNESS, draw_edge_handle
-from masknmf.visualization.imgui.theme import em, to_vec4
+from masknmf.visualization.imgui.theme import em, opaque_popups, to_vec4
 
 _CURSOR_COLOR = imgui.ImVec4(1.0, 1.0, 1.0, 0.7)
 
@@ -135,6 +135,7 @@ class TracePlot:
         self.on_frame = lambda k: indices.set_dim_index(dim, float(ref[k]), cancel_awaiting=True)
 
     def _draw_dock(self):
+        opaque_popups()
         moved = self.draw(reserve=HANDLE_THICKNESS)
         draw_edge_handle(self._window)
         if moved is not None and self.on_frame is not None:

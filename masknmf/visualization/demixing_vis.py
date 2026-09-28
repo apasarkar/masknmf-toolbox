@@ -32,6 +32,7 @@ from masknmf.visualization.imgui import (
     draw_roi_table,
     em,
     popup,
+    opaque_popups,
     resolve_time_reference,
     section,
     to_vec4,
@@ -127,15 +128,15 @@ class SingleSessionDemixingVis:
     marked. Pixel averages are diagnostic only: Demix and export ignore them, Delete drops them.
     A drawn roi gets the same kind of trace once it is closed ("roi n", groupable, in the table too) and,
     unlike a pixel average, is kept: Demix seeds the NMF pass with it and export writes it.
-    The Curation tab's filter takes any column, del included (0 or 1): a slider with two lines over the
-    column's span, everything in view at the full span. Its "apply to selection" checkbox makes the signals on the side
-    switch's side of the range (the switch poly-select uses too) the selection, as ctrl+a does for the table, and keeps
+    The Signals tab's filter takes any column, del included (0 or 1): a slider with two lines over the
+    column's span, everything in view at the full span. Its "apply" checkbox makes the signals on the filter
+    switch's side of the range (outside by default) the selection, as ctrl+a does for the table, and keeps
     it following the lines as they move; editing the selection by hand switches it off. Delete then marks the
     selection like any other and remembers the filter it came from, listed under the range, and Demix writes
     which filter removed which signals into the curated file's description. The Curation tab's "color by"
     colors the masks and the table's ids by a column's rank instead of by signal id.
     poly-select (the Curation tab's polygon button) draws a polygon on any panel that selects every signal in
-    view whose center falls inside it (or outside, per the toggle): they form the group, highlighted in the
+    view whose center falls inside it (or outside, per its own switch): they form the group, highlighted in the
     panels and the table, and the selection follows the polygon as it is drawn and later dragged (its traces,
     when shown, plot once it settles). Clicking the button again or esc leaves the mode and keeps the selection, so
     Delete (or the Curation tab's delete button) marks it like any other selection. Nothing is removed until the
@@ -429,7 +430,7 @@ class SingleSessionDemixingVis:
         )
         self._traces.background = _TRACES_BG
         self._traces.dock(
-            self._ndw_fov.figure, size=480 if self._shift_lines else 360, title="traces"
+            self._ndw_fov.figure, size=440 if self._shift_lines else 320, title="traces"
         )
         if self._shift_lines:
             self._traces.set("shift (px)", self._shift_lines)
@@ -467,7 +468,7 @@ class SingleSessionDemixingVis:
         self._results_prompt = PathPrompt(
             "Load results", self._results_path or "", "load", "a results.hdf5 of the same movie", "open", _HDF5_FILTERS
         )
-        # the Curation tab's filter: select keeps the group on the side switch's side of the range, and a Delete
+        # the Signals tab's filter: select keeps the group on the filter switch's side of the range, and a Delete
         # of that selection records the filter in _filters for the curated file
         self._filter_select = False
         self._filter_side = set()
@@ -479,7 +480,8 @@ class SingleSessionDemixingVis:
         self._poly = None
         self._poly_panel = None
         self._poly_key = None
-        self._select_outside = True  # the side switch: what poly-select and the filter take
+        self._poly_outside = False
+        self._filter_outside = True
 
         self._bind_click_handlers()
 
@@ -488,7 +490,7 @@ class SingleSessionDemixingVis:
             subplot.toolbar = False
 
         self._ndw_fov.figure.add_imgui_window(
-            self._draw_side_panel, location="right", size=300, title="Tools"
+            self._draw_side_panel, location="right", size=340, title="Tools"
         )
         if self._has_ac and len(self._footprints):
             self._select_component(0)
@@ -1279,7 +1281,7 @@ class SingleSessionDemixingVis:
             if not moving:
                 self._drop_poly()
             return
-        key = (polygon.tobytes(), self._select_outside, self._order.range_limits, moving)
+        key = (polygon.tobytes(), self._poly_outside, self._order.range_limits, moving)
         if key == self._poly_key:
             return
         self._poly_key = key
@@ -1290,7 +1292,7 @@ class SingleSessionDemixingVis:
             bool,
             len(view),
         )
-        hits = [int(k) for k in (view[~inside] if self._select_outside else view[inside])]
+        hits = [int(k) for k in (view[~inside] if self._poly_outside else view[inside])]
         if hits != self._poly_hits:
             self._poly_hits = hits
             self._group[:] = hits
@@ -1298,7 +1300,7 @@ class SingleSessionDemixingVis:
             if self._active_component is not None:
                 self._order.goto(self._active_component)
             self._sync_highlight()
-            where = "outside" if self._select_outside else "inside"
+            where = "outside" if self._poly_outside else "inside"
             self._status = f"poly-select: {len(hits)} signal(s) {where} the polygon"
         # no traces while the polygon is being drawn or dragged; they plot once it settles
         if moving:
@@ -1331,7 +1333,7 @@ class SingleSessionDemixingVis:
                     {
                         "column": self._order.range_column,
                         "range": tuple(self._order.range_limits),
-                        "outside": self._select_outside,
+                        "outside": self._filter_outside,
                         "signals": signals & self._filter_side,
                     }
                 )
@@ -1357,7 +1359,8 @@ class SingleSessionDemixingVis:
                 "active_pixel": self._active_pixel,
                 "filter_select": self._filter_select,
                 "filter_side": set(self._filter_side),
-                "select_outside": self._select_outside,
+                "poly_outside": self._poly_outside,
+                "filter_outside": self._filter_outside,
                 "filters": [dict(kept, signals=set(kept["signals"])) for kept in self._filters],
             }
         )
@@ -1400,7 +1403,8 @@ class SingleSessionDemixingVis:
         self._marked.update(state["marked"])
         self._filter_select = state["filter_select"]
         self._filter_side = set(state["filter_side"])
-        self._select_outside = state["select_outside"]
+        self._poly_outside = state["poly_outside"]
+        self._filter_outside = state["filter_outside"]
         self._filters = [dict(kept, signals=set(kept["signals"])) for kept in state["filters"]]
         if self._order is not None:
             self._order.columns["del"][:] = 0
@@ -1574,6 +1578,7 @@ class SingleSessionDemixingVis:
         Docked at "right" (the NDWidget owns "bottom"): a File menu, the Panels and Static images buttons, then the
         roi tools and the signal table as tabs.
         """
+        opaque_popups()
         self._poll_worker()
         self._poll_rois()
         self._poll_poly()
@@ -1736,6 +1741,8 @@ class SingleSessionDemixingVis:
             else RoiOrder({"area": np.zeros(0), "peak": np.zeros(0), "del": np.zeros(0)}, 0)
         )
         names = () if self._cell_stats is None else self._cell_stats.names
+        if self._order is not None and self._order.range_column is not None:
+            self._draw_filter()
         footer = imgui.get_frame_height_with_spacing() * 2.5
         if imgui.begin_child("##signal_table", imgui.ImVec2(0, -footer)):
             columns = ("id", "area", "peak", *names, "del")
@@ -1769,6 +1776,95 @@ class SingleSessionDemixingVis:
         imgui.push_text_wrap_pos(0)
         imgui.text_disabled(self._selection_status())
         imgui.pop_text_wrap_pos()
+
+    def _draw_filter(self):
+        """The filter over the table: its column, "apply" with its side switch, the range, and the filters applied."""
+        order = self._order
+        g = grid(_CAPTIONS)
+        right = imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x
+        slider_w = min(0.7 * imgui.get_window_width(), right - g.cell_x[0] - g.mark_w)
+        g.row("filter")
+        imgui.set_next_item_width(g.w)
+        glow = self._filter_select
+        if glow:
+            for color, value in (
+                (imgui.Col_.frame_bg, THEME.emphasis),
+                (imgui.Col_.frame_bg_hovered, THEME.emphasis_hover),
+                (imgui.Col_.button, THEME.emphasis),
+                (imgui.Col_.button_hovered, THEME.emphasis_hover),
+                (imgui.Col_.text, (0.05, 0.05, 0.05)),
+            ):
+                imgui.push_style_color(color, to_vec4(value))
+        # popped right after the preview, so the dropdown's items keep the normal text color
+        opened = imgui.begin_combo("##range_column", order.range_column)
+        if glow:
+            imgui.pop_style_color(5)
+        picked = None
+        if opened:
+            for name in order.columns:
+                if imgui.selectable(name, name == order.range_column)[0]:
+                    picked = name
+            imgui.end_combo()
+        if picked is not None and picked != order.range_column:
+            # a new column starts at its full span; the selection stays as it is until apply is on again
+            order.set_range_column(picked)
+            order.rebuild()
+            self._filter_select = False
+        tooltip("Filter column: the range below spans it (del is 0 or 1); picking one puts the range back at its full span")
+        imgui.same_line(0, g.gap)
+        inner = imgui.get_style().item_inner_spacing.x
+        need = imgui.get_frame_height() + inner + imgui.calc_text_size("apply").x + g.gap + _side_switch_width()
+        if imgui.get_content_region_avail().x < need:
+            imgui.new_line()
+            imgui.same_line(g.cell_x[0])
+        # a selection edited by hand is no longer the filter's: the checkbox switches itself off
+        if self._filter_select and {k for k in self._group if isinstance(k, int)} != self._filter_side:
+            self._filter_select = False
+        toggled, self._filter_select = imgui.checkbox("apply", self._filter_select)
+        if toggled and self._filter_select:
+            # the filter takes over from poly-select
+            self._armed = None if self._armed == "poly" else self._armed
+            self._drop_poly()
+        tooltip(
+            "Apply to selection: the signals on the switch's side of the range become the selection, as ctrl+a does "
+            "for the table, and follow the lines as they move; Delete marks them and records the filter. Editing "
+            "the selection by hand switches this off"
+        )
+        imgui.same_line(0, g.gap)
+        flipped, self._filter_outside = _side_switch(
+            "filter",
+            self._filter_outside,
+            self._filter_select,
+            "The filter takes the signals inside or outside the range"
+            + ("" if self._filter_select else "; lit while it drives the selection"),
+        )
+        imgui.same_line(0, g.gap)
+        right_aligned_text(f"{len(order.order)} / {order.n_items}")
+        g.row("range")
+        moved = draw_range_filter(order, "_signals", slider_w)
+        if moved:
+            order.rebuild()
+        tooltip("Range: drag a line to move it, double-click for the full span; the table shows what is inside")
+        for i, kept in enumerate(self._filters):
+            g.row("applied" if i == 0 else "")
+            fmt = "%.0f" if np.asarray(order.columns[kept["column"]]).dtype.kind in "iub" else "%.3g"
+            imgui.push_text_wrap_pos(0)
+            imgui.text_disabled(
+                f"{kept['column']} {'outside' if kept['outside'] else 'inside'} "
+                f"{fmt % kept['range'][0]} - {fmt % kept['range'][1]}: {len(kept['signals'])} deleted"
+            )
+            imgui.pop_text_wrap_pos()
+            tooltip("the filter a Delete came from, written into the curated file's description on demix; ctrl+z undoes the delete")
+        if self._filter_select and (toggled or moved or flipped):
+            values = np.asarray(order.columns[order.range_column], dtype=np.float64)
+            inside = (values >= order.range_limits[0]) & (values <= order.range_limits[1])
+            self._filter_side = set(
+                np.flatnonzero(np.isfinite(values) & ~inside if self._filter_outside else inside).tolist()
+            )
+            self._group[:] = sorted(self._filter_side)
+            self._sync_highlight()
+            self._update_traces()
+        imgui.dummy(imgui.ImVec2(0, em(0.2)))
 
     def _draw_roi_tools(self):
         drawing = self._drawing()
@@ -1873,6 +1969,7 @@ class SingleSessionDemixingVis:
         gap, avail = em(0.6), imgui.get_content_region_avail().x
         w = min((avail - 5 * gap) / 6, em(3.2))
         size = imgui.ImVec2(w, imgui.get_frame_height() * 1.2)
+        imgui.dummy(imgui.ImVec2(0, em(0.4)))
         imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + (avail - 6 * w - 5 * gap) / 2)
         with button_colors(THEME.accent, THEME.accent, (0.05, 0.05, 0.05), on=self._follow):
             if imgui.button(f"{fa.ICON_FA_LOCATION_CROSSHAIRS}##center", size):
@@ -1888,7 +1985,7 @@ class SingleSessionDemixingVis:
             "Poly-select is on: click again or esc to leave it, the selection stays (a)"
             if selecting
             else "Poly-select: draw a polygon on any panel to select every signal in view whose center is on the "
-            "switch's side of it; the selection follows the polygon as it is drawn and dragged (a)"
+            "poly switch's side of it; the selection follows the polygon as it is drawn and dragged (a)"
             + ("; off while the filter drives the selection" if self._filter_select else "")
         )
         imgui.same_line(0, gap)
@@ -1920,91 +2017,19 @@ class SingleSessionDemixingVis:
             self._export_prompt.start()
         imgui.end_disabled()
         tooltip(f"Export: the {len(self._rois)} drawn roi(s) to a .npz, a window with a typed path, browse for the native dialog")
-        # the side switch under the row, centered: grey but flippable until poly-select or the filter drives the
-        # selection, then accent with the side in use lit
-        live = selecting or self._filter_select
-        inner = imgui.get_style().item_inner_spacing.x
-        dim, lit = imgui.get_style().color_(imgui.Col_.text_disabled), imgui.get_style().color_(imgui.Col_.text)
-        frame = THEME.accent if live else (0.28, 0.28, 0.31)
-        hover = (0.55, 0.78, 1.0) if live else (0.38, 0.38, 0.42)
-        row_w = (
-            imgui.calc_text_size("inside").x
-            + imgui.calc_text_size("outside").x
-            + imgui.get_frame_height() * imgui_toggle.ToggleConfig().width_ratio
-            + 2 * inner
+        # the poly switch under the row, centered: grey but flippable until poly-select drives the selection
+        imgui.dummy(imgui.ImVec2(0, em(0.4)))
+        label_w = imgui.calc_text_size("poly").x + em(0.6)
+        row_w = label_w + _side_switch_width()
+        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + max((imgui.get_content_region_avail().x - row_w) / 2, 0))
+        _, self._poly_outside = _side_switch(
+            "poly",
+            self._poly_outside,
+            selecting,
+            "Poly-select takes the signals inside or outside the polygon"
+            + ("" if selecting else "; lit while it drives the selection"),
+            label_w,
         )
-        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + max((avail - row_w) / 2, 0))
-        imgui.align_text_to_frame_padding()
-        imgui.text_colored(lit if live and not self._select_outside else dim, "inside")
-        imgui.same_line(0, inner)
-        for color, value in (
-            (imgui.Col_.frame_bg, frame),
-            (imgui.Col_.button, frame),
-            (imgui.Col_.frame_bg_hovered, hover),
-            (imgui.Col_.button_hovered, hover),
-            (imgui.Col_.text, lit if live else dim),
-        ):
-            imgui.push_style_color(color, to_vec4(value))
-        flipped, self._select_outside = imgui_toggle.toggle("##side", self._select_outside, imgui_toggle.ToggleFlags_.animated)
-        imgui.pop_style_color(5)
-        tooltip(
-            "Side: poly-select and the filter take the signals inside or outside the polygon / range"
-            + ("" if live else "; lit while one of them drives the selection")
-        )
-        imgui.same_line(0, inner)
-        imgui.text_colored(lit if live and self._select_outside else dim, "outside")
-        if self._order is not None and self._order.range_column is not None:
-            order = self._order
-            g.row("filter")
-            columns = list(order.columns)
-            imgui.set_next_item_width(g.w)
-            picked, index = imgui.combo("##range_column", columns.index(order.range_column), columns)
-            if picked:
-                # a new column starts at its full span; the selection stays as it is until select is on again
-                order.set_range_column(columns[index])
-                order.rebuild()
-                self._filter_select = False
-            tooltip("Filter column: the range below spans it (del is 0 or 1); picking one puts the range back at its full span")
-            imgui.same_line(0, g.gap)
-            right_aligned_text(f"{len(order.order)} / {order.n_items}")
-            g.row("range")
-            moved = draw_range_filter(order, "_signals", slider_w)
-            if moved:
-                order.rebuild()
-            tooltip("Range: drag a line to move it, double-click for the full span; the table shows what is inside")
-            g.row("")
-            # a selection edited by hand is no longer the filter's: the checkbox switches itself off
-            if self._filter_select and {k for k in self._group if isinstance(k, int)} != self._filter_side:
-                self._filter_select = False
-            toggled, self._filter_select = imgui.checkbox("apply to selection", self._filter_select)
-            if toggled and self._filter_select:
-                # the filter takes over from poly-select
-                self._armed = None if self._armed == "poly" else self._armed
-                self._drop_poly()
-            help_mark(
-                "the signals on the switch's side of the range become the selection, as ctrl+a does for the table, "
-                "and follow the lines as they move; Delete marks them and records the filter. editing the "
-                "selection by hand switches this off"
-            )
-            if self._filter_select and (toggled or moved or flipped):
-                values = np.asarray(order.columns[order.range_column], dtype=np.float64)
-                inside = (values >= order.range_limits[0]) & (values <= order.range_limits[1])
-                self._filter_side = set(
-                    np.flatnonzero(np.isfinite(values) & ~inside if self._select_outside else inside).tolist()
-                )
-                self._group[:] = sorted(self._filter_side)
-                self._sync_highlight()
-                self._update_traces()
-            for i, kept in enumerate(self._filters):
-                g.row("applied" if i == 0 else "")
-                fmt = "%.0f" if np.asarray(order.columns[kept["column"]]).dtype.kind in "iub" else "%.3g"
-                imgui.push_text_wrap_pos(0)
-                imgui.text_disabled(
-                    f"{kept['column']} {'outside' if kept['outside'] else 'inside'} "
-                    f"{fmt % kept['range'][0]} - {fmt % kept['range'][1]}: {len(kept['signals'])} deleted"
-                )
-                imgui.pop_text_wrap_pos()
-                tooltip("the filter a Delete came from, written into the curated file's description on demix; ctrl+z undoes the delete")
 
         w = imgui.get_frame_height() * 1.6
         section("DEMIX")
@@ -2146,6 +2171,45 @@ class SingleSessionDemixingVis:
     def close(self):
         self._summary.cleanup()
         self._ndw_fov.close()
+
+
+def _side_switch_width() -> float:
+    """What :func:`_side_switch` takes past its label."""
+    return (
+        imgui.calc_text_size("inside").x
+        + imgui.calc_text_size("outside").x
+        + imgui.get_frame_height() * imgui_toggle.ToggleConfig().width_ratio
+        + 2 * imgui.get_style().item_inner_spacing.x
+    )
+
+
+def _side_switch(key: str, outside: bool, live: bool, tip: str, label_w: float = 0.0) -> tuple[bool, bool]:
+    """An inside / outside toggle, after ``key`` when ``label_w``: accent with the side in use lit while ``live``, grey otherwise."""
+    inner = imgui.get_style().item_inner_spacing.x
+    dim, lit = imgui.get_style().color_(imgui.Col_.text_disabled), imgui.get_style().color_(imgui.Col_.text)
+    frame = THEME.accent if live else (0.28, 0.28, 0.31)
+    hover = (0.55, 0.78, 1.0) if live else (0.38, 0.38, 0.42)
+    imgui.align_text_to_frame_padding()
+    if label_w:
+        x = imgui.get_cursor_pos_x()
+        imgui.text_colored(lit if live else dim, key)
+        imgui.same_line(x + label_w)
+    imgui.text_colored(lit if live and not outside else dim, "inside")
+    imgui.same_line(0, inner)
+    for color, value in (
+        (imgui.Col_.frame_bg, frame),
+        (imgui.Col_.button, frame),
+        (imgui.Col_.frame_bg_hovered, hover),
+        (imgui.Col_.button_hovered, hover),
+        (imgui.Col_.text, lit if live else dim),
+    ):
+        imgui.push_style_color(color, to_vec4(value))
+    changed, outside = imgui_toggle.toggle(f"##side_{key}", outside, imgui_toggle.ToggleFlags_.animated)
+    imgui.pop_style_color(5)
+    tooltip(tip)
+    imgui.same_line(0, inner)
+    imgui.text_colored(lit if live and outside else dim, "outside")
+    return changed, outside
 
 
 def extract_per_trace_roi_averages(signals_array: masknmf.SignalsArray, rowslice: slice, colslice: slice):
