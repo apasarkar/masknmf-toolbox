@@ -24,6 +24,7 @@ from masknmf.visualization.imgui import (
     component_at_pixel,
     draw_keybinds_popup,
     draw_path_prompt,
+    draw_help_buttons,
     draw_range_filter,
     draw_roi_table,
     em,
@@ -36,6 +37,8 @@ from masknmf.visualization.imgui import (
     button_colors,
     tooltip,
 )
+from masknmf.visualization.imgui.curation_help import draw_curation_help
+from masknmf.visualization.imgui.keybinds import DEMIXING, pressed
 from masknmf.visualization.rois import MARKED_COLOR, SELECTED_ALPHA, FootprintSet
 from masknmf.demixing import CellStats, update_signals, write_curated
 from masknmf.pipelines.configs.demixing_configs import NMFConfig
@@ -73,37 +76,6 @@ _GROUP_COLORS = (
     (0.65, 0.50, 1.00),
     (1.00, 1.00, 1.00),
 )
-# TODO: should abstract keybinds out of the curation widget, where most keybinds live
-# They share a lot of common functionality with demixing vis
-_KEYBINDS = (
-    ("up / down", "previous / next signal in the table (shift: by 10)"),
-    (
-        "click",
-        "on an empty pixel: add its 5x5 pixel average to the plot as if grouped; on a drawn roi: plot its average alone",
-    ),
-    (
-        "ctrl + click",
-        "toggle a signal, drawn roi or pixel average in the group, in the image or the table",
-    ),
-    (
-        "shift + click",
-        "add a signal or drawn roi to the group; in the table, every row up to it",
-    ),
-    ("esc", "cancel a new roi, stop a poly-select (the selection stays), else deselect everything and drop the pixel averages"),
-    ("ctrl + a", "group every signal the table shows"),
-    ("ctrl + z", "undo the last mark, drawn roi, pixel average or deselect"),
-    ("f", "center the view on the selection and keep following it"),
-    (
-        "p",
-        "toggle quick pixel trace: a click on an empty pixel adds its 5x5 average to the plot",
-    ),
-    (
-        "delete",
-        "remove the selected roi, drop the active pixel average, or mark the selected signals for deletion (unmark when all are)",
-    ),
-    ("shift / alt + scroll", "in the trace plot, zoom x only / y only"),
-    ("k", "show these keybinds"),
-)
 # compressed/signal/background/residual, in that order, so the 4 base lines read apart in the legend
 _BASE_LINE_COLORS = (
     (0.85, 0.85, 0.85),
@@ -132,7 +104,9 @@ class SingleSessionDemixingVis:
     Clicking the selected mask or its table row again deselects it; a pan or drag on a panel leaves the
     selection alone, and a double-click on a trace or shift panel only refits its axes. Esc deselects everything, ctrl+a groups every signal the table shows, and
     ctrl+z undoes the last mark, drawn roi, pixel average or deselect (a Demix empties the undo stack; roi
-    vertex drags are not undone). The Overlay section shows masks and contours in two pairs, each a checkbox
+    vertex drags are not undone). Left / right step the movie a frame (shift: 10); m and c toggle the masks and
+    contours, r arms a new roi. Every key is listed by the keybinds button at the top of both tabs (k) and the
+    help button beside it (h) opens the curation help page. The Overlay section shows masks and contours in two pairs, each a checkbox
     and an opacity: "masks" / "contours" over every footprint, "sel masks" / "sel contours" over the selection
     and its group, which take their signal's mask color so a contour matches its trace.
     With "pixel traces" on (Curation tab checkbox or the p key, off by default), clicking an empty pixel adds the compressed movie's 5x5
@@ -415,6 +389,7 @@ class SingleSessionDemixingVis:
         self._follow = False
         self._scroll_to_current = False
         self._keybinds_open = False
+        self._help_open = False
         self._show_masks = show_masks
         self._mask_opacity = mask_opacity
         self._show_selected_masks = True
@@ -1468,32 +1443,52 @@ class SingleSessionDemixingVis:
         io = imgui.get_io()
         if io.want_text_input:
             return
-        if imgui.is_key_pressed(imgui.Key.delete, False):
+        if pressed(DEMIXING["delete"]):
             self._delete_selected()
-        if imgui.is_key_pressed(imgui.Key.escape, False):
-            if self._armed is not None:
+        if pressed(DEMIXING["escape"]):
+            if self._help_open or self._keybinds_open:
+                self._help_open = self._keybinds_open = False
+            elif self._armed is not None:
                 self._armed = None
             elif self._poly is not None:
                 self._drop_poly()
             else:
                 self.deselect()
-        if io.key_ctrl and imgui.is_key_pressed(imgui.Key.a, False) and self._order is not None:
+        if pressed(DEMIXING["select_all"]) and self._order is not None:
             self._group[:] = [int(k) for k in self._order.order]
             self._sync_highlight()
             self._update_traces()
-        if io.key_ctrl and imgui.is_key_pressed(imgui.Key.z, False):
+        if pressed(DEMIXING["undo"]):
             self.undo()
         stride = 10 if io.key_shift else 1
-        if imgui.is_key_pressed(imgui.Key.down_arrow, True):
+        if pressed(DEMIXING["down"]):
             self._step(stride)
-        if imgui.is_key_pressed(imgui.Key.up_arrow, True):
+        if pressed(DEMIXING["up"]):
             self._step(-stride)
-        if imgui.is_key_pressed(imgui.Key.f, False):
+        if pressed(DEMIXING["right"]):
+            self._step_frame(stride)
+        if pressed(DEMIXING["left"]):
+            self._step_frame(-stride)
+        if pressed(DEMIXING["masks"]) and self._image_selector is not None:
+            self._show_masks = not self._show_masks
+            self._refresh_masks()
+        if pressed(DEMIXING["contours"]):
+            self._set_contours(not self._show_contours)
+        if pressed(DEMIXING["follow"]):
             self._toggle_follow()
-        if imgui.is_key_pressed(imgui.Key.p, False):
+        if pressed(DEMIXING["pixel_trace"]):
             self._set_pixel_traces(not self._pixel_traces)
-        if imgui.is_key_pressed(imgui.Key.k, False):
+        if pressed(DEMIXING["roi"]) and not self._drawing():
+            self._start_roi()
+        if pressed(DEMIXING["help"]):
+            self._help_open = not self._help_open
+        if pressed(DEMIXING["keybinds"]):
             self._keybinds_open = not self._keybinds_open
+
+    def _step_frame(self, delta: int):
+        """Move the time index by delta frames; every panel and the trace playhead follow."""
+        step = self.reference_index.ref_ranges["time"].step
+        self.reference_index.set({"time": self.reference_index["time"] + delta * step})
 
     def _selection_status(self) -> str:
         pixels = [k for k in self._group if isinstance(k, tuple)]
@@ -1555,12 +1550,9 @@ class SingleSessionDemixingVis:
             if imgui.begin_tab_item("Signals")[0]:
                 self._draw_signal_tab()
                 imgui.end_tab_item()
-            if imgui.tab_item_button("?", imgui.TabItemFlags_.trailing | imgui.TabItemFlags_.no_tooltip):
-                self._keybinds_open = not self._keybinds_open
-            if imgui.is_item_hovered():
-                imgui.set_tooltip("press k for keybinds")
             imgui.end_tab_bar()
-        self._keybinds_open = draw_keybinds_popup(_KEYBINDS, self._keybinds_open)
+        self._keybinds_open = draw_keybinds_popup(DEMIXING, self._keybinds_open)
+        self._help_open, self._keybinds_open = draw_curation_help(self._help_open, self._keybinds_open)
         path = draw_path_prompt(self._export_prompt)
         if path is not None:
             try:
@@ -1593,6 +1585,13 @@ class SingleSessionDemixingVis:
             except (OSError, KeyError, ValueError, TypeError) as e:
                 self._results_prompt.status = f"load failed: {e}"
 
+    def _draw_help_row(self):
+        """The help and keybinds buttons, flush right at the top of a tab."""
+        padding = imgui.get_style().frame_padding.x
+        w = imgui.calc_text_size("help").x + imgui.calc_text_size("keybinds").x + 4 * padding + em(0.4)
+        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + max(imgui.get_content_region_avail().x - w, 0))
+        self._help_open, self._keybinds_open = draw_help_buttons(self._help_open, self._keybinds_open)
+
     def _table_select(self, component):
         if component == self._active_component and not self._group:
             self._snapshot()
@@ -1620,6 +1619,7 @@ class SingleSessionDemixingVis:
         return f"{int(value)}" if name == "area" else f"{float(value):.3g}"
 
     def _draw_signal_tab(self):
+        self._draw_help_row()
         if self._order is None and not self._pixels and not self._rois:
             imgui.text_disabled("no demixed signals")
             return
@@ -1668,6 +1668,7 @@ class SingleSessionDemixingVis:
         drawing = self._drawing()
         existing = len(self._footprints) if self._footprints is not None else 0
         g = grid(_CAPTIONS)
+        self._draw_help_row()
 
         section("OVERLAY")
         if self._image_selector is not None:
