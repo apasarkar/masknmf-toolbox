@@ -38,7 +38,7 @@ GROUP = (
     imgui.ImVec4(0.95, 0.35, 0.90, 1.0),
 )
 # the trace plot's frame while a selection shows, and while a double-click's sources do
-SELECTED = imgui.ImVec4(0.04, 0.11, 0.06, 1.0)
+SELECTED = imgui.ImVec4(0.05, 0.14, 0.08, 1.0)
 SOURCED = imgui.ImVec4(0.08, 0.06, 0.16, 1.0)
 # a made-up field of view: four cells at (column, row) fractions of the panel, each with a radius in em
 CELLS = ((0.18, 0.34, 0.85), (0.42, 0.68, 1.0), (0.66, 0.30, 0.75), (0.86, 0.66, 0.65))

@@ -399,11 +399,14 @@ class SummaryImageViewer:
             viewport.get_center(), imgui.Cond_.first_use_ever, pivot=imgui.ImVec2(0.5, 0.5)
         )
 
+        background = imgui.get_style().color_(imgui.Col_.window_bg)
+        imgui.push_style_color(imgui.Col_.window_bg, imgui.ImVec4(background.x, background.y, background.z, 1.0))
         opened, self._popup_open = imgui.begin(
             f"{self._title}###summary_image_popup",
             self._popup_open,
             flags=imgui.WindowFlags_.no_saved_settings,
         )
+        imgui.pop_style_color()
         if not opened:
             imgui.end()
             return
