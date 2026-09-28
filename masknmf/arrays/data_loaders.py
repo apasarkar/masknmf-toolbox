@@ -147,6 +147,8 @@ class TiffArray(LazyFrameLoader):
             data = tifffile.imread(self.filename, key=[indices])
         elif isinstance(indices, list):
             data = tifffile.imread(self.filename, key=indices)
+        elif isinstance(indices, np.ndarray) and indices.dtype.kind in "iu":
+            data = tifffile.imread(self.filename, key=indices.tolist())
         else:
             indices_list = list(
                 range(
@@ -225,6 +227,8 @@ class Hdf5Array(LazyFrameLoader):
                 data = field_dataset[indices, :, :]
             elif isinstance(indices, list):
                 data = field_dataset[indices, :, :]
+            elif isinstance(indices, np.ndarray) and indices.dtype.kind in "iu":
+                data = field_dataset[indices.tolist(), :, :]
             else:
                 indices_list = list(
                     range(
