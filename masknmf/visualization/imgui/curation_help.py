@@ -17,6 +17,7 @@ from wgpu.utils.imgui import ImguiRenderer
 
 from masknmf.visualization.imgui.keybinds import DEMIXING
 from masknmf.visualization.imgui.panels import draw_keybinds_button, draw_keybinds_popup
+from masknmf.visualization.imgui.theme import popup
 
 ACCENT = imgui.ImVec4(0.40, 0.68, 1.00, 1.0)
 KEY = imgui.ImVec4(1.00, 0.80, 0.20, 1.0)
@@ -309,18 +310,10 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     em = imgui.get_font_size()
     w = WIDTH_EM * em
     viewport = imgui.get_main_viewport()
-    imgui.set_next_window_pos(viewport.get_center(), imgui.Cond_.appearing, pivot=imgui.ImVec2(0.5, 0.5))
     imgui.set_next_window_size_constraints(
         imgui.ImVec2(0, 0), imgui.ImVec2(viewport.size.x, 0.94 * viewport.size.y)
     )
-    imgui.push_style_var(imgui.StyleVar_.window_rounding, 6.0)
-    imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(em, 0.8 * em))
-    opened, is_open = imgui.begin(
-        f"{TITLE} help###curation-help",
-        is_open,
-        flags=imgui.WindowFlags_.no_saved_settings | imgui.WindowFlags_.always_auto_resize,
-    )
-    imgui.pop_style_var(2)
+    opened, is_open = popup(f"{TITLE} help", is_open)
     if not opened:
         imgui.end()
         return is_open, keys_open

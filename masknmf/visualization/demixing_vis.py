@@ -1583,7 +1583,7 @@ class SingleSessionDemixingVis:
                 imgui.end_tab_item()
             imgui.end_tab_bar()
         # drawn last, over the bar's rule: nothing else in this window follows the cursor from here
-        imgui.set_cursor_pos(imgui.ImVec2(top.x + room - buttons_w, top.y))
+        imgui.set_cursor_pos(imgui.ImVec2(top.x + room - buttons_w, top.y - em(0.25)))
         self._help_open, self._keybinds_open = draw_help_buttons(self._help_open, self._keybinds_open, "Curation Guide")
         self._keybinds_open = draw_keybinds_popup(DEMIXING, self._keybinds_open)
         self._help_open, self._keybinds_open = draw_curation_help(self._help_open, self._keybinds_open)
@@ -1693,6 +1693,9 @@ class SingleSessionDemixingVis:
     def _draw_roi_tools(self):
         drawing = self._drawing()
         g = grid(_CAPTIONS)
+        # sliders: seven tenths of the panel, or what their row has left before the (?) mark
+        right = imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x
+        slider_w = min(0.7 * imgui.get_window_width(), right - g.cell_x[0] - g.mark_w)
 
         section("OVERLAY")
         if self._image_selector is not None:
@@ -1701,7 +1704,7 @@ class SingleSessionDemixingVis:
                 self._show_masks = show
                 self._refresh_masks()
             g.cell(0)
-            imgui.set_next_item_width(g.w)
+            imgui.set_next_item_width(slider_w)
             changed, self._mask_opacity = imgui.slider_float(
                 "##mask-opacity", self._mask_opacity, 0.05, 1.0, "%.2f"
             )
@@ -1713,7 +1716,7 @@ class SingleSessionDemixingVis:
                 self._show_selected_masks = show
                 self._refresh_masks()
             g.cell(0)
-            imgui.set_next_item_width(g.w)
+            imgui.set_next_item_width(slider_w)
             changed, self._selected_mask_opacity = imgui.slider_float(
                 "##selected-mask-opacity", self._selected_mask_opacity, 0.05, 1.0, "%.2f"
             )
@@ -1724,7 +1727,7 @@ class SingleSessionDemixingVis:
             if changed:
                 self._set_contours(show)
             g.cell(0)
-            imgui.set_next_item_width(g.w)
+            imgui.set_next_item_width(slider_w)
             changed, self._contour_opacity = imgui.slider_float(
                 "##contour-opacity", self._contour_opacity, 0.05, 1.0, "%.2f"
             )
@@ -1736,7 +1739,7 @@ class SingleSessionDemixingVis:
                 self._show_selected_contours = show
                 self._image_selector.alpha = self._selected_contour_opacity if show else 0.0
             g.cell(0)
-            imgui.set_next_item_width(g.w)
+            imgui.set_next_item_width(slider_w)
             changed, self._selected_contour_opacity = imgui.slider_float(
                 "##selected-contour-opacity", self._selected_contour_opacity, 0.05, 1.0, "%.2f"
             )
@@ -1883,10 +1886,7 @@ class SingleSessionDemixingVis:
             imgui.same_line(0, g.gap)
             right_aligned_text(f"{len(order.order)} / {order.n_items}")
             g.row("range")
-            # up to three quarters of the panel, else whatever the row has left
-            moved = draw_range_filter(
-                order, "_signals", min(0.75 * imgui.get_window_width(), imgui.get_content_region_avail().x)
-            )
+            moved = draw_range_filter(order, "_signals", slider_w)
             if moved:
                 order.rebuild()
             tooltip("Range: drag a line to move it, double-click for the full span; the table shows what is inside")
