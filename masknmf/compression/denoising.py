@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 import os
 import sys
 from masknmf.utils import display
+from pytorch_lightning.callbacks import TQDMProgressBar
 
 
 class MaskedConv1d(nn.Conv1d):
@@ -110,6 +111,9 @@ class BlindSpotTemporal(nn.Module):
         else:
             self.final_activation = final_activation
 
+        # Largest distance (in samples) between an output and any input it depends on.
+        self.receptive_radius = self._compute_receptive_radius()
+
     def forward(self, x):
 
         # run regular convolutions
@@ -131,6 +135,20 @@ class BlindSpotTemporal(nn.Module):
         out = self.final_activation(self.final(out))
         return out
 
+    def _compute_receptive_radius(self) -> int:
+        """Receptive-field radius of forward(). Mirrors its wiring: bsconv1 reads x, and each
+        bsconv{i} (i >= 2) reads enc{i-1}. Update this if forward() is rewired."""
+
+        def reach(conv):
+            return conv.dilation[0] * (conv.kernel_size[0] // 2)
+
+        regular = [self.reg_conv1, self.reg_conv2, self.reg_conv3, self.reg_conv4, self.reg_conv5]
+        blind_spot = [self.bsconv1, self.bsconv2, self.bsconv3, self.bsconv4, self.bsconv5, self.bsconv6]
+        feature_radius = [0]  # radius of x, enc1, ..., enc5
+        for block in regular:
+            feature_radius.append(feature_radius[-1] + reach(block.conv))
+        return max(r + reach(b.conv) for r, b in zip(feature_radius, blind_spot)) + reach(self.final)
+
 
 class TemporalNetwork(nn.Module):
     def __init__(self):
@@ -140,6 +158,10 @@ class TemporalNetwork(nn.Module):
 
     def forward(self, x):
         return self.mean_backbone(x), self.var_backbone(x)
+
+    @property
+    def receptive_radius(self) -> int:
+        return max(self.mean_backbone.receptive_radius, self.var_backbone.receptive_radius)
 
 
 class TotalVarianceTemporalDenoiser(pl.LightningModule):
@@ -164,7 +186,7 @@ class TotalVarianceTemporalDenoiser(pl.LightningModule):
         input_traces = batch
         mu_x, total_variance = self(input_traces)
 
-        num_datapoints = input_traces.shape[0] * input_traces.shape[1]
+        num_datapoints = input_traces.numel()
 
         # make sure all total variances are positive
         total_variance = torch.clamp(total_variance, min=1e-8)
@@ -176,9 +198,6 @@ class TotalVarianceTemporalDenoiser(pl.LightningModule):
         loss = log_lik / num_datapoints
         self.log("train_loss", loss)
 
-        current_lr = self.optimizers().param_groups[0]['lr']
-        self.log('learning_rate', current_lr)
-
         return loss
 
     def forward(self, x):
@@ -188,9 +207,13 @@ class TotalVarianceTemporalDenoiser(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         return optimizer
 
+    @property
+    def receptive_radius(self) -> int:
+        return self.temporal_network.receptive_radius
+
 
 def train_total_variance_denoiser(
-        time_series, #num_timeseries x time_series_length
+        time_series,  # num_timeseries x time_series_length
         learning_rate: float = 1e-2,
         input_size: int = 900,
         overlap: int = 600,
@@ -198,31 +221,101 @@ def train_total_variance_denoiser(
         batch_size: int = 1,
         devices: int = 1,
         padding: int = 100,
+        precision: str = "32-true",
+        log_every_n_steps: int = 100,
 ):
-    """Train a total variance prediction network"""
+    """Train a total variance prediction network
+
+
+    Args:
+        precision (str): Lightning precision setting. "16-mixed" is the previous behavior. At batch size 1
+            the network's tensors are too small to benefit from fp16, so "32-true" may be faster (no cast
+            kernels or gradient scaler). "bf16-mixed" drops the gradient scaler on Ampere-or-newer GPUs.
+            Worth timing each.
+        log_every_n_steps (int): How often metrics are written to the logger and the progress bar is
+            redrawn. Each logger write forces a CPU-GPU sync, so the old value of 1 serialized every step.
+
+    Returns:
+        model: the trained model.
+        dataset: the training dataset, with its data moved back to CPU memory.
+    """
     model = TotalVarianceTemporalDenoiser(
         learning_rate=learning_rate,
         max_epochs=max_epochs,
     )
-    padded_timeseries = torch.nn.functional.pad(time_series, (padding, padding), mode = 'reflect')
-    dataset = MultivariateTimeSeriesDataset(padded_timeseries, input_size=input_size, overlap=overlap)
-    train_loader = DataLoader(
-        dataset, batch_size=batch_size, shuffle=True, num_workers=6, pin_memory=True
+
+    use_gpu_data = torch.cuda.is_available() and devices == 1
+    data_device = "cuda" if use_gpu_data else "cpu"
+
+    padded_timeseries = blind_spot_safe_pad(
+        time_series.to(data_device, torch.float32), padding, radius=model.receptive_radius
     )
+    dataset = MultivariateTimeSeriesDataset(padded_timeseries, input_size=input_size, overlap=overlap)
+
+    del padded_timeseries
+
+    if use_gpu_data:
+        train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    else:
+        train_loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=2,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=True,
+        )
 
     logger = TensorBoardLogger("lightning_logs", name="total_variance")
+
+    # Trainer(benchmark=True) sets the global torch.backends.cudnn.benchmark flag. Remember the
+    # previous value so it can be restored after training (see below).
+    previous_cudnn_benchmark = torch.backends.cudnn.benchmark
+
     trainer = pl.Trainer(
         max_epochs=max_epochs,
-        log_every_n_steps=1,
+        log_every_n_steps=log_every_n_steps,
         devices=devices,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
-        precision="16-mixed",
-        # strategy="ddp_notebook" if devices > 1 else None,
+        precision=precision,
+        logger=logger,
+        callbacks=[TQDMProgressBar(refresh_rate=log_every_n_steps)],
+        benchmark=True,
     )
 
     trainer.fit(model, train_loader)
+
+    # Restore the global cuDNN flag, so inference on many different input shapes doesn't pay a
+    # one-time autotuning cost for each new shape.
+    torch.backends.cudnn.benchmark = previous_cudnn_benchmark
+
+    dataset.data = dataset.data.cpu()
     return model, dataset
 
+def blind_spot_safe_pad(x: torch.Tensor, pad: int, radius: int) -> torch.Tensor:
+    """
+    Mirror-pad the last dimension by `pad` samples on each side, without breaking the blind spot.
+
+    Plain reflect padding places a copy of x[t] at position -t, within the receptive field of the
+    output at t for small t, so outputs near the trace ends would partly see their own input. Here
+    the mirror starts `radius + 1` samples in from each edge, so every copy of x[t] lands more than
+    `radius` samples away from t.
+
+    Args:
+        x (torch.Tensor): Traces, shape (..., num_frames)
+        pad (int): Number of samples to add on each side
+        radius (int): The model's receptive radius (model.receptive_radius)
+
+    Returns:
+        torch.Tensor: Padded traces, shape (..., num_frames + 2 * pad)
+    """
+    num_frames = x.shape[-1]
+    if num_frames < pad + radius + 1:
+        raise ValueError(f"Traces must have at least {pad + radius + 1} samples to pad by {pad} "
+                         f"with receptive radius {radius} (got {T})")
+    left = x[..., radius + 1:radius + 1 + pad].flip(-1)
+    right = x[..., num_frames - radius - 1 - pad:num_frames - radius - 1].flip(-1)
+    return torch.cat([left, x, right], dim=-1)
 
 class MultivariateTimeSeriesDataset(torch.utils.data.Dataset):
     def __init__(self, data, input_size=900, overlap=100, provide_indices=False):
@@ -230,7 +323,7 @@ class MultivariateTimeSeriesDataset(torch.utils.data.Dataset):
         Multivariate time series dataset.
 
         Args:
-            data (torch.Tensor or np.ndarray): An array of shape (N, T_max) containing the time series data.
+            data (torch.Tensor or np.ndarray): An array of shape (num_timeseries, num_frames) containing the time series data.
             input_size (int): Length of the input snippet.
             overlap (int): The number of overlapping samples between consecutive windows.
         """
@@ -287,7 +380,7 @@ class MultivariateTimeSeriesDataset(torch.utils.data.Dataset):
             # If the end index exceeds the data length, adjust it
             end_idx = self.data.shape[1]
             start_idx = end_idx - self.input_size
-        data = self.data[[which_series], start_idx:end_idx]
+        data = self.data[which_series:which_series + 1, start_idx:end_idx]
         if self.provide_indices:
             return data, which_series, start_idx, end_idx
         else:
@@ -302,9 +395,8 @@ def denoise_batched(
         overlap: int = 200,
 ):
     """
-    Denoise a large dataset by processing in batches.
-    First, we partition the variance using a subset of the data,
-    then we denoise the entire dataset using the estimated noise variance.
+    Denoise a large dataset by processing in batches. We use a Bayesian update rule to mix observations with network
+    predictions during inference time.
 
     Args:
         model (torch.nn.Module): Trained model
@@ -319,27 +411,22 @@ def denoise_batched(
         signal_weight: weights for signal component. Shape: [num_nodes, num_timesteps]
         observation_weight: weights for observation component. Shape: [num_nodes, num_timesteps]
     """
+    if not 0 <= overlap < input_size:
+        raise ValueError(f"overlap ({overlap}) must be non-negative and smaller than input_size ({input_size})")
     device = next(model.parameters()).device #Infer device from the model device
-    traces = traces.to(device)
+    traces = traces.to(device).float().clone()
     traces_means = torch.mean(traces, dim=1, keepdim=True)
-    traces_normalized = traces - traces_means
-    traces_norms = torch.linalg.norm(traces_normalized, dim=1, keepdim=True)
+    traces -= traces_means
+    traces_norms = torch.linalg.norm(traces, dim=1, keepdim=True)
     traces_norms[traces_norms == 0] = 1
-    traces_normalized /= traces_norms
-
-    noise_variance = partition_variance(
-        model,
-        traces_normalized[:, :],
-        quantile=noise_variance_quantile,
-    )
-
+    traces /= traces_norms
 
     # Denoise the entire dataset using the estimated noise variance
-    denoised_traces, signal_mean, signal_weight, observation_weight, total_var = (
+    denoised_traces, network_estimates, total_variance_estimates = (
         _denoise_batched_inner(
             model,
-            traces_normalized,
-            noise_variance,
+            traces,
+            noise_variance_quantile,
             input_size=input_size,
             overlap=overlap,
         )
@@ -347,189 +434,111 @@ def denoise_batched(
 
     denoised_traces *= traces_norms
     denoised_traces += traces_means
-    noise_variance = noise_variance
     return (
         denoised_traces,
-        signal_mean,
-        noise_variance,
-        signal_weight,
-        observation_weight,
-        total_var,
+        network_estimates,
+        total_variance_estimates,
     )
-
-
-def partition_variance(model: torch.nn.Module,
-                       validation_data: torch.Tensor,
-                       quantile: float=0.05):
-    """
-    Partition the total variance into signal and noise components using quantile regression.
-    For now, a quantile of 0.0 maps to 0 (as opposed to the minimum total noise variance value).
-
-    Args:
-        model (torch.nn.Module): trained model that predicts means and total variances
-        validation_data (torch.Tensor): array of validation data used for partitioning. (Number of time series x time series length)
-        percentile float: The percentile for thresholding to set the noise variance
-
-    Returns:
-        noise_variance (torch.Tensor): Estimated observation noise variance (for each time series). Shape (number of time series, 1)
-    """
-    model.eval()
-    device = next(model.parameters()).device
-    if quantile == 0.0:
-        return torch.zeros(validation_data.shape[0], 1, device=device)
-    else:
-
-        input_traces = validation_data.float()
-        input_traces = input_traces[:, None, :]  # [Batch, channels, num_timesteps]
-
-        # Move tensor to the same device as the model parameters
-        input_traces = input_traces.to(device)
-
-        # Get variance prediction to use in percentile calculation
-        with torch.no_grad():
-            _, total_variance = model(input_traces)
-
-        total_variance = total_variance.squeeze(1)
-        noise_var = torch.quantile(total_variance, quantile, dim=1, keepdim=True)
-        return noise_var
-
 
 def _denoise_batched_inner(model: torch.nn.Module,
                            traces: torch.Tensor,
-                           noise_variance: torch.Tensor,
+                           quantile: float,
                            input_size: int = 900,
                            overlap: int = 200):
     """
-    Denoise a large dataset by processing in batches.
+    Denoise traces by running the network over overlapping windows and fusing its predictions with the
+    observations using a Bayesian update.
+
+    Outputs within RECEPTIVE_RADIUS samples of a window's edges depend on the convolutions' zero padding,
+    so they are discarded, except at the trace's true start and end, where no neighboring window exists.
+    Every kept output therefore equals what a single full-length pass would produce. Positions covered by
+    two windows receive identical values, so they are simply overwritten rather than averaged.
 
     Args:
-        model (torch.nn.Module): Trained model
-        traces (torch.Tensor): Input traces to denoise (number_of_traces, number_of_frames)
-        noise_variance (torch.Tensor): Shape (number of traces, 1)
-        input_size (int): The number of time points of data we process at once
-        overlap (int) Overlap between windows
+        model (torch.nn.Module): Trained model returning (mean, total variance) for inputs of shape (N, 1, L)
+        traces (torch.Tensor): Normalized input traces, shape (num_traces, num_frames)
+        quantile (float): Quantile in [0, 1] of each trace's predicted total variance, used as that trace's
+            observation noise variance. 0 means no denoising: the output equals the input.
+        input_size (int): Window length processed per forward pass
+        overlap (int): Overlap between consecutive windows. Must satisfy
+            2 * RECEPTIVE_RADIUS <= overlap < input_size so the kept regions cover every position.
 
     Returns:
-        denoised_traces (torch.Tensor): Shape (number_of_traces, number_of_frames) The denoised traces
+        denoised_traces (torch.Tensor): (num_traces, num_frames), fusion of network predictions and observations
+        network_predictions (torch.Tensor): (num_traces, num_frames), the blind-spot network's mean predictions
+        total_variance_estimates (torch.Tensor): (num_traces, num_frames), predicted total variance
+            (system + observation), clamped below at the observation variance
+        All three are in the normalized units of `traces`.
     """
-    # Create arrays to hold results
+    radius = model.receptive_radius
+    if not 2 * radius <= overlap < input_size:
+        raise ValueError(f"overlap ({overlap}) must be at least {2 * radius} "
+                         f"and smaller than input_size ({input_size})")
+
     device = next(model.parameters()).device
-    # Hacky way to re-use the iteration pattern here over timesteps:
-    placeholder_trace = torch.arange(traces.shape[1], device=device)[None, :]
+    num_timepoints = traces.shape[1]
+
+    # Reuse the dataset's windowing logic to get each window's start and end indices
+    placeholder_trace = torch.arange(num_timepoints, device=device)[None, :]
     eval_dataset = MultivariateTimeSeriesDataset(
-        placeholder_trace, input_size=input_size, overlap=overlap,
-        provide_indices=True,
+        placeholder_trace, input_size=input_size, overlap=overlap, provide_indices=True,
     )
 
-    num_batches = eval_dataset.num_windows
-
-    denoised_traces = torch.zeros_like(traces, device=device, dtype=torch.float32)
-    signal_mean = torch.zeros_like(traces, device=device, dtype=torch.float32)
-    signal_weights = torch.zeros_like(traces, device=device, dtype=torch.float32)
-    observation_weights = torch.zeros_like(traces, device=device, dtype=torch.float32)
-    total_var = torch.zeros_like(traces, device=device, dtype=torch.float32)
-    counts = torch.zeros_like(traces, device=device, dtype=torch.float32)
-
-    # Process each window
-    for i in range(eval_dataset.num_windows):
-        _, _, start_idx, end_idx = eval_dataset[i]
-        subset = traces[:, start_idx:end_idx]
-        subset = subset.unsqueeze(1) #Shape [num_timeseries, channels, num_timepoints]
-
-        denoised_curr, signal_mean_curr, signal_weight_curr, observation_weight_curr, total_var_curr = (
-            denoise_with_partitioned_variance(
-                model,
-                subset,
-                noise_variance,
-            )
-        )
-        denoised_traces[:, start_idx:end_idx] += denoised_curr.squeeze(1)
-        signal_mean[:, start_idx:end_idx] += signal_mean_curr.squeeze(1)
-        signal_weights[:, start_idx:end_idx] += signal_weight_curr.squeeze(1)
-        observation_weights[:, start_idx:end_idx] += observation_weight_curr.squeeze(1)
-        total_var[:, start_idx:end_idx] += total_var_curr.squeeze(1)
-
-        # Count how many times each window has been added
-        counts[:, start_idx:end_idx] += 1
-
-    denoised_traces = denoised_traces / counts
-    signal_mean = signal_mean / counts
-    signal_weights = signal_weights / counts
-    observation_weights = observation_weights / counts
-    total_var = total_var / counts
-
-    return denoised_traces, signal_mean, signal_weights, observation_weights, total_var
-
-
-def denoise_with_partitioned_variance(model: torch.nn.Module,
-                                      traces: torch.Tensor,
-                                      noise_variance: torch.Tensor):
-    """
-    Denoise a single batch of traces.
-
-    Args:
-        model (torch.nn.Module): Trained model
-        traces (torch.Tensor): Input traces (batch_size, num_nodes, num_timesteps)
-        noise_variance (torch.Tensor): Estimated noise variance per node
-
-    Returns:
-        denoised_traces (torch.Tensor): The denoised traces. Shape (batch_size, num_timeseries, num_timesteps)
-        mean_traces (torch.Tensor): The neural network outputs (mean estimate given temporal context)
-
-    """
     model.eval()
-    traces = traces.to(model.device)
     with torch.no_grad():
+        # Every position is written at least once (guaranteed by the overlap check above)
+        network_predictions = torch.empty_like(traces)
+        total_variance_estimates = torch.empty_like(traces)
 
-        # Move tensor to the same device as the model parameters
-        device = next(model.parameters()).device
-        traces = traces.to(device)
+        for i in range(eval_dataset.num_windows):
+            _, _, start_idx, end_idx = eval_dataset[i]
+            window_predictions, window_variances = model(traces[:, None, start_idx:end_idx])
 
-        # Get predictions
-        mu_x, total_variance = model(traces)
+            # Keep only outputs whose receptive field lies entirely inside this window.
+            # At the trace's true start/end there is no neighboring window, so keep those outputs too.
+            window_length = end_idx - start_idx
+            keep_start = 0 if start_idx == 0 else radius
+            keep_end = window_length if end_idx == num_timepoints else window_length - radius
 
-        # Apply noise variance (expand dimensions to match)
-        noise_var = noise_variance.to(traces.device)
-        noise_var = noise_var[..., None].expand_as(total_variance)
+            network_predictions[:, start_idx + keep_start:start_idx + keep_end] = \
+                window_predictions[:, 0, keep_start:keep_end]
+            total_variance_estimates[:, start_idx + keep_start:start_idx + keep_end] = \
+                window_variances[:, 0, keep_start:keep_end]
 
-        # In some regions we may have total_variance <= noise_variance.
-        # Since this can't happen, we reset the variance to noise_variance
-        # in those regions.
-        total_variance_normalizer = torch.clamp(total_variance, min=noise_var)
+        if quantile == 0:
+            # Zero noise variance puts all weight on the observations
+            observation_variance = torch.zeros(traces.shape[0], 1, device=device, dtype=traces.dtype)
+        else:
+            observation_variance = torch.quantile(total_variance_estimates, quantile, dim=1, keepdim=True)
 
-        # Ensure signal variance is positive
-        signal_var = torch.clamp(total_variance_normalizer - noise_var, min=0)
+        total_variance_estimates = torch.clamp(total_variance_estimates, min=observation_variance)
+        system_variance = torch.clamp(total_variance_estimates - observation_variance, min=0)
 
         # Apply Bayesian formula for posterior mean
-        weight_signal = noise_var / total_variance_normalizer
-        weight_observation = signal_var / total_variance_normalizer
-        denoised_traces = weight_signal * mu_x + weight_observation * traces
+        weight_signal = observation_variance / total_variance_estimates
+        weight_observation = system_variance / total_variance_estimates
+        denoised_traces = weight_signal * network_predictions + weight_observation * traces
 
-    return (
-        denoised_traces,
-        mu_x,
-        weight_signal,
-        weight_observation,
-        total_variance,
-    )
-
+    return denoised_traces, network_predictions, total_variance_estimates
 
 class CompressionTemporalDenoiser(torch.nn.Module):
 
     def __init__(self,
                  trained_model: torch.nn.Module,
                  noise_variance_quantile:float = 1,
+                 input_size: int = 900,
                  padding: int = 100):
         super(CompressionTemporalDenoiser, self).__init__()
         self.noise_variance_quantile = noise_variance_quantile
         self.net = trained_model
         self._padding = padding
+        self._input_size = input_size
 
     def forward(self, traces: torch.Tensor):
         #F.pad(x, (pad_size, pad_size), mode=mode)
-        padded = torch.nn.functional.pad(traces, (self._padding, self._padding), mode = 'reflect')
+        padded = blind_spot_safe_pad(traces, self._padding, radius=self.net.receptive_radius)
         outputs = denoise_batched(self.net,
                                padded,
                                noise_variance_quantile=self.noise_variance_quantile,
-                               input_size=traces.shape[1])[0]
-        return outputs[:, self._padding:-1*self._padding]
+                               input_size=self._input_size)[0]
+        return outputs[:, self._padding:outputs.shape[1] - self._padding]
