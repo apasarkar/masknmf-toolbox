@@ -32,6 +32,8 @@ class Theme:
     border: Color = (0.35, 0.35, 0.37, 0.7)
     danger: Color = (0.75, 0.15, 0.15, 0.8)
     danger_hover: Color = (0.90, 0.20, 0.20, 1.0)
+    emphasis: Color = (1.00, 0.62, 0.10, 1.0)
+    emphasis_hover: Color = (1.00, 0.74, 0.30, 1.0)
     rounding: float = 6.0
     card_rounding: float = 0.0
 

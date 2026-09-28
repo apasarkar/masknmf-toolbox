@@ -86,9 +86,9 @@ _BASE_LINE_COLORS = (
 )
 # behind the traces, naming what the lines are: near-black material-dark tints, navy at rest, forest green
 # for a selection, indigo for the sources under a double-clicked pixel
-_TRACES_BG = (0.07, 0.09, 0.16, 1.0)
-_SIGNALS_BG = (0.06, 0.13, 0.08, 1.0)
-_SOURCES_BG = (0.10, 0.07, 0.19, 1.0)
+_TRACES_BG = (0.04, 0.05, 0.10, 1.0)
+_SIGNALS_BG = (0.03, 0.08, 0.05, 1.0)
+_SOURCES_BG = (0.06, 0.04, 0.12, 1.0)
 
 
 class SingleSessionDemixingVis:
@@ -476,7 +476,7 @@ class SingleSessionDemixingVis:
         self._poly = None
         self._poly_panel = None
         self._poly_key = None
-        self._select_outside = False  # the side switch: what poly-select and the filter take
+        self._select_outside = True  # the side switch: what poly-select and the filter take
 
         self._bind_click_handlers()
 
@@ -1467,6 +1467,11 @@ class SingleSessionDemixingVis:
                 self._help_open = self._keybinds_open = False
             elif self._armed is not None:
                 self._armed = None
+            elif self._active_roi is not None and (
+                self._active_roi._move_info.mode == "create" or self._active_roi.selection.shape[0] < 3
+            ):
+                # a roi still being drawn: cancel it, vertices and all
+                self._delete_roi(self._active_roi, record=False)
             elif self._poly is not None:
                 self._drop_poly()
             else:
@@ -1497,6 +1502,9 @@ class SingleSessionDemixingVis:
             self._set_pixel_traces(not self._pixel_traces)
         if pressed(DEMIXING["roi"]) and not self._drawing():
             self._start_roi()
+        selecting = self._armed == "poly" or self._poly is not None
+        if pressed(DEMIXING["poly"]) and self._order is not None and not self._filter_select and (selecting or not self._drawing()):
+            self._start_poly()
         if pressed(DEMIXING["help"]):
             self._help_open = not self._help_open
         if pressed(DEMIXING["keybinds"]):
@@ -1783,15 +1791,15 @@ class SingleSessionDemixingVis:
         size = imgui.ImVec2((imgui.get_content_region_avail().x - 2 * margin - 4 * gap) / 5, imgui.get_frame_height() * 1.3)
         imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + margin)
         imgui.begin_disabled(self._order is None or (drawing and not selecting) or self._filter_select)
-        with button_colors(THEME.accent, THEME.accent, (0.05, 0.05, 0.05), on=selecting):
+        with button_colors(THEME.emphasis, THEME.emphasis_hover, (0.05, 0.05, 0.05), on=selecting):
             if imgui.button(f"{fa.ICON_FA_DRAW_POLYGON}##poly", size):
                 self._start_poly()
         imgui.end_disabled()
         tooltip(
-            "Poly-select is on: click again or esc to leave it, the selection stays"
+            "Poly-select is on: click again or esc to leave it, the selection stays (a)"
             if selecting
             else "Poly-select: draw a polygon on any panel to select every signal in view whose center is on the "
-            "switch's side of it; the selection follows the polygon as it is drawn and dragged"
+            "switch's side of it; the selection follows the polygon as it is drawn and dragged (a)"
             + ("; off while the filter drives the selection" if self._filter_select else "")
         )
         imgui.same_line(0, gap)
@@ -1833,25 +1841,28 @@ class SingleSessionDemixingVis:
             + 2 * inner
         )
         imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + max((imgui.get_content_region_avail().x - row_w) / 2, 0))
-        imgui.begin_disabled(not live)
+        # grey but flippable until then, with the chosen side lit only while it is in use
+        frame = THEME.accent if live else (0.28, 0.28, 0.31)
+        hover = (0.55, 0.78, 1.0) if live else (0.38, 0.38, 0.42)
         imgui.align_text_to_frame_padding()
-        imgui.text_colored(dim if self._select_outside else lit, "inside")
+        imgui.text_colored(lit if live and not self._select_outside else dim, "inside")
         imgui.same_line(0, inner)
-        if live:
-            for color in (imgui.Col_.frame_bg, imgui.Col_.button):
-                imgui.push_style_color(color, to_vec4(THEME.accent))
-            for color in (imgui.Col_.frame_bg_hovered, imgui.Col_.button_hovered):
-                imgui.push_style_color(color, to_vec4((0.55, 0.78, 1.0)))
+        for color, value in (
+            (imgui.Col_.frame_bg, frame),
+            (imgui.Col_.button, frame),
+            (imgui.Col_.frame_bg_hovered, hover),
+            (imgui.Col_.button_hovered, hover),
+            (imgui.Col_.text, lit if live else dim),
+        ):
+            imgui.push_style_color(color, to_vec4(value))
         flipped, self._select_outside = imgui_toggle.toggle("##side", self._select_outside, imgui_toggle.ToggleFlags_.animated)
-        if live:
-            imgui.pop_style_color(4)
+        imgui.pop_style_color(5)
         tooltip(
             "Side: poly-select and the filter take the signals inside or outside the polygon / range"
             + ("" if live else "; lit while one of them drives the selection")
         )
         imgui.same_line(0, inner)
-        imgui.text_colored(lit if self._select_outside else dim, "outside")
-        imgui.end_disabled()
+        imgui.text_colored(lit if live and self._select_outside else dim, "outside")
         if self._order is not None and self._order.range_column is not None:
             order = self._order
             g.row("filter")

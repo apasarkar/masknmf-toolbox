@@ -62,6 +62,9 @@ DEMIXING: Mapping[str, Bind] = {
         "p", "toggle quick pixel trace: a click on an empty pixel adds its 5x5 average to the plot", imgui.Key.p
     ),
     "roi": Bind("r", "add a roi: the next click on a panel starts its polygon", imgui.Key.r),
+    "poly": Bind(
+        "a", "poly-select: the next click on a panel starts its polygon; again or esc leaves it, the selection stays", imgui.Key.a
+    ),
     "delete": Bind(
         "delete",
         "remove the selected roi, drop the active pixel average, or mark the selected signals for deletion (unmark "
