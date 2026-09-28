@@ -40,6 +40,7 @@ from masknmf.visualization.imgui import (
 from masknmf.visualization.rois import MARKED_COLOR, SELECTED_ALPHA, FootprintSet
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.demixing import CellStats, update_signals, write_curated
+from masknmf.diagnostics import pmd_autocovariance_diagnostics
 from masknmf.pipelines.configs.demixing_configs import NMFConfig
 
 _ROI_COLORS = (
@@ -181,6 +182,9 @@ class SingleSessionDemixingVis:
     and "Export" open a window with a typed path, so they work on a remote kernel; "browse" there is the
     native dialog for a local one. Marked signals always come first. A Demix pass recomputes the results'
     stats for the new signals and drops given ones.
+
+    :meth:`compute_lag1_acf` (``masknmf view --compression``) adds the lag-1 autocorrelation images of the movie
+    the compression saw, of the compressed movie and of their residual to the Static images window.
     """
 
     def __init__(
@@ -361,6 +365,7 @@ class SingleSessionDemixingVis:
         self._bind_arrays()
         self._summary_img = summary_img
         self._summary_name = "summary image" if summary_img_name is None else summary_img_name
+        self._lag1 = {}
         self._stills = self._static_images()
         # one panel per movie, up to three, each switchable to any of them; they open in _DEFAULT_ORDER
         movies = self._movies()
@@ -579,6 +584,7 @@ class SingleSessionDemixingVis:
         if self._pmd_array is not None:
             stills["mean image"] = self._pmd_array.mean_image.cpu().numpy()
             stills["noise variance image"] = self._pmd_array.noise_variance_image.cpu().numpy()
+        stills.update(self._lag1)
         return stills
 
     def _panel_choices(self, panel: str) -> tuple[list, str]:
@@ -2025,6 +2031,29 @@ class SingleSessionDemixingVis:
         if isinstance(order, (str, os.PathLike)):
             order = np.load(order) if str(order).endswith(".npy") else np.loadtxt(order, dtype=np.int64, ndmin=1)
         self.add_cell_stats(CellStats.from_order(order, 0 if self._order is None else self._order.n_items, name))
+
+    def compute_lag1_acf(self, batch_size: int = 200):
+        """
+        Add the lag-1 autocorrelation images to Static images: of the movie the compression saw (the registered
+        movie, else the raw one), of the compressed movie and of their residual, the last two normalized like the
+        first (:func:`masknmf.pmd_autocovariance_diagnostics`). One pass over the movie, ``batch_size`` frames at a time.
+        """
+        if self._pmd_array is None:
+            raise ValueError("lag-1 acf images need a compression")
+        movie = self._raw if self._registered is None else self._registered
+        if movie is None:
+            raise ValueError("lag-1 acf images need the movie the compression saw: raw=, and registered= when the results hold a registration")
+        display("computing the lag-1 acf images")
+        # in raw units with the pixelwise trend, as the movie is: the residual is then mean 0, which the diagnostic assumes
+        compressed = masknmf.CompressionArray.from_flyweight(
+            self._pmd_array.shape, self._pmd_array.flyweight, rescale=True, include_trend=True
+        )
+        raw, compressed, residual = pmd_autocovariance_diagnostics(movie, compressed, batch_size=batch_size, device=self.device)
+        name = "raw" if self._registered is None else "registered"
+        self._lag1 = {f"{name} lag-1 acf": raw, "compressed lag-1 acf": compressed, "residual lag-1 acf": residual}
+        self._stills = self._static_images()
+        if self._summary.is_open:
+            self._summary.set_images(self._stills)
 
     @property
     def reference_index(self) -> fpl.ReferenceIndices:
