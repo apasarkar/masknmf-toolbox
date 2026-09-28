@@ -1,9 +1,12 @@
 """The contract every pipeline keeps with BasePipeline."""
 
 import inspect
+import json
+import logging
 
 import pytest
 
+import masknmf
 from masknmf.pipelines import scraper
 
 SLUGS = sorted(scraper.pipeline_registry())
@@ -28,3 +31,37 @@ def test_a_given_config_is_kept_and_output_folder_is_resolved(slug, tmp_path):
     pipeline = cls(**{name: default, "output_folder": str(tmp_path)})
     assert getattr(pipeline, name) is default
     assert pipeline.output_folder == tmp_path.resolve()
+
+
+@pytest.mark.parametrize("slug", SLUGS)
+def test_log_level_sets_the_logger_and_a_run_folder_gets_a_log_beside_its_config(slug, tmp_path):
+    cls = scraper.pipeline_registry()[slug]
+    pipeline = cls(output_folder=str(tmp_path), log_level="debug")
+    assert logging.getLogger("masknmf").level == logging.DEBUG
+    folder = pipeline.create_run_folder()
+    assert json.loads((folder / "config.json").read_text())["log_level"] == "debug"
+    logging.getLogger("masknmf").debug("a debug line")
+    text = (folder / f"{folder.name}.log").read_text()
+    assert masknmf.__version__ in text and cls.__name__ in text
+    assert "DEBUG" in text and "a debug line" in text
+    logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
+    pipeline.log_handler.close()
+    cls()
+    assert logging.getLogger("masknmf").level == logging.INFO
+
+
+def test_step_logs_its_start_and_how_long_it_took_or_that_it_failed(tmp_path):
+    cls = scraper.pipeline_registry()[SLUGS[0]]
+    pipeline = cls(output_folder=str(tmp_path))
+    folder = pipeline.create_run_folder()
+    with pipeline.step("a quick step"):
+        pass
+    with pytest.raises(RuntimeError):
+        with pipeline.step("a broken step"):
+            raise RuntimeError("broken")
+    text = (folder / f"{folder.name}.log").read_text()
+    assert "INFO masknmf.pipelines._base: a quick step\n" in text
+    assert "a quick step done in 0:00:00" in text
+    assert "ERROR masknmf.pipelines._base: a broken step failed after 0:00:00" in text
+    logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
+    pipeline.log_handler.close()

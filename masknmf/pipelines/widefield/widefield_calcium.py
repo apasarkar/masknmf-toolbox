@@ -1,6 +1,5 @@
 import torch
 from masknmf.arrays import LazyFrameLoader, ArrayLike
-from masknmf.utils import display
 
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, MotionCorrectionConfigs
@@ -17,7 +16,8 @@ class WidefieldSinglechannelPipeline(BasePipeline):
                  compress_config: CompressionConfigs | None = None,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
-                 device: Literal["auto", "cuda", "cpu"] = "auto"
+                 device: Literal["auto", "cuda", "cpu"] = "auto",
+                 log_level: Literal["debug", "info", "warning"] = "info"
                  ):
         """
         Args:
@@ -29,8 +29,10 @@ class WidefieldSinglechannelPipeline(BasePipeline):
                 one hdf5 group per stage. None uses the working directory
             frame_batch_size (int): Number of frames to load into GPU at a time for processing
             device (str): Indicates which device pytorch runs on
+            log_level (str): How much the run logs, to the console and to the run folder's .log file
         """
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         log_level=log_level,
                          motion_correct_config=motion_correct_config, compress_config=compress_config)
 
     @classmethod
@@ -50,11 +52,10 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
                                                     exclude_border_radius)
 
-        display("Running Compression")
         compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
 
-        compressed_results = compress_strategy.compress(moco_data)
-
-        compressed_results.export(results_path)
+        with self.step("compression"):
+            compressed_results = compress_strategy.compress(moco_data)
+            compressed_results.export(results_path)
         return Path(results_path).parent
 

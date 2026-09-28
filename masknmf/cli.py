@@ -10,6 +10,7 @@ here enumerates a parameter by hand:
     masknmf params --pipeline two-photon-calcium
     masknmf run --pipeline two-photon-calcium movie.tif --fs 30
     masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --motion-correct-kind piecewise-rigid
+    masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --log-level debug
     masknmf params --pipeline two-photon-calcium --json > configs.json
     masknmf run movie.tif --fs 30 --config configs.json
     masknmf view results.hdf5 --raw movie.tif
@@ -22,8 +23,11 @@ from typing import Any, Optional
 import argparse
 import dataclasses
 import json
+import logging
 import shutil
 import sys
+import time
+from datetime import timedelta
 from pathlib import Path
 
 import h5py
@@ -39,6 +43,8 @@ SUFFIXES_HDF5 = (".h5", ".hdf5")
 NAMES_ALIAS = {"frame_rate": "--fs"}
 
 CHARACTERS_NEEDING_QUOTES = set(" \t\\'&|;<>()$`!*?[]{}~#")
+
+logger = logging.getLogger("masknmf")
 
 
 def group_names_registration() -> tuple[str, ...]:
@@ -200,14 +206,15 @@ def kinds_buildable(section: scraper.Section) -> list[str]:
 
 def read_config_file(filepath: str) -> dict:
     """
-    Read a --config file: the json `masknmf params --json` prints, or a run folder's config.json.
+    Read a --config file: the json `masknmf params --json` prints, or a run folder's config.json, an object
+    naming the pipeline under "pipeline" and holding its argument values under "configs".
 
     Args:
         filepath (str): The file
     Returns:
-        dict: Argument name to value
+        dict: The object
     Raises:
-        SystemExit: If the file is missing or is not a json object
+        SystemExit: If the file is missing, is not a json object, or its "configs" is not one
     """
     path = Path(filepath).expanduser()
     if not path.is_file():
@@ -216,8 +223,8 @@ def read_config_file(filepath: str) -> dict:
         loaded = json.loads(path.read_text())
     except json.JSONDecodeError as error:
         fail(f"{path.name} is not valid json: {error}")
-    if not isinstance(loaded, dict):
-        fail(f"{path.name} should hold a json object of argument names to values")
+    if not isinstance(loaded, dict) or not isinstance(loaded.get("configs"), dict):
+        fail(f"{path.name} should hold a json object with argument names to values under \"configs\"")
     return loaded
 
 
@@ -397,7 +404,7 @@ def command_params(args: argparse.Namespace) -> None:
     spec = spec_for(slug=args.pipeline)
     if args.json:
         configs = {section.argument: section.default for section in spec.sections}
-        print(json.dumps({"pipeline": spec.cls.__name__, **configs}, indent=2, default=scraper.config_json_value))
+        print(json.dumps({"pipeline": spec.cls.__name__, "configs": configs}, indent=2, default=scraper.config_json_value))
         return
 
     print(f"{spec.slug}  ({spec.cls.__name__})\n")
@@ -429,12 +436,13 @@ def command_params(args: argparse.Namespace) -> None:
 def command_run(args: argparse.Namespace) -> None:
     """Build the pipeline the scraper described and run it."""
     spec = spec_for(slug=args.pipeline)
-    values_file = read_config_file(filepath=args.config) if args.config is not None else {}
+    loaded = read_config_file(filepath=args.config) if args.config is not None else {"configs": {}}
 
-    if values_file.get("pipeline", spec.cls.__name__) != spec.cls.__name__:
-        fail(f"the config file is for {values_file['pipeline']}, not {spec.cls.__name__}")
+    if loaded.get("pipeline", spec.cls.__name__) != spec.cls.__name__:
+        fail(f"the config file is for {loaded['pipeline']}, not {spec.cls.__name__}")
+    values_file = loaded["configs"]
     names_known = {s.argument for s in spec.sections} | {p.field for p in spec.scalars} | {p.field for p in spec.run_scalars}
-    unknown = set(values_file) - names_known - {"pipeline", "masknmf_version"}
+    unknown = set(values_file) - names_known
     if len(unknown) > 0:
         fail(f"the config file sets {', '.join(sorted(unknown))}, which {spec.slug} does not take")
 
@@ -503,19 +511,25 @@ def command_run(args: argparse.Namespace) -> None:
         if kwargs_run.get(p.field) is not None
     )
     print(f"{spec.cls.__name__} on {shapes or 'stored results'}")
+    start = time.monotonic()
     try:
         run_folder = pipeline.run(**kwargs_run)
     except BaseException:
-        # a failed run keeps its folder only when one of its results files holds a finished compression
+        logger.exception("run failed")
+        # a failed run keeps its folder only when one of its results files holds a finished compression; its log
+        # file, closed first so windows lets the folder go, moves up to where the folder was
         folder = pipeline.run_folder
         if folder is not None and not any(
             has_stage(filepath_results=str(filepath), name_group=group_name_compression())
             for filepath in folder.glob("*.hdf5")
         ):
+            logger.removeHandler(pipeline.log_handler)
+            pipeline.log_handler.close()
+            shutil.move(pipeline.log_handler.baseFilename, folder.parent)
             shutil.rmtree(folder)
-            print(f"removed {folder}", file=sys.stderr)
-        raise
-    print(f"done: {run_folder}")
+            print(f"removed {folder}, its log is in {folder.parent}", file=sys.stderr)
+        raise SystemExit(1)
+    logger.info(f"done in {timedelta(seconds=round(time.monotonic() - start))}: {run_folder}")
 
 
 def command_view(args: argparse.Namespace) -> None:

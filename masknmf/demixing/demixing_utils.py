@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import scipy.sparse
 
@@ -7,6 +8,9 @@ import torch
 import networkx as nx
 from collections import defaultdict
 from masknmf.utils import SparseCOOTensor
+
+logger = logging.getLogger(__name__)
+
 
 def _max_ac_routine(a: SparseCOOTensor,
                     c: torch.Tensor):
@@ -271,9 +275,9 @@ def cosine_similarity(img1: np.ndarray,
         cosine_sim: cosine similarity between these two images
     """
     if np.count_nonzero(img1 != 0) == 0 or np.count_nonzero(img2 != 0) == 0:
-        print("one of these arrays is zero!!!")
+        logger.debug("one of these arrays is zero!!!")
         if np.count_nonzero(img2 != 0) == 0:
-            print("the second one was 0")
+            logger.debug("the second one was 0")
         return 0
     img1_flat = img1.flatten()
     img2_flat = img2.flatten()

@@ -22,9 +22,11 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                  unfiltered_demixing_config: MultipassDemixingConfigs | None = None,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
-                 device: Literal["auto", "cuda", "cpu"] = "auto"
+                 device: Literal["auto", "cuda", "cpu"] = "auto",
+                 log_level: Literal["debug", "info", "warning"] = "info"
                  ):
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         log_level=log_level,
                          motion_correct_config=motion_correct_config, compress_config=compress_config,
                          spatial_highpass_config=spatial_highpass_config,
                          filtered_demixing_config=filtered_demixing_config,
@@ -100,13 +102,13 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
                                                         exclude_border_radius)
 
-            display("Running Compression")
             compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
             compress_strategy.detrender = self.spline_detrender(data.shape[0], frame_rate, window_seconds=40,
                                                                 knot_seconds=25, sigma_seconds=0.3)
 
-            compressed_results = compress_strategy.compress(moco_data)
-            compressed_results.export(results_path)
+            with self.step("compression"):
+                compressed_results = compress_strategy.compress(moco_data)
+                compressed_results.export(results_path)
 
         if isinstance(self.filtered_demixing_config, str):
             if self.filtered_demixing_config.lower() != "skip":
@@ -137,7 +139,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         filtered_demixing_config_used = self.with_detrender(self.filtered_demixing_config, detrender)
         unfiltered_demixing_config_used = self.with_detrender(self.unfiltered_demixing_config, detrender)
 
-        curr_demix_results = self.run_multipass(highpass_pmd_demixer, filtered_demixing_config_used)
+        curr_demix_results = self.run_multipass(highpass_pmd_demixer, filtered_demixing_config_used, "filtered demixing")
 
         ## Define the unfiltered demixer object
         signals_array = curr_demix_results.signals_array
@@ -156,7 +158,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
         latest_demix_results = self.run_multipass(
             unfiltered_pmd_demixer,
-            MultipassDemixingConfig([custom_unfiltered_conf] + unfiltered_demixing_config_used.DemixingConfigs[1:]))
+            MultipassDemixingConfig([custom_unfiltered_conf] + unfiltered_demixing_config_used.DemixingConfigs[1:]),
+            "unfiltered demixing")
 
         latest_demix_results.export(results_path)
         if remove_intermediates:

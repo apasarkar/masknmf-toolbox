@@ -271,9 +271,11 @@ class OnePhotonCulturePipeline(BasePipeline):
                  output_folder: str | Path | None = None,
                  load_into_ram: bool = False,
                  frame_batch_size: int = 300,
-                 device: Literal["auto", "cuda", "cpu"] = "auto"
+                 device: Literal["auto", "cuda", "cpu"] = "auto",
+                 log_level: Literal["debug", "info", "warning"] = "info"
                  ):
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         log_level=log_level,
                          motion_correct_config=motion_correct_config, compress_config=compress_config,
                          demixing_config=demixing_config)
         self.load_into_ram = load_into_ram
@@ -348,10 +350,11 @@ class OnePhotonCulturePipeline(BasePipeline):
                              include_mean=True,
                              device=device)
 
-            mean_img = torch.mean(mov[:self.motion_correct_config.num_frames_template], dim=0)
-            corrector = GradientMotionCorrector(template=mean_img)
-            moco_array = corrector.motion_correct(mov)
-            moco_array.output_device=device
+            with self.step("motion correction"):
+                mean_img = torch.mean(mov[:self.motion_correct_config.num_frames_template], dim=0)
+                corrector = GradientMotionCorrector(template=mean_img)
+                moco_array = corrector.motion_correct(mov)
+                moco_array.output_device=device
 
         self.run_config = {"frame_rate": frame_rate, "indicator_sign": indicator_sign,
                            "remove_intermediates": remove_intermediates}
@@ -363,8 +366,6 @@ class OnePhotonCulturePipeline(BasePipeline):
         else:
             results_path = self.results_path()
 
-            display("Running Compression")
-
             ## Add the run-specific frame weighting to a copy of the config, so the pipeline's own is untouched
             if self.compress_config.frame_weighting is not None:
                 frame_weighting = self.compress_config.frame_weighting * active_frames.astype(self.compress_config.frame_weighting.dtype)
@@ -375,8 +376,9 @@ class OnePhotonCulturePipeline(BasePipeline):
 
             compress_strategy.detrender = self.spline_detrender(moco_array.shape[0], frame_rate, window_seconds=0.05,
                                                                 knot_seconds=0.05, sigma_seconds=0.01)
-            compressed_results = compress_strategy.compress(moco_array)
-            compressed_results.export(results_path)
+            with self.step("compression"):
+                compressed_results = compress_strategy.compress(moco_array)
+                compressed_results.export(results_path)
 
         device = self.torch_device
         display("Running demixing analysis")
@@ -416,13 +418,14 @@ class OnePhotonCulturePipeline(BasePipeline):
         c_all_frames = expand_traces_to_all_frames(curr_demix_results.temporal_demixed,
                                                    active_frames)
 
-        a_rawdata_scale, full_c_estimate_denoised = compute_final_denoised_c_estimates(pmd_denoise,
-                                                                                 curr_demix_results,
-                                                                                 c_all_frames)
+        with self.step("raw scale estimates"):
+            a_rawdata_scale, full_c_estimate_denoised = compute_final_denoised_c_estimates(pmd_denoise,
+                                                                                     curr_demix_results,
+                                                                                     c_all_frames)
 
-        c_regressed_on_raw = hals_on_rawdata(moco_array,
-                                             a_rawdata_scale,
-                                             full_c_estimate_denoised)
+            c_regressed_on_raw = hals_on_rawdata(moco_array,
+                                                 a_rawdata_scale,
+                                                 full_c_estimate_denoised)
 
 
 
