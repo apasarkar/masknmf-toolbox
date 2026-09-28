@@ -1952,7 +1952,7 @@ class SingleSessionDemixingVis:
             g.row("traces")
             buttons = [
                 (
-                    "center",
+                    fa.ICON_FA_ARROWS_LEFT_RIGHT_TO_LINE,
                     self._traces.follow,
                     self._toggle_trace_follow,
                     "Center: keep the current frame in the middle of the traces as the movie plays or the slider "
@@ -1962,7 +1962,7 @@ class SingleSessionDemixingVis:
             if self._pmd_array is not None:
                 buttons += [
                     (
-                        "quick pixel trace",
+                        fa.ICON_FA_EYE_DROPPER,
                         self._pixel_traces,
                         lambda: self._set_pixel_traces(not self._pixel_traces),
                         "Quick pixel trace: click an empty pixel to add the compressed movie's 5x5 average there to "
@@ -1970,7 +1970,7 @@ class SingleSessionDemixingVis:
                         "Demix and export ignore it; delete drops it (p)",
                     ),
                     (
-                        "show selected traces",
+                        fa.ICON_FA_CHART_LINE,
                         self._show_traces,
                         self._toggle_show_traces,
                         "Show selected traces: plot whatever is selected, a signal's four averages, or one line per "
@@ -1978,17 +1978,12 @@ class SingleSessionDemixingVis:
                         "compressed average. Off, selecting only highlights, however big the selection",
                     ),
                 ]
-            # toggle buttons, lit while on, flowing onto a new line when the row is full
-            pad = imgui.get_style().frame_padding.x
-            for i, (label, on, action, tip) in enumerate(buttons):
-                w = imgui.calc_text_size(label).x + 2 * pad
+            # icon toggle buttons, lit while on
+            for i, (icon, on, action, tip) in enumerate(buttons):
                 if i:
                     imgui.same_line(0, g.gap)
-                    if imgui.get_content_region_avail().x < w:
-                        imgui.new_line()
-                        imgui.same_line(g.cell_x[0])
                 with button_colors(THEME.accent, THEME.accent, (0.05, 0.05, 0.05), on=on):
-                    if imgui.button(f"{label}##traces_{i}", imgui.ImVec2(w, 0)):
+                    if imgui.button(f"{icon}##traces_{i}", imgui.ImVec2(em(3.2), 0)):
                         action()
                 tooltip(tip)
 
@@ -2007,10 +2002,10 @@ class SingleSessionDemixingVis:
         )
         # one centered row of equally spaced buttons, capped so a wide panel does not bloat them
         gap, avail = em(0.6), imgui.get_content_region_avail().x
-        w = min((avail - 5 * gap) / 6, em(3.2))
+        w = min((avail - 6 * gap) / 7, em(3.2))
         size = imgui.ImVec2(w, imgui.get_frame_height() * 1.2)
         imgui.dummy(imgui.ImVec2(0, em(0.4)))
-        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + (avail - 6 * w - 5 * gap) / 2)
+        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + (avail - 7 * w - 6 * gap) / 2)
         with button_colors(THEME.accent, THEME.accent, (0.05, 0.05, 0.05), on=self._follow):
             if imgui.button(f"{fa.ICON_FA_LOCATION_CROSSHAIRS}##center", size):
                 self._toggle_follow()
@@ -2027,6 +2022,11 @@ class SingleSessionDemixingVis:
             else "Draw: a polygon on any panel selects every signal in view whose center is on the switch's side of "
             "it, live as it is drawn and dragged; Add ROI keeps it, a click that picks by hand drops it (a)"
         )
+        imgui.same_line(0, gap)
+        imgui.begin_disabled(True)
+        imgui.button(f"{fa.ICON_FA_SIGNATURE}##freehand", size)
+        imgui.end_disabled()
+        tooltip("Freehand selection: the region drawn in one stroke, not yet implemented")
         imgui.same_line(0, gap)
         imgui.begin_disabled(not settled)
         if imgui.button(f"{fa.ICON_FA_PLUS}##add_roi", size):
