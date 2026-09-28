@@ -86,9 +86,9 @@ _BASE_LINE_COLORS = (
 )
 # behind the traces, naming what the lines are: near-black material-dark tints, navy at rest, forest green
 # for a selection, indigo for the sources under a double-clicked pixel
-_TRACES_BG = (0.04, 0.05, 0.10, 1.0)
-_SIGNALS_BG = (0.03, 0.08, 0.05, 1.0)
-_SOURCES_BG = (0.06, 0.04, 0.12, 1.0)
+_TRACES_BG = (0.05, 0.07, 0.13, 1.0)
+_SIGNALS_BG = (0.04, 0.11, 0.06, 1.0)
+_SOURCES_BG = (0.08, 0.06, 0.16, 1.0)
 
 
 class SingleSessionDemixingVis:
