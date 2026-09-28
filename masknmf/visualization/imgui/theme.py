@@ -181,7 +181,7 @@ def button_colors(fill, hover, text=None, on: bool = True):
 
 def popup(title: str, is_open: bool, theme: Theme = THEME) -> tuple[bool, bool]:
     """
-    Begin a centered, auto-sized, closable window.
+    Begin a centered, auto-sized, closable window with an opaque background.
 
     Returns
     -------
@@ -192,11 +192,14 @@ def popup(title: str, is_open: bool, theme: Theme = THEME) -> tuple[bool, bool]:
     )
     imgui.push_style_var(imgui.StyleVar_.window_rounding, theme.rounding)
     imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(em(1.0), em(0.8)))
+    background = imgui.get_style().color_(imgui.Col_.window_bg)
+    imgui.push_style_color(imgui.Col_.window_bg, imgui.ImVec4(background.x, background.y, background.z, 1.0))
     opened, is_open = imgui.begin(
         f"{title}###{title}",
         is_open,
         flags=imgui.WindowFlags_.no_saved_settings | imgui.WindowFlags_.always_auto_resize,
     )
+    imgui.pop_style_color()
     imgui.pop_style_var(2)
     return opened, is_open
 

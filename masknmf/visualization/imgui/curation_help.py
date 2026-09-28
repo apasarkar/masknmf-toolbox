@@ -17,6 +17,7 @@ from wgpu.utils.imgui import ImguiRenderer
 
 from masknmf.visualization.imgui.keybinds import DEMIXING
 from masknmf.visualization.imgui.panels import draw_keybinds_button, draw_keybinds_popup
+from masknmf.visualization.imgui.theme import popup
 
 ACCENT = imgui.ImVec4(0.40, 0.68, 1.00, 1.0)
 KEY = imgui.ImVec4(1.00, 0.80, 0.20, 1.0)
@@ -37,8 +38,8 @@ GROUP = (
     imgui.ImVec4(0.95, 0.35, 0.90, 1.0),
 )
 # the trace plot's frame while a selection shows, and while a double-click's sources do
-SELECTED = imgui.ImVec4(0.03, 0.08, 0.05, 1.0)
-SOURCED = imgui.ImVec4(0.06, 0.04, 0.12, 1.0)
+SELECTED = imgui.ImVec4(0.04, 0.11, 0.06, 1.0)
+SOURCED = imgui.ImVec4(0.08, 0.06, 0.16, 1.0)
 # a made-up field of view: four cells at (column, row) fractions of the panel, each with a radius in em
 CELLS = ((0.18, 0.34, 0.85), (0.42, 0.68, 1.0), (0.66, 0.30, 0.75), (0.86, 0.66, 0.65))
 WIDTH_EM = 44
@@ -309,18 +310,10 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     em = imgui.get_font_size()
     w = WIDTH_EM * em
     viewport = imgui.get_main_viewport()
-    imgui.set_next_window_pos(viewport.get_center(), imgui.Cond_.appearing, pivot=imgui.ImVec2(0.5, 0.5))
     imgui.set_next_window_size_constraints(
         imgui.ImVec2(0, 0), imgui.ImVec2(viewport.size.x, 0.94 * viewport.size.y)
     )
-    imgui.push_style_var(imgui.StyleVar_.window_rounding, 6.0)
-    imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(em, 0.8 * em))
-    opened, is_open = imgui.begin(
-        f"{TITLE} help###curation-help",
-        is_open,
-        flags=imgui.WindowFlags_.no_saved_settings | imgui.WindowFlags_.always_auto_resize,
-    )
-    imgui.pop_style_var(2)
+    opened, is_open = popup(f"{TITLE} help", is_open)
     if not opened:
         imgui.end()
         return is_open, keys_open

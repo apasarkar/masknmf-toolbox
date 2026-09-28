@@ -37,7 +37,9 @@ def draw_keybinds_popup(bindings: Mapping[str, Bind], is_open: bool, title: str 
 def hint_button(name: str, hint: str) -> bool:
     """A button reading ``name`` with ``hint`` dimmed after it, e.g. its key in parentheses."""
     style = imgui.get_style()
+    imgui.push_style_var(imgui.StyleVar_.frame_rounding, THEME.rounding)
     clicked = imgui.button(f"##{name} {hint}", imgui.ImVec2(hint_button_width(name, hint), 0))
+    imgui.pop_style_var()
     corner = imgui.get_item_rect_min()
     x, y = corner.x + style.frame_padding.x, corner.y + style.frame_padding.y
     draw = imgui.get_window_draw_list()

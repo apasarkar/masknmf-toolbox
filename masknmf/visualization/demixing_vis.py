@@ -71,7 +71,7 @@ _UNDO_DEPTH = 50  # ctrl+z snapshots kept
 _DEFAULT_ORDER = ("raw", "compressed+denoised", "signals", "background", "registered", "residual")
 _CAPTIONS = (
     "masks", "contours", "sel masks", "sel contours", "color by", "traces",
-    "rois", "filter", "range", "applied", "run", "options",
+    "filter", "range", "applied", "run", "options",
 )
 # signals selected together, in order of mutual contrast on the dark plot; no red, a mask marked for
 # deletion is red
@@ -93,9 +93,9 @@ _BASE_LINE_COLORS = (
 )
 # behind the traces, naming what the lines are: near-black material-dark tints, navy at rest, forest green
 # for a selection, indigo for the sources under a double-clicked pixel
-_TRACES_BG = (0.04, 0.05, 0.10, 1.0)
-_SIGNALS_BG = (0.03, 0.08, 0.05, 1.0)
-_SOURCES_BG = (0.06, 0.04, 0.12, 1.0)
+_TRACES_BG = (0.05, 0.07, 0.13, 1.0)
+_SIGNALS_BG = (0.04, 0.11, 0.06, 1.0)
+_SOURCES_BG = (0.08, 0.06, 0.16, 1.0)
 
 
 class SingleSessionDemixingVis:
@@ -1638,7 +1638,7 @@ class SingleSessionDemixingVis:
                 imgui.end_tab_item()
             imgui.end_tab_bar()
         # drawn last, over the bar's rule: nothing else in this window follows the cursor from here
-        imgui.set_cursor_pos(imgui.ImVec2(top.x + room - buttons_w, top.y))
+        imgui.set_cursor_pos(imgui.ImVec2(top.x + room - buttons_w, top.y - em(0.25)))
         self._help_open, self._keybinds_open = draw_help_buttons(self._help_open, self._keybinds_open, "Curation Guide")
         self._keybinds_open = draw_keybinds_popup(DEMIXING, self._keybinds_open)
         self._help_open, self._keybinds_open = draw_curation_help(self._help_open, self._keybinds_open)
@@ -1769,8 +1769,10 @@ class SingleSessionDemixingVis:
 
     def _draw_roi_tools(self):
         drawing = self._drawing()
-        existing = len(self._footprints) if self._footprints is not None else 0
         g = grid(_CAPTIONS)
+        # sliders: seven tenths of the panel, or what their row has left before the (?) mark
+        right = imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x
+        slider_w = min(0.7 * imgui.get_window_width(), right - g.cell_x[0] - g.mark_w)
 
         section("OVERLAY")
         if self._image_selector is not None:
@@ -1779,7 +1781,7 @@ class SingleSessionDemixingVis:
                 self._show_masks = show
                 self._refresh_masks()
             g.cell(0)
-            imgui.set_next_item_width(g.w)
+            imgui.set_next_item_width(slider_w)
             changed, self._mask_opacity = imgui.slider_float(
                 "##mask-opacity", self._mask_opacity, 0.05, 1.0, "%.2f"
             )
@@ -1791,7 +1793,7 @@ class SingleSessionDemixingVis:
                 self._show_selected_masks = show
                 self._refresh_masks()
             g.cell(0)
-            imgui.set_next_item_width(g.w)
+            imgui.set_next_item_width(slider_w)
             changed, self._selected_mask_opacity = imgui.slider_float(
                 "##selected-mask-opacity", self._selected_mask_opacity, 0.05, 1.0, "%.2f"
             )
@@ -1802,7 +1804,7 @@ class SingleSessionDemixingVis:
             if changed:
                 self._set_contours(show)
             g.cell(0)
-            imgui.set_next_item_width(g.w)
+            imgui.set_next_item_width(slider_w)
             changed, self._contour_opacity = imgui.slider_float(
                 "##contour-opacity", self._contour_opacity, 0.05, 1.0, "%.2f"
             )
@@ -1814,7 +1816,7 @@ class SingleSessionDemixingVis:
                 self._show_selected_contours = show
                 self._image_selector.alpha = self._selected_contour_opacity if show else 0.0
             g.cell(0)
-            imgui.set_next_item_width(g.w)
+            imgui.set_next_item_width(slider_w)
             changed, self._selected_contour_opacity = imgui.slider_float(
                 "##selected-contour-opacity", self._selected_contour_opacity, 0.05, 1.0, "%.2f"
             )
@@ -1864,17 +1866,16 @@ class SingleSessionDemixingVis:
             and bool(signals)
             and all(k in self._marked for k in signals)
         )
-        # every row spans the same margin-to-margin width, so the buttons grow with the panel
-        margin, gap = em(1.0), g.gap / 2
-        span = imgui.get_content_region_avail().x - 2 * margin
-        height = imgui.get_frame_height() * 1.3
-        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + margin)
+        # one centered row of equally spaced buttons, capped so a wide panel does not bloat them
+        gap, avail = em(0.6), imgui.get_content_region_avail().x
+        w = min((avail - 5 * gap) / 6, em(3.2))
+        size = imgui.ImVec2(w, imgui.get_frame_height() * 1.2)
+        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + (avail - 6 * w - 5 * gap) / 2)
         with button_colors(THEME.accent, THEME.accent, (0.05, 0.05, 0.05), on=self._follow):
-            if imgui.button(f"{fa.ICON_FA_LOCATION_CROSSHAIRS}##center", imgui.ImVec2(span, height)):
+            if imgui.button(f"{fa.ICON_FA_LOCATION_CROSSHAIRS}##center", size):
                 self._toggle_follow()
         tooltip("Center: every panel on the selected signal, following it as the selection moves (f)")
-        size = imgui.ImVec2((span - 2 * gap) / 3, height)
-        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + margin)
+        imgui.same_line(0, gap)
         imgui.begin_disabled(self._order is None or (drawing and not selecting) or self._filter_select)
         with button_colors(THEME.emphasis, THEME.emphasis_hover, (0.05, 0.05, 0.05), on=selecting):
             if imgui.button(f"{fa.ICON_FA_DRAW_POLYGON}##poly", size):
@@ -1887,36 +1888,7 @@ class SingleSessionDemixingVis:
             "switch's side of it; the selection follows the polygon as it is drawn and dragged (a)"
             + ("; off while the filter drives the selection" if self._filter_select else "")
         )
-        # the side switch beside it, centered on the button: grey but flippable until poly-select or the filter
-        # drives the selection, then accent with the side in use lit
-        live = selecting or self._filter_select
-        inner = imgui.get_style().item_inner_spacing.x
-        dim, lit = imgui.get_style().color_(imgui.Col_.text_disabled), imgui.get_style().color_(imgui.Col_.text)
-        frame = THEME.accent if live else (0.28, 0.28, 0.31)
-        hover = (0.55, 0.78, 1.0) if live else (0.38, 0.38, 0.42)
         imgui.same_line(0, gap)
-        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + (height - imgui.get_frame_height()) / 2)
-        imgui.align_text_to_frame_padding()
-        imgui.text_colored(lit if live and not self._select_outside else dim, "inside")
-        imgui.same_line(0, inner)
-        for color, value in (
-            (imgui.Col_.frame_bg, frame),
-            (imgui.Col_.button, frame),
-            (imgui.Col_.frame_bg_hovered, hover),
-            (imgui.Col_.button_hovered, hover),
-            (imgui.Col_.text, lit if live else dim),
-        ):
-            imgui.push_style_color(color, to_vec4(value))
-        flipped, self._select_outside = imgui_toggle.toggle("##side", self._select_outside, imgui_toggle.ToggleFlags_.animated)
-        imgui.pop_style_color(5)
-        tooltip(
-            "Side: poly-select and the filter take the signals inside or outside the polygon / range"
-            + ("" if live else "; lit while one of them drives the selection")
-        )
-        imgui.same_line(0, inner)
-        imgui.text_colored(lit if live and self._select_outside else dim, "outside")
-        imgui.dummy(imgui.ImVec2(0, em(0.3)))
-        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + margin)
         imgui.begin_disabled(drawing)
         if imgui.button(f"{fa.ICON_FA_PLUS}##add_roi", size):
             self._start_roi()
@@ -1939,7 +1911,45 @@ class SingleSessionDemixingVis:
         imgui.button(f"{fa.ICON_FA_OBJECT_GROUP}##merge", size)
         imgui.end_disabled()
         tooltip("Merge: the grouped signals into one, not yet implemented")
-        imgui.dummy(imgui.ImVec2(0, em(0.3)))
+        imgui.same_line(0, gap)
+        imgui.begin_disabled(not self._rois)
+        if imgui.button(f"{fa.ICON_FA_FILE_EXPORT}##export", size):
+            self._export_prompt.start()
+        imgui.end_disabled()
+        tooltip(f"Export: the {len(self._rois)} drawn roi(s) to a .npz, a window with a typed path, browse for the native dialog")
+        # the side switch under the row, centered: grey but flippable until poly-select or the filter drives the
+        # selection, then accent with the side in use lit
+        live = selecting or self._filter_select
+        inner = imgui.get_style().item_inner_spacing.x
+        dim, lit = imgui.get_style().color_(imgui.Col_.text_disabled), imgui.get_style().color_(imgui.Col_.text)
+        frame = THEME.accent if live else (0.28, 0.28, 0.31)
+        hover = (0.55, 0.78, 1.0) if live else (0.38, 0.38, 0.42)
+        row_w = (
+            imgui.calc_text_size("inside").x
+            + imgui.calc_text_size("outside").x
+            + imgui.get_frame_height() * imgui_toggle.ToggleConfig().width_ratio
+            + 2 * inner
+        )
+        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + max((avail - row_w) / 2, 0))
+        imgui.align_text_to_frame_padding()
+        imgui.text_colored(lit if live and not self._select_outside else dim, "inside")
+        imgui.same_line(0, inner)
+        for color, value in (
+            (imgui.Col_.frame_bg, frame),
+            (imgui.Col_.button, frame),
+            (imgui.Col_.frame_bg_hovered, hover),
+            (imgui.Col_.button_hovered, hover),
+            (imgui.Col_.text, lit if live else dim),
+        ):
+            imgui.push_style_color(color, to_vec4(value))
+        flipped, self._select_outside = imgui_toggle.toggle("##side", self._select_outside, imgui_toggle.ToggleFlags_.animated)
+        imgui.pop_style_color(5)
+        tooltip(
+            "Side: poly-select and the filter take the signals inside or outside the polygon / range"
+            + ("" if live else "; lit while one of them drives the selection")
+        )
+        imgui.same_line(0, inner)
+        imgui.text_colored(lit if live and self._select_outside else dim, "outside")
         if self._order is not None and self._order.range_column is not None:
             order = self._order
             g.row("filter")
@@ -1955,7 +1965,7 @@ class SingleSessionDemixingVis:
             imgui.same_line(0, g.gap)
             right_aligned_text(f"{len(order.order)} / {order.n_items}")
             g.row("range")
-            moved = draw_range_filter(order, "_signals", g.w)
+            moved = draw_range_filter(order, "_signals", slider_w)
             if moved:
                 order.rebuild()
             tooltip("Range: drag a line to move it, double-click for the full span; the table shows what is inside")
@@ -1995,14 +2005,6 @@ class SingleSessionDemixingVis:
 
         w = imgui.get_frame_height() * 1.6
         section("DEMIX")
-        g.row("rois")
-        imgui.begin_disabled(not self._rois)
-        if imgui.button(f"{fa.ICON_FA_FILE_EXPORT}##export", imgui.ImVec2(w, 0)):
-            self._export_prompt.start()
-        imgui.end_disabled()
-        tooltip("Export: the drawn rois to a .npz, a window with a typed path, browse for the native dialog")
-        imgui.same_line(0, g.gap)
-        right_aligned_text(f"{existing} existing, {len(self._rois)} drawn")
         g.row("run")
         imgui.begin_disabled(
             (not self._rois and not self._marked)
