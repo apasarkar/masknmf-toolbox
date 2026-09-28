@@ -312,7 +312,7 @@ def blind_spot_safe_pad(x: torch.Tensor, pad: int, radius: int) -> torch.Tensor:
     num_frames = x.shape[-1]
     if num_frames < pad + radius + 1:
         raise ValueError(f"Traces must have at least {pad + radius + 1} samples to pad by {pad} "
-                         f"with receptive radius {radius} (got {T})")
+                         f"with receptive radius {radius} (got {num_frames})")
     left = x[..., radius + 1:radius + 1 + pad].flip(-1)
     right = x[..., num_frames - radius - 1 - pad:num_frames - radius - 1].flip(-1)
     return torch.cat([left, x, right], dim=-1)
