@@ -2,10 +2,13 @@
 
 from typing import Mapping
 
+from imgui_bundle import icons_fontawesome_6 as fa
 from imgui_bundle import imgui
 
 from masknmf.visualization.imgui.keybinds import Bind
 from masknmf.visualization.imgui.theme import THEME, close_button, em, popup, to_vec4
+
+KEYBINDS_LABEL = f"{fa.ICON_FA_KEYBOARD} Keybinds"
 
 
 def draw_keybinds_popup(bindings: Mapping[str, Bind], is_open: bool, title: str = "Keybinds") -> bool:
@@ -60,20 +63,21 @@ def draw_keybinds_button(is_open: bool, right: float | None = None) -> bool:
     line with its right edge at that window x. Returns the popup's new open state.
     """
     if right is not None:
-        imgui.same_line(right - hint_button_width("Keybinds", "(k)"))
-    if hint_button("Keybinds", "(k)"):
+        imgui.same_line(right - hint_button_width(KEYBINDS_LABEL, "(k)"))
+    if hint_button(KEYBINDS_LABEL, "(k)"):
         is_open = not is_open
     return is_open
 
 
 def help_buttons_width(guide: str) -> float:
     """The width :func:`draw_help_buttons` takes for ``guide``."""
-    return hint_button_width(guide, "(h)") + em(0.4) + hint_button_width("Keybinds", "(k)")
+    guide_w = hint_button_width(f"{fa.ICON_FA_CIRCLE_QUESTION} {guide}", "(h)")
+    return guide_w + em(0.4) + hint_button_width(KEYBINDS_LABEL, "(k)")
 
 
 def draw_help_buttons(help_open: bool, keys_open: bool, guide: str) -> tuple[bool, bool]:
     """The ``guide`` and keybinds buttons, h's and k's twins, from the cursor. Returns their new open states."""
-    if hint_button(guide, "(h)"):
+    if hint_button(f"{fa.ICON_FA_CIRCLE_QUESTION} {guide}", "(h)"):
         help_open = not help_open
     imgui.same_line(0, em(0.4))
     return help_open, draw_keybinds_button(keys_open)

@@ -1623,23 +1623,26 @@ class SingleSessionDemixingVis:
                 if stills
                 else "the results hold no still images"
             )
-        # the guide and keybinds buttons take the tab bar's trailing space, or a row of their own above it when that is too narrow
-        style = imgui.get_style()
-        tabs_w = sum(imgui.calc_text_size(name).x + 2 * style.frame_padding.x for name in ("Curation", "Signals"))
-        top, room, buttons_w = imgui.get_cursor_pos(), imgui.get_content_region_avail().x, help_buttons_width("Curation Guide")
-        if tabs_w + style.item_inner_spacing.x + em(1.0) + buttons_w > room:
-            imgui.dummy(imgui.ImVec2(0, imgui.get_frame_height()))
+        # the guide and keybinds buttons right-aligned on the same row, or on a row of their own when it is too narrow
+        buttons_w = help_buttons_width("Curation Guide")
+        imgui.same_line()
+        if imgui.get_content_region_avail().x < buttons_w + em(0.6):
+            imgui.new_line()
+        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x - buttons_w)
+        self._help_open, self._keybinds_open = draw_help_buttons(self._help_open, self._keybinds_open, "Curation Guide")
+        # each tab's body is a child that scrolls on its own: the menu, the buttons and the tabs stay put
         if imgui.begin_tab_bar("##side"):
             if imgui.begin_tab_item("Curation")[0]:
+                imgui.begin_child("##curation_tab")
                 self._draw_roi_tools()
+                imgui.end_child()
                 imgui.end_tab_item()
             if imgui.begin_tab_item("Signals")[0]:
+                imgui.begin_child("##signals_tab")
                 self._draw_signal_tab()
+                imgui.end_child()
                 imgui.end_tab_item()
             imgui.end_tab_bar()
-        # drawn last, over the bar's rule: nothing else in this window follows the cursor from here
-        imgui.set_cursor_pos(imgui.ImVec2(top.x + room - buttons_w, top.y - em(0.25)))
-        self._help_open, self._keybinds_open = draw_help_buttons(self._help_open, self._keybinds_open, "Curation Guide")
         self._keybinds_open = draw_keybinds_popup(DEMIXING, self._keybinds_open)
         self._help_open, self._keybinds_open = draw_curation_help(self._help_open, self._keybinds_open)
         path = draw_path_prompt(self._export_prompt)
