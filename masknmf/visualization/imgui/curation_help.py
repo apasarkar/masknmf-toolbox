@@ -52,8 +52,8 @@ TOOLTIP = (
 )
 STEPS = (
     (fa.ICON_FA_ARROW_POINTER, "Click", "a signal: its parts"),
-    (fa.ICON_FA_DRAW_POLYGON, "Select", "poly (a), filter, ctrl / shift"),
-    (fa.ICON_FA_PLUS, "Add ROI", "r: where a cell is missed"),
+    (fa.ICON_FA_DRAW_POLYGON, "Select", "draw (a), filter, ctrl / shift"),
+    (fa.ICON_FA_PLUS, "Add ROI", "r: keep the drawn region"),
     (fa.ICON_FA_TRASH, "Delete", "mark wrong signals"),
     (fa.ICON_FA_WAND_MAGIC_SPARKLES, "Demix", "refit to a new file"),
 )
@@ -141,9 +141,9 @@ MOUSE = (
     ("drag", "pan; the selection stays"),
     ("right-click", "pick the panel's movie, over the usual menu"),
 )
-# the SELECTION row's buttons as (icon, name, color): lit poly-select, the rest as they sit
+# the SELECTION row's buttons as (icon, name, color): draw lit, the rest as they sit
 TOOL_BUTTONS = (
-    (fa.ICON_FA_DRAW_POLYGON, "poly-select (a)", KEY),
+    (fa.ICON_FA_DRAW_POLYGON, "draw (a)", KEY),
     (fa.ICON_FA_PLUS, "add roi (r)", TEXT),
     (fa.ICON_FA_TRASH, "delete", DROP),
     (fa.ICON_FA_OBJECT_GROUP, "merge", DIM),
@@ -152,14 +152,15 @@ TOOL_BUTTONS = (
 TOOLS = (
     ("tool", "does"),
     (
-        "poly-select (a)",
-        "draw a polygon on any panel: every signal in view whose center is on the switch's side of it is "
-        "selected, live as it is drawn or dragged; a or esc leaves it, the selection stays",
+        "draw (a)",
+        "one region at a time, a polygon on any panel: every signal in view whose center is on the switch's "
+        "side of it is selected, live as it is drawn or dragged; a or esc drops it, the selection stays, and so "
+        "does a click or table pick that edits the selection by hand",
     ),
     (
         "add roi (r)",
-        "draw a polygon where a cell is missed: its average joins the plot and Demix seeds the nmf pass with "
-        "it; Export writes the drawn rois to a .npz",
+        "keep the drawn region as a roi, where a cell is missed: its average joins the plot and Demix seeds the "
+        "nmf pass with it; r with nothing drawn starts drawing; Export writes the drawn rois to a .npz",
     ),
     (
         "delete",
@@ -170,8 +171,8 @@ TOOLS = (
     ("center (f)", "every panel on the selected signal, following it as the selection moves"),
     (
         "inside / outside",
-        "the switches: which side of the polygon poly-select takes (inside by default) and which side of the "
-        "range the filter takes (outside by default), each lit while its tool drives the selection",
+        "the switches: which side of the region it takes (inside by default) and which side of the range the "
+        "filter takes (outside by default), each lit while its tool drives the selection",
     ),
     (
         "filter, range",
@@ -481,7 +482,7 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
         box(dl, x, p.y, bw, bh, icon, color, 0.18 if color in (KEY, ACCENT) else 0.0)
         size = imgui.calc_text_size(name)
         dl.add_text(imgui.ImVec2(x + (bw - size.x) / 2, p.y + bh + 0.3 * em), u32(DIM), name)
-    # the side switch, outside picked and lit as while poly-select or the filter drives the selection
+    # the side switch, outside picked and lit as while the region or the filter drives the selection
     x = p.x + 5 * (bw + bgap) + em
     dl.add_text(imgui.ImVec2(x, p.y + 0.55 * em), u32(DIM), "inside")
     x += imgui.calc_text_size("inside").x + 0.5 * em

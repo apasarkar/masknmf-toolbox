@@ -64,9 +64,12 @@ DEMIXING: Mapping[str, Bind] = {
     "pixel_trace": Bind(
         "p", "toggle quick pixel trace: a click on an empty pixel adds its 5x5 average to the plot", imgui.Key.p
     ),
-    "roi": Bind("r", "add a roi: the next click on a panel starts its polygon", imgui.Key.r),
+    "roi": Bind("r", "add a roi: keep the drawn region as one; with none drawn, start drawing", imgui.Key.r),
     "poly": Bind(
-        "a", "poly-select: the next click on a panel starts its polygon; again or esc leaves it, the selection stays", imgui.Key.a
+        "a",
+        "draw: the next click on a panel starts a region that selects what it holds; again or esc drops it, the "
+        "selection stays",
+        imgui.Key.a,
     ),
     "delete": Bind(
         "delete",
@@ -76,8 +79,8 @@ DEMIXING: Mapping[str, Bind] = {
     ),
     "escape": Bind(
         "esc",
-        "close the help and keybinds windows, cancel a new roi, stop a poly-select (the selection stays), else "
-        "deselect everything and drop the pixel averages",
+        "close the help and keybinds windows, drop the drawn region (the selection stays), else deselect everything "
+        "and drop the pixel averages",
         imgui.Key.escape,
     ),
     "select_all": Bind("ctrl + a", "group every signal the table shows", imgui.Key.a, ctrl=True),

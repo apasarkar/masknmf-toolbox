@@ -137,12 +137,12 @@ class SingleSessionDemixingVis:
     selection like any other and remembers the filter it came from, listed under the range, and Demix writes
     which filter removed which signals into the curated file's description. The Curation tab's "color by"
     colors the masks and the table's ids by a column's rank instead of by signal id.
-    poly-select (the Curation tab's polygon button) draws a polygon on any panel that selects every signal in
-    view whose center falls inside it (or outside, per its own switch): they form the group, highlighted in the
+    draw (the Curation tab's polygon button, a) puts one region on any panel: a polygon that selects every signal
+    in view whose center falls inside it (or outside, per its own switch): they form the group, highlighted in the
     panels and the table, and the selection follows the polygon as it is drawn and later dragged (its traces,
-    when shown, plot once it settles). Clicking the button again or esc leaves the mode and keeps the selection, so
-    Delete (or the Curation tab's delete button) marks it like any other selection. Nothing is removed until the
-    next Demix. line-select is a placeholder, not implemented yet.
+    when shown, plot once it settles). Add ROI (r) keeps the region as a drawn roi. The button again, esc, or a
+    click or table pick that edits the selection by hand drops it and keeps the selection, so Delete (or the
+    Curation tab's delete button) marks it like any other selection. Nothing is removed until the next Demix.
 
     ``raw`` (a movie, or a .tif path) adds the raw movie, ``registered`` (the results' registration replayed
     on it, for compression or demixing results) the registered one, and ``shifts`` (an array, or a motion
@@ -387,7 +387,6 @@ class SingleSessionDemixingVis:
         self._marked = (
             set()
         )  # signal indices "Delete" has marked; removed on the next "Demix"
-        self._poly_hits = []  # the signals the poly-select polygon holds
         self._show_traces = True  # plot the selection's traces; off, selecting only highlights
         self._roi_radius = 1  # a double-click splits the square this far around the pixel into its sources
         self._undo = []  # curation snapshots for ctrl+z, newest last
@@ -472,12 +471,14 @@ class SingleSessionDemixingVis:
         self._filters = []
         self._press = None  # screen position of the last pointer press on a video panel
         self._same_spot = False
-        self._armed = None  # "roi" / "poly": the next press on any video panel starts that polygon there
-        # the poly-select polygon, its subplot, and the vertices / side / filter its hits were last computed for
-        self._poly = None
-        self._poly_panel = None
-        self._poly_key = None
-        self._poly_outside = False
+        # the one drawn region (draw / a): a polygon that selects the signals it holds until + keeps it as a roi
+        # or esc drops it; armed = the next press on any video panel starts it there
+        self._armed = False
+        self._region = None
+        self._region_panel = None
+        self._region_key = None  # the vertices / side / filter its hits were last computed for
+        self._region_hits = None  # the signals it selected, None until it first did
+        self._region_outside = False
         self._filter_outside = True
 
         self._bind_click_handlers()
@@ -665,10 +666,8 @@ class SingleSessionDemixingVis:
             and abs(ev.x - self._press[0]) + abs(ev.y - self._press[1]) <= _CLICK_SLOP
         )
         self._press = (ev.x, ev.y)
-        if self._armed == "roi":
-            self._begin_roi(name)
-        elif self._armed == "poly":
-            self._begin_poly(name)
+        if self._armed:
+            self._begin_region(name)
 
     def _set_gray_cmaps(self):
         for g in self._panel_graphics.values():
@@ -699,7 +698,8 @@ class SingleSessionDemixingVis:
         self._hidden_stats = set(self._cell_stats.names)
         self._bind_arrays()
         self._clear_rois()
-        self._drop_poly()
+        self._armed = False
+        self._drop_region()
         self._marked.clear()
         self._filter_select = False
         self._filter_side = set()
@@ -1144,10 +1144,8 @@ class SingleSessionDemixingVis:
                 self._image_selector.add_graphic(g.graphic)
 
     def _drawing(self) -> bool:
-        return self._armed is not None or any(
-            s is not None and s._move_info.mode == "create"
-            for s in (self._active_roi, self._poly)
-        )
+        """The region has the pointer: armed, or its vertices are being placed or dragged."""
+        return self._armed or (self._region is not None and self._region._move_info.mode is not None)
 
     def _roi_at(self, col: int, row: int):
         for selector in reversed(self._rois):
@@ -1156,18 +1154,14 @@ class SingleSessionDemixingVis:
                 return selector
         return None
 
-    def _start_roi(self):
-        """Arm a new roi: it is created on whichever video panel gets the next press."""
-        self._armed = "roi"
-        self._clear_component()
-
-    def _begin_roi(self, name: str):
-        """
-        Create the armed roi on panel ``name``. The press that got here also places its first
-        vertex: pygfx bubbles it up to the renderer last, where the selector's fresh handlers wait.
-        """
-        self._armed = None
+    def _commit_region(self):
+        """The Add ROI action (r): the settled region becomes a roi, redrawn in the next roi color, and the selection."""
+        vertices = np.array(self._region.selection)
+        name = self._region_panel
         self._snapshot()
+        self.group_clear()
+        self._clear_component()
+        self._drop_region()
         color = _ROI_COLORS[len(self._rois) % len(_ROI_COLORS)]
         selector = self._panel_graphics[name].graphic.add_polygon_selector(
             fill_color=color,
@@ -1176,6 +1170,8 @@ class SingleSessionDemixingVis:
             edge_thickness=2,
             vertex_size=8,
         )
+        selector.selection = vertices
+        selector._end_move_mode()
         selector.add_event_handler(partial(self._roi_changed, selector), "selection")
         self._rois[selector] = {
             "color": color,
@@ -1252,43 +1248,53 @@ class SingleSessionDemixingVis:
         for selector in list(self._rois):
             self._delete_roi(selector)
 
-    def _start_poly(self):
-        """The poly-select button: arm a polygon for the next press on a video panel, or leave the mode (the selection stays)."""
-        if self._armed == "poly":
-            self._armed = None
-        elif self._poly is not None:
-            self._drop_poly()
+    def _start_region(self):
+        """The draw button (a): arm a region for the next press on a video panel, or drop the one there is (the selection stays)."""
+        if self._armed:
+            self._armed = False
+        elif self._region is not None:
+            self._drop_region()
         else:
-            self._armed = "poly"
+            self._armed = True
+            self._filter_select = False
 
-    def _begin_poly(self, name: str):
-        """Create the armed poly-select polygon on panel ``name``; the press places its first vertex, as for a roi."""
-        self._armed = None
+    def _begin_region(self, name: str):
+        """
+        Create the armed region on panel ``name``. The press that got here also places its first
+        vertex: pygfx bubbles it up to the renderer last, where the selector's fresh handlers wait.
+        """
+        self._armed = False
         self._snapshot()
-        self._drop_poly()
-        self._poly = self._panel_graphics[name].graphic.add_polygon_selector(
+        self._region = self._panel_graphics[name].graphic.add_polygon_selector(
             fill_color=(0.0, 0.0, 0.0, 0.0),
             edge_color=THEME.accent[:3],
             vertex_color=THEME.accent[:3],
             edge_thickness=2,
             vertex_size=8,
         )
-        self._poly_panel = self._ndw_fov.figure[name]
+        self._region_panel = name
 
-    def _poll_poly(self):
-        """Select the signals in view the poly-select polygon holds, following it as it is drawn or dragged."""
-        if self._poly is None:
+    def _poll_region(self):
+        """
+        The region selects the signals in view it holds, following it as it is drawn or dragged. Left with
+        under three vertices, or once the selection is edited by hand, it is dropped.
+        """
+        if self._region is None:
             return
-        polygon = self._poly.selection[:, :2]
-        moving = self._poly._move_info.mode is not None
+        polygon = self._region.selection[:, :2]
+        moving = self._region._move_info.mode is not None
         if polygon.shape[0] < 3:
             if not moving:
-                self._drop_poly()
+                self._drop_region()
             return
-        key = (polygon.tobytes(), self._poly_outside, self._order.range_limits, moving)
-        if key == self._poly_key:
+        signals = [k for k in self._group if isinstance(k, int)]
+        if self._region_hits is not None and not moving and signals != self._region_hits:
+            self._drop_region()
             return
-        self._poly_key = key
+        key = (polygon.tobytes(), self._region_outside, self._order.range_limits, moving)
+        if key == self._region_key:
+            return
+        self._region_key = key
         view = self._order.order
         centers = self._ac_array.centers.cpu().numpy()[view]
         inside = np.fromiter(
@@ -1296,16 +1302,18 @@ class SingleSessionDemixingVis:
             bool,
             len(view),
         )
-        hits = [int(k) for k in (view[~inside] if self._poly_outside else view[inside])]
-        if hits != self._poly_hits:
-            self._poly_hits = hits
+        hits = [int(k) for k in (view[~inside] if self._region_outside else view[inside])]
+        if hits != self._region_hits:
+            self._region_hits = hits
             self._group[:] = hits
+            self._active_roi = None
+            self._active_pixel = None
             self._active_component = hits[-1] if hits else None
             if self._active_component is not None:
                 self._order.goto(self._active_component)
             self._sync_highlight()
-            where = "outside" if self._poly_outside else "inside"
-            self._status = f"poly-select: {len(hits)} signal(s) {where} the polygon"
+            where = "outside" if self._region_outside else "inside"
+            self._status = f"region: {len(hits)} signal(s) {where}; + keeps it as a roi (r), esc drops it"
         # no traces while the polygon is being drawn or dragged; they plot once it settles
         if moving:
             self._selected_signals = None
@@ -1313,15 +1321,15 @@ class SingleSessionDemixingVis:
         else:
             self._update_traces()
 
-    def _drop_poly(self):
-        if self._poly is None:
+    def _drop_region(self):
+        if self._region is None:
             return
-        if self._poly._move_info.mode is not None:
-            self._poly._end_move_mode()
-        self._poly_panel.delete_graphic(self._poly)
-        self._poly = None
-        self._poly_key = None
-        self._poly_hits = []
+        if self._region._move_info.mode is not None:
+            self._region._end_move_mode()
+        self._ndw_fov.figure[self._region_panel].delete_graphic(self._region)
+        self._region = None
+        self._region_key = None
+        self._region_hits = None
         self._update_traces()
 
     def _mark(self, signals, on: bool, record: bool = True):
@@ -1363,7 +1371,7 @@ class SingleSessionDemixingVis:
                 "active_pixel": self._active_pixel,
                 "filter_select": self._filter_select,
                 "filter_side": set(self._filter_side),
-                "poly_outside": self._poly_outside,
+                "region_outside": self._region_outside,
                 "filter_outside": self._filter_outside,
                 "filters": [dict(kept, signals=set(kept["signals"])) for kept in self._filters],
             }
@@ -1371,12 +1379,12 @@ class SingleSessionDemixingVis:
         del self._undo[:-_UNDO_DEPTH]
 
     def undo(self):
-        """Ctrl+z: back to the last snapshot; a deleted roi is redrawn, a live poly-select polygon is dropped."""
+        """Ctrl+z: back to the last snapshot; a deleted roi is redrawn, a live region is dropped."""
         if not self._undo:
             return
         state = self._undo.pop()
-        self._armed = None
-        self._drop_poly()
+        self._armed = False
+        self._drop_region()
         kept = {sel for sel, *_ in state["rois"]}
         for sel in list(self._rois):
             if sel not in kept:
@@ -1407,7 +1415,7 @@ class SingleSessionDemixingVis:
         self._marked.update(state["marked"])
         self._filter_select = state["filter_select"]
         self._filter_side = set(state["filter_side"])
-        self._poly_outside = state["poly_outside"]
+        self._region_outside = state["region_outside"]
         self._filter_outside = state["filter_outside"]
         self._filters = [dict(kept, signals=set(kept["signals"])) for kept in state["filters"]]
         if self._order is not None:
@@ -1507,20 +1515,15 @@ class SingleSessionDemixingVis:
         io = imgui.get_io()
         if io.want_text_input:
             return
-        if pressed(DEMIXING["delete"]):
+        if pressed(DEMIXING["delete"]) and self._worker is None:
             self._delete_selected()
         if pressed(DEMIXING["escape"]):
             if self._help_open or self._keybinds_open:
                 self._help_open = self._keybinds_open = False
-            elif self._armed is not None:
-                self._armed = None
-            elif self._active_roi is not None and (
-                self._active_roi._move_info.mode == "create" or self._active_roi.selection.shape[0] < 3
-            ):
-                # a roi still being drawn: cancel it, vertices and all
-                self._delete_roi(self._active_roi, record=False)
-            elif self._poly is not None:
-                self._drop_poly()
+            elif self._armed:
+                self._armed = False
+            elif self._region is not None:
+                self._drop_region()
             else:
                 self.deselect()
         if pressed(DEMIXING["select_all"]) and self._order is not None:
@@ -1549,11 +1552,13 @@ class SingleSessionDemixingVis:
             self._toggle_trace_follow()
         if pressed(DEMIXING["pixel_trace"]) and self._pmd_array is not None:
             self._set_pixel_traces(not self._pixel_traces)
-        if pressed(DEMIXING["roi"]) and not self._drawing():
-            self._start_roi()
-        selecting = self._armed == "poly" or self._poly is not None
-        if pressed(DEMIXING["poly"]) and self._order is not None and not self._filter_select and (selecting or not self._drawing()):
-            self._start_poly()
+        if pressed(DEMIXING["roi"]) and self._order is not None:
+            if self._region is not None and self._region._move_info.mode is None:
+                self._commit_region()
+            elif not self._drawing():
+                self._start_region()
+        if pressed(DEMIXING["poly"]) and self._order is not None:
+            self._start_region()
         if pressed(DEMIXING["help"]):
             self._help_open = not self._help_open
         if pressed(DEMIXING["keybinds"]):
@@ -1591,7 +1596,7 @@ class SingleSessionDemixingVis:
         opaque_popups()
         self._poll_worker()
         self._poll_rois()
-        self._poll_poly()
+        self._poll_region()
         self._handle_keys()
         # a child carries the menu bar, so the docked window itself needs no flag
         imgui.begin_child(
@@ -1832,9 +1837,9 @@ class SingleSessionDemixingVis:
             self._filter_select = False
         toggled, self._filter_select = imgui.checkbox("apply", self._filter_select)
         if toggled and self._filter_select:
-            # the filter takes over from poly-select
-            self._armed = None if self._armed == "poly" else self._armed
-            self._drop_poly()
+            # the filter takes over from the region
+            self._armed = False
+            self._drop_region()
         tooltip(
             "Apply to selection: the signals on the switch's side of the range become the selection, as ctrl+a does "
             "for the table, and follow the lines as they move; Delete marks them and records the filter. Editing "
@@ -1877,7 +1882,6 @@ class SingleSessionDemixingVis:
         imgui.dummy(imgui.ImVec2(0, em(0.2)))
 
     def _draw_roi_tools(self):
-        drawing = self._drawing()
         g = grid(_CAPTIONS)
         # sliders: seven tenths of the panel, or what their row has left before the (?) mark
         right = imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x
@@ -1987,7 +1991,8 @@ class SingleSessionDemixingVis:
                 tooltip(tip)
 
         section("SELECTION")
-        selecting = self._armed == "poly" or self._poly is not None
+        selecting = self._armed or self._region is not None
+        settled = self._region is not None and self._region._move_info.mode is None
         signals = [k for k in self._group if isinstance(k, int)]
         if not signals and self._active_component is not None:
             signals = [self._active_component]
@@ -2009,24 +2014,26 @@ class SingleSessionDemixingVis:
                 self._toggle_follow()
         tooltip("Center: every panel on the selected signal, following it as the selection moves (f)")
         imgui.same_line(0, gap)
-        imgui.begin_disabled(self._order is None or (drawing and not selecting) or self._filter_select)
+        imgui.begin_disabled(self._order is None)
         with button_colors(THEME.emphasis, THEME.emphasis_hover, (0.05, 0.05, 0.05), on=selecting):
-            if imgui.button(f"{fa.ICON_FA_DRAW_POLYGON}##poly", size):
-                self._start_poly()
+            if imgui.button(f"{fa.ICON_FA_DRAW_POLYGON}##draw", size):
+                self._start_region()
         imgui.end_disabled()
         tooltip(
-            "Poly-select is on: click again or esc to leave it, the selection stays (a)"
+            "Draw is on: click again or esc to drop the region, the selection stays (a)"
             if selecting
-            else "Poly-select: draw a polygon on any panel to select every signal in view whose center is on the "
-            "poly switch's side of it; the selection follows the polygon as it is drawn and dragged (a)"
-            + ("; off while the filter drives the selection" if self._filter_select else "")
+            else "Draw: a polygon on any panel selects every signal in view whose center is on the switch's side of "
+            "it, live as it is drawn and dragged; Add ROI keeps it, a click that picks by hand drops it (a)"
         )
         imgui.same_line(0, gap)
-        imgui.begin_disabled(drawing)
+        imgui.begin_disabled(not settled)
         if imgui.button(f"{fa.ICON_FA_PLUS}##add_roi", size):
-            self._start_roi()
+            self._commit_region()
         imgui.end_disabled()
-        tooltip("Add ROI: draw a polygon on any panel; its average joins the plot and Demix seeds the nmf pass with it (r)")
+        tooltip(
+            "Add ROI: keep the drawn region as a roi; its average joins the plot and Demix seeds the nmf pass with it (r)"
+            + ("" if settled else "; draw one first")
+        )
         imgui.same_line(0, gap)
         imgui.begin_disabled(nothing or self._worker is not None)
         with button_colors(THEME.danger, THEME.danger_hover, on=not unmark):
@@ -2050,16 +2057,16 @@ class SingleSessionDemixingVis:
             self._export_prompt.start()
         imgui.end_disabled()
         tooltip(f"Export: the {len(self._rois)} drawn roi(s) to a .npz, a window with a typed path, browse for the native dialog")
-        # the poly switch under the row, centered: grey but flippable until poly-select drives the selection
+        # the side switch under the row, centered: grey but flippable until the region drives the selection
         imgui.dummy(imgui.ImVec2(0, em(0.4)))
         label_w = imgui.calc_text_size("poly").x + em(0.6)
         row_w = label_w + _side_switch_width()
         imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + max((imgui.get_content_region_avail().x - row_w) / 2, 0))
-        _, self._poly_outside = _side_switch(
+        _, self._region_outside = _side_switch(
             "poly",
-            self._poly_outside,
+            self._region_outside,
             selecting,
-            "Poly-select takes the signals inside or outside the polygon"
+            "The region takes the signals inside or outside it"
             + ("" if selecting else "; lit while it drives the selection"),
             label_w,
         )
@@ -2101,9 +2108,9 @@ class SingleSessionDemixingVis:
 
         imgui.spacing()
         imgui.push_text_wrap_pos(0)
-        if self._armed is not None:
-            imgui.text_disabled("click on any panel to start the polygon (esc or the button cancels)")
-        elif drawing:
+        if self._armed:
+            imgui.text_disabled("click on any panel to start the region (esc or the button cancels)")
+        elif self._region is not None and self._region._move_info.mode == "create":
             imgui.text_disabled("click to add points; click the first point to close")
         else:
             imgui.text_disabled(self._status)
