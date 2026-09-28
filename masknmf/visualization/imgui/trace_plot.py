@@ -62,6 +62,20 @@ class TracePlot:
         self._marks: list = []  # (label, frames, rgb): vertical lines in every panel
         self._spans: list = []  # (label, starts, stops, rgb): shaded epochs in every panel
         self.background = None  # rgb(a) of the frame behind the panels, None for implot's own
+        # keep the playhead centered in the x span as it moves, pinned to an end of the recording near either end
+        self.follow = False
+        self._x_span = None  # the x limits drawn last frame
+        self._x_target = None  # the x limits follow sets this frame
+        self._held = False  # the playhead is being dragged
+
+    @property
+    def title(self) -> Optional[str]:
+        """The docked window's title bar text, None until docked."""
+        return None if self._window is None else self._window._title
+
+    @title.setter
+    def title(self, value: str):
+        self._window._title = value
 
     @property
     def panels(self) -> tuple:
@@ -148,6 +162,8 @@ class TracePlot:
         if implot.get_current_context() is None:
             implot.create_context()
         fit = self._resolve_fit()
+        self._x_target = None if fit else self._follow_target()
+        self._held = False
         io = imgui.get_io()
         # qt on windows reports alt + wheel as a horizontal wheel, which implot ignores
         if io.key_alt and io.mouse_wheel == 0.0 and io.mouse_wheel_h != 0.0:
@@ -185,6 +201,34 @@ class TracePlot:
         if fit:
             self._fitted.update(name for name, lines in self._lines.items() if lines)
         return fit
+
+    def _follow_target(self) -> Optional[tuple]:
+        """
+        The x limits that put the playhead at the center of the current span, clamped to the recording, eased
+        from where the span is now so a jump glides rather than snaps. None while follow is off, the playhead is
+        dragged, a panel is being zoomed or panned, or the span is already there.
+        """
+        if not self.follow or self._held or self._x_span is None:
+            return None
+        io = imgui.get_io()
+        if imgui.is_window_hovered(imgui.HoveredFlags_.child_windows) and (
+            io.mouse_wheel != 0.0 or imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
+        ):
+            return None
+        xs = self.x
+        first, last = float(xs[0]), float(xs[-1])
+        lo, hi = self._x_span
+        width = hi - lo
+        if width >= last - first:
+            goal = first
+        else:
+            goal = float(np.clip(float(xs[self.frame]) - width / 2, first, last - width))
+        error = goal - lo
+        if abs(error) <= width * 1e-4:
+            return None
+        # a small miss finishes now; a big one closes a third of the way per frame
+        step = error if abs(error) <= width * 0.02 else error / 3
+        return lo + step, lo + step + width
 
     def _draw_settings_popup(self):
         """Right-click context menu (opened from a panel in ``_draw_panel``) for autofit/fit/x-axis."""
@@ -301,11 +345,14 @@ class TracePlot:
             xs = self.x
             if fit:
                 implot.setup_axis_limits(implot.ImAxis_.x1, float(xs[0]), float(xs[-1]), implot.Cond_.always)
+            elif self._x_target is not None:
+                implot.setup_axis_limits(implot.ImAxis_.x1, *self._x_target, implot.Cond_.always)
             if limits is not None:
                 implot.setup_axis_limits(implot.ImAxis_.y1, *limits, implot.Cond_.always)
             self._draw_spans(xs)
             columns = int(implot.get_plot_size().x)
             span = implot.get_plot_limits().x
+            self._x_span = (float(span.min), float(span.max))
             for label, trace, rgb in lines:
                 self._draw_trace(label, xs, trace, rgb, (span.min, span.max), columns)
             self._draw_marks(xs)
@@ -318,7 +365,9 @@ class TracePlot:
                         self.on_pick(name, self._nearest_line(lines, xs))
                 if imgui.is_mouse_clicked(1):
                     imgui.open_popup(self._popup_id)
-            moved, at = implot.drag_line_x(0, float(xs[self.frame]), _CURSOR_COLOR, 1.5)[:2]
+            moved, at, _, _, held = implot.drag_line_x(0, float(xs[self.frame]), _CURSOR_COLOR, 1.5, out_held=False)
+            if held:
+                self._held = True
             if moved:
                 self.frame = np.searchsorted(xs, at)
                 return self.frame

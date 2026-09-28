@@ -58,6 +58,9 @@ DEMIXING: Mapping[str, Bind] = {
     "masks": MASKS,
     "contours": Bind("c", "toggle every other footprint's contour", imgui.Key.c),
     "follow": Bind("f", "center the view on the selection and keep following it", imgui.Key.f),
+    "trace_follow": Bind(
+        "t", "toggle center in the traces: the current frame stays in the middle as the movie plays", imgui.Key.t
+    ),
     "pixel_trace": Bind(
         "p", "toggle quick pixel trace: a click on an empty pixel adds its 5x5 average to the plot", imgui.Key.p
     ),

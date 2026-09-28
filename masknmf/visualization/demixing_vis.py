@@ -92,11 +92,13 @@ _BASE_LINE_COLORS = (
     (0.95, 0.55, 0.15),
     (0.35, 0.65, 0.95),
 )
-# behind the traces, naming what the lines are: near-black material-dark tints, navy at rest, forest green
-# for a selection, indigo for the sources under a double-clicked pixel
-_TRACES_BG = (0.06, 0.09, 0.16, 1.0)
-_SIGNALS_BG = (0.05, 0.14, 0.08, 1.0)
-_SOURCES_BG = (0.08, 0.06, 0.16, 1.0)
+# behind the traces, naming what the lines are: near-black with nothing shown, navy for the sources under a
+# double-clicked pixel, forest green for a selection
+_TRACE_MODES = {
+    "normal": (0.02, 0.02, 0.03, 1.0),
+    "source": (0.06, 0.09, 0.16, 1.0),
+    "selection": (0.05, 0.14, 0.08, 1.0),
+}
 
 
 class SingleSessionDemixingVis:
@@ -428,10 +430,8 @@ class SingleSessionDemixingVis:
             frame_timings,
             autofit=False,
         )
-        self._traces.background = _TRACES_BG
-        self._traces.dock(
-            self._ndw_fov.figure, size=440 if self._shift_lines else 320, title="traces"
-        )
+        self._traces.dock(self._ndw_fov.figure, size=440 if self._shift_lines else 320)
+        self._set_trace_mode("normal")
         if self._shift_lines:
             self._traces.set("shift (px)", self._shift_lines)
         self._traces.link(self.reference_index)
@@ -658,7 +658,7 @@ class SingleSessionDemixingVis:
         lines.append(("background", background_trace, _BASE_LINE_COLORS[2]))
         lines.append(("residual", residual_trace, _BASE_LINE_COLORS[3]))
         self._traces.set("traces", lines)
-        self._traces.background = _SOURCES_BG
+        self._set_trace_mode("source")
         self._status = f"sources over the {row_stop - row_start}x{col_stop - col_start} square at ({row}, {col})"
 
     def _pointer_down(self, name: str, ev: pygfx.PointerEvent):
@@ -951,7 +951,7 @@ class SingleSessionDemixingVis:
         if not self._show_traces:
             self._selected_signals = None
             self._traces.set("traces", [])
-            self._traces.background = _TRACES_BG
+            self._set_trace_mode("normal")
             return
         results = self.demixing_results
         if len(self._group) > 1 or any(not isinstance(k, int) for k in self._group):
@@ -1007,7 +1007,7 @@ class SingleSessionDemixingVis:
             self._clear_traces()
             return
         self._traces.set("traces", lines)
-        self._traces.background = _SIGNALS_BG
+        self._set_trace_mode("selection")
 
     def _seed_group(self):
         """A first ctrl or shift pick keeps the current selection in the group."""
@@ -1122,6 +1122,13 @@ class SingleSessionDemixingVis:
         self._follow = not self._follow
         if self._follow and self._active_component is not None:
             self._center_on(self._active_component)
+
+    def _toggle_trace_follow(self):
+        self._traces.follow = not self._traces.follow
+
+    def _toggle_show_traces(self):
+        self._show_traces = not self._show_traces
+        self._update_traces()
 
     def _step(self, delta: int):
         """Move the table cursor and select what it lands on."""
@@ -1443,7 +1450,11 @@ class SingleSessionDemixingVis:
         self._active_pixel = None
         if self._pmd_array is not None:
             self._traces.set("traces", [])
-        self._traces.background = _TRACES_BG
+        self._set_trace_mode("normal")
+
+    def _set_trace_mode(self, mode: str):
+        self._traces.background = _TRACE_MODES[mode]
+        self._traces.title = f"Traces (mode: {mode})"
 
     @property
     def roi_masks(self) -> np.ndarray:
@@ -1537,6 +1548,8 @@ class SingleSessionDemixingVis:
             self._set_contours(not self._show_contours)
         if pressed(DEMIXING["follow"]):
             self._toggle_follow()
+        if pressed(DEMIXING["trace_follow"]) and self._traces.panels:
+            self._toggle_trace_follow()
         if pressed(DEMIXING["pixel_trace"]) and self._pmd_array is not None:
             self._set_pixel_traces(not self._pixel_traces)
         if pressed(DEMIXING["roi"]) and not self._drawing():
@@ -1932,26 +1945,49 @@ class SingleSessionDemixingVis:
                 self._footprints.recolor(None if index == 0 else self._order.columns[self._color_by])
                 self._refresh_masks()
             help_mark("color the masks and the table's ids by a column's rank instead of by signal id")
-        if self._pmd_array is None:
-            return
-        g.row("traces")
-        changed, on = imgui.checkbox("quick pixel trace", self._pixel_traces)
-        if changed:
-            self._set_pixel_traces(on)
-        help_mark(
-            "click an empty pixel to add the compressed movie's 5x5 average there to the plot, grouped "
-            "with whatever is shown, and to the top of the signals table, marked. demix and export "
-            "ignore it; delete drops it (p)"
-        )
-        g.cell(1)
-        changed, self._show_traces = imgui.checkbox("show selected traces", self._show_traces)
-        if changed:
-            self._update_traces()
-        help_mark(
-            "plot whatever is selected: a signal's four averages, or one line per group member - a "
-            "grouped signal's demixed trace, a pixel average's or drawn roi's compressed average. "
-            "off, selecting only highlights, however big the selection"
-        )
+        if self._traces.panels:
+            g.row("traces")
+            buttons = [
+                (
+                    "center",
+                    self._traces.follow,
+                    self._toggle_trace_follow,
+                    "Center: keep the current frame in the middle of the traces as the movie plays or the slider "
+                    "moves, the zoom kept; near either end of the recording the view stops at that end (t)",
+                )
+            ]
+            if self._pmd_array is not None:
+                buttons += [
+                    (
+                        "quick pixel trace",
+                        self._pixel_traces,
+                        lambda: self._set_pixel_traces(not self._pixel_traces),
+                        "Quick pixel trace: click an empty pixel to add the compressed movie's 5x5 average there to "
+                        "the plot, grouped with whatever is shown, and to the top of the signals table, marked. "
+                        "Demix and export ignore it; delete drops it (p)",
+                    ),
+                    (
+                        "show selected traces",
+                        self._show_traces,
+                        self._toggle_show_traces,
+                        "Show selected traces: plot whatever is selected, a signal's four averages, or one line per "
+                        "group member - a grouped signal's demixed trace, a pixel average's or drawn roi's "
+                        "compressed average. Off, selecting only highlights, however big the selection",
+                    ),
+                ]
+            # toggle buttons, lit while on, flowing onto a new line when the row is full
+            pad = imgui.get_style().frame_padding.x
+            for i, (label, on, action, tip) in enumerate(buttons):
+                w = imgui.calc_text_size(label).x + 2 * pad
+                if i:
+                    imgui.same_line(0, g.gap)
+                    if imgui.get_content_region_avail().x < w:
+                        imgui.new_line()
+                        imgui.same_line(g.cell_x[0])
+                with button_colors(THEME.accent, THEME.accent, (0.05, 0.05, 0.05), on=on):
+                    if imgui.button(f"{label}##traces_{i}", imgui.ImVec2(w, 0)):
+                        action()
+                tooltip(tip)
 
         section("SELECTION")
         selecting = self._armed == "poly" or self._poly is not None
