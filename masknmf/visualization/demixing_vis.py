@@ -1038,7 +1038,7 @@ class SingleSessionDemixingVis:
             self._update_traces()
 
     def deselect(self):
-        """Drop the selection, the group and the pixel averages: esc, or the Curation tab's deselect button."""
+        """Drop the selection, the group and the pixel averages: esc."""
         if self._group or self._pixels or self._active_component is not None or self._active_roi is not None:
             self._snapshot()
         self._pixels.clear()
@@ -1785,10 +1785,16 @@ class SingleSessionDemixingVis:
             and bool(signals)
             and all(k in self._marked for k in signals)
         )
-        selected = bool(self._group or self._pixels) or self._active_component is not None or self._active_roi is not None
-        # five buttons share the row inside a margin, so they grow with the panel
+        # every row spans the same margin-to-margin width, so the buttons grow with the panel
         margin, gap = em(1.0), g.gap / 2
-        size = imgui.ImVec2((imgui.get_content_region_avail().x - 2 * margin - 4 * gap) / 5, imgui.get_frame_height() * 1.3)
+        span = imgui.get_content_region_avail().x - 2 * margin
+        height = imgui.get_frame_height() * 1.3
+        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + margin)
+        with button_colors(THEME.accent, THEME.accent, (0.05, 0.05, 0.05), on=self._follow):
+            if imgui.button(f"{fa.ICON_FA_LOCATION_CROSSHAIRS}##center", imgui.ImVec2(span, height)):
+                self._toggle_follow()
+        tooltip("Center: every panel on the selected signal, following it as the selection moves (f)")
+        size = imgui.ImVec2((span - 2 * gap) / 3, height)
         imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + margin)
         imgui.begin_disabled(self._order is None or (drawing and not selecting) or self._filter_select)
         with button_colors(THEME.emphasis, THEME.emphasis_hover, (0.05, 0.05, 0.05), on=selecting):
@@ -1802,48 +1808,15 @@ class SingleSessionDemixingVis:
             "switch's side of it; the selection follows the polygon as it is drawn and dragged (a)"
             + ("; off while the filter drives the selection" if self._filter_select else "")
         )
-        imgui.same_line(0, gap)
-        imgui.begin_disabled(not selected)
-        if imgui.button("desel", size):
-            self.deselect()
-        imgui.end_disabled()
-        tooltip("Deselect: drop the selection, the group and the pixel averages (esc)")
-        imgui.same_line(0, gap)
-        imgui.begin_disabled(nothing or self._worker is not None)
-        with button_colors(THEME.danger, THEME.danger_hover, on=not unmark):
-            if imgui.button(f"{fa.ICON_FA_TRASH}##delete", size):
-                self._delete_selected()
-        imgui.end_disabled()
-        tooltip(
-            f"Unmark: the {len(signals)} selected signal(s) stay in the next demix (delete)"
-            if unmark
-            else f"Mark for deletion: the {len(signals)} selected signal(s) are removed by the next demix and kept "
-            "until then; a selected drawn roi or pixel average is dropped right away (delete)"
-        )
-        imgui.same_line(0, gap)
-        imgui.begin_disabled(True)
-        imgui.button(f"{fa.ICON_FA_OBJECT_GROUP}##merge", size)
-        imgui.end_disabled()
-        tooltip("Merge: the grouped signals into one, not yet implemented")
-        imgui.same_line(0, gap)
-        with button_colors(THEME.accent, THEME.accent, (0.05, 0.05, 0.05), on=self._follow):
-            if imgui.button(f"{fa.ICON_FA_LOCATION_CROSSHAIRS}##center", size):
-                self._toggle_follow()
-        tooltip("Center: every panel on the selected signal, following it as the selection moves (f)")
-        # the side switch between its labels, centered; lit while poly-select or the filter drives the selection
+        # the side switch beside it, centered on the button: grey but flippable until poly-select or the filter
+        # drives the selection, then accent with the side in use lit
         live = selecting or self._filter_select
         inner = imgui.get_style().item_inner_spacing.x
         dim, lit = imgui.get_style().color_(imgui.Col_.text_disabled), imgui.get_style().color_(imgui.Col_.text)
-        row_w = (
-            imgui.calc_text_size("inside").x
-            + imgui.calc_text_size("outside").x
-            + imgui.get_frame_height() * imgui_toggle.ToggleConfig().width_ratio
-            + 2 * inner
-        )
-        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + max((imgui.get_content_region_avail().x - row_w) / 2, 0))
-        # grey but flippable until then, with the chosen side lit only while it is in use
         frame = THEME.accent if live else (0.28, 0.28, 0.31)
         hover = (0.55, 0.78, 1.0) if live else (0.38, 0.38, 0.42)
+        imgui.same_line(0, gap)
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + (height - imgui.get_frame_height()) / 2)
         imgui.align_text_to_frame_padding()
         imgui.text_colored(lit if live and not self._select_outside else dim, "inside")
         imgui.same_line(0, inner)
@@ -1863,6 +1836,31 @@ class SingleSessionDemixingVis:
         )
         imgui.same_line(0, inner)
         imgui.text_colored(lit if live and self._select_outside else dim, "outside")
+        imgui.dummy(imgui.ImVec2(0, em(0.3)))
+        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + margin)
+        imgui.begin_disabled(drawing)
+        if imgui.button(f"{fa.ICON_FA_PLUS}##add_roi", size):
+            self._start_roi()
+        imgui.end_disabled()
+        tooltip("Add ROI: draw a polygon on any panel; its average joins the plot and Demix seeds the nmf pass with it (r)")
+        imgui.same_line(0, gap)
+        imgui.begin_disabled(nothing or self._worker is not None)
+        with button_colors(THEME.danger, THEME.danger_hover, on=not unmark):
+            if imgui.button(f"{fa.ICON_FA_TRASH}##delete", size):
+                self._delete_selected()
+        imgui.end_disabled()
+        tooltip(
+            f"Unmark: the {len(signals)} selected signal(s) stay in the next demix (delete)"
+            if unmark
+            else f"Mark for deletion: the {len(signals)} selected signal(s) are removed by the next demix and kept "
+            "until then; a selected drawn roi or pixel average is dropped right away (delete)"
+        )
+        imgui.same_line(0, gap)
+        imgui.begin_disabled(True)
+        imgui.button(f"{fa.ICON_FA_OBJECT_GROUP}##merge", size)
+        imgui.end_disabled()
+        tooltip("Merge: the grouped signals into one, not yet implemented")
+        imgui.dummy(imgui.ImVec2(0, em(0.3)))
         if self._order is not None and self._order.range_column is not None:
             order = self._order
             g.row("filter")
@@ -1919,12 +1917,6 @@ class SingleSessionDemixingVis:
         w = imgui.get_frame_height() * 1.6
         section("DEMIX")
         g.row("rois")
-        imgui.begin_disabled(drawing)
-        if imgui.button(f"{fa.ICON_FA_PLUS}##add_roi", imgui.ImVec2(w, 0)):
-            self._start_roi()
-        imgui.end_disabled()
-        tooltip("Add ROI: draw a polygon on any panel; its average joins the plot and Demix seeds the nmf pass with it")
-        imgui.same_line(0, g.gap / 2)
         imgui.begin_disabled(not self._rois)
         if imgui.button(f"{fa.ICON_FA_FILE_EXPORT}##export", imgui.ImVec2(w, 0)):
             self._export_prompt.start()
