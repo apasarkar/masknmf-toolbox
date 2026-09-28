@@ -139,7 +139,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         filtered_demixing_config_used = self.with_detrender(self.filtered_demixing_config, detrender)
         unfiltered_demixing_config_used = self.with_detrender(self.unfiltered_demixing_config, detrender)
 
-        curr_demix_results = self.run_multipass(highpass_pmd_demixer, filtered_demixing_config_used)
+        curr_demix_results = self.run_multipass(highpass_pmd_demixer, filtered_demixing_config_used, "filtered demixing")
 
         ## Define the unfiltered demixer object
         signals_array = curr_demix_results.signals_array
@@ -158,7 +158,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
         latest_demix_results = self.run_multipass(
             unfiltered_pmd_demixer,
-            MultipassDemixingConfig([custom_unfiltered_conf] + unfiltered_demixing_config_used.DemixingConfigs[1:]))
+            MultipassDemixingConfig([custom_unfiltered_conf] + unfiltered_demixing_config_used.DemixingConfigs[1:]),
+            "unfiltered demixing")
 
         latest_demix_results.export(results_path)
         if remove_intermediates:

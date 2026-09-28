@@ -54,6 +54,10 @@ class BasePipeline(ABC):
         self.run_folder = None
         # the scalar arguments of the run in progress, saved to config.json beside the __init__ ones
         self.run_config = {}
+        # what config.json keeps from the run whose results a resumed run reuses
+        self.configs_reused = {}
+        # the seconds, start and status of each step that ran in the run folder, by step name
+        self.timings = {}
         defaults = self.default_configs()
         unknown = set(configs) - set(defaults)
         if len(unknown) > 0:
@@ -84,8 +88,7 @@ class BasePipeline(ABC):
     def create_run_folder(self) -> Path:
         """
         Make ``<output_folder>/<YYYYmmdd_HHMMSS>_<pipeline slug>/`` (the working directory when output_folder is None),
-        adding a numeric suffix when a run started in the same second, and write the pipeline's config and the run's
-        scalar arguments to config.json in it.
+        adding a numeric suffix when a run started in the same second, and write config.json in it.
         """
         base = Path.cwd() if self.output_folder is None else self.output_folder
         name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{slugify(name_class=type(self).__name__)}"
@@ -98,12 +101,24 @@ class BasePipeline(ABC):
             except FileExistsError:
                 suffix += 1
                 candidate = base / f"{name}_{suffix}"
-        with open(candidate / "config.json", "w") as f:
-            json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__, **self.config, **self.run_config},
-                      f, indent=2, default=config_json_value)
         self.run_folder = candidate
+        self.configs_reused = {}
+        self.timings = {}
+        self.write_config()
         self.log_to(candidate)
         return candidate
+
+    def write_config(self) -> Path:
+        """
+        Write ``config.json`` in the run folder: the masknmf version, the pipeline, its __init__ and run arguments
+        under "configs" (those of a reused run's steps over this run's) and the steps that ran under "timings".
+        """
+        path = self.run_folder / "config.json"
+        with open(path, "w") as f:
+            json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__,
+                       "configs": {**self.config, **self.run_config, **self.configs_reused}, "timings": self.timings},
+                      f, indent=2, default=config_json_value)
+        return path
 
     def log_to(self, folder: Path) -> Path:
         """
@@ -122,20 +137,31 @@ class BasePipeline(ABC):
 
     @contextmanager
     def step(self, name: str):
-        """Log that name starts and, once the block ends, how long it took, or that it failed and after how long."""
+        """
+        Log that name starts and, once the block ends, how long it took, or that it failed and after how long, and
+        record its start, seconds and status under name in timings and config.json.
+        """
         logger.info(name)
+        started = datetime.now().isoformat(timespec="seconds")
         start = time.monotonic()
+        status = "failed"
         try:
             yield
-        except BaseException:
-            logger.error(f"{name} failed after {timedelta(seconds=round(time.monotonic() - start))}")
-            raise
-        logger.info(f"{name} done in {timedelta(seconds=round(time.monotonic() - start))}")
+            status = "done"
+        finally:
+            seconds = time.monotonic() - start
+            self.timings[name] = {"seconds": round(seconds, 1), "started": started, "status": status}
+            if self.run_folder is not None:
+                self.write_config()
+            if status == "done":
+                logger.info(f"{name} done in {timedelta(seconds=round(seconds))}")
+            else:
+                logger.error(f"{name} failed after {timedelta(seconds=round(seconds))}")
 
     def results_path(self, resume: bool = False) -> str:
         """
         ``results.hdf5`` in a new run folder. With ``resume``, the one in output_folder itself, an earlier run
-        folder whose compression is reused.
+        folder whose compression is reused; its config.json keeps that run's motion correction and compression.
         """
         if not resume:
             path = os.path.join(self.create_run_folder(), "results.hdf5")
@@ -145,7 +171,16 @@ class BasePipeline(ABC):
         path = os.path.join(folder, "results.hdf5")
         if not has_group(path, CompressionArray.__name__):
             raise ValueError(f"You specified that compression should be skipped but {path} holds no compression")
+        self.run_folder = folder
+        # the earlier run's motion correction and compression made the results reused now, so config.json keeps
+        # their configs and timings and takes the rest from this run
+        earlier = json.loads((folder / "config.json").read_text()) if (folder / "config.json").is_file() else {}
+        self.configs_reused = {name: value for name, value in earlier.get("configs", {}).items()
+                               if name in ("motion_correct_config", "compress_config", "exclude_border_radius")}
+        self.timings = {name: timing for name, timing in earlier.get("timings", {}).items()
+                        if name in ("motion correction", "compression")}
         self.log_to(folder)
+        self.write_config()
         return path
 
     def motion_correct(self,
@@ -221,16 +256,17 @@ class BasePipeline(ABC):
                                     sigma=max(2.0, sigma_seconds * frame_rate),
                                     device=self.torch_device)
 
-    def run_multipass(self, demixer: SignalDemixer, config: MultipassDemixingConfig) -> DemixingResults:
+    def run_multipass(self, demixer: SignalDemixer, config: MultipassDemixingConfig,
+                      name: str = "demixing") -> DemixingResults:
         """
-        Run the passes of config in order, stopping at the first that finds no signals, and return the results of
-        the last pass that ran. Raises when the first pass finds none.
+        Run the passes of config in order as the steps "<name> pass i of n", stopping at the first that finds no
+        signals, and return the results of the last pass that ran. Raises when the first pass finds none.
         """
         if len(config.DemixingConfigs) < 1:
             raise ValueError("Demixing needs at least one pass")
         results = None
         for i, singlepass in enumerate(config.DemixingConfigs):
-            with self.step(f"demixing pass {i + 1} of {len(config.DemixingConfigs)}"):
+            with self.step(f"{name} pass {i + 1} of {len(config.DemixingConfigs)}"):
                 try:
                     demixer.initialize_signals(**asdict(singlepass.InitConfig))
                 except NoSignalsDetectedError:
