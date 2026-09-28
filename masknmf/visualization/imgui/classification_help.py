@@ -302,8 +302,7 @@ def draw_classification_help(is_open: bool, keys_open: bool) -> tuple[bool, bool
     cur = int(imgui.get_time() / 1.5) % len(ROIS)
     imgui.push_text_wrap_pos(w)
     imgui.text_colored(ACCENT, f"{fa.ICON_FA_CIRCLE_QUESTION}  {TITLE}")
-    imgui.same_line(w - 4.8 * em)
-    keys_open = draw_keybinds_button(keys_open)
+    keys_open = draw_keybinds_button(keys_open, right=w)
     imgui.separator()
     imgui.dummy(imgui.ImVec2(0, 0.5 * em))
 

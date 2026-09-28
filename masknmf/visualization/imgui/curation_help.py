@@ -263,8 +263,7 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     frame = imgui.get_time() * 8.0 % 60
     imgui.push_text_wrap_pos(w)
     imgui.text_colored(ACCENT, f"{fa.ICON_FA_CIRCLE_QUESTION}  {TITLE}")
-    imgui.same_line(w - 4.8 * em)
-    keys_open = draw_keybinds_button(keys_open)
+    keys_open = draw_keybinds_button(keys_open, right=w)
     imgui.separator()
     imgui.dummy(imgui.ImVec2(0, 0.5 * em))
 

@@ -34,20 +34,44 @@ def draw_keybinds_popup(bindings: Mapping[str, Bind], is_open: bool, title: str 
     return is_open
 
 
-def draw_keybinds_button(is_open: bool) -> bool:
-    """The keybinds button, k's twin; it toggles the popup the caller draws. Returns the popup's new open state."""
-    if imgui.button("keybinds"):
+def hint_button(name: str, hint: str) -> bool:
+    """A button reading ``name`` with ``hint`` dimmed after it, e.g. its key in parentheses."""
+    style = imgui.get_style()
+    clicked = imgui.button(f"##{name} {hint}", imgui.ImVec2(hint_button_width(name, hint), 0))
+    corner = imgui.get_item_rect_min()
+    x, y = corner.x + style.frame_padding.x, corner.y + style.frame_padding.y
+    draw = imgui.get_window_draw_list()
+    draw.add_text(imgui.ImVec2(x, y), imgui.get_color_u32(imgui.Col_.text), name)
+    draw.add_text(
+        imgui.ImVec2(x + imgui.calc_text_size(f"{name} ").x, y), imgui.get_color_u32(imgui.Col_.text_disabled), hint
+    )
+    return clicked
+
+
+def hint_button_width(name: str, hint: str) -> float:
+    return imgui.calc_text_size(f"{name} {hint}").x + 2 * imgui.get_style().frame_padding.x
+
+
+def draw_keybinds_button(is_open: bool, right: float | None = None) -> bool:
+    """
+    The keybinds button, k's twin; it toggles the popup the caller draws. With ``right`` it joins the current
+    line with its right edge at that window x. Returns the popup's new open state.
+    """
+    if right is not None:
+        imgui.same_line(right - hint_button_width("Keybinds", "(k)"))
+    if hint_button("Keybinds", "(k)"):
         is_open = not is_open
-    if imgui.is_item_hovered():
-        imgui.set_tooltip("k")
     return is_open
 
 
-def draw_help_buttons(help_open: bool, keys_open: bool) -> tuple[bool, bool]:
-    """The help and keybinds buttons, h's and k's twins, on the current line. Returns their new open states."""
-    if imgui.button("help"):
+def help_buttons_width(guide: str) -> float:
+    """The width :func:`draw_help_buttons` takes for ``guide``."""
+    return hint_button_width(guide, "(h)") + em(0.4) + hint_button_width("Keybinds", "(k)")
+
+
+def draw_help_buttons(help_open: bool, keys_open: bool, guide: str) -> tuple[bool, bool]:
+    """The ``guide`` and keybinds buttons, h's and k's twins, from the cursor. Returns their new open states."""
+    if hint_button(guide, "(h)"):
         help_open = not help_open
-    if imgui.is_item_hovered():
-        imgui.set_tooltip("h")
     imgui.same_line(0, em(0.4))
     return help_open, draw_keybinds_button(keys_open)

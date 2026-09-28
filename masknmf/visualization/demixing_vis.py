@@ -25,6 +25,7 @@ from masknmf.visualization.imgui import (
     draw_keybinds_popup,
     draw_path_prompt,
     draw_help_buttons,
+    help_buttons_width,
     draw_range_filter,
     draw_roi_table,
     em,
@@ -1543,6 +1544,12 @@ class SingleSessionDemixingVis:
                 imgui.end_menu()
             imgui.end_menu_bar()
         imgui.end_child()
+        # the guide and keybinds buttons take the tab bar's trailing space, or a row of their own above it when that is too narrow
+        style = imgui.get_style()
+        tabs_w = sum(imgui.calc_text_size(name).x + 2 * style.frame_padding.x for name in ("Curation", "Signals"))
+        top, room, buttons_w = imgui.get_cursor_pos(), imgui.get_content_region_avail().x, help_buttons_width("Curation Guide")
+        if tabs_w + style.item_inner_spacing.x + em(1.0) + buttons_w > room:
+            imgui.dummy(imgui.ImVec2(0, imgui.get_frame_height()))
         if imgui.begin_tab_bar("##side"):
             if imgui.begin_tab_item("Curation")[0]:
                 self._draw_roi_tools()
@@ -1551,6 +1558,9 @@ class SingleSessionDemixingVis:
                 self._draw_signal_tab()
                 imgui.end_tab_item()
             imgui.end_tab_bar()
+        # drawn last, over the bar's rule: nothing else in this window follows the cursor from here
+        imgui.set_cursor_pos(imgui.ImVec2(top.x + room - buttons_w, top.y))
+        self._help_open, self._keybinds_open = draw_help_buttons(self._help_open, self._keybinds_open, "Curation Guide")
         self._keybinds_open = draw_keybinds_popup(DEMIXING, self._keybinds_open)
         self._help_open, self._keybinds_open = draw_curation_help(self._help_open, self._keybinds_open)
         path = draw_path_prompt(self._export_prompt)
@@ -1585,13 +1595,6 @@ class SingleSessionDemixingVis:
             except (OSError, KeyError, ValueError, TypeError) as e:
                 self._results_prompt.status = f"load failed: {e}"
 
-    def _draw_help_row(self):
-        """The help and keybinds buttons, flush right at the top of a tab."""
-        padding = imgui.get_style().frame_padding.x
-        w = imgui.calc_text_size("help").x + imgui.calc_text_size("keybinds").x + 4 * padding + em(0.4)
-        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + max(imgui.get_content_region_avail().x - w, 0))
-        self._help_open, self._keybinds_open = draw_help_buttons(self._help_open, self._keybinds_open)
-
     def _table_select(self, component):
         if component == self._active_component and not self._group:
             self._snapshot()
@@ -1619,7 +1622,6 @@ class SingleSessionDemixingVis:
         return f"{int(value)}" if name == "area" else f"{float(value):.3g}"
 
     def _draw_signal_tab(self):
-        self._draw_help_row()
         if self._order is None and not self._pixels and not self._rois:
             imgui.text_disabled("no demixed signals")
             return
@@ -1668,7 +1670,6 @@ class SingleSessionDemixingVis:
         drawing = self._drawing()
         existing = len(self._footprints) if self._footprints is not None else 0
         g = grid(_CAPTIONS)
-        self._draw_help_row()
 
         section("OVERLAY")
         if self._image_selector is not None:

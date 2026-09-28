@@ -1697,7 +1697,7 @@ class ClassificationVis:
         imgui.end_disabled()
         imgui.end_disabled()
         imgui.same_line(0, em(1.0))
-        self._help_open, self._keybinds_open = draw_help_buttons(self._help_open, self._keybinds_open)
+        self._help_open, self._keybinds_open = draw_help_buttons(self._help_open, self._keybinds_open, "Classification Guide")
         imgui.same_line(0, em(1.0))
         if self._loading is not None or self._clf_busy:
             # negative fraction is imgui's indeterminate bar: it keeps moving while we work
