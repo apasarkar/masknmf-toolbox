@@ -84,6 +84,10 @@ _BASE_LINE_COLORS = (
     (0.95, 0.55, 0.15),
     (0.35, 0.65, 0.95),
 )
+# behind the traces, naming what the lines are: material green 900 for a selection, deep purple 900 for the
+# sources under a double-clicked pixel
+_SIGNALS_BG = (0.11, 0.37, 0.13, 0.6)
+_SOURCES_BG = (0.19, 0.11, 0.57, 0.6)
 
 
 class SingleSessionDemixingVis:
@@ -615,6 +619,7 @@ class SingleSessionDemixingVis:
         lines.append(("background", background_trace, _BASE_LINE_COLORS[2]))
         lines.append(("residual", residual_trace, _BASE_LINE_COLORS[3]))
         self._traces.set("traces", lines)
+        self._traces.background = _SOURCES_BG
         self._status = f"sources over the {row_stop - row_start}x{col_stop - col_start} square at ({row}, {col})"
 
     def _pointer_down(self, name: str, ev: pygfx.PointerEvent):
@@ -902,6 +907,7 @@ class SingleSessionDemixingVis:
         if not self._show_traces:
             self._selected_signals = None
             self._traces.set("traces", [])
+            self._traces.background = None
             return
         results = self.demixing_results
         if len(self._group) > 1 or any(not isinstance(k, int) for k in self._group):
@@ -957,6 +963,7 @@ class SingleSessionDemixingVis:
             self._clear_traces()
             return
         self._traces.set("traces", lines)
+        self._traces.background = _SIGNALS_BG
 
     def _seed_group(self):
         """A first ctrl or shift pick keeps the current selection in the group."""
@@ -1389,6 +1396,7 @@ class SingleSessionDemixingVis:
     def _clear_traces(self):
         self._active_pixel = None
         self._traces.set("traces", [])
+        self._traces.background = None
 
     @property
     def roi_masks(self) -> np.ndarray:
