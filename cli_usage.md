@@ -69,24 +69,29 @@ masknmf run movie.tif --fs 30 --config ./20260923_120000_two-photon-calcium/conf
 ```json
 {
   "pipeline": "TwoPhotonCalciumPipeline",
-  "motion_correct_config": {"kind": "piecewise-rigid", "minimum_patch_sizes": [64, 64], "max_deviation_rigid": [3, 3]},
-  "compress_config": {"kind": "compress-denoise", "max_components": 30},
-  "filtered_demixing_config": {
-    "kind": "multipass",
-    "DemixingConfigs": [
-      {"InitConfig": {"mad_correlation_threshold": 0.7}},
-      {},
-      {"NMFConfig": {"maxiter": 60}}
-    ]
-  },
-  "device": "cuda"
+  "configs": {
+    "motion_correct_config": {"kind": "piecewise-rigid", "minimum_patch_sizes": [64, 64], "max_deviation_rigid": [3, 3]},
+    "compress_config": {"kind": "compress-denoise", "max_components": 30},
+    "filtered_demixing_config": {
+      "kind": "multipass",
+      "DemixingConfigs": [
+        {"InitConfig": {"mad_correlation_threshold": 0.7}},
+        {},
+        {"NMFConfig": {"maxiter": 60}}
+      ]
+    },
+    "device": "cuda"
+  }
 }
 ```
 
 Flags win over the file: `--device cpu` replaces the file's device, and a `--<section>-kind` naming another config
 than the file's replaces that section with the named config's defaults. A `--<section>-kind` naming the file's own
 config keeps the file's values. A run folder's `config.json` holds every
-config the run used, with `"*"` for values json cannot hold (arrays, detrenders); `"*"` keeps the default.
+config the run used under `configs`, with `"*"` for values json cannot hold (arrays, detrenders); `"*"` keeps the default.
+Under `timings` it holds each step that ran, with its start time, seconds and whether it finished, updated as the run goes.
+A run that resumes from the folder's compression (`--compress-kind skip --output-folder <run folder>`) keeps the
+earlier run's motion correction and compression configs and timings there and replaces the rest.
 
 ---
 
@@ -120,8 +125,10 @@ masknmf run --pipeline two-photon-calcium registered.tif --fs 30 \
 # plain PMD compression, tuned, and a stronger spatial highpass
 cat > tuned.json <<'EOF'
 {
-  "compress_config": {"kind": "compress", "block_sizes": [32, 32], "max_components": 30, "frame_range": 5000},
-  "spatial_highpass_config": {"filter_sigma": 6}
+  "configs": {
+    "compress_config": {"kind": "compress", "block_sizes": [32, 32], "max_components": 30, "frame_range": 5000},
+    "spatial_highpass_config": {"filter_sigma": 6}
+  }
 }
 EOF
 masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --config tuned.json
@@ -156,8 +163,10 @@ masknmf run --pipeline one-photon-culture voltage.tif --fs 1000 \
 # a 500 frame template, larger compression blocks, keep the compression group
 cat > voltage.json <<'EOF'
 {
-  "motion_correct_config": {"kind": "gradient", "num_frames_template": 500},
-  "compress_config": {"kind": "compress-denoise", "block_sizes": [40, 40], "max_components": 40}
+  "configs": {
+    "motion_correct_config": {"kind": "gradient", "num_frames_template": 500},
+    "compress_config": {"kind": "compress-denoise", "block_sizes": [40, 40], "max_components": 40}
+  }
 }
 EOF
 masknmf run --pipeline one-photon-culture voltage.h5 --dataset data --fs 400 \
@@ -193,8 +202,10 @@ masknmf run --pipeline glutamate-calcium-spine \
 # tune moco and compression; kinds can be left out because each section has one
 cat > spines.json <<'EOF'
 {
-  "motion_correct_config": {"max_shifts": [8, 8]},
-  "compress_config": {"block_sizes": [16, 16], "num_epochs": 5}
+  "configs": {
+    "motion_correct_config": {"max_shifts": [8, 8]},
+    "compress_config": {"block_sizes": [16, 16], "num_epochs": 5}
+  }
 }
 EOF
 masknmf run --pipeline glutamate-calcium-spine \
@@ -215,8 +226,10 @@ masknmf run --pipeline widefield-singlechannel wf.tif
 # piecewise-rigid + plain compression
 cat > wf.json <<'EOF'
 {
-  "motion_correct_config": {"kind": "piecewise-rigid", "minimum_patch_sizes": [32, 32]},
-  "compress_config": {"kind": "compress", "block_sizes": [16, 16]}
+  "configs": {
+    "motion_correct_config": {"kind": "piecewise-rigid", "minimum_patch_sizes": [32, 32]},
+    "compress_config": {"kind": "compress", "block_sizes": [16, 16]}
+  }
 }
 EOF
 masknmf run --pipeline widefield-singlechannel wf.tif --device cpu --output-folder ./wf_out --config wf.json
