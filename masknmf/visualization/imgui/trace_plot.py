@@ -7,7 +7,7 @@ from fastplotlib.ui import ImguiWindow
 from imgui_bundle import imgui, implot
 
 from masknmf.visualization.imgui.layout import HANDLE_THICKNESS, draw_edge_handle
-from masknmf.visualization.imgui.theme import em
+from masknmf.visualization.imgui.theme import em, to_vec4
 
 _CURSOR_COLOR = imgui.ImVec4(1.0, 1.0, 1.0, 0.7)
 
@@ -61,6 +61,7 @@ class TracePlot:
         self.on_pick: Optional[Callable] = None
         self._marks: list = []  # (label, frames, rgb): vertical lines in every panel
         self._spans: list = []  # (label, starts, stops, rgb): shaded epochs in every panel
+        self.background = None  # rgb(a) of the frame behind the panels, None for implot's own
 
     @property
     def panels(self) -> tuple:
@@ -154,19 +155,25 @@ class TracePlot:
         flags = implot.SubplotFlags_.link_all_x
         if self._link_y:
             flags |= implot.SubplotFlags_.link_all_y
-        if not implot.begin_subplots("##traces", len(self._panels), 1, imgui.ImVec2(-1, height), flags):
-            return None
-        shared = self._y_limits(self._panels) if fit and self._link_y else None
-        moved = None
+        if self.background is not None:
+            implot.push_style_color(implot.Col_.frame_bg, to_vec4(self.background))
         try:
-            for i, name in enumerate(self._panels):
-                limits = None
-                if fit:
-                    limits = shared if self._link_y else self._y_limits((name,))
-                got = self._draw_panel(name, fit, limits, last=i == len(self._panels) - 1)
-                moved = got if got is not None else moved
+            if not implot.begin_subplots("##traces", len(self._panels), 1, imgui.ImVec2(-1, height), flags):
+                return None
+            shared = self._y_limits(self._panels) if fit and self._link_y else None
+            moved = None
+            try:
+                for i, name in enumerate(self._panels):
+                    limits = None
+                    if fit:
+                        limits = shared if self._link_y else self._y_limits((name,))
+                    got = self._draw_panel(name, fit, limits, last=i == len(self._panels) - 1)
+                    moved = got if got is not None else moved
+            finally:
+                implot.end_subplots()
         finally:
-            implot.end_subplots()
+            if self.background is not None:
+                implot.pop_style_color()
         self._draw_settings_popup()
         return moved
 

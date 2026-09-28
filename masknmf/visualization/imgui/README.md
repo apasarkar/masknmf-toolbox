@@ -8,11 +8,14 @@ Reusable GUI-layer building blocks shared by the interactive viewers
 - `widgets.py` — imgui `EdgeWindow` panels. `CheckboxWindow` (was `ROIManager` in `interactive_guis.py`).
 - `picking.py` — data-space picking. `component_at_pixel` (was duplicated as `CurationVis._neuron_at` and `MultiSessionDemixingVis.neuron_selection`), `contours_to_bbox` / `zoom_to_bbox` (from `multisession_vis.py`).
 - `layout.py` — figure-level helpers. `resolve_time_reference` (frame_timings/ref_range block that was triplicated across curation/demixing/motion), `is_notebook_canvas` (canvas-class check in `show()` dispatch) and `draw_edge_handle` (resize/collapse handle for top/left edge windows, which fastplotlib only has for bottom/right).
-- `table.py` — `RoiOrder` (filter / sort / cursor over per-item columns) and `draw_roi_table` (clipped sortable table with ctrl / shift multi-select callbacks), `draw_range_filter`.
-- `panels.py` — `draw_keybinds_popup`: the (key, action) reference window.
+- `table.py` — `RoiOrder` (filter / sort / cursor over per-item columns) and `draw_roi_table` (clipped sortable table with ctrl / shift multi-select callbacks), `draw_range_slider` (two grabs on one frame) and `draw_range_filter` (it over `RoiOrder.range_column`).
+- `panels.py` — `draw_keybinds_popup`: the key reference window listing a keybinds table, `draw_keybinds_button` and `draw_help_buttons`: the buttons that toggle it and the help page (their popups are drawn by the caller), built on `hint_button` (a name with its key dimmed after it).
+- `keybinds.py` — every viewer's keys in one place: `Bind` rows (key, modifiers, label, action) in the `DEMIXING` and `CLASSIFICATION` tables, `pressed` for the handlers, `LABEL_KEYS`; the popup and the help pages list the same rows, so a custom mapping goes here.
+- `curation_help.py`, `classification_help.py` — the viewers' help pages: diagrams, tables and the keybinds button; each runs standalone with `python -m`.
+- `files.py` — `PathPrompt` / `draw_path_prompt`: every path a viewer asks for (load results, cell stats, export, classifier) goes through this typed-path window with the native dialog as a browse shortcut, so it works from a notebook on another machine; `mbo_utilities.gui._files` mirrors it.
 - `trace_plot.py` — `TracePlot`: stacked implot panels docked on top of a figure, playhead linked to the NDWidget time index, stimulus marks/spans, double-click pick.
 - `movie_player.py` — `MoviePlayer`: imgui transport bar over a lazy (T, H, W) array.
-- `theme.py` — palette and card/section/popup helpers shared by the imgui panels.
+- `theme.py` — palette and card/section/popup helpers shared by the imgui panels; `help_mark` (a (?) with a tooltip) and `tooltip` (on the last item itself).
 
 `widgets` is imgui proper; `picking`/`layout` are fastplotlib-level helpers that
 live here because they only serve the interactive GUIs. If this package grows, they could

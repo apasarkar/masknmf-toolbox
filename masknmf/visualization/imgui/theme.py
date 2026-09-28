@@ -32,6 +32,8 @@ class Theme:
     border: Color = (0.35, 0.35, 0.37, 0.7)
     danger: Color = (0.75, 0.15, 0.15, 0.8)
     danger_hover: Color = (0.90, 0.20, 0.20, 1.0)
+    emphasis: Color = (1.00, 0.62, 0.10, 1.0)
+    emphasis_hover: Color = (1.00, 0.74, 0.30, 1.0)
     rounding: float = 6.0
     card_rounding: float = 0.0
 
@@ -121,7 +123,7 @@ class Grid:
 
 
 def grid(captions) -> Grid:
-    """Measure a :class:`Grid` at the cursor: the caption column fits the longest of ``captions`` as a checkbox, the rest splits in two."""
+    """Measure a :class:`Grid` at the cursor: the caption column fits the longest of ``captions`` as a checkbox, the rest splits in two cells of at most 12 em."""
     gap = em(0.6)
     x0 = imgui.get_cursor_pos_x()
     caption_w = (
@@ -130,7 +132,8 @@ def grid(captions) -> Grid:
         + imgui.get_style().item_inner_spacing.x
         + gap
     )
-    cell_w = (imgui.get_content_region_avail().x - caption_w - gap) / 2
+    # capped, so a wide panel does not stretch every button and slider with it
+    cell_w = min((imgui.get_content_region_avail().x - caption_w - gap) / 2, em(12))
     return Grid((x0 + caption_w, x0 + caption_w + cell_w + gap), cell_w, gap, imgui.calc_text_size("(?)").x + em(0.3))
 
 
@@ -139,6 +142,12 @@ def help_mark(text: str):
     imgui.same_line(0, em(0.3))
     imgui.text_disabled("(?)")
     if imgui.is_item_hovered():
+        imgui.set_tooltip(text)
+
+
+def tooltip(text: str):
+    """``text`` as the tooltip of the last item, disabled or not."""
+    if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
         imgui.set_tooltip(text)
 
 
