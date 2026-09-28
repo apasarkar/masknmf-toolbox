@@ -90,12 +90,12 @@ def load_movie(filepath_movie: str, name_dataset: Optional[str] = None):
         if len(filepaths_tiffs) == 0:
             fail(f"no tiff files in {path_movie}")
         if len(filepaths_tiffs) == 1:
-            return load_tiff(filepath_tiff=filepaths_tiffs[0])
+            return masknmf.TiffArray(filepaths_tiffs[0])
         return masknmf.TiffSeriesLoader(filepaths_tiffs)
 
     suffix = path_movie.suffix.lower()
     if suffix in SUFFIXES_TIFF:
-        return load_tiff(filepath_tiff=str(path_movie))
+        return masknmf.TiffArray(str(path_movie))
     if suffix in SUFFIXES_HDF5:
         if name_dataset is None:
             fail(f"{path_movie.name} is hdf5; name the movie dataset with --dataset")
@@ -105,17 +105,6 @@ def load_movie(filepath_movie: str, name_dataset: Optional[str] = None):
         f"masknmf cannot read {path_movie.name}; expected a .tif/.tiff file, a directory "
         "of them, or a .h5/.hdf5 file"
     )
-
-
-def load_tiff(filepath_tiff: str):
-    """
-    Open a tiff memory-mapped, as the viewers do, so any frame index pattern reads directly; a tiff that
-    cannot be mapped (compressed, or not one contiguous stack) falls back to reading pages.
-    """
-    try:
-        return masknmf.TiffArray(filepath_tiff, memmap=True)
-    except (ValueError, TypeError):
-        return masknmf.TiffArray(filepath_tiff)
 
 
 def has_stage(filepath_results: str, name_group: str) -> bool:

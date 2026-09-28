@@ -250,10 +250,7 @@ class SingleSessionDemixingVis:
                 raw, found_raw = tifs[0], True
         raw_src = raw if isinstance(raw, (str, os.PathLike)) else None
         if raw_src is not None:
-            try:
-                raw = TiffArray(str(raw_src), memmap=True)
-            except (ValueError, TypeError):
-                raw = TiffArray(str(raw_src))
+            raw = TiffArray(str(raw_src))
         if raw is not None and tuple(raw.shape) != tuple(self._shape):
             if not found_raw:
                 raise ValueError(
