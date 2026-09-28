@@ -182,8 +182,8 @@ class SingleSessionDemixingVis:
         demixing_results: masknmf.DemixingResults
         | masknmf.CompressionArray
         | masknmf.BaseRegistrationArray,
-        frame_timings: Optional[np.ndarray | List[np.ndarray]] = None,
-        ref_range: Optional[dict] = None,
+        frame_timings: np.ndarray | list[np.ndarray] | None = None,
+        ref_range: dict | None = None,
         summary_img: np.ndarray | masknmf.ArrayLike | None = None,
         summary_img_name: str | None = None,
         show_contours: bool = False,
