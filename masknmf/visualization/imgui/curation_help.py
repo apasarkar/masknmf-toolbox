@@ -1,6 +1,7 @@
 """
-The Curation tab's (?) page: the steps, the panels, the motion shifts, what a click and a group plot, and what
-Demix does, as diagrams and tables, with the viewer's keybinds behind a button. From the repo root,
+The Curation tab's guide (h): the steps, the panels and what fills them, the motion shifts, what a click, a
+group and the selection tools do, and what Demix does, as diagrams and tables, with the viewer's keybinds
+behind a button. From the repo root,
 ``python -m masknmf.visualization.imgui.curation_help`` opens it in a window of its own.
 """
 
@@ -35,12 +36,9 @@ GROUP = (
     imgui.ImVec4(0.25, 0.85, 0.35, 1.0),
     imgui.ImVec4(0.95, 0.35, 0.90, 1.0),
 )
-COLORFUL = (
-    imgui.ImVec4(0.95, 0.35, 0.35, 1.0),
-    imgui.ImVec4(0.35, 0.60, 1.00, 1.0),
-    imgui.ImVec4(0.95, 0.85, 0.25, 1.0),
-    imgui.ImVec4(0.40, 0.90, 0.80, 1.0),
-)
+# the trace plot's frame while a selection shows, and while a double-click's sources do
+SELECTED = imgui.ImVec4(0.03, 0.08, 0.05, 1.0)
+SOURCED = imgui.ImVec4(0.06, 0.04, 0.12, 1.0)
 # a made-up field of view: four cells at (column, row) fractions of the panel, each with a radius in em
 CELLS = ((0.18, 0.34, 0.85), (0.42, 0.68, 1.0), (0.66, 0.30, 0.75), (0.86, 0.66, 0.65))
 WIDTH_EM = 44
@@ -48,33 +46,46 @@ FONT_SIZE = 14
 
 TITLE = "Curation"
 TOOLTIP = (
-    "the steps, the panels, the motion shifts, what a click and a group plot, what Demix does, the keybinds"
+    "the steps, the panels and what fills them, the motion shifts, what a click, a group and the selection "
+    "tools do, what Demix does, the keybinds"
 )
 STEPS = (
     (fa.ICON_FA_ARROW_POINTER, "Click", "a signal: its parts"),
-    (fa.ICON_FA_OBJECT_GROUP, "Group", "ctrl / shift: compare"),
-    (fa.ICON_FA_DRAW_POLYGON, "Draw ROI", "where a cell is missed"),
+    (fa.ICON_FA_DRAW_POLYGON, "Select", "poly (a), filter, ctrl / shift"),
+    (fa.ICON_FA_PLUS, "Add ROI", "r: where a cell is missed"),
     (fa.ICON_FA_TRASH, "Delete", "mark wrong signals"),
     (fa.ICON_FA_WAND_MAGIC_SPARKLES, "Demix", "refit to a new file"),
 )
-# the fov panels in the viewer's order and what their thumbnails draw: the smooth background, the cells
-# (gray or in their own colors, pulsing with their traces) and how strong the speckle, 0 to 1
+# the movies a panel can show, in the viewer's order, and what their thumbnails draw: the smooth background,
+# the cells pulsing with their traces, and how strong the speckle, 0 to 1
 THUMBS = (
-    ("raw", True, "gray", 1.0),
-    ("compressed+denoised", True, "gray", 0.2),
-    ("signals", False, "gray", 0.0),
-    ("background", True, None, 0.0),
-    ("residual", False, None, 0.6),
-    ("colorful signals", False, "colorful", 0.0),
+    ("raw", True, True, 1.0),
+    ("registered", True, True, 1.0),
+    ("compressed+denoised", True, True, 0.2),
+    ("residual", False, False, 0.6),
+    ("background", True, False, 0.0),
+    ("signals", False, True, 0.0),
 )
+# the movies the three panels open on, one per column of the Panels window
+DEFAULTS = ("raw", "compressed+denoised", "signals")
 # the plot panels' lines as (trace kind, cell, color): the shift panel's height / width, one clicked signal's
 # parts, and a group of three
 SHIFT_LINES = (("slow", 3, imgui.ImVec4(1.0, 0.6, 0.2, 1.0)), ("slow", 4, imgui.ImVec4(0.4, 0.7, 1.0, 1.0)))
 TRACE_LINES = (("sum", 0, COMPRESSED), ("bumps", 0, SIGNAL), ("slow", 0, BACKGROUND), ("noise", 0, RESIDUAL))
 GROUP_LINES = (("bumps", 0, GROUP[0]), ("bumps", 1, GROUP[1]), ("bumps", 2, GROUP[2]))
+# what the Static images window offers, behind its (?)
+STILLS = (
+    "the registration template",
+    "the summary image given",
+    "the residual correlation image, once demixed",
+    "the mean and noise variance images of the compression",
+    "lag-1 autocorrelation images, with masknmf view --compression",
+    "pan, zoom, colormap and contrast; pixel values when zoomed in",
+)
 PANELS = (
-    ("panel", "shows"),
-    ("raw", "the raw movie, when given or found beside the results"),
+    ("movie", "shows"),
+    ("raw", "the movie as recorded, when given or found beside the results"),
+    ("registered", "the raw movie with the file's registration replayed, when both are there"),
     (
         "compressed+denoised",
         "the raw movie compressed and denoised by PMD: the noise left out, what the demixer fits",
@@ -82,7 +93,7 @@ PANELS = (
     ("signals", "every footprint x trace summed: the demixed movie"),
     ("background", "the fitted fluctuating background"),
     ("residual", "compressed minus signals minus background"),
-    ("colorful signals", "each signal's footprint in its own color"),
+    ("Static images", "a window over the stills the results hold, from the button above the tabs", STILLS),
 )
 # the compressed movie's parts in the trace plot's colors, each followed by its operator
 PARTS = (
@@ -99,6 +110,11 @@ SHIFTS = (
         "a shift per block per frame, shown as the largest absolute one over the blocks: "
         "max block shift height, max block shift width",
     ),
+    (
+        "registration only",
+        "a file holding only a registration opens raw beside registered, with the shifts; no signals, rois "
+        "or Demix",
+    ),
 )
 MEMBERS = (
     ("row", "line"),
@@ -110,9 +126,10 @@ MEMBERS = (
 SOURCES = (
     "takes the 3x3 square around the pixel",
     "averages compressed, background and residual over it",
-    "one line per signal whose footprint touches the square",
-    "scaled by its mean footprint weight there, in its colorful signals color",
-    "needs demixed signals and traces shown",
+    "one line per signal whose footprint touches the square, in its mask color",
+    "scaled by its mean footprint weight there",
+    "the traces frame turns indigo while sources show",
+    "needs demixed signals and traces shown; both presses on one spot",
 )
 MOUSE = (
     ("mouse", "does"),
@@ -121,6 +138,55 @@ MOUSE = (
     ("shift + click", "add it; in the table, every row up to it"),
     ("double-click", "show demixed sources for selected pixels", SOURCES),
     ("drag", "pan; the selection stays"),
+    ("right-click", "pick the panel's movie, over the usual menu"),
+)
+# the SELECTION row's buttons as (icon, name, color): lit poly-select, the rest as they sit
+TOOL_BUTTONS = (
+    (fa.ICON_FA_DRAW_POLYGON, "poly-select (a)", KEY),
+    (fa.ICON_FA_PLUS, "add roi (r)", TEXT),
+    (fa.ICON_FA_TRASH, "delete", DROP),
+    (fa.ICON_FA_OBJECT_GROUP, "merge", DIM),
+    (fa.ICON_FA_LOCATION_CROSSHAIRS, "center (f)", ACCENT),
+)
+TOOLS = (
+    ("tool", "does"),
+    (
+        "poly-select (a)",
+        "draw a polygon on any panel: every signal in view whose center is on the switch's side of it is "
+        "selected, live as it is drawn or dragged; a or esc leaves it, the selection stays",
+    ),
+    (
+        "add roi (r)",
+        "draw a polygon where a cell is missed: its average joins the plot and Demix seeds the nmf pass with "
+        "it; Export writes the drawn rois to a .npz",
+    ),
+    (
+        "delete",
+        "mark the selected signals for the next demix, again unmarks; a selected roi or pixel average is "
+        "dropped right away",
+    ),
+    ("merge", "the grouped signals into one, not yet implemented"),
+    ("center (f)", "every panel on the selected signal, following it as the selection moves"),
+    (
+        "inside / outside",
+        "the switch: which side of the polygon or range poly-select and the filter take; outside by default, "
+        "lit while one of them drives the selection",
+    ),
+    (
+        "filter, range",
+        "a stats column and a range on it: the table shows what is inside; apply to selection makes the "
+        "switch's side the selection, live as the lines move, as ctrl+a does for the table",
+    ),
+    (
+        "applied",
+        "a Delete made from the filter is listed under it and named in the curated file's description; "
+        "ctrl+z undoes it",
+    ),
+    (
+        "overlay",
+        "masks (m), the selected masks, contours (c), the selected contours, each with an opacity; color by "
+        "ranks a column; quick pixel trace (p); show selected traces",
+    ),
 )
 
 
@@ -179,24 +245,24 @@ def lines(dl, x: float, y: float, w: float, h: float, specs: tuple, frame: float
     dl.add_line(imgui.ImVec2(cx, y + 0.3 * em), imgui.ImVec2(cx, y + h - 0.3 * em), u32(TEXT, 0.7), 1.5)
 
 
-def card(dl, x: float, y: float, w: float, h: float, title: str) -> float:
-    """A panel's card: its title in a strip on top, the dark plot area below. Returns the plot area's top."""
+def card(dl, x: float, y: float, w: float, h: float, title: str, tint: imgui.ImVec4 = PLOT) -> float:
+    """A panel's card: its title in a strip on top, the plot area below in tint. Returns the area's top."""
     em = imgui.get_font_size()
     a, b = imgui.ImVec2(x, y), imgui.ImVec2(x + w, y + h)
     dl.add_rect_filled(a, b, u32(CARD), 4.0)
     area = imgui.ImVec2(x, y + 1.2 * em)
-    dl.add_rect_filled(area, b, u32(PLOT), 4.0, imgui.ImDrawFlags_.round_corners_bottom)
+    dl.add_rect_filled(area, b, u32(tint), 4.0, imgui.ImDrawFlags_.round_corners_bottom)
     dl.add_rect(a, b, u32(EDGE), 4.0)
     size = imgui.calc_text_size(title)
     dl.add_text(imgui.ImVec2(x + (w - size.x) / 2, y + (1.2 * em - size.y) / 2), u32(TEXT), title)
     return y + 1.2 * em
 
 
-def plot(dl, w: float, title: str, specs: tuple, h: float, frame: float) -> None:
+def plot(dl, w: float, title: str, specs: tuple, h: float, frame: float, tint: imgui.ImVec4 = PLOT) -> None:
     """A full-width plot card at the cursor, its lines under the title; the cursor moves past it."""
     em = imgui.get_font_size()
     p = imgui.get_cursor_screen_pos()
-    lines(dl, p.x, card(dl, p.x, p.y, w, 1.2 * em + h, title), w, h, specs, frame)
+    lines(dl, p.x, card(dl, p.x, p.y, w, 1.2 * em + h, title, tint), w, h, specs, frame)
     imgui.dummy(imgui.ImVec2(w, 1.2 * em + h))
 
 
@@ -344,16 +410,39 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
             )
         for k, (u, v, r) in enumerate(CELLS if cells else ()):
             lit = 0.15 + 0.85 * trace("bumps", k, frame)
-            color = COLORFUL[k] if cells == "colorful" else TEXT
             center = imgui.ImVec2(x + u * bw, top + v * ih)
             for ring in (1.0, 0.85, 0.7, 0.55, 0.4, 0.25):
-                dl.add_circle_filled(center, ring * r * em, u32(color, 0.2 * lit))
+                dl.add_circle_filled(center, ring * r * em, u32(TEXT, 0.2 * lit))
         # the speckle re-rolls with the frame; fainter speckle is sparser too
         for k, (u, v) in enumerate(SPECKLE[: int(len(SPECKLE) * speckle)]):
             at = imgui.ImVec2(x + u * (bw - 0.2 * em), top + v * (ih - 0.2 * em))
             alpha = int(140 * speckle * hash01(k, int(frame)))
             dl.add_rect_filled(at, imgui.ImVec2(at.x + 0.2 * em, at.y + 0.2 * em), grain | alpha << 24)
     imgui.dummy(imgui.ImVec2(w, y + 1.2 * em + ih - p.y))
+    # the Panels window: one radio per movie and panel, the defaults picked
+    p = imgui.get_cursor_screen_pos()
+    row_h = 1.3 * em
+    mw, mh = 15 * em, row_h * (len(THUMBS) + 1) + 0.4 * em
+    dl.add_rect_filled(p, imgui.ImVec2(p.x + mw, p.y + mh), u32(CARD), 4.0)
+    dl.add_rect(p, imgui.ImVec2(p.x + mw, p.y + mh), u32(EDGE), 4.0)
+    for j in range(3):
+        dl.add_text(imgui.ImVec2(p.x + (9.9 + 1.8 * j) * em, p.y + 0.2 * em), u32(DIM), str(j + 1))
+    for i, (name, _shaded, _cells, _speckle) in enumerate(THUMBS):
+        ry = p.y + 0.2 * em + (i + 1) * row_h
+        dl.add_text(imgui.ImVec2(p.x + 0.5 * em, ry), u32(TEXT), name)
+        for j in range(3):
+            center = imgui.ImVec2(p.x + (10.1 + 1.8 * j) * em, ry + 0.55 * em)
+            dl.add_circle(center, 0.4 * em, u32(DIM), 0, 1.0)
+            if DEFAULTS[j] == name:
+                dl.add_circle_filled(center, 0.25 * em, u32(ACCENT))
+    imgui.dummy(imgui.ImVec2(mw, mh))
+    imgui.same_line(0, em)
+    imgui.text_colored(
+        DIM,
+        "up to three panels, any movie in each: the Panels button above the tabs, or a right-click on a "
+        "panel, picks what it shows; the zoom and the drawn rois stay when it switches. They open on raw, "
+        "compressed+denoised and signals, and the frame slider runs all three.",
+    )
     table("panels", PANELS)
 
     heading(fa.ICON_FA_ARROWS_UP_DOWN_LEFT_RIGHT, "Motion correction shifts")
@@ -366,17 +455,17 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     table("shifts", SHIFTS)
 
     heading(fa.ICON_FA_ARROW_POINTER, "One signal: click")
-    plot(dl, w, "traces", TRACE_LINES, 4.4 * em, frame)
+    plot(dl, w, "traces", TRACE_LINES, 4.4 * em, frame, SELECTED)
     imgui.text_colored(
         DIM,
         "compressed, signal, background and residual averaged over its footprint, the cursor on the frame "
-        "slider",
+        "slider; the frame goes green while a selection shows",
     )
 
     heading(fa.ICON_FA_OBJECT_GROUP, "A group: ctrl / shift click")
     p = imgui.get_cursor_screen_pos()
     pw, ph = 24 * em, 5.2 * em
-    dl.add_rect_filled(p, imgui.ImVec2(p.x + pw, p.y + ph), u32(PLOT), 4.0)
+    dl.add_rect_filled(p, imgui.ImVec2(p.x + pw, p.y + ph), u32(SELECTED), 4.0)
     dl.add_rect(p, imgui.ImVec2(p.x + pw, p.y + ph), u32(EDGE), 4.0)
     lines(dl, p.x, p.y, pw, ph, GROUP_LINES, frame)
     for i, (label, color) in enumerate(zip(("signal 12", "roi 0", "pixel avg (40, 61)"), GROUP)):
@@ -391,6 +480,31 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
         "fire together",
     )
     table("members", MEMBERS)
+
+    heading(fa.ICON_FA_SLIDERS, "Selection tools")
+    p = imgui.get_cursor_screen_pos()
+    bw, bh, bgap = 5.2 * em, 2.2 * em, 0.6 * em
+    for i, (icon, name, color) in enumerate(TOOL_BUTTONS):
+        x = p.x + i * (bw + bgap)
+        box(dl, x, p.y, bw, bh, icon, color, 0.18 if color in (KEY, ACCENT) else 0.0)
+        size = imgui.calc_text_size(name)
+        dl.add_text(imgui.ImVec2(x + (bw - size.x) / 2, p.y + bh + 0.3 * em), u32(DIM), name)
+    # the side switch, outside picked and lit as while poly-select or the filter drives the selection
+    x = p.x + 5 * (bw + bgap) + em
+    dl.add_text(imgui.ImVec2(x, p.y + 0.55 * em), u32(DIM), "inside")
+    x += imgui.calc_text_size("inside").x + 0.5 * em
+    pill = imgui.ImVec2(x, p.y + 0.45 * em), imgui.ImVec2(x + 2.4 * em, p.y + 1.65 * em)
+    dl.add_rect_filled(*pill, u32(ACCENT, 0.35), 0.6 * em)
+    dl.add_rect(*pill, u32(ACCENT), 0.6 * em)
+    dl.add_circle_filled(imgui.ImVec2(x + 1.8 * em, p.y + 1.05 * em), 0.45 * em, u32(TEXT))
+    dl.add_text(imgui.ImVec2(x + 2.9 * em, p.y + 0.55 * em), u32(TEXT), "outside")
+    imgui.dummy(imgui.ImVec2(w, bh + 1.6 * em))
+    imgui.text_colored(
+        DIM,
+        "the Curation tab's SELECTION row and its side switch; a mode that is on is lit, a tool with nothing "
+        "to act on is greyed; the filter's column and range sit under the switch",
+    )
+    table("tools", TOOLS)
 
     heading(fa.ICON_FA_COMPUTER_MOUSE, "Mouse")
     table("mouse", MOUSE)
@@ -415,7 +529,9 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     box(dl, x, y, 13 * em, bh, "<time>.curated.hdf5", KEY)
     imgui.dummy(imgui.ImVec2(w, 1.4 * em + bh + 1.4 * em))
     imgui.text_colored(
-        DIM, "every signal refit, the original file untouched; the viewer moves on to the new file"
+        DIM,
+        "every signal refit, the original file untouched; a filter behind a Delete is named in the new "
+        "file's description; the viewer moves on to the new file",
     )
 
     imgui.pop_text_wrap_pos()
