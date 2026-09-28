@@ -5,6 +5,8 @@ from typing import Callable, Container, Optional, Sequence
 import numpy as np
 from imgui_bundle import imgui
 
+from masknmf.visualization.imgui.theme import THEME, to_vec4
+
 
 class RoiOrder:
     """
@@ -204,8 +206,8 @@ def draw_range_slider(
     str_id: str, lo: float, hi: float, span: tuple, fmt: str = "%.3g", width: float = -1
 ) -> tuple[bool, float, float]:
     """
-    A range slider: two grabs on one frame with the span between them filled and the values read in the
-    middle. A press or drag moves the nearer grab, a double-click puts both back at the ends of ``span``.
+    A range slider: two lines on one frame with the span between them filled and the values read in the
+    middle. A press or drag moves the nearer line, a double-click puts both back at the ends of ``span``.
 
     Returns (changed, lo, hi).
     """
@@ -217,7 +219,7 @@ def draw_range_slider(
     height = imgui.get_frame_height()
     pos = imgui.get_cursor_screen_pos()
     imgui.invisible_button(str_id, imgui.ImVec2(width, height))
-    grab = max(style.grab_min_size, imgui.get_font_size() * 0.5)
+    grab = max(3.0, round(imgui.get_font_size() * 0.2))
     x0, x1 = pos.x + style.frame_padding.x + grab / 2, pos.x + width - style.frame_padding.x - grab / 2
     scale = (x1 - x0) / (span_hi - span_lo) if span_hi > span_lo else 0.0
     storage = imgui.get_state_storage()
@@ -249,16 +251,12 @@ def draw_range_slider(
     lo_x, hi_x = x0 + (lo - span_lo) * scale, x0 + (hi - span_lo) * scale
     top, bottom = pos.y + 2, pos.y + height - 2
     draw.add_rect_filled(
-        imgui.ImVec2(lo_x, top),
-        imgui.ImVec2(hi_x, bottom),
-        imgui.get_color_u32(imgui.Col_.slider_grab, 0.35),
-        style.grab_rounding,
+        imgui.ImVec2(lo_x, top), imgui.ImVec2(hi_x, bottom), imgui.get_color_u32(imgui.ImVec4(*THEME.accent[:3], 0.35))
     )
     for i, x in enumerate((lo_x, hi_x)):
-        color = imgui.Col_.slider_grab_active if active and storage.get_int(key, 0) == i else imgui.Col_.slider_grab
-        draw.add_rect_filled(
-            imgui.ImVec2(x - grab / 2, top), imgui.ImVec2(x + grab / 2, bottom), imgui.get_color_u32(color), style.grab_rounding
-        )
+        held = active and storage.get_int(key, 0) == i
+        color = imgui.get_color_u32(imgui.Col_.text) if held else imgui.get_color_u32(to_vec4(THEME.accent))
+        draw.add_rect_filled(imgui.ImVec2(x - grab / 2, top), imgui.ImVec2(x + grab / 2, bottom), color)
     label = f"{fmt % lo} - {fmt % hi}"
     size = imgui.calc_text_size(label)
     draw.add_text(

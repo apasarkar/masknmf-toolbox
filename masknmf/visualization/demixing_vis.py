@@ -63,7 +63,7 @@ _UNDO_DEPTH = 50  # ctrl+z snapshots kept
 # every grid's captions, so the caption column is one width across the sections and the tabs
 _CAPTIONS = (
     "masks", "contours", "sel masks", "sel contours", "color by", "traces",
-    "rois", "polygon", "side", "filter", "range", "applied", "selection", "run", "options",
+    "rois", "filter", "range", "applied", "run", "options",
 )
 # signals selected together, in order of mutual contrast on the dark plot; no red, a mask marked for
 # deletion is red
@@ -115,9 +115,9 @@ class SingleSessionDemixingVis:
     A drawn roi gets the same kind of trace once it is closed ("roi n", groupable, in the table too) and,
     unlike a pixel average, is kept: Demix seeds the NMF pass with it and export writes it.
     The Curation tab's filter takes any column, del included (0 or 1): a slider with two lines over the
-    column's span, everything in view at the full span. The filter icon makes the signals on the side
+    column's span, everything in view at the full span. Its "apply to selection" checkbox makes the signals on the side
     switch's side of the range (the switch poly-select uses too) the selection, as ctrl+a does for the table, and keeps
-    it following the grabs as they move; editing the selection by hand switches it off. Delete then marks the
+    it following the lines as they move; editing the selection by hand switches it off. Delete then marks the
     selection like any other and remembers the filter it came from, listed under the range, and Demix writes
     which filter removed which signals into the curated file's description. The Curation tab's "color by"
     colors the masks and the table's ids by a column's rank instead of by signal id.
@@ -1748,53 +1748,93 @@ class SingleSessionDemixingVis:
             "off, selecting only highlights, however big the selection"
         )
 
-        pad = imgui.get_style().frame_padding.x
-        w = imgui.get_frame_height() * 1.6
-        section("ROIS")
-        g.row("rois")
-        imgui.begin_disabled(drawing)
-        if imgui.button(f"{fa.ICON_FA_PLUS}##add_roi", imgui.ImVec2(w, 0)):
-            self._start_roi()
-        imgui.end_disabled()
-        tooltip("add a roi: draw a polygon on any panel; its average joins the plot and Demix seeds the nmf pass with it")
-        imgui.same_line(0, g.gap / 2)
-        imgui.begin_disabled(not self._rois)
-        if imgui.button(f"{fa.ICON_FA_FILE_EXPORT}##export", imgui.ImVec2(w, 0)):
-            self._export_prompt.start()
-        imgui.end_disabled()
-        tooltip("export the drawn rois to a .npz: a window with a typed path, browse for the native dialog")
-        imgui.same_line(0, g.gap)
-        right_aligned_text(f"{existing} existing, {len(self._rois)} drawn")
-
-        section("SELECT")
+        section("SELECTION")
         selecting = self._armed == "poly" or self._poly is not None
-        g.row("polygon")
-        imgui.begin_disabled(self._order is None or (drawing and not selecting))
+        signals = [k for k in self._group if isinstance(k, int)]
+        if not signals and self._active_component is not None:
+            signals = [self._active_component]
+        nothing = self._active_roi is None and self._active_pixel is None and not signals
+        unmark = (
+            self._active_roi is None
+            and self._active_pixel is None
+            and bool(signals)
+            and all(k in self._marked for k in signals)
+        )
+        selected = bool(self._group or self._pixels) or self._active_component is not None or self._active_roi is not None
+        # five buttons share the row inside a margin, so they grow with the panel
+        margin, gap = em(1.0), g.gap / 2
+        size = imgui.ImVec2((imgui.get_content_region_avail().x - 2 * margin - 4 * gap) / 5, imgui.get_frame_height() * 1.3)
+        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + margin)
+        imgui.begin_disabled(self._order is None or (drawing and not selecting) or self._filter_select)
         with button_colors(THEME.accent, THEME.accent, (0.05, 0.05, 0.05), on=selecting):
-            if imgui.button(f"{fa.ICON_FA_DRAW_POLYGON}##poly", imgui.ImVec2(w, 0)):
+            if imgui.button(f"{fa.ICON_FA_DRAW_POLYGON}##poly", size):
                 self._start_poly()
         imgui.end_disabled()
         tooltip(
-            "poly-select is on: click again or esc to leave it, the selection stays"
+            "Poly-select is on: click again or esc to leave it, the selection stays"
             if selecting
-            else "poly-select: draw a polygon on any panel to select every signal in view whose center is on the "
-            "side the switch says; the selection follows the polygon as it is drawn and dragged, and Delete marks it"
+            else "Poly-select: draw a polygon on any panel to select every signal in view whose center is on the "
+            "switch's side of it; the selection follows the polygon as it is drawn and dragged"
+            + ("; off while the filter drives the selection" if self._filter_select else "")
         )
-        imgui.same_line(0, g.gap / 2)
-        imgui.begin_disabled(True)
-        imgui.button(f"{fa.ICON_FA_PEN_RULER}##line", imgui.ImVec2(w, 0))
+        imgui.same_line(0, gap)
+        imgui.begin_disabled(not selected)
+        if imgui.button("desel", size):
+            self.deselect()
         imgui.end_disabled()
-        tooltip("line-select: not yet implemented")
-        g.row("side")
-        flipped, self._select_outside = imgui_toggle.toggle(
-            f"{'outside' if self._select_outside else 'inside'}###side",
-            self._select_outside,
-            imgui_toggle.ToggleFlags_.animated,
-        )
+        tooltip("Deselect: drop the selection, the group and the pixel averages (esc)")
+        imgui.same_line(0, gap)
+        imgui.begin_disabled(nothing or self._worker is not None)
+        with button_colors(THEME.danger, THEME.danger_hover, on=not unmark):
+            if imgui.button(f"{fa.ICON_FA_TRASH}##delete", size):
+                self._delete_selected()
+        imgui.end_disabled()
         tooltip(
-            "the side of the polygon, or of the range, that a selection takes; switch for "
-            + ("inside" if self._select_outside else "outside")
+            f"Unmark: the {len(signals)} selected signal(s) stay in the next demix (delete)"
+            if unmark
+            else f"Mark for deletion: the {len(signals)} selected signal(s) are removed by the next demix and kept "
+            "until then; a selected drawn roi or pixel average is dropped right away (delete)"
         )
+        imgui.same_line(0, gap)
+        imgui.begin_disabled(True)
+        imgui.button(f"{fa.ICON_FA_OBJECT_GROUP}##merge", size)
+        imgui.end_disabled()
+        tooltip("Merge: the grouped signals into one, not yet implemented")
+        imgui.same_line(0, gap)
+        with button_colors(THEME.accent, THEME.accent, (0.05, 0.05, 0.05), on=self._follow):
+            if imgui.button(f"{fa.ICON_FA_LOCATION_CROSSHAIRS}##center", size):
+                self._toggle_follow()
+        tooltip("Center: every panel on the selected signal, following it as the selection moves (f)")
+        # the side switch between its labels, centered; lit while poly-select or the filter drives the selection
+        live = selecting or self._filter_select
+        inner = imgui.get_style().item_inner_spacing.x
+        dim, lit = imgui.get_style().color_(imgui.Col_.text_disabled), imgui.get_style().color_(imgui.Col_.text)
+        row_w = (
+            imgui.calc_text_size("inside").x
+            + imgui.calc_text_size("outside").x
+            + imgui.get_frame_height() * imgui_toggle.ToggleConfig().width_ratio
+            + 2 * inner
+        )
+        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + max((imgui.get_content_region_avail().x - row_w) / 2, 0))
+        imgui.begin_disabled(not live)
+        imgui.align_text_to_frame_padding()
+        imgui.text_colored(dim if self._select_outside else lit, "inside")
+        imgui.same_line(0, inner)
+        if live:
+            for color in (imgui.Col_.frame_bg, imgui.Col_.button):
+                imgui.push_style_color(color, to_vec4(THEME.accent))
+            for color in (imgui.Col_.frame_bg_hovered, imgui.Col_.button_hovered):
+                imgui.push_style_color(color, to_vec4((0.55, 0.78, 1.0)))
+        flipped, self._select_outside = imgui_toggle.toggle("##side", self._select_outside, imgui_toggle.ToggleFlags_.animated)
+        if live:
+            imgui.pop_style_color(4)
+        tooltip(
+            "Side: poly-select and the filter take the signals inside or outside the polygon / range"
+            + ("" if live else "; lit while one of them drives the selection")
+        )
+        imgui.same_line(0, inner)
+        imgui.text_colored(lit if self._select_outside else dim, "outside")
+        imgui.end_disabled()
         if self._order is not None and self._order.range_column is not None:
             order = self._order
             g.row("filter")
@@ -1806,26 +1846,27 @@ class SingleSessionDemixingVis:
                 order.set_range_column(columns[index])
                 order.rebuild()
                 self._filter_select = False
-            tooltip("the column the range filters on (del is 0 or 1); picking one puts the range back at its full span")
+            tooltip("Filter column: the range below spans it (del is 0 or 1); picking one puts the range back at its full span")
             imgui.same_line(0, g.gap)
             right_aligned_text(f"{len(order.order)} / {order.n_items}")
             g.row("range")
             moved = draw_range_filter(order, "_signals", g.w)
             if moved:
                 order.rebuild()
-            tooltip("drag either grab; double-click for the full span, which shows everything")
-            g.cell(1)
-            # a selection edited by hand is no longer the filter's: select switches itself off
+            tooltip("Range: drag a line to move it, double-click for the full span; the table shows what is inside")
+            g.row("")
+            # a selection edited by hand is no longer the filter's: the checkbox switches itself off
             if self._filter_select and {k for k in self._group if isinstance(k, int)} != self._filter_side:
                 self._filter_select = False
-            with button_colors(THEME.accent, THEME.accent, (0.05, 0.05, 0.05), on=self._filter_select):
-                toggled = imgui.button(f"{fa.ICON_FA_FILTER}##select", imgui.ImVec2(w, 0))
-            if toggled:
-                self._filter_select = not self._filter_select
-            tooltip(
-                "select by the filter: the signals on the switch's side of the range become the selection, as "
-                "ctrl+a does for the table, and follow the range as it moves; Delete then marks them and records "
-                "the filter"
+            toggled, self._filter_select = imgui.checkbox("apply to selection", self._filter_select)
+            if toggled and self._filter_select:
+                # the filter takes over from poly-select
+                self._armed = None if self._armed == "poly" else self._armed
+                self._drop_poly()
+            help_mark(
+                "the signals on the switch's side of the range become the selection, as ctrl+a does for the table, "
+                "and follow the lines as they move; Delete marks them and records the filter. editing the "
+                "selection by hand switches this off"
             )
             if self._filter_select and (toggled or moved or flipped):
                 values = np.asarray(order.columns[order.range_column], dtype=np.float64)
@@ -1846,47 +1887,23 @@ class SingleSessionDemixingVis:
                 )
                 imgui.pop_text_wrap_pos()
                 tooltip("the filter a Delete came from, written into the curated file's description on demix; ctrl+z undoes the delete")
-        g.row("selection")
-        signals = [k for k in self._group if isinstance(k, int)]
-        if not signals and self._active_component is not None:
-            signals = [self._active_component]
-        nothing = self._active_roi is None and self._active_pixel is None and not signals
-        unmark = (
-            self._active_roi is None
-            and self._active_pixel is None
-            and bool(signals)
-            and all(k in self._marked for k in signals)
-        )
-        imgui.begin_disabled(nothing or self._worker is not None)
-        with button_colors(THEME.danger, THEME.danger_hover, on=not unmark):
-            if imgui.button(f"{fa.ICON_FA_TRASH}##delete", imgui.ImVec2(w, 0)):
-                self._delete_selected()
-        imgui.end_disabled()
-        tooltip(
-            f"unmark the {len(signals)} selected signal(s) (delete)"
-            if unmark
-            else "remove the selected drawn roi, drop the active pixel average, or mark the "
-            f"{len(signals)} selected signal(s) for deletion on the next demix (delete)"
-        )
-        imgui.same_line(0, g.gap / 2)
-        selected = bool(self._group or self._pixels) or self._active_component is not None or self._active_roi is not None
-        imgui.begin_disabled(not selected)
-        if imgui.button(f"{fa.ICON_FA_XMARK}##deselect", imgui.ImVec2(w, 0)):
-            self.deselect()
-        imgui.end_disabled()
-        tooltip("drop the selection, the group and the pixel averages (esc)")
-        imgui.same_line(0, g.gap / 2)
-        imgui.begin_disabled(True)
-        imgui.button(f"{fa.ICON_FA_OBJECT_GROUP}##merge", imgui.ImVec2(w, 0))
-        imgui.end_disabled()
-        tooltip("merge the grouped signals into one: not yet implemented")
-        imgui.same_line(0, g.gap / 2)
-        with button_colors(THEME.accent, THEME.accent, (0.05, 0.05, 0.05), on=self._follow):
-            if imgui.button(f"{fa.ICON_FA_LOCATION_CROSSHAIRS}##center", imgui.ImVec2(w, 0)):
-                self._toggle_follow()
-        tooltip("center every panel on the selected signal and keep following it (f)")
 
+        w = imgui.get_frame_height() * 1.6
         section("DEMIX")
+        g.row("rois")
+        imgui.begin_disabled(drawing)
+        if imgui.button(f"{fa.ICON_FA_PLUS}##add_roi", imgui.ImVec2(w, 0)):
+            self._start_roi()
+        imgui.end_disabled()
+        tooltip("Add ROI: draw a polygon on any panel; its average joins the plot and Demix seeds the nmf pass with it")
+        imgui.same_line(0, g.gap / 2)
+        imgui.begin_disabled(not self._rois)
+        if imgui.button(f"{fa.ICON_FA_FILE_EXPORT}##export", imgui.ImVec2(w, 0)):
+            self._export_prompt.start()
+        imgui.end_disabled()
+        tooltip("Export: the drawn rois to a .npz, a window with a typed path, browse for the native dialog")
+        imgui.same_line(0, g.gap)
+        right_aligned_text(f"{existing} existing, {len(self._rois)} drawn")
         g.row("run")
         imgui.begin_disabled(
             (not self._rois and not self._marked)
@@ -1898,10 +1915,10 @@ class SingleSessionDemixingVis:
             self.demix()
         imgui.end_disabled()
         tooltip(
-            "demix: add the drawn rois, remove the marked signals, write a new curated results file "
+            "Demix: add the drawn rois, remove the marked signals, write a new curated results file "
             "beside the original (kept)"
             if self._results_path is not None
-            else "demix needs the results opened with results_path"
+            else "Demix needs the results opened with results_path"
         )
         imgui.same_line(0, g.gap)
         right_aligned_text(f"{len(self._rois)} roi(s), {len(self._marked)} marked")
