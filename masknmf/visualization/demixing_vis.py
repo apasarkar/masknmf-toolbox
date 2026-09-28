@@ -468,6 +468,7 @@ class SingleSessionDemixingVis:
         self._filter_side = set()
         self._filters = []
         self._press = None  # screen position of the last pointer press on a video panel
+        self._same_spot = False
         self._armed = None  # "roi" / "poly": the next press on any video panel starts that polygon there
         # the poly-select polygon, its subplot, and the vertices / side / filter its hits were last computed for
         self._poly = None
@@ -573,7 +574,7 @@ class SingleSessionDemixingVis:
         split the compressed average over the square around a double-clicked pixel into its sources.
         """
 
-        if self._ac_array is None or not self._show_traces or self._drawing():
+        if self._ac_array is None or not self._show_traces or self._drawing() or not self._same_spot:
             return
         num_frames, height, width = self._shape
         col, row = ev.pick_info["index"]
@@ -623,6 +624,11 @@ class SingleSessionDemixingVis:
         self._status = f"sources over the {row_stop - row_start}x{col_stop - col_start} square at ({row}, {col})"
 
     def _pointer_down(self, name: str, ev: pygfx.PointerEvent):
+        # pygfx reports any two quick presses on one panel as a double-click, however far apart
+        self._same_spot = (
+            self._press is not None
+            and abs(ev.x - self._press[0]) + abs(ev.y - self._press[1]) <= _CLICK_SLOP
+        )
         self._press = (ev.x, ev.y)
         if self._armed == "roi":
             self._begin_roi(name)
