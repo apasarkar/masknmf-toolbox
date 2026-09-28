@@ -470,6 +470,7 @@ class SingleSessionDemixingVis:
         self._filter_side = set()
         self._filters = []
         self._press = None  # screen position of the last pointer press on a video panel
+        self._press_drawn = False  # that press drew the region, so the click it makes is not a pick
         self._same_spot = False
         # the one drawn region (draw / a): a polygon that selects the signals it holds until + keeps it as a roi
         # or esc drops it; armed = the next press on any video panel starts it there
@@ -615,7 +616,7 @@ class SingleSessionDemixingVis:
         split the compressed average over the square around a double-clicked pixel into its sources.
         """
 
-        if self._ac_array is None or not self._show_traces or self._drawing() or not self._same_spot:
+        if self._ac_array is None or not self._show_traces or self._press_drawn or not self._same_spot:
             return
         num_frames, height, width = self._shape
         col, row = ev.pick_info["index"]
@@ -666,6 +667,7 @@ class SingleSessionDemixingVis:
             and abs(ev.x - self._press[0]) + abs(ev.y - self._press[1]) <= _CLICK_SLOP
         )
         self._press = (ev.x, ev.y)
+        self._press_drawn = self._drawing()
         if self._armed:
             self._begin_region(name)
 
@@ -792,7 +794,7 @@ class SingleSessionDemixingVis:
         Priority: a drawn roi, then an existing component, else clear the selection.
         ctrl / shift on a component grow the group instead of replacing the selection.
         """
-        if self._drawing() or imgui.get_io().want_capture_mouse:
+        if self._press_drawn or imgui.get_io().want_capture_mouse:
             return
         # pygfx reports a click after any press and release on one graphic, a pan drag included
         if self._press is not None and (
