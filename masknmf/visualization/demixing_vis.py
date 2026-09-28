@@ -84,10 +84,11 @@ _BASE_LINE_COLORS = (
     (0.95, 0.55, 0.15),
     (0.35, 0.65, 0.95),
 )
-# behind the traces, naming what the lines are: material green 900 for a selection, deep purple 900 for the
-# sources under a double-clicked pixel
-_SIGNALS_BG = (0.11, 0.37, 0.13, 0.6)
-_SOURCES_BG = (0.19, 0.11, 0.57, 0.6)
+# behind the traces, naming what the lines are: near-black material-dark tints, navy at rest, forest green
+# for a selection, indigo for the sources under a double-clicked pixel
+_TRACES_BG = (0.07, 0.09, 0.16, 1.0)
+_SIGNALS_BG = (0.06, 0.13, 0.08, 1.0)
+_SOURCES_BG = (0.10, 0.07, 0.19, 1.0)
 
 
 class SingleSessionDemixingVis:
@@ -425,6 +426,7 @@ class SingleSessionDemixingVis:
             frame_timings,
             autofit=False,
         )
+        self._traces.background = _TRACES_BG
         self._traces.dock(
             self._ndw_fov.figure, size=480 if self._shift_lines else 360, title="traces"
         )
@@ -913,7 +915,7 @@ class SingleSessionDemixingVis:
         if not self._show_traces:
             self._selected_signals = None
             self._traces.set("traces", [])
-            self._traces.background = None
+            self._traces.background = _TRACES_BG
             return
         results = self.demixing_results
         if len(self._group) > 1 or any(not isinstance(k, int) for k in self._group):
@@ -1402,7 +1404,7 @@ class SingleSessionDemixingVis:
     def _clear_traces(self):
         self._active_pixel = None
         self._traces.set("traces", [])
-        self._traces.background = None
+        self._traces.background = _TRACES_BG
 
     @property
     def roi_masks(self) -> np.ndarray:
