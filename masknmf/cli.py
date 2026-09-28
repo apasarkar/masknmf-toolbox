@@ -551,13 +551,15 @@ def command_view(args: argparse.Namespace) -> None:
     name_registration = next((n for n in group_names_registration() if n in names_present), None)
     registered = None
     if name_registration is not None and raw is not None:
-        registered = getattr(masknmf, name_registration).from_hdf5(args.results, input_movie=raw)
-        if registered.shifts.shape[0] != raw.shape[0]:
+        with h5py.File(args.results, "r") as f:
+            num_frames = f[name_registration]["shifts"].shape[0]
+        if num_frames != raw.shape[0]:
             print(
                 f"{args.raw} has {raw.shape[0]} frames, the {name_registration} in {args.results} "
-                f"{registered.shifts.shape[0]}: not the movie the run registered; shifts not applied"
+                f"{num_frames}: not the movie the run registered; shifts not applied"
             )
-            registered = None
+        else:
+            registered = getattr(masknmf, name_registration).from_hdf5(args.results, input_movie=raw)
     if name_demixing in names_present:
         results = masknmf.DemixingResults.from_hdf5(args.results, prefix=args.prefix, device=device)
     elif group_name_compression() in names_present:
@@ -566,45 +568,25 @@ def command_view(args: argparse.Namespace) -> None:
         results = registered
     else:
         fail(f"{args.results} holds only {name_registration}; showing it needs --raw, the movie the run registered")
-    compressed = (
-        results.compression_array
-        if isinstance(results, masknmf.DemixingResults)
-        else results if isinstance(results, masknmf.CompressionArray) else None
-    )
-
-    # the compression viewer when asked for, or when compression is the file's last stage; it compares the
-    # movie that was compressed, the raw one with the file's shifts applied, to the compressed one, which the
-    # demixing results carry once the pipeline has dropped the CompressionArray group
-    if args.compression and compressed is None:
-        fail(f"{args.results} holds no compression")
-    if args.compression and raw is None:
-        fail("the compression viewer needs --raw")
-    if compressed is not None and raw is not None and (args.compression or name_demixing not in names_present):
-        viewers.append(
-            masknmf.CompressionVis(
-                moco_stack=raw if registered is None else registered,
-                pmd_stack=compressed,
-                frame_timings=timings(compressed.shape[0], args.fs),
-                device=device,
-            )
-        )
-    elif compressed is not None and name_demixing not in names_present:
-        print("the compression viewer needs --raw")
-
     # a raw movie the pipeline trimmed (the glutamate pipeline drops its first frames) no longer lines up
     raw_fits = raw is not None and tuple(raw.shape) == tuple(results.shape)
     if raw is not None and not raw_fits:
         print(f"raw movie is {tuple(raw.shape)}, the results {tuple(results.shape)}; no raw panel")
-    viewers.append(
-        masknmf.SingleSessionDemixingVis(
-            demixing_results=results,
-            frame_timings=timings(results.shape[0], args.fs),
-            device=device,
-            results_path=args.results,
-            raw=raw if raw_fits else None,
-            registered=registered if raw_fits and registered is not results else None,
-        )
+    if args.compression and isinstance(results, masknmf.BaseRegistrationArray):
+        fail(f"{args.results} holds no compression")
+    if args.compression and not raw_fits:
+        fail("--compression needs --raw, the movie the compression saw, with the results' frame count")
+    viewer = masknmf.SingleSessionDemixingVis(
+        demixing_results=results,
+        frame_timings=timings(results.shape[0], args.fs),
+        device=device,
+        results_path=args.results,
+        raw=raw if raw_fits else None,
+        registered=registered if raw_fits and registered is not results else None,
     )
+    if args.compression:
+        viewer.compute_lag1_acf()
+    viewers.append(viewer)
 
     if args.classify:
         classification = masknmf.ClassificationVis.from_masknmf(
@@ -683,7 +665,7 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_view.add_argument(
         "--compression",
         action="store_true",
-        help="also open the compression viewer (needs --raw); opened on its own when the file holds no demixing results",
+        help="also compute the lag-1 autocorrelation images of the registered (else raw), compressed and residual movies into the Static images window (needs --raw and a compression)",
     )
     parser_view.add_argument(
         "--classify",
