@@ -106,6 +106,7 @@ class DemixingResults(Serializer):
         "residual_roi_averages",
         "multiunit_basis_term1",
         "multiunit_basis_term2",
+        "temporal_demixed_raw",
     }
 
     """
@@ -150,6 +151,7 @@ class DemixingResults(Serializer):
             residual_roi_averages: torch.Tensor | None = None,
             multiunit_basis_term1: torch.Tensor | None = None,
             multiunit_basis_term2: torch.Tensor | None = None,
+            temporal_demixed_raw: torch.Tensor | None = None,
             device: torch.device | str ="cpu",
             **kwargs
     ):
@@ -186,6 +188,8 @@ class DemixingResults(Serializer):
             background_correlation_image_mean (torch.Tensor | None): The mean image used to compute the correlation between the signal and the background.
             background_correlation_image_normalizer (torch.Tensor | None): The mean image used to compute the correlation between the signal and the background.
             global_resid_correlation_image (torch.Tensor): The global correlation image of the residual. Shape (FOV dim 1, FOV dim 2).
+            temporal_demixed_raw (torch.Tensor | None): shape (number of frames, number of neural signals). temporal_demixed
+                re-estimated from the registered raw movie, with no compression or denoising
             device (str): 'cpu' or 'cuda'. used to manage where the tensors reside
         """
         self._device = device
@@ -277,6 +281,8 @@ class DemixingResults(Serializer):
             self.flyweight.multiunit_basis_term1 = multiunit_basis_term1.to(self._device)
             self.flyweight.multiunit_basis_term2 = multiunit_basis_term2.to(self._device)
 
+        self.temporal_demixed_raw = temporal_demixed_raw
+
         self._signals_array = None
         self._colorful_signals_array = None
         self._compression_array = None
@@ -364,6 +370,16 @@ class DemixingResults(Serializer):
     @property
     def multiunit_basis_term2(self) -> None | torch.Tensor:
         return self.flyweight.multiunit_basis_term2
+
+    @property
+    def temporal_demixed_raw(self) -> None | torch.Tensor:
+        return self.flyweight.temporal_demixed_raw
+
+    @temporal_demixed_raw.setter
+    def temporal_demixed_raw(self, value: torch.Tensor | None):
+        if value is not None and tuple(value.shape) != tuple(self.temporal_demixed.shape):
+            raise ValueError(f"temporal_demixed_raw has shape {tuple(value.shape)}, temporal_demixed {tuple(self.temporal_demixed.shape)}")
+        self.flyweight.temporal_demixed_raw = None if value is None else value.to(self._device).float()
 
 
     @property

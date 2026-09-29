@@ -91,6 +91,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
         self.run_config = {"frame_rate": frame_rate, "exclude_border_radius": exclude_border_radius,
                            "remove_intermediates": remove_intermediates}
+        # a resumed run has no registered movie to re-estimate raw traces from
+        moco_data = None
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
                 results_path = self.results_path(resume=True)
@@ -165,6 +167,9 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             MultipassDemixingConfig([custom_unfiltered_conf] + unfiltered_demixing_config_used.DemixingConfigs[1:]),
             "unfiltered demixing")
 
+        with self.step("raw traces"):
+            latest_demix_results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
+                latest_demix_results, moco_data, frame_batch_size=self.frame_batch_size)
         latest_demix_results.export(results_path)
         if remove_intermediates:
             self.drop_compression(results_path)
