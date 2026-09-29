@@ -22,9 +22,11 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                  unfiltered_demixing_config: MultipassDemixingConfigs | None = None,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
-                 device: Literal["auto", "cuda", "cpu"] = "auto"
+                 device: Literal["auto", "cuda", "cpu"] = "auto",
+                 load_into_ram: bool = False
                  ):
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         load_into_ram=load_into_ram,
                          motion_correct_config=motion_correct_config, compress_config=compress_config,
                          spatial_highpass_config=spatial_highpass_config,
                          filtered_demixing_config=filtered_demixing_config,
@@ -97,6 +99,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             ## Decide whether to motion correct data or not
             if data is None:
                 raise ValueError("data is None starting from the motion correction step. Specify a dataset")
+            if self.load_into_ram:
+                data = self.read_into_ram(data)
             moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
                                                         exclude_border_radius)
 

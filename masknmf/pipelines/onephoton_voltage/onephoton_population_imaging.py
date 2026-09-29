@@ -274,9 +274,9 @@ class OnePhotonCulturePipeline(BasePipeline):
                  device: Literal["auto", "cuda", "cpu"] = "auto"
                  ):
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         load_into_ram=load_into_ram,
                          motion_correct_config=motion_correct_config, compress_config=compress_config,
                          demixing_config=demixing_config)
-        self.load_into_ram = load_into_ram
 
     @classmethod
     def default_configs(cls) -> dict:
@@ -334,6 +334,8 @@ class OnePhotonCulturePipeline(BasePipeline):
 
         ## Decide whether to motion correct data or not. You must have access to raw data
         negative_indicator = True if indicator_sign == "negative" else False
+        if self.load_into_ram:
+            data = self.read_into_ram(data)
         if isinstance(self.motion_correct_config, str):
             if self.motion_correct_config.lower() == "skip":
                 moco_array = OphysArray(data,

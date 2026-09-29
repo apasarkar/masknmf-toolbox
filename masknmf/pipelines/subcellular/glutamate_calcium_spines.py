@@ -48,7 +48,9 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                  demixing_config: MultipassDemixingConfigs | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto"):
+        # both channels are always read into RAM
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         load_into_ram=True,
                          motion_correct_config=motion_correct_config, compress_config=compress_config,
                          demixing_config=demixing_config)
 

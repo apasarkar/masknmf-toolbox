@@ -94,7 +94,9 @@ config the run used, with `"*"` for values json cannot hold (arrays, detrenders)
 
 Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise | skip), `spatial-highpass` (spatial-highpass), `filtered-demixing` / `unfiltered-demixing` (multipass: 2 and 3 passes by default).
 Run args: `MOVIE` (optional), `--fs` (required), `--exclude-border-radius`, `--remove-intermediates`.
-Init args: `--output-folder`, `--frame-batch-size`, `--device {auto,cuda,cpu}`.
+Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device {auto,cuda,cpu}`.
+
+`--load-into-ram true` reads the whole raw movie into RAM before motion correction, so every later pass (moco, compression, the one-photon raw regression) reads memory instead of the file. It needs about the movie's size in free RAM. The glutamate pipeline always does this and has no flag.
 
 Demixing passes without a detrender get the spline detrender the run builds from `--fs`.
 
@@ -206,7 +208,7 @@ masknmf run --pipeline glutamate-calcium-spine \
 Moco and compression only, with no demixing.
 Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise, no skip).
 Run args: `MOVIE`, `--exclude-border-radius`.
-Init args: `--output-folder`, `--frame-batch-size`, `--device`.
+Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device`.
 
 ```bash
 # minimal
