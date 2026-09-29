@@ -403,6 +403,11 @@ class TracePlot:
                 implot.setup_axis_limits(implot.ImAxis_.x1, float(xs[0]), float(xs[-1]), implot.Cond_.always)
             elif self._x_target is not None:
                 implot.setup_axis_limits(implot.ImAxis_.x1, *self._x_target, implot.Cond_.always)
+            else:
+                # a plot imgui has just made (a retitled window makes new ones) would fit x to the playhead line
+                # alone when it holds no lines, collapsing the linked axis; it starts at the span shown instead
+                span = self._x_span or (float(xs[0]), float(xs[-1]))
+                implot.setup_axis_limits(implot.ImAxis_.x1, *span, implot.Cond_.once)
             if limits is not None:
                 implot.setup_axis_limits(implot.ImAxis_.y1, *limits, implot.Cond_.always)
             self._draw_spans(xs)
