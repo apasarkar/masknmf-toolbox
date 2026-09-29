@@ -142,3 +142,39 @@ def test_a_config_reruns_with_its_frame_rate_unless_one_is_given_and_writes_besi
     cli.main(["run", "--config", str(first / "config.json"), str(tmp_path / "third" / "movie.tif"), "--fs", "30"])
     third, = (p for p in (tmp_path / "third").iterdir() if p.is_dir())
     assert json.loads((third / "config.json").read_text())["configs"]["frame_rate"] == 30
+
+
+def test_results_globs_expand_without_sidecars_or_zarr_stores(tmp_path, capsys):
+    for relative in ["a/results.hdf5", "a/results.labels.hdf5", "a/movie.tif", "b/results.hdf5",
+                     "b/deep/results.hdf5", "movie.zarr/0/results.hdf5", "b/raw.zarr/0/0/results.hdf5"]:
+        (tmp_path / relative).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / relative).touch()
+
+    assert cli.expand_results([str(tmp_path / "*" / "*.hdf5")]) == [
+        str(tmp_path / "a" / "results.hdf5"), str(tmp_path / "b" / "results.hdf5")
+    ]
+    assert cli.expand_results([str(tmp_path / "*" / "*" / "*.hdf5")]) == [str(tmp_path / "b" / "deep" / "results.hdf5")]
+    assert "skipped 2 .zarr store(s)" in capsys.readouterr().out
+
+    assert cli.expand_results([str(tmp_path / "**" / "results.hdf5")]) == [
+        str(tmp_path / "a" / "results.hdf5"), str(tmp_path / "b" / "results.hdf5"), str(tmp_path / "b" / "deep" / "results.hdf5")
+    ]
+    assert "skipped 2 .zarr store(s)" in capsys.readouterr().out
+
+    with pytest.raises(SystemExit):
+        cli.expand_results([str(tmp_path / "*" / "*.h5")])
+
+
+def test_view_opens_several_results_only_to_classify_them(tmp_path, capsys):
+    for name in ["a", "b"]:
+        (tmp_path / name).mkdir()
+        h5py.File(tmp_path / name / "results.hdf5", "w").close()
+    pattern = str(tmp_path / "*" / "results.hdf5")
+
+    with pytest.raises(SystemExit):
+        cli.main(["view", pattern])
+    assert "the demixing viewer opens one results file, got 2" in capsys.readouterr().err
+
+    with pytest.raises(SystemExit):
+        cli.main(["view", pattern, "--classify"])
+    assert "no results file holds DemixingResults" in capsys.readouterr().err
