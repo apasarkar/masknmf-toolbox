@@ -47,6 +47,7 @@ class BasePipeline(ABC):
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto",
                  log_level: Literal["debug", "info", "warning"] = "info",
+                 load_into_ram: bool = False,
                  **configs):
         if output_folder is not None:
             output_folder = Path(output_folder).expanduser().resolve()
@@ -59,6 +60,7 @@ class BasePipeline(ABC):
         logging.getLogger("masknmf").setLevel(log_level.upper())
         # the handler writing the run's log file, once log_to has opened one
         self.log_handler = None
+        self.load_into_ram = load_into_ram
         # the folder the last create_run_folder made
         self.run_folder = None
         # the scalar arguments of the run in progress, saved to config.json beside the __init__ ones
@@ -243,6 +245,25 @@ class BasePipeline(ABC):
         self.log_to(folder)
         self.write_config()
         return path
+
+    def read_into_ram(self, data: np.ndarray | ArrayLike) -> np.ndarray:
+        """
+        data as one numpy array, read frame_batch_size frames at a time so no second full copy is made. A numpy array
+        comes back as it is.
+        """
+        if isinstance(data, np.ndarray):
+            return data
+        display(f"Loading {data.shape} into RAM")
+        movie = None
+        for start in range(0, data.shape[0], self.frame_batch_size):
+            stop = min(start + self.frame_batch_size, data.shape[0])
+            chunk = data[start:stop]
+            if isinstance(chunk, torch.Tensor):
+                chunk = chunk.cpu().numpy()
+            if movie is None:
+                movie = np.empty(data.shape, dtype=chunk.dtype.newbyteorder("="))
+            movie[start:stop] = chunk
+        return movie
 
     def motion_correct(self,
                        data: np.ndarray | ArrayLike,

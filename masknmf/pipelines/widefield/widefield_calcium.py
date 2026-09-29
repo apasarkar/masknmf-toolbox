@@ -17,7 +17,8 @@ class WidefieldSinglechannelPipeline(BasePipeline):
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto",
-                 log_level: Literal["debug", "info", "warning"] = "info"
+                 log_level: Literal["debug", "info", "warning"] = "info",
+                 load_into_ram: bool = False
                  ):
         """
         Args:
@@ -30,9 +31,11 @@ class WidefieldSinglechannelPipeline(BasePipeline):
             frame_batch_size (int): Number of frames to load into GPU at a time for processing
             device (str): Indicates which device pytorch runs on
             log_level (str): How much the run logs, to the console and to the run folder's .log file
+            load_into_ram (bool): Read the whole movie into RAM before motion correction, so no stage reads it from disk
         """
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
                          log_level=log_level,
+                         load_into_ram=load_into_ram,
                          motion_correct_config=motion_correct_config, compress_config=compress_config)
 
     @classmethod
@@ -49,6 +52,8 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         """
         self.run_config = {"exclude_border_radius": exclude_border_radius}
         results_path = self.results_path()
+        if self.load_into_ram:
+            data = self.read_into_ram(data)
         moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
                                                     exclude_border_radius)
 

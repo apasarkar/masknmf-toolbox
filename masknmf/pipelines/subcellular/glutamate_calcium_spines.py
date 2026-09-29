@@ -49,8 +49,10 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto",
                  log_level: Literal["debug", "info", "warning"] = "info"):
+        # both channels are always read into RAM
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
                          log_level=log_level,
+                         load_into_ram=True,
                          motion_correct_config=motion_correct_config, compress_config=compress_config,
                          demixing_config=demixing_config)
 
