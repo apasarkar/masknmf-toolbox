@@ -82,3 +82,19 @@ def test_a_resumed_run_keeps_the_inputs_of_the_run_whose_compression_it_reuses(t
     assert written["configs"]["compress_config"] == "*" and written["timings"] == earlier["timings"]
     logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
     pipeline.log_handler.close()
+
+
+@pytest.mark.parametrize("slug", SLUGS)
+def test_from_config_builds_the_pipeline_a_config_json_describes(slug, tmp_path):
+    cls = scraper.pipeline_registry()[slug]
+    pipeline = cls(output_folder=str(tmp_path), frame_batch_size=123, device="cpu")
+    folder = pipeline.create_run_folder()
+    logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
+    pipeline.log_handler.close()
+    rebuilt = cls.from_config(folder / "config.json", device="auto")
+    assert rebuilt.frame_batch_size == 123 and rebuilt.device == "auto"
+    for name, default in cls.default_configs().items():
+        assert getattr(rebuilt, name) == default, name
+    other = next(c for s, c in scraper.pipeline_registry().items() if s != slug)
+    with pytest.raises(ValueError):
+        other.from_config(folder / "config.json")

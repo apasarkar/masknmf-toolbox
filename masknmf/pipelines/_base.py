@@ -13,7 +13,7 @@ import torch
 from typing import *
 
 from masknmf._version import __version__
-from masknmf.pipelines.scraper import slugify, config_json_value
+from masknmf.pipelines.scraper import slugify, config_json_value, config_from_json
 from masknmf.arrays import ArrayLike
 from masknmf.compression import CompressionArray, CompressStrategy, CompressDenoiseStrategy
 from masknmf.compression.preprocessing import MaximinSplineDetrend
@@ -77,6 +77,22 @@ class BasePipeline(ABC):
         changes to those carry through.
         """
         pass
+
+    @classmethod
+    def from_config(cls, path: str | Path, **overrides):
+        """
+        The pipeline a run folder's config.json, or ``masknmf params --json`` output, describes, each value built on
+        default_configs(); overrides replace the file's values. The run arguments the file holds under "configs"
+        (frame_rate and the like) are left for the caller to pass to run.
+        """
+        loaded = json.loads(Path(path).expanduser().read_text())
+        if loaded.get("pipeline", cls.__name__) != cls.__name__:
+            raise ValueError(f"{path} is for {loaded['pipeline']}, not {cls.__name__}")
+        defaults = cls.default_configs()
+        parameters = inspect.signature(cls.__init__).parameters
+        values = {name: config_from_json(value=value, annotation=parameters[name].annotation, base=defaults.get(name))
+                  for name, value in loaded["configs"].items() if name in parameters}
+        return cls(**{**values, **overrides})
 
     @property
     def config(self) -> dict:

@@ -28,12 +28,14 @@ class FolderPipeline(BasePipeline):
     def default_configs(cls) -> dict:
         return {}
 
-    def run(self, data: np.ndarray | None = None, fail: bool = False) -> Path:
+    def run(self, data: np.ndarray | None = None, frame_rate: float = 1.0, fail: bool = False) -> Path:
+        self.run_config = {"frame_rate": frame_rate}
         folder = self.create_run_folder()
         logging.getLogger("masknmf").debug("a debug line")
         logging.getLogger("masknmf").info("an info line")
         logging.getLogger("masknmf").warning("a warning line")
-        if fail:
+        # a five frame movie stands for one a run breaks on
+        if fail or (data is not None and data.shape[0] == 5):
             raise RuntimeError("the run broke")
         return folder
 
@@ -85,3 +87,35 @@ def test_the_movie_a_run_read_is_kept_in_its_config(folder_pipeline, tmp_path):
     folder, = (tmp_path / "out").iterdir()
     inputs = json.loads((folder / "config.json").read_text())["inputs"]
     assert inputs == {"data": {"path": str(movie.resolve()), "name": "movie.tif"}}
+
+
+def test_several_movies_run_one_after_another_and_a_failed_one_does_not_stop_the_rest(folder_pipeline, tmp_path, capsys):
+    movies = tmp_path / "movies"
+    movies.mkdir()
+    for name, frames in [("a.tif", 2), ("b.tif", 5), ("c.tif", 2)]:
+        tifffile.imwrite(movies / name, np.zeros((frames, 8, 8), dtype=np.uint16))
+    with pytest.raises(SystemExit):
+        cli.main(["run", "--pipeline", "folder", str(movies / "*.tif")])
+    folders = sorted(p for p in movies.iterdir() if p.is_dir())
+    names = [json.loads((f / "config.json").read_text())["inputs"]["data"]["name"] for f in folders]
+    assert sorted(names) == ["a.tif", "c.tif"]
+    assert len(list(movies.glob("*.log"))) == 1
+    out = capsys.readouterr().out
+    assert "2 of 3 runs done" in out and f"failed  {movies / 'b.tif'}" in out
+
+
+def test_a_config_reruns_with_its_frame_rate_unless_one_is_given_and_writes_beside_the_new_movie(folder_pipeline,
+                                                                                                 tmp_path):
+    for name in ["first", "second", "third"]:
+        (tmp_path / name).mkdir()
+        tifffile.imwrite(tmp_path / name / "movie.tif", np.zeros((2, 8, 8), dtype=np.uint16))
+    cli.main(["run", "--pipeline", "folder", str(tmp_path / "first" / "movie.tif"), "--fs", "7.5"])
+    first, = (p for p in (tmp_path / "first").iterdir() if p.is_dir())
+
+    cli.main(["run", "--config", str(first / "config.json"), str(tmp_path / "second" / "movie.tif")])
+    second, = (p for p in (tmp_path / "second").iterdir() if p.is_dir())
+    assert json.loads((second / "config.json").read_text())["configs"]["frame_rate"] == 7.5
+
+    cli.main(["run", "--config", str(first / "config.json"), str(tmp_path / "third" / "movie.tif"), "--fs", "30"])
+    third, = (p for p in (tmp_path / "third").iterdir() if p.is_dir())
+    assert json.loads((third / "config.json").read_text())["configs"]["frame_rate"] == 30

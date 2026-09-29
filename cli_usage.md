@@ -62,9 +62,18 @@ the default list: each pass builds on the default pass at the same position, and
 masknmf params --pipeline two-photon-calcium --json > configs.json
 masknmf run movie.tif --fs 30 --config configs.json   # the file names the pipeline, so --pipeline can be left out
 
-# rerun with the configs of an earlier run
-masknmf run movie.tif --fs 30 --config ./20260923_120000_two-photon-calcium/config.json
+# rerun with the configs of an earlier run, its frame rate included unless --fs is given
+masknmf run movie.tif --config ./20260923_120000_two-photon-calcium/config.json
+
+# the same configs on many movies, one run folder beside each; quote the glob so masknmf expands it on every shell
+masknmf run "D:/sessions/*/movie.tif" --config ./20260923_120000_two-photon-calcium/config.json
 ```
+
+Several movies, or a glob, run one after another. A movie that cannot be opened stops the batch before any run starts;
+a run that fails is logged and the rest carry on, and the batch ends by listing each movie as done or failed with its
+run folder. A config file's `output_folder` is ignored when movies are given: each run folder goes beside its movie,
+or under `--output-folder`. From python, `TwoPhotonCalciumPipeline.from_config("<run folder>/config.json")` builds the
+same pipeline; pass `frame_rate` and the other run arguments to `run` yourself.
 
 ```json
 {
