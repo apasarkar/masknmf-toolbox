@@ -414,6 +414,8 @@ class OnePhotonCulturePipeline(BasePipeline):
         - Re-scaling the results to match the raw data
         - Re-incorporating any subthreshold trends from the PMD demixing
         """
+
+        ## TODO: Regress raw data onto the demixing results the way the 2p pipeline does it
         pmd_denoise.to(device)
         curr_demix_results.to(device)
 

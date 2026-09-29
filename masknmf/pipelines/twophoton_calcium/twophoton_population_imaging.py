@@ -169,7 +169,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
         with self.step("raw traces"):
             latest_demix_results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
-                latest_demix_results, moco_data, frame_batch_size=self.frame_batch_size)
+                latest_demix_results, moco_data, device=self.torch_device, nonneg=True, frame_batch_size=self.frame_batch_size)
         latest_demix_results.export(results_path)
         if remove_intermediates:
             self.drop_compression(results_path)
