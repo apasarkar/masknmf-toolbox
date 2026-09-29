@@ -74,7 +74,7 @@ def estimate_temporal_demixed_raw(results: DemixingResults,
     fluctuating_background = results.fluctuating_background_array
     baseline_image = results.baseline_image #(fov_height, fov_width)
     mean_image = results.mean_image
-    noise_variance_image = results.noise_variance_image
+    noise_variance_image = results.noise_variance_image.clone()
     noise_variance_image[noise_variance_image <= 0] = 1.0
     c_new = results.temporal_demixed.clone()
     for k in range(num_iters):
@@ -82,7 +82,8 @@ def estimate_temporal_demixed_raw(results: DemixingResults,
         end_pt = min(start_pt + frame_batch_size, movie.shape[0])
         data = torch.as_tensor(movie[start_pt:end_pt, :, :], device=device,
                                dtype=torch.float32)
-        data -= mean_image[None, :, :]
+        # as_tensor shares memory with a cpu numpy movie, so the first step must not be in place
+        data = data - mean_image[None, :, :]
         data /= noise_variance_image[None, :, :]
         data -= fluctuating_background.getitem_tensor(slice(start_pt, end_pt))
         data -= baseline_image[None, :, :]
