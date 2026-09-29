@@ -2,7 +2,6 @@ import os
 import threading
 from pathlib import Path
 from dataclasses import replace
-from typing import *
 import numpy as np
 import fastplotlib as fpl
 from imgui_bundle import imgui, imgui_toggle, icons_fontawesome_6 as fa
@@ -12,6 +11,7 @@ import pygfx
 from fastplotlib.widgets.nd_widget._async import run_sync
 import h5py
 import torch
+from collections.abc import Sequence
 from collections import OrderedDict
 import masknmf.arrays
 from masknmf.arrays import SwitchableArray, TiffArray
