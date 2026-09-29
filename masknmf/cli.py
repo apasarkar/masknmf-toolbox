@@ -17,6 +17,9 @@ here enumerates a parameter by hand:
     masknmf view results.hdf5 --raw movie.tif
     masknmf view results.hdf5 --raw movie.tif --compression
     masknmf view results.hdf5 --classify --labels soma,dendrite,junk
+    masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
+    masknmf train-classifier "sessions/*/results.hdf5" --out cells
+    masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classifier
 """
 
 from typing import Any, Optional
@@ -26,6 +29,7 @@ import dataclasses
 import glob
 import json
 import logging
+import os
 import shutil
 import sys
 import time
@@ -36,6 +40,8 @@ import h5py
 import numpy as np
 
 import masknmf
+from masknmf.classification import RoicatClassifier
+from masknmf.demixing.labels import SIDECAR_SUFFIX, read_labels
 from masknmf.pipelines import scraper
 
 
@@ -142,6 +148,66 @@ def groups_present(filepath_results: str) -> list[str]:
                 if isinstance(f[key], h5py.Group) and group_name_demixing() in f[key]
             ]
     return names
+
+
+def expand_results(entries: list[str]) -> list[str]:
+    """
+    The .h5/.hdf5 results files a list of paths and globs names, labels sidecars left out.
+
+    Powershell and cmd hand globs over unexpanded, so they are expanded here, one path
+    level at a time; ** walks every folder below. Neither ever enters a .zarr store,
+    whose chunk folders can number in the millions, and each store passed over is reported.
+    """
+    files = []
+    stores = []
+    for entry in entries:
+        parts = Path(entry).expanduser().parts
+        if not any(c in entry for c in "*?["):
+            if not os.path.isfile(Path(*parts)):
+                fail(f"no such file: {entry}")
+            files.append(str(Path(*parts)))
+            continue
+        index = next(i for i, part in enumerate(parts) if any(c in part for c in "*?["))
+        candidates = [str(Path(*parts[:index])) if index > 0 else "."]
+        for depth, part in enumerate(parts[index:], start=index):
+            found = []
+            for base in candidates:
+                if part == "**":
+                    for folder, names_folder, _ in os.walk(base):
+                        stores += [os.path.join(folder, n) for n in names_folder if n.endswith(".zarr")]
+                        names_folder[:] = sorted(n for n in names_folder if not n.endswith(".zarr"))
+                        found.append(folder)
+                    continue
+                for path in sorted(glob.glob(os.path.join(glob.escape(base), part))):
+                    if depth < len(parts) - 1 and path.endswith(".zarr"):
+                        stores.append(path)
+                    elif depth < len(parts) - 1 and os.path.isdir(path):
+                        found.append(path)
+                    elif depth == len(parts) - 1 and os.path.isfile(path):
+                        found.append(path)
+            candidates = found
+        matches = [
+            os.path.normpath(path)
+            for path in candidates
+            if path.lower().endswith(SUFFIXES_HDF5) and not path.endswith(SIDECAR_SUFFIX)
+        ]
+        if len(matches) == 0:
+            fail(f"no results file matches {entry}")
+        files.extend(matches)
+    if len(stores) > 0:
+        print(f"warning: skipped {len(stores)} .zarr store(s) without looking inside, e.g. {stores[0]}")
+    return list(dict.fromkeys(files))
+
+
+def demixing_sessions(files: list[str]) -> list[str]:
+    """The results files holding top-level demixing results, each one a classification session; the rest are reported and skipped."""
+    sessions = [filepath for filepath in files if has_stage(filepath_results=filepath, name_group=group_name_demixing())]
+    for filepath in files:
+        if filepath not in sessions:
+            print(f"skipped {filepath}: it holds no {group_name_demixing()}")
+    if len(sessions) == 0:
+        fail(f"no results file holds {group_name_demixing()}")
+    return sessions
 
 
 def format_command(argv: list[str]) -> str:
@@ -579,31 +645,50 @@ def command_run(args: argparse.Namespace) -> None:
 
 
 def command_view(args: argparse.Namespace) -> None:
-    """Open the viewers for whatever stages a results file holds."""
-    names_present = groups_present(filepath_results=args.results)
-    if len(names_present) == 0:
-        fail(f"{args.results} holds no masknmf results")
-
-    print(Path(args.results).resolve())
-    for name in names_present:
-        print(f"  {name}")
+    """Open the viewers for whatever stages the results files hold; --classify opens only the classification viewer."""
+    files = expand_results(entries=args.results)
+    present = {filepath: groups_present(filepath_results=filepath) for filepath in files}
+    for filepath, names in present.items():
+        print(Path(filepath).resolve())
+        for name in names or ["no masknmf results"]:
+            print(f"  {name}")
     if args.list:
         return
 
+    if args.classify:
+        if args.prefix:
+            fail("--classify reads only the top-level demixing results; drop --prefix")
+        if args.raw is not None or args.compression:
+            fail("--classify opens only the classification viewer; drop --raw and --compression")
+        import fastplotlib as fpl
+
+        classification = masknmf.ClassificationVis.from_masknmf(
+            demixing_sessions(files=files), label_names=args.labels.split(",") if args.labels else ()
+        )
+        if args.classifier is not None:
+            classification.classifier_path = args.classifier
+            if Path(args.classifier).is_file():
+                classification.select_classifier(args.classifier)
+        classification.show()
+        fpl.loop.run()
+        return
+
+    if len(files) > 1:
+        fail(f"the demixing viewer opens one results file, got {len(files)}; --classify opens several")
+    filepath_results = files[0]
+    names_present = present[filepath_results]
+    if len(names_present) == 0:
+        fail(f"{filepath_results} holds no masknmf results")
+
     name_demixing = f"{args.prefix}/{group_name_demixing()}" if args.prefix else group_name_demixing()
     if name_demixing not in names_present and args.prefix:
-        fail(f"{args.results} holds no {name_demixing}")
-    if args.classify and args.prefix:
-        fail("--classify reads only the top-level demixing results; drop --prefix")
-    if args.classify and name_demixing not in names_present:
-        fail(f"--classify needs {group_name_demixing()}, which {args.results} does not hold")
+        fail(f"{filepath_results} holds no {name_demixing}")
 
     import fastplotlib as fpl
 
     device = (
         str(masknmf.utils.torch_select_device()) if args.device == "auto" else args.device
     )
-    viewers = []
     raw = None if args.raw is None else load_movie(filepath_movie=args.raw, name_dataset=args.dataset)
 
     # the file's registration replayed on the raw movie: what the compression saw, and all a registration-only
@@ -611,56 +696,76 @@ def command_view(args: argparse.Namespace) -> None:
     name_registration = next((n for n in group_names_registration() if n in names_present), None)
     registered = None
     if name_registration is not None and raw is not None:
-        with h5py.File(args.results, "r") as f:
+        with h5py.File(filepath_results, "r") as f:
             num_frames = f[name_registration]["shifts"].shape[0]
         if num_frames != raw.shape[0]:
             print(
-                f"{args.raw} has {raw.shape[0]} frames, the {name_registration} in {args.results} "
+                f"{args.raw} has {raw.shape[0]} frames, the {name_registration} in {filepath_results} "
                 f"{num_frames}: not the movie the run registered; shifts not applied"
             )
         else:
-            registered = getattr(masknmf, name_registration).from_hdf5(args.results, input_movie=raw)
+            registered = getattr(masknmf, name_registration).from_hdf5(filepath_results, input_movie=raw)
     if name_demixing in names_present:
-        results = masknmf.DemixingResults.from_hdf5(args.results, prefix=args.prefix, device=device)
+        results = masknmf.DemixingResults.from_hdf5(filepath_results, prefix=args.prefix, device=device)
     elif group_name_compression() in names_present:
-        results = masknmf.CompressionArray.from_hdf5(args.results)
+        results = masknmf.CompressionArray.from_hdf5(filepath_results)
     elif registered is not None:
         results = registered
     else:
-        fail(f"{args.results} holds only {name_registration}; showing it needs --raw, the movie the run registered")
+        fail(f"{filepath_results} holds only {name_registration}; showing it needs --raw, the movie the run registered")
     # a raw movie the pipeline trimmed (the glutamate pipeline drops its first frames) no longer lines up
     raw_fits = raw is not None and tuple(raw.shape) == tuple(results.shape)
     if raw is not None and not raw_fits:
         print(f"raw movie is {tuple(raw.shape)}, the results {tuple(results.shape)}; no raw panel")
     if args.compression and isinstance(results, masknmf.BaseRegistrationArray):
-        fail(f"{args.results} holds no compression")
+        fail(f"{filepath_results} holds no compression")
     if args.compression and not raw_fits:
         fail("--compression needs --raw, the movie the compression saw, with the results' frame count")
     viewer = masknmf.SingleSessionDemixingVis(
         demixing_results=results,
         frame_timings=timings(results.shape[0], args.fs),
         device=device,
-        results_path=args.results,
+        results_path=filepath_results,
         raw=raw if raw_fits else None,
         registered=registered if raw_fits and registered is not results else None,
     )
     if args.compression:
         viewer.compute_lag1_acf()
-    viewers.append(viewer)
-
-    if args.classify:
-        classification = masknmf.ClassificationVis.from_masknmf(
-            [args.results], label_names=args.labels.split(",") if args.labels else ()
-        )
-        if args.classifier is not None:
-            classification.classifier_path = args.classifier
-            if Path(args.classifier).is_file():
-                classification.select_classifier(args.classifier)
-        viewers.append(classification)
-
-    for viewer in viewers:
-        viewer.show()
+    viewer.show()
     fpl.loop.run()
+
+
+def command_train_classifier(args: argparse.Namespace) -> None:
+    """Train a ROICaT classifier on the labels the classification viewer saved beside each results file."""
+    sessions = demixing_sessions(files=expand_results(entries=args.results))
+    incomplete = []
+    for filepath in sessions:
+        labels, _ = read_labels(filepath)
+        if labels is None or (labels < 0).any():
+            incomplete.append(filepath)
+    if len(incomplete) > 0:
+        fail("every ROI must be labeled before training; label these with masknmf view --classify:\n  " + "\n  ".join(incomplete))
+
+    classifier = RoicatClassifier.from_masknmf(sessions)
+    try:
+        classifier.train(num_workers=0)
+    except ValueError as error:
+        fail(str(error))
+    for name, count in sorted(classifier.class_counts.items()):
+        print(f"  {name}: {count}")
+    classifier.save(args.out)
+
+
+def command_classify(args: argparse.Namespace) -> None:
+    """Classify every ROI in each results file; predictions go to its labels sidecar, unlabeled ROIs take them."""
+    sessions = demixing_sessions(files=expand_results(entries=args.results))
+    if not Path(args.classifier).is_file():
+        fail(f"no such classifier: {args.classifier}")
+    classifier = RoicatClassifier.from_disk(args.classifier, device=args.device)
+    _, names, _ = classifier.classify(sessions, write=True)
+    for filepath, names_session in zip(sessions, names):
+        counts = ", ".join(f"{name}: {names_session.count(name)}" for name in classifier.label_names)
+        print(f"{filepath}  {counts}")
 
 
 def timings(num_frames: int, frame_rate: Optional[float]):
@@ -714,7 +819,9 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_run.set_defaults(handler=command_run)
 
     parser_view = subparsers.add_parser("view", help="open the viewers for a results file")
-    parser_view.add_argument("results")
+    parser_view.add_argument(
+        "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several need --classify"
+    )
     parser_view.add_argument("--raw", default=None, help="the raw movie the results came from")
     parser_view.add_argument("--dataset", default=None)
     parser_view.add_argument("--fs", default=None, type=float, help="acquisition rate in Hz")
@@ -730,7 +837,7 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_view.add_argument(
         "--classify",
         action="store_true",
-        help="also open the ROI labeling and classification viewer; labels are saved next to the results file",
+        help="open only the ROI labeling and classification viewer, one session per results file; labels are saved next to each",
     )
     parser_view.add_argument(
         "--labels", default=None, help="with --classify, comma-separated class names, e.g. soma,dendrite,junk"
@@ -744,6 +851,23 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
         "--list", action="store_true", help="print what the file holds and exit"
     )
     parser_view.set_defaults(handler=command_view)
+
+    parser_train = subparsers.add_parser(
+        "train-classifier", help="train a ROI classifier on the labels saved with masknmf view --classify"
+    )
+    parser_train.add_argument("results", nargs="+", help="labeled results .hdf5 files or globs")
+    parser_train.add_argument(
+        "--out", required=True, help="where the classifier is saved, as <out>.roicat_classifier and <out>.training.json"
+    )
+    parser_train.set_defaults(handler=command_train_classifier)
+
+    parser_classify = subparsers.add_parser(
+        "classify", help="classify the ROIs in results files; predictions are saved next to each"
+    )
+    parser_classify.add_argument("results", nargs="+", help="results .hdf5 files or globs")
+    parser_classify.add_argument("--classifier", required=True, help="a .roicat_classifier from masknmf train-classifier")
+    parser_classify.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
+    parser_classify.set_defaults(handler=command_classify)
 
     return parser
 
