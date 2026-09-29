@@ -54,6 +54,9 @@ class BasePipeline(ABC):
         self.run_folder = None
         # the scalar arguments of the run in progress, saved to config.json beside the __init__ ones
         self.run_config = {}
+        # the file each movie or array argument of the run in progress was read from, by argument name, as
+        # config.json holds it: {"path": ..., "name": ...}; the cli fills it
+        self.inputs = {}
         # what config.json keeps from the run whose results a resumed run reuses
         self.configs_reused = {}
         # the seconds, start and status of each step that ran in the run folder, by step name
@@ -110,12 +113,13 @@ class BasePipeline(ABC):
 
     def write_config(self) -> Path:
         """
-        Write ``config.json`` in the run folder: the masknmf version, the pipeline, its __init__ and run arguments
-        under "configs" (those of a reused run's steps over this run's) and the steps that ran under "timings".
+        Write ``config.json`` in the run folder: the masknmf version, the pipeline, the files its run arguments came
+        from under "inputs", its __init__ and run arguments under "configs" (those of a reused run's steps over this
+        run's) and the steps that ran under "timings".
         """
         path = self.run_folder / "config.json"
         with open(path, "w") as f:
-            json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__,
+            json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__, "inputs": self.inputs,
                        "configs": {**self.config, **self.run_config, **self.configs_reused}, "timings": self.timings},
                       f, indent=2, default=config_json_value)
         return path
@@ -173,8 +177,9 @@ class BasePipeline(ABC):
             raise ValueError(f"You specified that compression should be skipped but {path} holds no compression")
         self.run_folder = folder
         # the earlier run's motion correction and compression made the results reused now, so config.json keeps
-        # their configs and timings and takes the rest from this run
+        # their inputs, configs and timings and takes the rest from this run
         earlier = json.loads((folder / "config.json").read_text()) if (folder / "config.json").is_file() else {}
+        self.inputs = {**earlier.get("inputs", {}), **self.inputs}
         self.configs_reused = {name: value for name, value in earlier.get("configs", {}).items()
                                if name in ("motion_correct_config", "compress_config", "exclude_border_radius")}
         self.timings = {name: timing for name, timing in earlier.get("timings", {}).items()

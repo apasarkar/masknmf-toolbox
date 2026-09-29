@@ -453,6 +453,7 @@ def command_run(args: argparse.Namespace) -> None:
             kwargs_init[section.argument] = value
 
     kwargs_run = {}
+    inputs = {}
     for param in spec.movie_params:
         name = param.field if len(spec.movie_params) == 1 else option_name(flag_for(param))
         filepath = getattr(args, name, None)
@@ -462,6 +463,8 @@ def command_run(args: argparse.Namespace) -> None:
             kwargs_run[param.field] = load_movie(
                 filepath_movie=filepath, name_dataset=args.dataset
             )
+            path = Path(filepath).expanduser().resolve()
+            inputs[param.field] = {"path": str(path), "name": path.name}
 
     for param in spec.array_params:
         filepath = getattr(args, option_name(flag_for(param)), None)
@@ -470,6 +473,8 @@ def command_run(args: argparse.Namespace) -> None:
                 fail(f"--{param.field.replace('_', '-')} is required for {spec.slug}")
         else:
             kwargs_run[param.field] = np.load(filepath)
+            path = Path(filepath).expanduser().resolve()
+            inputs[param.field] = {"path": str(path), "name": path.name}
 
     for param in spec.run_scalars:
         if param.field in values_file:
@@ -494,6 +499,7 @@ def command_run(args: argparse.Namespace) -> None:
         kwargs_init["output_folder"] = str(first if first.is_dir() else first.parent)
 
     pipeline = spec.cls(**kwargs_init)
+    pipeline.inputs = inputs
     shapes = ", ".join(
         str(kwargs_run[p.field].shape)
         for p in spec.movie_params

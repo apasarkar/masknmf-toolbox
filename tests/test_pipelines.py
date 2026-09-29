@@ -4,6 +4,7 @@ import inspect
 import json
 import logging
 
+import h5py
 import pytest
 
 import masknmf
@@ -63,5 +64,21 @@ def test_step_logs_its_start_and_how_long_it_took_or_that_it_failed(tmp_path):
     assert "INFO masknmf.pipelines._base: a quick step\n" in text
     assert "a quick step done in 0:00:00" in text
     assert "ERROR masknmf.pipelines._base: a broken step failed after 0:00:00" in text
+    logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
+    pipeline.log_handler.close()
+
+
+def test_a_resumed_run_keeps_the_inputs_of_the_run_whose_compression_it_reuses(tmp_path):
+    cls = scraper.pipeline_registry()[SLUGS[0]]
+    with h5py.File(tmp_path / "results.hdf5", "w") as file:
+        file.create_group(masknmf.CompressionArray.__name__)
+    earlier = {"inputs": {"data": {"path": "C:/movies/movie.tif", "name": "movie.tif"}},
+               "configs": {"compress_config": "*"}, "timings": {"compression": {"seconds": 1.0}}}
+    (tmp_path / "config.json").write_text(json.dumps(earlier))
+    pipeline = cls(output_folder=str(tmp_path))
+    pipeline.results_path(resume=True)
+    written = json.loads((tmp_path / "config.json").read_text())
+    assert written["inputs"] == earlier["inputs"]
+    assert written["configs"]["compress_config"] == "*" and written["timings"] == earlier["timings"]
     logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
     pipeline.log_handler.close()

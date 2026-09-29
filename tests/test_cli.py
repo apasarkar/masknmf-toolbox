@@ -7,6 +7,7 @@ from typing import Literal
 
 import numpy as np
 import pytest
+import tifffile
 
 from masknmf import cli, pipelines
 from masknmf.pipelines._base import BasePipeline
@@ -75,3 +76,12 @@ def test_log_level_selects_what_the_log_holds_and_round_trips_through_config(fol
     text = (third / f"{third.name}.log").read_text()
     assert "a debug line" in text and "an info line" in text and "a warning line" in text
     assert "FolderPipeline" in text and "done in 0:00:00" in text
+
+
+def test_the_movie_a_run_read_is_kept_in_its_config(folder_pipeline, tmp_path):
+    movie = tmp_path / "movie.tif"
+    tifffile.imwrite(movie, np.zeros((2, 8, 8), dtype=np.uint16))
+    cli.main(["run", "--pipeline", "folder", str(movie), "--output-folder", str(tmp_path / "out")])
+    folder, = (tmp_path / "out").iterdir()
+    inputs = json.loads((folder / "config.json").read_text())["inputs"]
+    assert inputs == {"data": {"path": str(movie.resolve()), "name": "movie.tif"}}

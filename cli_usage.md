@@ -87,7 +87,8 @@ masknmf run movie.tif --fs 30 --config ./20260923_120000_two-photon-calcium/conf
 
 Flags win over the file: `--device cpu` replaces the file's device, and a `--<section>-kind` naming another config
 than the file's replaces that section with the named config's defaults. A `--<section>-kind` naming the file's own
-config keeps the file's values. A run folder's `config.json` holds every
+config keeps the file's values. A run folder's `config.json` holds the movie and array files the run read under
+`inputs`, each with its resolved `path` and file `name` by run argument, and every
 config the run used under `configs`, with `"*"` for values json cannot hold (arrays, detrenders); `"*"` keeps the default.
 Under `timings` it holds each step that ran, with its start time, seconds and whether it finished, updated as the run goes.
 A run that resumes from the folder's compression (`--compress-kind skip --output-folder <run folder>`) keeps the
