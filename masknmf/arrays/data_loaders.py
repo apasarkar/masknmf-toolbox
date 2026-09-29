@@ -175,8 +175,7 @@ class Hdf5Array(LazyFrameLoader):
     def __init__(self, filename: str, field: str) -> None:
         """
         Generic lazy loader for Hdf5 files video files, where data is stored as (T, x, y). T is number of frames,
-        x and y are the field of view dimensions (height and width). Datasets with size-1 axes between T and the
-        spatial axes, such as (T, Z, Y, X), load as 3D when a 'dims' attribute names every axis.
+        x and y are the field of view dimensions (height and width).
 
         Args:
             filename (str): Path to filename
@@ -190,42 +189,11 @@ class Hdf5Array(LazyFrameLoader):
             # Access the 'field' dataset
             field_dataset = file[self.field]
 
-            self._index_singleton = self._singleton_index(field_dataset)
-
             # Get the shape of the array
-            self._shape = (field_dataset.shape[0],) + field_dataset.shape[-2:]
+            self._shape = field_dataset.shape
 
             # Get the dtype of the array
             self._dtype = field_dataset.dtype
-
-    @staticmethod
-    def _singleton_index(field_dataset) -> tuple:
-        """
-        Index for the size-1 axes between T and the two spatial axes, named in the dataset's 'dims' attribute.
-
-        Args:
-            field_dataset (h5py.Dataset): The movie dataset
-        Returns:
-            tuple: One 0 per axis between T and the spatial axes; empty for a 3D dataset
-        Raises:
-            ValueError: If the dataset is not 3D and its axes are unnamed, out of order, or larger than 1
-        """
-        shape = field_dataset.shape
-        if len(shape) == 3:
-            return ()
-        dims = [d.decode() if isinstance(d, bytes) else str(d) for d in field_dataset.attrs.get("dims", [])]
-        is_collapsible = (
-            len(dims) == len(shape)
-            and dims[0] == "T"
-            and set(dims[-2:]) == {"X", "Y"}
-            and set(shape[1:-2]) == {1}
-        )
-        if not is_collapsible:
-            raise ValueError(
-                f"{field_dataset.name} has shape {shape} and dims {dims or 'unset'}; expected 3D, or dims "
-                f"(T, ..., Y, X) or (T, ..., X, Y) where every axis in between has size 1"
-            )
-        return (0,) * (len(shape) - 3)
 
     @property
     def dtype(self) -> str:
@@ -256,11 +224,11 @@ class Hdf5Array(LazyFrameLoader):
             # Access the 'field' dataset
             field_dataset = file[self.field]
             if isinstance(indices, int):
-                data = field_dataset[(indices, *self._index_singleton, slice(None), slice(None))]
+                data = field_dataset[indices, :, :]
             elif isinstance(indices, list):
-                data = field_dataset[(indices, *self._index_singleton, slice(None), slice(None))]
+                data = field_dataset[indices, :, :]
             elif isinstance(indices, np.ndarray) and indices.dtype.kind in "iu":
-                data = field_dataset[(indices.tolist(), *self._index_singleton, slice(None), slice(None))]
+                data = field_dataset[indices.tolist(), :, :]
             else:
                 indices_list = list(
                     range(
@@ -269,7 +237,7 @@ class Hdf5Array(LazyFrameLoader):
                         indices.step or 1,
                     )
                 )
-                data = field_dataset[(indices_list, *self._index_singleton, slice(None), slice(None))]
+                data = field_dataset[indices_list, :, :]
             if data.ndim == 2:
                 data = data[None, :, :]
         return data.astype(self.dtype, copy=False)
