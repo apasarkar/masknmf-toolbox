@@ -92,6 +92,8 @@ _BASE_LINE_COLORS = (
     (0.95, 0.55, 0.15),
     (0.35, 0.65, 0.95),
 )
+# pink, apart from the four base lines and the green and navy trace backgrounds
+_RAW_LINE_COLOR = (0.95, 0.45, 0.70)
 # behind the traces, naming what the lines are: near-black with nothing shown, navy for the sources under a
 # double-clicked pixel, forest green for a selection
 _TRACE_MODES = {
@@ -388,6 +390,7 @@ class SingleSessionDemixingVis:
             set()
         )  # signal indices "Delete" has marked; removed on the next "Demix"
         self._show_traces = True  # plot the selection's traces; off, selecting only highlights
+        self._show_raw_trace = True  # with a single signal, its trace re-estimated from the raw movie, when the results hold one
         self._roi_radius = 1  # a double-click splits the square this far around the pixel into its sources
         self._undo = []  # curation snapshots for ctrl+z, newest last
         self._group: list = []  # signals selected together; their traces share the plot
@@ -942,7 +945,8 @@ class SingleSessionDemixingVis:
 
     def _update_traces(self):
         """
-        One signal: its compressed / signal / background / residual roi averages. A group, or any pixel
+        One signal: its compressed / signal / background / residual roi averages, and when the results hold
+        temporal_demixed_raw and "raw trace" is on, the signal line from those raw traces drawn under it. A group, or any pixel
         average or drawn roi: one line per member, colored like its mask or table row - a signal's
         demixed trace, a pixel average or drawn roi's compressed average.
         Nothing unless "show selected traces" is on.
@@ -1001,6 +1005,12 @@ class SingleSessionDemixingVis:
                     self._base_lines, traces, _BASE_LINE_COLORS
                 )
             ]
+            if self._show_raw_trace and results.temporal_demixed_raw is not None:
+                raw = torch.sparse.mm(
+                    torch.index_select(results.spatial_demixed, 0, support), results.temporal_demixed_raw.T
+                ).mean(dim=0)
+                # before the signal line so the signal draws over it
+                lines.insert(1, ("raw (placeholder)", raw.cpu().numpy(), _RAW_LINE_COLOR))
         else:
             self._selected_signals = None
             self._clear_traces()
@@ -1127,6 +1137,10 @@ class SingleSessionDemixingVis:
 
     def _toggle_show_traces(self):
         self._show_traces = not self._show_traces
+        self._update_traces()
+
+    def _toggle_raw_trace(self):
+        self._show_raw_trace = not self._show_raw_trace
         self._update_traces()
 
     def _step(self, delta: int):
@@ -1978,6 +1992,17 @@ class SingleSessionDemixingVis:
                         "compressed average. Off, selecting only highlights, however big the selection",
                     ),
                 ]
+            if isinstance(self.demixing_results, masknmf.DemixingResults) and self.demixing_results.temporal_demixed_raw is not None:
+                buttons.append(
+                    (
+                        fa.ICON_FA_WAVE_SQUARE,
+                        self._show_raw_trace,
+                        self._toggle_raw_trace,
+                        "Raw trace: with one signal selected, also plot its signal line from the traces re-estimated "
+                        "on the raw movie, with no compression or denoising, under the signal line. For now a "
+                        "placeholder: the demixed trace plus noise",
+                    )
+                )
             # icon toggle buttons, lit while on
             for i, (icon, on, action, tip) in enumerate(buttons):
                 if i:
