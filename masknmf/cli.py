@@ -13,6 +13,7 @@ here enumerates a parameter by hand:
     masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --log-level debug
     masknmf params --pipeline two-photon-calcium --json > configs.json
     masknmf run movie.tif --fs 30 --config configs.json
+    masknmf run "sessions/*/movie.tif" --config run_folder/config.json
     masknmf view results.hdf5 --raw movie.tif
     masknmf view results.hdf5 --raw movie.tif --compression
     masknmf view results.hdf5 --classify --labels soma,dendrite,junk
@@ -22,6 +23,7 @@ from typing import Any, Optional
 
 import argparse
 import dataclasses
+import glob
 import json
 import logging
 import shutil
@@ -291,8 +293,9 @@ def add_pipeline_options(parser: argparse.ArgumentParser, spec: scraper.Pipeline
         _, allows_none = scraper.annotation_members(annotation=param.annotation)
         parser.add_argument(
             param.field,
-            nargs="?" if allows_none else None,
-            help=f"imaging movie for {param.field}",
+            nargs="*" if allows_none else "+",
+            help=f"imaging movie(s) for {param.field}; several movies or a glob run one after another, each in its "
+                 f"own run folder",
             default=None,
         )
 
@@ -452,93 +455,127 @@ def command_run(args: argparse.Namespace) -> None:
         if passes:
             kwargs_init[section.argument] = value
 
-    kwargs_run = {}
-    filepaths_input = {}
-    for param in spec.movie_params:
-        name = param.field if len(spec.movie_params) == 1 else option_name(flag_for(param))
-        filepath = getattr(args, name, None)
-        if filepath is None:
-            kwargs_run[param.field] = None
-        else:
-            kwargs_run[param.field] = load_movie(
-                filepath_movie=filepath, name_dataset=args.dataset
-            )
-            filepaths_input[param.field] = filepath
+    movies = [None]
+    if len(spec.movie_params) == 1 and getattr(args, spec.movie_params[0].field):
+        movies = []
+        for entry in getattr(args, spec.movie_params[0].field):
+            # powershell and cmd hand globs over unexpanded
+            matches = sorted(glob.glob(str(Path(entry).expanduser()))) if any(c in entry for c in "*?[") else [entry]
+            if len(matches) == 0:
+                fail(f"no movie matches {entry}")
+            movies.extend(matches)
+        # a movie that cannot be opened stops the batch before any run starts
+        for movie in movies:
+            load_movie(filepath_movie=movie, name_dataset=args.dataset)
+        # a config file's output_folder is where its own movie's runs went; this run's movies decide where theirs go
+        if getattr(args, "output_folder", None) is None:
+            kwargs_init.pop("output_folder", None)
 
-    for param in spec.array_params:
-        filepath = getattr(args, option_name(flag_for(param)), None)
-        if filepath is None:
-            if param.required:
-                fail(f"--{param.field.replace('_', '-')} is required for {spec.slug}")
-        else:
-            kwargs_run[param.field] = np.load(filepath)
-            filepaths_input[param.field] = filepath
+    finished = []
+    for movie in movies:
+        if len(spec.movie_params) == 1:
+            # the loading below reads the one movie this run takes from args
+            setattr(args, spec.movie_params[0].field, movie)
+        kwargs_pipeline = {**kwargs_init}
+        kwargs_run = {}
+        filepaths_input = {}
+        for param in spec.movie_params:
+            name = param.field if len(spec.movie_params) == 1 else option_name(flag_for(param))
+            filepath = getattr(args, name, None)
+            if filepath is None:
+                kwargs_run[param.field] = None
+            else:
+                kwargs_run[param.field] = load_movie(
+                    filepath_movie=filepath, name_dataset=args.dataset
+                )
+                filepaths_input[param.field] = filepath
 
-    inputs = {}
-    for field, filepath in filepaths_input.items():
-        path = Path(filepath).expanduser().resolve()
-        if path.is_dir():
-            size = sum(p.stat().st_size for p in path.iterdir() if p.suffix.lower() in SUFFIXES_TIFF)
-        else:
-            size = path.stat().st_size
-        inputs[field] = {"path": str(path), "name": path.name, "bytes": size,
-                         "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
-                         "shape": list(kwargs_run[field].shape), "dtype": str(kwargs_run[field].dtype)}
-        if isinstance(kwargs_run[field], masknmf.Hdf5Array):
-            inputs[field]["dataset"] = args.dataset
+        for param in spec.array_params:
+            filepath = getattr(args, option_name(flag_for(param)), None)
+            if filepath is None:
+                if param.required:
+                    fail(f"--{param.field.replace('_', '-')} is required for {spec.slug}")
+            else:
+                kwargs_run[param.field] = np.load(filepath)
+                filepaths_input[param.field] = filepath
 
-    for param in spec.run_scalars:
-        if param.field in values_file:
-            kwargs_run[param.field] = values_file[param.field]
-        text = getattr(args, option_name(flag_for(param)), None)
-        if text is None:
-            if param.required and param.field not in values_file:
-                fail(f"--{param.field.replace('_', '-')} is required for {spec.slug}")
-            continue
+        inputs = {}
+        for field, filepath in filepaths_input.items():
+            path = Path(filepath).expanduser().resolve()
+            if path.is_dir():
+                size = sum(p.stat().st_size for p in path.iterdir() if p.suffix.lower() in SUFFIXES_TIFF)
+            else:
+                size = path.stat().st_size
+            inputs[field] = {"path": str(path), "name": path.name, "bytes": size,
+                             "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+                             "shape": list(kwargs_run[field].shape), "dtype": str(kwargs_run[field].dtype)}
+            if isinstance(kwargs_run[field], masknmf.Hdf5Array):
+                inputs[field]["dataset"] = args.dataset
+
+        for param in spec.run_scalars:
+            if param.field in values_file:
+                kwargs_run[param.field] = values_file[param.field]
+            text = getattr(args, option_name(flag_for(param)), None)
+            if text is None:
+                if param.required and param.field not in values_file:
+                    fail(f"--{param.field.replace('_', '-')} is required for {spec.slug}")
+                continue
+            try:
+                kwargs_run[param.field] = scraper.coerce(param=param, text=text)
+            except ValueError as error:
+                fail(str(error))
+
+        filepaths_movie = [
+            getattr(args, p.field if len(spec.movie_params) == 1 else option_name(flag_for(p)), None)
+            for p in spec.movie_params
+        ]
+        filepaths_movie = [Path(f).expanduser().resolve() for f in filepaths_movie if f is not None]
+        if kwargs_pipeline.get("output_folder") is None and len(filepaths_movie) > 0:
+            first = filepaths_movie[0]
+            kwargs_pipeline["output_folder"] = str(first if first.is_dir() else first.parent)
+
+        pipeline = spec.cls(**kwargs_pipeline)
+        pipeline.inputs = inputs
+        pipeline.command = args.command
+        shapes = ", ".join(
+            str(kwargs_run[p.field].shape)
+            for p in spec.movie_params
+            if kwargs_run.get(p.field) is not None
+        )
+        print(f"{spec.cls.__name__} on {shapes or 'stored results'}")
+        start = time.monotonic()
         try:
-            kwargs_run[param.field] = scraper.coerce(param=param, text=text)
-        except ValueError as error:
-            fail(str(error))
+            run_folder = pipeline.run(**kwargs_run)
+        except BaseException as error:
+            logger.exception("run failed" if movie is None else f"run failed on {movie}")
+            if pipeline.run_folder is not None:
+                pipeline.finish("failed")
+            # a failed run keeps its folder only when one of its results files holds a finished compression; its log
+            # file, closed first so windows lets the folder go, moves up to where the folder was
+            folder = pipeline.run_folder
+            if folder is not None and not any(
+                has_stage(filepath_results=str(filepath), name_group=group_name_compression())
+                for filepath in folder.glob("*.hdf5")
+            ):
+                logger.removeHandler(pipeline.log_handler)
+                pipeline.log_handler.close()
+                shutil.move(pipeline.log_handler.baseFilename, folder.parent)
+                shutil.rmtree(folder)
+                print(f"removed {folder}, its log is in {folder.parent}", file=sys.stderr)
+            # one failed movie of several lets the rest run; ctrl+c stops them all
+            if len(movies) == 1 or not isinstance(error, Exception):
+                raise SystemExit(1)
+            finished.append((movie, None))
+            continue
+        logger.info(f"done in {timedelta(seconds=round(time.monotonic() - start))}: {run_folder}")
+        finished.append((movie, run_folder))
 
-    filepaths_movie = [
-        getattr(args, p.field if len(spec.movie_params) == 1 else option_name(flag_for(p)), None)
-        for p in spec.movie_params
-    ]
-    filepaths_movie = [Path(f).expanduser().resolve() for f in filepaths_movie if f is not None]
-    if kwargs_init.get("output_folder") is None and len(filepaths_movie) > 0:
-        first = filepaths_movie[0]
-        kwargs_init["output_folder"] = str(first if first.is_dir() else first.parent)
-
-    pipeline = spec.cls(**kwargs_init)
-    pipeline.inputs = inputs
-    pipeline.command = args.command
-    shapes = ", ".join(
-        str(kwargs_run[p.field].shape)
-        for p in spec.movie_params
-        if kwargs_run.get(p.field) is not None
-    )
-    print(f"{spec.cls.__name__} on {shapes or 'stored results'}")
-    start = time.monotonic()
-    try:
-        run_folder = pipeline.run(**kwargs_run)
-    except BaseException:
-        logger.exception("run failed")
-        if pipeline.run_folder is not None:
-            pipeline.finish("failed")
-        # a failed run keeps its folder only when one of its results files holds a finished compression; its log
-        # file, closed first so windows lets the folder go, moves up to where the folder was
-        folder = pipeline.run_folder
-        if folder is not None and not any(
-            has_stage(filepath_results=str(filepath), name_group=group_name_compression())
-            for filepath in folder.glob("*.hdf5")
-        ):
-            logger.removeHandler(pipeline.log_handler)
-            pipeline.log_handler.close()
-            shutil.move(pipeline.log_handler.baseFilename, folder.parent)
-            shutil.rmtree(folder)
-            print(f"removed {folder}, its log is in {folder.parent}", file=sys.stderr)
-        raise SystemExit(1)
-    logger.info(f"done in {timedelta(seconds=round(time.monotonic() - start))}: {run_folder}")
+    if len(movies) > 1:
+        print(f"{sum(folder is not None for _, folder in finished)} of {len(movies)} runs done")
+        for movie, folder in finished:
+            print(f"  {'done' if folder is not None else 'failed'}  {movie}" + ("" if folder is None else f"  ->  {folder}"))
+        if any(folder is None for _, folder in finished):
+            raise SystemExit(1)
 
 
 def command_view(args: argparse.Namespace) -> None:
