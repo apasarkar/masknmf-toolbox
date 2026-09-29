@@ -27,7 +27,7 @@ import logging
 import shutil
 import sys
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import h5py
@@ -453,7 +453,7 @@ def command_run(args: argparse.Namespace) -> None:
             kwargs_init[section.argument] = value
 
     kwargs_run = {}
-    inputs = {}
+    filepaths_input = {}
     for param in spec.movie_params:
         name = param.field if len(spec.movie_params) == 1 else option_name(flag_for(param))
         filepath = getattr(args, name, None)
@@ -463,8 +463,7 @@ def command_run(args: argparse.Namespace) -> None:
             kwargs_run[param.field] = load_movie(
                 filepath_movie=filepath, name_dataset=args.dataset
             )
-            path = Path(filepath).expanduser().resolve()
-            inputs[param.field] = {"path": str(path), "name": path.name}
+            filepaths_input[param.field] = filepath
 
     for param in spec.array_params:
         filepath = getattr(args, option_name(flag_for(param)), None)
@@ -473,8 +472,20 @@ def command_run(args: argparse.Namespace) -> None:
                 fail(f"--{param.field.replace('_', '-')} is required for {spec.slug}")
         else:
             kwargs_run[param.field] = np.load(filepath)
-            path = Path(filepath).expanduser().resolve()
-            inputs[param.field] = {"path": str(path), "name": path.name}
+            filepaths_input[param.field] = filepath
+
+    inputs = {}
+    for field, filepath in filepaths_input.items():
+        path = Path(filepath).expanduser().resolve()
+        if path.is_dir():
+            size = sum(p.stat().st_size for p in path.iterdir() if p.suffix.lower() in SUFFIXES_TIFF)
+        else:
+            size = path.stat().st_size
+        inputs[field] = {"path": str(path), "name": path.name, "bytes": size,
+                         "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+                         "shape": list(kwargs_run[field].shape), "dtype": str(kwargs_run[field].dtype)}
+        if isinstance(kwargs_run[field], masknmf.Hdf5Array):
+            inputs[field]["dataset"] = args.dataset
 
     for param in spec.run_scalars:
         if param.field in values_file:
@@ -500,6 +511,7 @@ def command_run(args: argparse.Namespace) -> None:
 
     pipeline = spec.cls(**kwargs_init)
     pipeline.inputs = inputs
+    pipeline.command = args.command
     shapes = ", ".join(
         str(kwargs_run[p.field].shape)
         for p in spec.movie_params
@@ -511,6 +523,8 @@ def command_run(args: argparse.Namespace) -> None:
         run_folder = pipeline.run(**kwargs_run)
     except BaseException:
         logger.exception("run failed")
+        if pipeline.run_folder is not None:
+            pipeline.finish("failed")
         # a failed run keeps its folder only when one of its results files holds a finished compression; its log
         # file, closed first so windows lets the folder go, moves up to where the folder was
         folder = pipeline.run_folder
@@ -730,6 +744,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         spec = spec_for(slug=bootstrap.pipeline)
 
     args = build_parser(spec=spec).parse_args(argv)
+    args.command = f"masknmf {format_command(argv=argv)}"
     args.handler(args)
 
 

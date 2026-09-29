@@ -435,7 +435,7 @@ class OnePhotonCulturePipeline(BasePipeline):
         if remove_intermediates:
             self.drop_compression(results_path)
 
-        return Path(results_path).parent
+        return self.finish()
 
 
 

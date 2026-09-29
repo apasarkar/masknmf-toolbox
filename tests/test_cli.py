@@ -2,9 +2,11 @@
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+import h5py
 import numpy as np
 import pytest
 import tifffile
@@ -35,7 +37,7 @@ class FolderPipeline(BasePipeline):
         logging.getLogger("masknmf").warning("a warning line")
         if fail:
             raise RuntimeError("the run broke")
-        return folder
+        return self.finish()
 
 
 @pytest.fixture
@@ -84,4 +86,25 @@ def test_the_movie_a_run_read_is_kept_in_its_config(folder_pipeline, tmp_path):
     cli.main(["run", "--pipeline", "folder", str(movie), "--output-folder", str(tmp_path / "out")])
     folder, = (tmp_path / "out").iterdir()
     inputs = json.loads((folder / "config.json").read_text())["inputs"]
-    assert inputs == {"data": {"path": str(movie.resolve()), "name": "movie.tif"}}
+    modified = datetime.fromtimestamp(movie.stat().st_mtime).isoformat(timespec="seconds")
+    assert inputs == {"data": {"path": str(movie.resolve()), "name": "movie.tif", "bytes": movie.stat().st_size,
+                               "modified": modified, "shape": [2, 8, 8], "dtype": "uint16"}}
+
+
+def test_an_hdf5_movie_is_kept_with_its_dataset(folder_pipeline, tmp_path):
+    movie = tmp_path / "movie.h5"
+    with h5py.File(movie, "w") as file:
+        file.create_dataset("mov", data=np.zeros((2, 8, 8), dtype=np.float32))
+    cli.main(["run", "--pipeline", "folder", str(movie), "--dataset", "mov", "--output-folder", str(tmp_path / "out")])
+    folder, = (tmp_path / "out").iterdir()
+    inputs = json.loads((folder / "config.json").read_text())["inputs"]
+    assert inputs["data"]["dataset"] == "mov" and inputs["data"]["dtype"] == "float32"
+
+
+def test_a_run_records_its_command_device_and_end(folder_pipeline, tmp_path):
+    cli.main(["run", "--pipeline", "folder", "--output-folder", str(tmp_path)])
+    folder, = tmp_path.iterdir()
+    run = json.loads((folder / "config.json").read_text())["run"]
+    assert run["command"].startswith("masknmf run --pipeline folder --output-folder ") and str(tmp_path) in run["command"]
+    assert run["device"] in ("cpu", "cuda") and run["status"] == "done"
+    assert run["finished"] >= run["started"] and run["seconds"] >= 0

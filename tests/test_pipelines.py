@@ -3,6 +3,7 @@
 import inspect
 import json
 import logging
+import time
 
 import h5py
 import pytest
@@ -82,3 +83,42 @@ def test_a_resumed_run_keeps_the_inputs_of_the_run_whose_compression_it_reuses(t
     assert written["configs"]["compress_config"] == "*" and written["timings"] == earlier["timings"]
     logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
     pipeline.log_handler.close()
+
+
+def test_finish_records_when_the_run_ended_and_how(tmp_path):
+    cls = scraper.pipeline_registry()[SLUGS[0]]
+    pipeline = cls(output_folder=str(tmp_path))
+    folder = pipeline.create_run_folder()
+    assert json.loads((folder / "config.json").read_text())["run"]["status"] == "running"
+    assert pipeline.finish("failed") == folder
+    run = json.loads((folder / "config.json").read_text())["run"]
+    assert run["status"] == "failed" and run["finished"] >= run["started"] and run["seconds"] >= 0
+    assert run["command"] is None and run["device"] == str(pipeline.torch_device)
+    logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
+    pipeline.log_handler.close()
+
+
+def test_a_long_step_logs_that_it_is_still_running(tmp_path):
+    cls = scraper.pipeline_registry()[SLUGS[0]]
+    pipeline = cls(output_folder=str(tmp_path))
+    pipeline.heartbeat_seconds = 0.05
+    folder = pipeline.create_run_folder()
+    with pipeline.step("a slow step"):
+        time.sleep(0.2)
+    text = (folder / f"{folder.name}.log").read_text()
+    assert "a slow step still running after 0:00:00" in text
+    logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
+    pipeline.log_handler.close()
+
+
+def test_a_step_records_its_peak_cuda_memory_only_on_a_cuda_device(tmp_path):
+    cls = scraper.pipeline_registry()[SLUGS[0]]
+    for device in ("cpu", "auto"):
+        pipeline = cls(output_folder=str(tmp_path / device), device=device)
+        folder = pipeline.create_run_folder()
+        with pipeline.step("a step"):
+            pass
+        timing = json.loads((folder / "config.json").read_text())["timings"]["a step"]
+        assert ("peak_cuda_gb" in timing) == str(pipeline.torch_device).startswith("cuda")
+        logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
+        pipeline.log_handler.close()

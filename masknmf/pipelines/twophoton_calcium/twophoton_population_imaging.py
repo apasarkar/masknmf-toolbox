@@ -113,7 +113,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         if isinstance(self.filtered_demixing_config, str):
             if self.filtered_demixing_config.lower() != "skip":
                 raise ValueError(f"If filtered_demixing_config is a string, it can only be `skip`")
-            return Path(results_path).parent
+            return self.finish()
 
         device = self.torch_device
         display("Running demixing analysis")
@@ -164,7 +164,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         latest_demix_results.export(results_path)
         if remove_intermediates:
             self.drop_compression(results_path)
-        return Path(results_path).parent
+        return self.finish()
 
 
 
