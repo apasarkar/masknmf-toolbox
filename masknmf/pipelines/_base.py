@@ -1,16 +1,20 @@
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import asdict, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import inspect
 import json
+import logging
 import os
+import threading
+import time
 import numpy as np
 import torch
 from typing import *
 
 from masknmf._version import __version__
-from masknmf.pipelines.scraper import slugify, config_json_value
+from masknmf.pipelines.scraper import slugify, config_json_value, config_from_json
 from masknmf.arrays import ArrayLike
 from masknmf.compression import CompressionArray, CompressStrategy, CompressDenoiseStrategy
 from masknmf.compression.preprocessing import MaximinSplineDetrend
@@ -22,16 +26,28 @@ from masknmf.pipelines.configs.compression_configs import CompressConfig, Compre
 from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig, SinglepassDemixingConfig, SuperpixelInitConfig
 from masknmf.utils import display, has_group, drop_group, torch_select_device
 
+logger = logging.getLogger(__name__)
+
+
+def heartbeat(name: str, start: float, seconds: float, stop: threading.Event):
+    """Log every seconds that the step name, started at start (monotonic), is still running, until stop is set."""
+    while not stop.wait(seconds):
+        logger.info(f"{name} still running after {timedelta(seconds=round(time.monotonic() - start))}")
+
 
 class BasePipeline(ABC):
     """
     Motion correction, compression (and optional demixing) of one session.
     """
 
+    heartbeat_seconds = 600
+
     def __init__(self,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto",
+                 log_level: Literal["debug", "info", "warning"] = "info",
+                 load_into_ram: bool = False,
                  **configs):
         if output_folder is not None:
             output_folder = Path(output_folder).expanduser().resolve()
@@ -40,10 +56,27 @@ class BasePipeline(ABC):
         self.output_folder = output_folder
         self.frame_batch_size = frame_batch_size
         self.device = device
+        self.log_level = log_level
+        logging.getLogger("masknmf").setLevel(log_level.upper())
+        # the handler writing the run's log file, once log_to has opened one
+        self.log_handler = None
+        self.load_into_ram = load_into_ram
         # the folder the last create_run_folder made
         self.run_folder = None
         # the scalar arguments of the run in progress, saved to config.json beside the __init__ ones
         self.run_config = {}
+        # the command line that started the run in progress, when the cli did
+        self.command = None
+        # the run in progress as config.json holds it: command, device, gpu, start, and once finish has run, its
+        # end, seconds and status
+        self.run_record = {}
+        # the file each movie or array argument of the run in progress was read from, by argument name, as
+        # config.json holds it: {"path": ..., "name": ...}; the cli fills it
+        self.inputs = {}
+        # what config.json keeps from the run whose results a resumed run reuses
+        self.configs_reused = {}
+        # the seconds, start and status of each step that ran in the run folder, by step name
+        self.timings = {}
         defaults = self.default_configs()
         unknown = set(configs) - set(defaults)
         if len(unknown) > 0:
@@ -61,6 +94,22 @@ class BasePipeline(ABC):
         """
         pass
 
+    @classmethod
+    def from_config(cls, path: str | Path, **overrides):
+        """
+        The pipeline a run folder's config.json, or ``masknmf params --json`` output, describes, each value built on
+        default_configs(); overrides replace the file's values. The run arguments the file holds under "configs"
+        (frame_rate and the like) are left for the caller to pass to run.
+        """
+        loaded = json.loads(Path(path).expanduser().read_text())
+        if loaded.get("pipeline", cls.__name__) != cls.__name__:
+            raise ValueError(f"{path} is for {loaded['pipeline']}, not {cls.__name__}")
+        defaults = cls.default_configs()
+        parameters = inspect.signature(cls.__init__).parameters
+        values = {name: config_from_json(value=value, annotation=parameters[name].annotation, base=defaults.get(name))
+                  for name, value in loaded["configs"].items() if name in parameters}
+        return cls(**{**values, **overrides})
+
     @property
     def config(self) -> dict:
         """Every __init__ argument by name, as constructed."""
@@ -74,8 +123,7 @@ class BasePipeline(ABC):
     def create_run_folder(self) -> Path:
         """
         Make ``<output_folder>/<YYYYmmdd_HHMMSS>_<pipeline slug>/`` (the working directory when output_folder is None),
-        adding a numeric suffix when a run started in the same second, and write the pipeline's config and the run's
-        scalar arguments to config.json in it.
+        adding a numeric suffix when a run started in the same second, and write config.json in it.
         """
         base = Path.cwd() if self.output_folder is None else self.output_folder
         name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{slugify(name_class=type(self).__name__)}"
@@ -88,25 +136,134 @@ class BasePipeline(ABC):
             except FileExistsError:
                 suffix += 1
                 candidate = base / f"{name}_{suffix}"
-        with open(candidate / "config.json", "w") as f:
-            json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__, **self.config, **self.run_config},
-                      f, indent=2, default=config_json_value)
         self.run_folder = candidate
+        self.configs_reused = {}
+        self.timings = {}
+        self.log_to(candidate)
+        self.write_config()
         return candidate
+
+    def write_config(self) -> Path:
+        """
+        Write ``config.json`` in the run folder: the masknmf version, the pipeline, the run record under "run", the
+        files its run arguments came from under "inputs", its __init__ and run arguments under "configs" (those of a
+        reused run's steps over this run's) and the steps that ran under "timings".
+        """
+        path = self.run_folder / "config.json"
+        with open(path, "w") as f:
+            json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__, "run": self.run_record,
+                       "inputs": self.inputs,
+                       "configs": {**self.config, **self.run_config, **self.configs_reused}, "timings": self.timings},
+                      f, indent=2, default=config_json_value)
+        return path
+
+    def log_to(self, folder: Path) -> Path:
+        """
+        Write the masknmf log to ``<folder>/<folder name>.log`` from here on, appending to the file an earlier run
+        left there and closing the file of the run logged until now, start the run record (command, device, gpu and
+        start time; finish ends it) and log this run's header line.
+        """
+        for handler in [h for h in logging.getLogger("masknmf").handlers if isinstance(h, logging.FileHandler)]:
+            logging.getLogger("masknmf").removeHandler(handler)
+            handler.close()
+        path = folder / f"{folder.name}.log"
+        self.log_handler = logging.FileHandler(path, encoding="utf-8")
+        self.log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.getLogger("masknmf").addHandler(self.log_handler)
+        device = str(self.torch_device)
+        self.run_record = {"command": self.command, "device": device,
+                           "gpu": torch.cuda.get_device_name() if device.startswith("cuda") else None,
+                           "started": datetime.now().isoformat(timespec="seconds"), "finished": None, "seconds": None,
+                           "status": "running"}
+        logger.info(f"masknmf {__version__} {type(self).__name__} on {device}, {self.log_level} log at {path}")
+        return path
+
+    @contextmanager
+    def step(self, name: str):
+        """
+        Log that name starts, that it is still running every heartbeat_seconds and, once the block ends, how long it
+        took (with its peak cuda memory on a cuda device), or that it failed and after how long, and record its start,
+        seconds, status and peak under name in timings and config.json.
+        """
+        logger.info(name)
+        started = datetime.now().isoformat(timespec="seconds")
+        start = time.monotonic()
+        cuda = str(self.torch_device).startswith("cuda")
+        if cuda:
+            torch.cuda.reset_peak_memory_stats()
+        stop = threading.Event()
+        threading.Thread(target=heartbeat, args=(name, start, self.heartbeat_seconds, stop), daemon=True).start()
+        status = "failed"
+        try:
+            yield
+            status = "done"
+        finally:
+            stop.set()
+            seconds = time.monotonic() - start
+            self.timings[name] = {"seconds": round(seconds, 1), "started": started, "status": status}
+            peak = ""
+            if cuda:
+                self.timings[name]["peak_cuda_gb"] = round(torch.cuda.max_memory_allocated() / 1e9, 2)
+                peak = f", peak cuda {self.timings[name]['peak_cuda_gb']} GB"
+            if self.run_folder is not None:
+                self.write_config()
+            if status == "done":
+                logger.info(f"{name} done in {timedelta(seconds=round(seconds))}{peak}")
+            else:
+                logger.error(f"{name} failed after {timedelta(seconds=round(seconds))}{peak}")
+
+    def finish(self, status: Literal["done", "failed"] = "done") -> Path:
+        """Record in the run record and config.json that the run ended now with status and how long it took, and return the run folder."""
+        finished = datetime.now()
+        seconds = (finished - datetime.fromisoformat(self.run_record["started"])).total_seconds()
+        self.run_record.update(finished=finished.isoformat(timespec="seconds"), seconds=round(seconds, 1), status=status)
+        self.write_config()
+        return self.run_folder
 
     def results_path(self, resume: bool = False) -> str:
         """
         ``results.hdf5`` in a new run folder. With ``resume``, the one in output_folder itself, an earlier run
-        folder whose compression is reused.
+        folder whose compression is reused; its config.json keeps that run's motion correction and compression.
         """
         if not resume:
             path = os.path.join(self.create_run_folder(), "results.hdf5")
             display(f"Writing results to {path}")
             return path
-        path = os.path.join(Path.cwd() if self.output_folder is None else self.output_folder, "results.hdf5")
+        folder = Path.cwd() if self.output_folder is None else self.output_folder
+        path = os.path.join(folder, "results.hdf5")
         if not has_group(path, CompressionArray.__name__):
             raise ValueError(f"You specified that compression should be skipped but {path} holds no compression")
+        self.run_folder = folder
+        # the earlier run's motion correction and compression made the results reused now, so config.json keeps
+        # their inputs, configs and timings and takes the rest from this run
+        earlier = json.loads((folder / "config.json").read_text()) if (folder / "config.json").is_file() else {}
+        self.inputs = {**earlier.get("inputs", {}), **self.inputs}
+        self.configs_reused = {name: value for name, value in earlier.get("configs", {}).items()
+                               if name in ("motion_correct_config", "compress_config", "exclude_border_radius")}
+        self.timings = {name: timing for name, timing in earlier.get("timings", {}).items()
+                        if name in ("motion correction", "compression")}
+        self.log_to(folder)
+        self.write_config()
         return path
+
+    def read_into_ram(self, data: np.ndarray | ArrayLike) -> np.ndarray:
+        """
+        data as one numpy array, read frame_batch_size frames at a time so no second full copy is made. A numpy array
+        comes back as it is.
+        """
+        if isinstance(data, np.ndarray):
+            return data
+        display(f"Loading {data.shape} into RAM")
+        movie = None
+        for start in range(0, data.shape[0], self.frame_batch_size):
+            stop = min(start + self.frame_batch_size, data.shape[0])
+            chunk = data[start:stop]
+            if isinstance(chunk, torch.Tensor):
+                chunk = chunk.cpu().numpy()
+            if movie is None:
+                movie = np.empty(data.shape, dtype=chunk.dtype.newbyteorder("="))
+            movie[start:stop] = chunk
+        return movie
 
     def motion_correct(self,
                        data: np.ndarray | ArrayLike,
@@ -132,11 +289,12 @@ class BasePipeline(ABC):
                                                               batch_size=self.frame_batch_size)
             else:
                 raise ValueError("Invalid MotionCorrectionConfig input")
-            if moco_strategy.template is None:
-                moco_strategy.compute_template(data)
-            moco_data = moco_strategy.motion_correct(data)
-            moco_data.output_device = moco_data.strategy.device
-            moco_data.export(results_path)
+            with self.step("motion correction"):
+                if moco_strategy.template is None:
+                    moco_strategy.compute_template(data)
+                moco_data = moco_strategy.motion_correct(data)
+                moco_data.output_device = moco_data.strategy.device
+                moco_data.export(results_path)
 
         if isinstance(moco_data, BaseRegistrationArray):
             shift_mask = construct_moco_template(moco_data.shifts.cpu().numpy(), moco_data.shape[1:]).astype("float")
@@ -180,25 +338,29 @@ class BasePipeline(ABC):
                                     sigma=max(2.0, sigma_seconds * frame_rate),
                                     device=self.torch_device)
 
-    def run_multipass(self, demixer: SignalDemixer, config: MultipassDemixingConfig) -> DemixingResults:
+    def run_multipass(self, demixer: SignalDemixer, config: MultipassDemixingConfig,
+                      name: str = "demixing") -> DemixingResults:
         """
-        Run the passes of config in order, stopping at the first that finds no signals, and return the results of
-        the last pass that ran. Raises when the first pass finds none.
+        Run the passes of config in order as the steps "<name> pass i of n", stopping at the first that finds no
+        signals, and return the results of the last pass that ran. Raises when the first pass finds none.
         """
         if len(config.DemixingConfigs) < 1:
             raise ValueError("Demixing needs at least one pass")
         results = None
-        for singlepass in config.DemixingConfigs:
-            try:
-                demixer.initialize_signals(**asdict(singlepass.InitConfig))
-            except NoSignalsDetectedError:
-                if results is None:
-                    raise ValueError("The demixer did not identify any signals. Lower thresholds or inspect the data "
-                                     "to resolve this issue.")
-                break
-            demixer.demix(**asdict(singlepass.NMFConfig))
-            results = demixer.results
-            torch.cuda.empty_cache()
+        for i, singlepass in enumerate(config.DemixingConfigs):
+            with self.step(f"{name} pass {i + 1} of {len(config.DemixingConfigs)}"):
+                try:
+                    demixer.initialize_signals(**asdict(singlepass.InitConfig))
+                except NoSignalsDetectedError:
+                    if results is None:
+                        raise ValueError("The demixer did not identify any signals. Lower thresholds or inspect the data "
+                                         "to resolve this issue.")
+                    logger.info("no signals detected, keeping the previous pass")
+                    break
+                demixer.demix(**asdict(singlepass.NMFConfig))
+                results = demixer.results
+                logger.info(f"{results.spatial_demixed.shape[1]} signals")
+                torch.cuda.empty_cache()
         return results
 
     def with_detrender(self, config: MultipassDemixingConfig, detrender: MaximinSplineDetrend) -> MultipassDemixingConfig:

@@ -62,7 +62,12 @@ def draw_edge_handle(window) -> None:
     thickness = window._separator_thickness
     rect_min, rect_max = _handle_rect(window, thickness)
     mouse = imgui.get_mouse_pos()
-    hovered = rect_min.x <= mouse.x <= rect_max.x and rect_min.y <= mouse.y <= rect_max.y
+    # a popup or window over the strip owns the mouse, the handle must not react through it
+    hovered = (
+        imgui.is_window_hovered(imgui.HoveredFlags_.root_and_child_windows)
+        and rect_min.x <= mouse.x <= rect_max.x
+        and rect_min.y <= mouse.y <= rect_max.y
+    )
 
     if hovered and imgui.is_mouse_clicked(0):
         window._right_gui_resizing = True
@@ -101,8 +106,9 @@ def draw_edge_handle(window) -> None:
             window.size = max(30, round(window.size + delta))
             window._collapsed = False
 
-    # foreground, so the handle stays visible when the window is collapsed to the strip
-    draw_list = imgui.get_foreground_draw_list()
+    # the window's own layer keeps popups above it; the clip override keeps it visible when collapsed
+    draw_list = imgui.get_window_draw_list()
+    draw_list.push_clip_rect(rect_min, rect_max, False)
     lit = hovered or active
     line = imgui.get_color_u32(imgui.ImVec4(0.9, 0.9, 0.9, 1.0) if lit else imgui.ImVec4(0.5, 0.5, 0.5, 0.8))
     background = imgui.get_color_u32(imgui.ImVec4(0.2, 0.2, 0.2, 0.8) if lit else imgui.ImVec4(0.15, 0.15, 0.15, 0.6))
@@ -111,3 +117,4 @@ def draw_edge_handle(window) -> None:
     for offset in (-7.0, 0.0, 7.0):
         dot = imgui.ImVec2(center.x + offset, center.y) if location == "top" else imgui.ImVec2(center.x, center.y + offset)
         draw_list.add_circle_filled(dot, 2, line)
+    draw_list.pop_clip_rect()

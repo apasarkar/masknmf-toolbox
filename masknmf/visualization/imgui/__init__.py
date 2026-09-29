@@ -1,4 +1,4 @@
-from masknmf.visualization.imgui.widgets import CheckboxWindow
+from masknmf.visualization.imgui.widgets import CheckboxWindow, SourceRightClickMenu
 from masknmf.visualization.imgui.picking import (
     component_at_pixel,
     contours_to_bbox,
@@ -11,8 +11,9 @@ from masknmf.visualization.imgui.layout import (
     resolve_time_reference,
 )
 from masknmf.visualization.imgui.trace_plot import TracePlot
-from masknmf.visualization.imgui.table import RoiOrder, draw_range_filter, draw_roi_table
-from masknmf.visualization.imgui.panels import draw_keybinds_popup, draw_path_popup
+from masknmf.visualization.imgui.table import RoiOrder, draw_range_filter, draw_range_slider, draw_roi_table
+from masknmf.visualization.imgui.panels import draw_help_buttons, draw_keybinds_button, draw_keybinds_popup, help_buttons_width
+from masknmf.visualization.imgui.files import NATIVE_DIALOGS, PathPrompt, draw_path_prompt
 from masknmf.visualization.imgui.theme import (
     Theme,
     THEME,
@@ -21,22 +22,31 @@ from masknmf.visualization.imgui.theme import (
     card,
     section,
     popup,
+    opaque_popups,
     Grid,
     grid,
     help_mark,
+    tooltip,
     right_aligned_text,
     button_colors,
 )
 
 __all__ = [
     "CheckboxWindow",
+    "SourceRightClickMenu",
     "HANDLE_THICKNESS",
     "TracePlot",
     "RoiOrder",
     "draw_range_filter",
+    "draw_range_slider",
     "draw_roi_table",
     "draw_keybinds_popup",
-    "draw_path_popup",
+    "draw_keybinds_button",
+    "draw_help_buttons",
+    "help_buttons_width",
+    "NATIVE_DIALOGS",
+    "PathPrompt",
+    "draw_path_prompt",
     "draw_edge_handle",
     "Theme",
     "THEME",
@@ -45,9 +55,11 @@ __all__ = [
     "card",
     "section",
     "popup",
+    "opaque_popups",
     "Grid",
     "grid",
     "help_mark",
+    "tooltip",
     "right_aligned_text",
     "button_colors",
     "component_at_pixel",

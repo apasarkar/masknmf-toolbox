@@ -502,7 +502,7 @@ class Launcher:
         if len(sections) > 0:
             configs = {section.argument: self.values[section.argument] for section in sections}
             FILEPATH_RUN_CONFIGS.write_text(
-                json.dumps({"pipeline": spec.cls.__name__, **configs}, indent=2, default=scraper.config_json_value)
+                json.dumps({"pipeline": spec.cls.__name__, "configs": configs}, indent=2, default=scraper.config_json_value)
             )
             argv += ["--config", str(FILEPATH_RUN_CONFIGS)]
         return argv
@@ -657,7 +657,7 @@ class Launcher:
         """Where the run folder is made."""
         draw_subsection(
             text="Output folder",
-            hint="Each run writes a timestamped folder here holding results.hdf5 and config.json. "
+            hint="Each run writes a timestamped folder here holding results.hdf5, config.json and its log. "
             "Empty uses the folder masknmf was started from.",
         )
         imgui.spacing()

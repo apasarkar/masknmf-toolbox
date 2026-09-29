@@ -7,9 +7,21 @@ from fastplotlib.ui import ImguiWindow
 from imgui_bundle import imgui, implot
 
 from masknmf.visualization.imgui.layout import HANDLE_THICKNESS, draw_edge_handle
-from masknmf.visualization.imgui.theme import em
+from masknmf.visualization.imgui.theme import em, opaque_popups, to_vec4
 
 _CURSOR_COLOR = imgui.ImVec4(1.0, 1.0, 1.0, 0.7)
+# follow's alpha-beta tracker, per 60 fps frame; the speed gain is a**2 / (2 - a), which keeps it from overshooting
+_FOLLOW_GAIN = 0.08
+_SEEK_GAIN = 0.15
+_FOLLOW_SPEED_GAIN = _FOLLOW_GAIN**2 / (2 - _FOLLOW_GAIN)
+# seconds between slider-drag fetches; fastplotlib's 0.05 drags at 20 Hz
+_DRAG_THROTTLE = 1 / 60
+
+
+def _nearest(xs: np.ndarray, value: float) -> int:
+    """Index of the sample in sorted ``xs`` nearest ``value``."""
+    i = int(np.clip(np.searchsorted(xs, value), 1, len(xs) - 1))
+    return i - 1 if value - xs[i - 1] <= xs[i] - value else i
 
 
 class TracePlot:
@@ -61,6 +73,22 @@ class TracePlot:
         self.on_pick: Optional[Callable] = None
         self._marks: list = []  # (label, frames, rgb): vertical lines in every panel
         self._spans: list = []  # (label, starts, stops, rgb): shaded epochs in every panel
+        self.background = None  # rgb(a) of the frame behind the panels, None for implot's own
+        # keep the playhead centered in the x span as it moves, pinned to an end of the recording near either end
+        self.follow = False
+        self._x_span = None  # the x limits drawn last frame
+        self._x_target = None  # the x limits follow sets this frame
+        self._held = False  # the playhead is being dragged
+        self._track = None  # (center, speed, seeking) of the followed span, None until follow takes over
+
+    @property
+    def title(self) -> Optional[str]:
+        """The docked window's title bar text, None until docked."""
+        return None if self._window is None else self._window._title
+
+    @title.setter
+    def title(self, value: str):
+        self._window._title = value
 
     @property
     def panels(self) -> tuple:
@@ -123,8 +151,36 @@ class TracePlot:
         return self._window
 
     def link(self, indices, dim: str = "time"):
-        """Follow and drive a fastplotlib ReferenceIndices (``ndw.indices``) on ``dim``, in its reference units."""
+        """
+        Follow and drive a fastplotlib ReferenceIndices (``ndw.indices``) on ``dim``, in its reference units.
+        Every value set on ``dim`` snaps to a frame: whole frame numbers, or a frame's timing.
+        """
         ref = self._timings if self._timings is not None else self._frames
+        clamp, set_dim_index = indices._clamp, indices.set_dim_index
+
+        def snap(d, value):
+            value = clamp(d, value)
+            if d != dim:
+                return value
+            k = _nearest(ref, value)
+            # play and step add one step to the index, which must still move a frame where timings are uneven
+            current = indices[dim]
+            if value > current and ref[k] <= current:
+                k = min(k + 1, len(ref) - 1)
+            elif value < current and ref[k] >= current:
+                k = max(k - 1, 0)
+            return k if self._timings is None else float(ref[k])
+
+        def set_dim_index_once(d, index, cancel_awaiting=False):
+            # a drag lands on the shown frame many times over; refetching it only stalls the drag
+            if cancel_awaiting and d == dim and snap(d, index) == indices[dim]:
+                return
+            set_dim_index(d, index, cancel_awaiting)
+
+        indices._clamp = snap
+        indices.set_dim_index = set_dim_index_once
+        indices.ref_ranges[dim].throttle = _DRAG_THROTTLE
+        indices.set_dim_index(dim, indices[dim])
 
         def follow(current):
             self.frame = np.searchsorted(ref, current[dim])
@@ -134,6 +190,7 @@ class TracePlot:
         self.on_frame = lambda k: indices.set_dim_index(dim, float(ref[k]), cancel_awaiting=True)
 
     def _draw_dock(self):
+        opaque_popups()
         moved = self.draw(reserve=HANDLE_THICKNESS)
         draw_edge_handle(self._window)
         if moved is not None and self.on_frame is not None:
@@ -146,6 +203,8 @@ class TracePlot:
         if implot.get_current_context() is None:
             implot.create_context()
         fit = self._resolve_fit()
+        self._x_target = None if fit else self._follow_target()
+        self._held = False
         io = imgui.get_io()
         # qt on windows reports alt + wheel as a horizontal wheel, which implot ignores
         if io.key_alt and io.mouse_wheel == 0.0 and io.mouse_wheel_h != 0.0:
@@ -154,19 +213,25 @@ class TracePlot:
         flags = implot.SubplotFlags_.link_all_x
         if self._link_y:
             flags |= implot.SubplotFlags_.link_all_y
-        if not implot.begin_subplots("##traces", len(self._panels), 1, imgui.ImVec2(-1, height), flags):
-            return None
-        shared = self._y_limits(self._panels) if fit and self._link_y else None
-        moved = None
+        if self.background is not None:
+            implot.push_style_color(implot.Col_.frame_bg, to_vec4(self.background))
         try:
-            for i, name in enumerate(self._panels):
-                limits = None
-                if fit:
-                    limits = shared if self._link_y else self._y_limits((name,))
-                got = self._draw_panel(name, fit, limits, last=i == len(self._panels) - 1)
-                moved = got if got is not None else moved
+            if not implot.begin_subplots("##traces", len(self._panels), 1, imgui.ImVec2(-1, height), flags):
+                return None
+            shared = self._y_limits(self._panels) if fit and self._link_y else None
+            moved = None
+            try:
+                for i, name in enumerate(self._panels):
+                    limits = None
+                    if fit:
+                        limits = shared if self._link_y else self._y_limits((name,))
+                    got = self._draw_panel(name, fit, limits, last=i == len(self._panels) - 1)
+                    moved = got if got is not None else moved
+            finally:
+                implot.end_subplots()
         finally:
-            implot.end_subplots()
+            if self.background is not None:
+                implot.pop_style_color()
         self._draw_settings_popup()
         return moved
 
@@ -177,6 +242,46 @@ class TracePlot:
         if fit:
             self._fitted.update(name for name, lines in self._lines.items() if lines)
         return fit
+
+    def _follow_target(self) -> Optional[tuple]:
+        """
+        The x limits that keep the playhead at the center of the current span, clamped to the recording. The
+        center tracks the playhead's position and speed, so uneven frame steps blend into one steady scroll and a
+        far jump glides. None while follow is off, the playhead is dragged, a panel is being zoomed or panned, or
+        the span has settled.
+        """
+        io = imgui.get_io()
+        interacting = imgui.is_window_hovered(imgui.HoveredFlags_.child_windows) and (
+            io.mouse_wheel != 0.0 or imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
+        )
+        if not self.follow or self._held or self._x_span is None or interacting:
+            self._track = None
+            return None
+        xs = self.x
+        first, last = float(xs[0]), float(xs[-1])
+        lo, hi = self._x_span
+        width = hi - lo
+        goal = float(xs[self.frame])
+        if self._track is None:
+            self._track = ((lo + hi) / 2, 0.0, True)
+        center, speed, seeking = self._track
+        dt = min(max(io.delta_time, 1e-3), 0.1)
+        frames = dt * 60.0
+        center += speed * dt
+        miss = goal - center
+        # a jump of more than half the span is a seek, not playback: glide there with no speed until nearly there,
+        # or the speed built on the way overshoots
+        if abs(miss) > width / 2:
+            seeking = True
+        elif seeking and abs(miss) <= width * 0.02:
+            seeking = False
+        center += (1.0 - (1.0 - (_SEEK_GAIN if seeking else _FOLLOW_GAIN)) ** frames) * miss
+        speed = 0.0 if seeking else speed + _FOLLOW_SPEED_GAIN * frames * miss / dt
+        self._track = (center, speed, seeking)
+        start = first if width >= last - first else float(np.clip(center - width / 2, first, last - width))
+        if abs(start - lo) <= width * 1e-5 and abs(miss) <= width * 1e-4 and abs(speed) * dt <= width * 1e-5:
+            return None
+        return start, start + width
 
     def _draw_settings_popup(self):
         """Right-click context menu (opened from a panel in ``_draw_panel``) for autofit/fit/x-axis."""
@@ -224,16 +329,19 @@ class TracePlot:
             a, b = max(lo - 1, 0), min(hi + 1, len(xs))
             implot.plot_line(label, xs[a:b], trace[a:b], self._spec(rgb))
             return
-        # one bin per pixel column: drawing more points than that packs each column with vertical strokes
-        window = trace[lo:hi]
-        edges = np.linspace(0, visible, columns + 1).astype(np.int64)
-        starts = edges[:-1]
-        counts = np.diff(edges).astype(np.float32)
+        # one to two bins per pixel column: more points than that packs each column with vertical strokes. bins
+        # are a power of two samples on a grid fixed to the recording, so a scrolling or resizing span keeps its
+        # bins and the band does not shimmer
+        step = 1 << int(np.log2(visible / columns))
+        start = max((lo // step - 1) * step, 0)
+        stop = min((-(-hi // step) + 1) * step, len(xs))
+        starts = np.arange(0, stop - start, step)
+        counts = np.diff(np.append(starts, stop - start))
+        window = trace[start:stop]
         lows = np.minimum.reduceat(window, starts)
         highs = np.maximum.reduceat(window, starts)
-        means = np.add.reduceat(window, starts) / counts
-        centers = starts + counts.astype(np.int64) // 2
-        x = np.ascontiguousarray(xs[lo:hi][centers], np.float32)
+        means = np.add.reduceat(window, starts) / counts.astype(np.float32)
+        x = np.ascontiguousarray(xs[start + starts + counts // 2], np.float32)
         # same label for both, so the legend keeps one entry and they toggle together
         implot.plot_shaded(label, x, highs, lows, self._spec(rgb, fill=True, alpha=0.35))
         implot.plot_line(label, x, np.ascontiguousarray(means, np.float32), self._spec(rgb))
@@ -293,11 +401,19 @@ class TracePlot:
             xs = self.x
             if fit:
                 implot.setup_axis_limits(implot.ImAxis_.x1, float(xs[0]), float(xs[-1]), implot.Cond_.always)
+            elif self._x_target is not None:
+                implot.setup_axis_limits(implot.ImAxis_.x1, *self._x_target, implot.Cond_.always)
+            else:
+                # a plot imgui has just made (a retitled window makes new ones) would fit x to the playhead line
+                # alone when it holds no lines, collapsing the linked axis; it starts at the span shown instead
+                span = self._x_span or (float(xs[0]), float(xs[-1]))
+                implot.setup_axis_limits(implot.ImAxis_.x1, *span, implot.Cond_.once)
             if limits is not None:
                 implot.setup_axis_limits(implot.ImAxis_.y1, *limits, implot.Cond_.always)
             self._draw_spans(xs)
             columns = int(implot.get_plot_size().x)
             span = implot.get_plot_limits().x
+            self._x_span = (float(span.min), float(span.max))
             for label, trace, rgb in lines:
                 self._draw_trace(label, xs, trace, rgb, (span.min, span.max), columns)
             self._draw_marks(xs)
@@ -310,9 +426,11 @@ class TracePlot:
                         self.on_pick(name, self._nearest_line(lines, xs))
                 if imgui.is_mouse_clicked(1):
                     imgui.open_popup(self._popup_id)
-            moved, at = implot.drag_line_x(0, float(xs[self.frame]), _CURSOR_COLOR, 1.5)[:2]
+            moved, at, _, _, held = implot.drag_line_x(0, float(xs[self.frame]), _CURSOR_COLOR, 1.5, out_held=False)
+            if held:
+                self._held = True
             if moved:
-                self.frame = np.searchsorted(xs, at)
+                self.frame = _nearest(xs, at)
                 return self.frame
         finally:
             implot.end_plot()

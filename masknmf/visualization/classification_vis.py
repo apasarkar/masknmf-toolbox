@@ -1,17 +1,19 @@
 from typing import *
 import json
 import os
-import textwrap
 import threading
 import time
 import numpy as np
 import fastplotlib as fpl
-from imgui_bundle import imgui, icons_fontawesome_6 as fa, portable_file_dialogs as pfd
+from imgui_bundle import imgui, icons_fontawesome_6 as fa
 
 from masknmf.visualization.imgui.movie_player import MoviePlayer
-from masknmf.visualization.imgui.panels import draw_keybinds_popup
+from masknmf.visualization.imgui.panels import draw_help_buttons, draw_keybinds_popup
+from masknmf.visualization.imgui.files import PathPrompt, draw_path_prompt
+from masknmf.visualization.imgui.classification_help import draw_classification_help
+from masknmf.visualization.imgui.keybinds import CLASSIFICATION, LABEL_KEYS, pressed
 from masknmf.visualization.summary_widget import SummaryImageViewer
-from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, close_button
+from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, opaque_popups
 from masknmf.demixing.labels import (
     CLASSIFIER_SUFFIX,
     SIDECAR_SUFFIX,
@@ -28,10 +30,6 @@ _LABEL_COLORS = (
     (0.84, 0.15, 0.16), (0.58, 0.40, 0.74), (0.55, 0.34, 0.29),
     (0.89, 0.47, 0.76), (0.50, 0.50, 0.50), (0.74, 0.74, 0.13),
     (0.09, 0.75, 0.81),
-)
-_LABEL_KEYS = (
-    imgui.Key._1, imgui.Key._2, imgui.Key._3, imgui.Key._4, imgui.Key._5,
-    imgui.Key._6, imgui.Key._7, imgui.Key._8, imgui.Key._9,
 )
 _COLUMNS = ("id", "sess", "label", "pred", "area", "peak", "f", "skew")
 _UNLABELED = ""  # key for unlabeled ROIs in _hidden_classes; no class can be named it
@@ -88,6 +86,8 @@ class ClassificationVis:
         change and restored from it on launch unless overridden by arguments.
         """
         self._save_path = str(save_path) if save_path is not None else None
+        # (roi ids, their labels before) per label() call, newest last, for ctrl+z
+        self._label_undo: list = []
         self._error: Optional[str] = None
         self._new_label = ""
         self._loading: Optional[str] = None
@@ -121,7 +121,17 @@ class ClassificationVis:
         self._label_colors: list[tuple] = []
         self._set_label_names(label_names)
         self._help_open = False
-        self._file_dialog = None
+        # typed-path windows, so they work on a remote kernel; browse there is the native dialog
+        self._results_prompt = PathPrompt(
+            "Load demixing results", "", "load", "one or more results.hdf5, ; separated", "open", _HDF5_FILTERS, multiple=True
+        )
+        self._folder_prompt = PathPrompt(
+            "Load a folder of results", "", "load", "a folder; every .hdf5 in it is a session", "folder"
+        )
+        self._classifier_prompt = PathPrompt(
+            "Select classifier", "", "select", "a saved .roicat_classifier to classify with", "open", _CLF_FILTERS
+        )
+        self._save_prompt = PathPrompt("Save classifier as", "", "set", "where train saves the classifier", "save", _CLF_FILTERS)
         self._placeholder = False
         self._clf_source: Optional[tuple[str, str]] = None  # ('trained' | 'file', path)
         self._classified_with = ""
@@ -325,6 +335,7 @@ class ClassificationVis:
                     f"class_labels has {class_labels.shape[0]} entries, expected {num_rois}"
                 )
         self._class_labels = class_labels
+        self._label_undo.clear()
 
         # labels restored from disk can reference classes the current name set
         # doesn't have; extend it so every label index stays displayable
@@ -555,6 +566,7 @@ class ClassificationVis:
             path = self._clf_source[1]
             self._clf_source = ("file", path) if os.path.isfile(path) else None
         self._save_files = None
+        self._label_undo.clear()
         self._adapter_kwargs = {}
         self._before_load = None
         self._roicat_input = None
@@ -592,12 +604,25 @@ class ClassificationVis:
             self._show_current()
 
     def label(self, roi_ids: Sequence[int], label_index: int | Sequence[int]):
-        """Assign a class label (or one per ROI) to the given ROIs; -1 clears"""
-        self._class_labels[list(roi_ids)] = label_index
+        """Assign a class label (or one per ROI) to the given ROIs; -1 clears. undo_label takes it back."""
+        roi_ids = list(roi_ids)
+        self._label_undo.append((roi_ids, self._class_labels[roi_ids].copy()))
+        del self._label_undo[:-50]
+        self._class_labels[roi_ids] = label_index
         self._autosave()
         if self._filter_label != -2:
             self._rebuild_order()
         self._show_current()
+
+    def undo_label(self):
+        """Ctrl+z: put back the labels the last label() call replaced and go to its first ROI."""
+        if not self._label_undo:
+            return
+        roi_ids, previous = self._label_undo.pop()
+        self.label(roi_ids, previous)
+        # label() recorded that too; a second ctrl+z should reach further back, not forward
+        self._label_undo.pop()
+        self.goto(roi_ids[0])
 
     def label_current(self, label_index: int):
         """Label the current ROI and advance to the next one in view"""
@@ -998,29 +1023,42 @@ class ClassificationVis:
         if io.want_text_input:
             return
         stride = 10 if io.key_shift else 1
-        if imgui.is_key_pressed(imgui.Key.up_arrow):
+        if pressed(CLASSIFICATION["up"]):
             self.step(-stride)
-        if imgui.is_key_pressed(imgui.Key.down_arrow):
+        if pressed(CLASSIFICATION["down"]):
             self.step(stride)
-        if imgui.is_key_pressed(imgui.Key.left_arrow):
-            (self._step_group if io.key_shift else self._step_bg)(-1)
-        if imgui.is_key_pressed(imgui.Key.right_arrow):
-            (self._step_group if io.key_shift else self._step_bg)(1)
-        if imgui.is_key_pressed(imgui.Key.b, False):
+        if pressed(CLASSIFICATION["left"]):
+            self._step_bg(-1)
+        if pressed(CLASSIFICATION["right"]):
+            self._step_bg(1)
+        if pressed(CLASSIFICATION["group_prev"]):
+            self._step_group(-1)
+        if pressed(CLASSIFICATION["group_next"]):
+            self._step_group(1)
+        if pressed(CLASSIFICATION["background"]):
             self._show_bg = not self._show_bg
             self._apply_overlay()
-        if imgui.is_key_pressed(imgui.Key.u, False):
-            self.goto_next_unlabeled()
-        if imgui.is_key_pressed(imgui.Key._0, False):
-            self.label_current(-1)
-        if imgui.is_key_pressed(imgui.Key.h, False):
-            self._help_open = not self._help_open
-        if imgui.is_key_pressed(imgui.Key.k, False):
-            self._keybinds_open = not self._keybinds_open
-        if imgui.is_key_pressed(imgui.Key.m, False):
+        if pressed(CLASSIFICATION["masks"]):
             self._show_mask = not self._show_mask
             self._apply_overlay()
-        for i, key in enumerate(_LABEL_KEYS[: len(self._label_names)]):
+        if pressed(CLASSIFICATION["class_masks"]):
+            self._show_class_masks = not self._show_class_masks
+            self._show_current()
+        if pressed(CLASSIFICATION["unlabeled"]):
+            self.goto_next_unlabeled()
+        if pressed(CLASSIFICATION["clear"]) or pressed(CLASSIFICATION["clear_delete"]):
+            self.label_current(-1)
+        if pressed(CLASSIFICATION["fov"]):
+            self._open_full_fov()
+        if pressed(CLASSIFICATION["undo"]):
+            self.undo_label()
+        if pressed(CLASSIFICATION["escape"]):
+            self._help_open = self._keybinds_open = False
+        if pressed(CLASSIFICATION["help"]):
+            self._help_open = not self._help_open
+        if pressed(CLASSIFICATION["keybinds"]):
+            self._keybinds_open = not self._keybinds_open
+        for i, key in enumerate(LABEL_KEYS[: len(self._label_names)]):
             if imgui.is_key_pressed(key, False):
                 self.label_current(i)
 
@@ -1235,6 +1273,7 @@ class ClassificationVis:
                 )
 
     def _draw_panel(self):
+        opaque_popups()
         self._poll_load()
         self._poll_classifier()
         self._handle_keys()
@@ -1249,8 +1288,9 @@ class ClassificationVis:
         self._draw_classifier_card(h)
         self._draw_status()
         self._summary.draw()
-        self._draw_help_popup()
-        self._draw_keybinds_popup()
+        self._draw_prompts()
+        self._help_open, self._keybinds_open = draw_classification_help(self._help_open, self._keybinds_open)
+        self._keybinds_open = draw_keybinds_popup(CLASSIFICATION, self._keybinds_open)
 
     def _draw_nav_card(self, h: float):
         with card("##nav", "NAVIGATE", h):
@@ -1402,7 +1442,7 @@ class ClassificationVis:
                         f"need at least {_MIN_PER_CLASS} ROIs labeled '{name}' to train (have {count})"
                     )
             imgui.table_next_column()
-            if i < len(_LABEL_KEYS):
+            if i < len(LABEL_KEYS):
                 imgui.text_disabled(f"({i + 1})")
             imgui.table_next_column()
             if imgui.small_button("x"):
@@ -1495,47 +1535,42 @@ class ClassificationVis:
         self.load_masknmf(files, append=append)
 
     def open_file(self):
-        """Native picker for one or more demixing_results .hdf5 files; loaded when the dialog returns."""
-        if self._file_dialog is None:
-            start = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
-            self._file_dialog = (
-                "hdf5", pfd.open_file("Open demixing results", start, _HDF5_FILTERS, pfd.opt.multiselect)
-            )
+        """Ask for one or more demixing_results .hdf5 files, typed or browsed; loaded on load."""
+        start = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
+        self._results_prompt.start(start)
 
     def open_folder(self):
-        """Native picker for a folder; every .hdf5 in it is loaded as a session."""
-        if self._file_dialog is None:
-            start = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
-            self._file_dialog = ("folder", pfd.select_folder("Open a folder of demixing results", start))
+        """Ask for a folder; every .hdf5 in it is loaded as a session."""
+        start = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
+        self._folder_prompt.start(start)
 
     def browse(self):
-        """Native picker for a saved classifier to classify with; applied when the dialog returns."""
-        if self._file_dialog is None:
-            start = os.path.dirname(self._classifier_path or self._default_classifier_path())
-            self._file_dialog = ("open", pfd.open_file("Select a ROICaT classifier", start, _CLF_FILTERS))
+        """Ask for a saved classifier to classify with; applied on select."""
+        self._classifier_prompt.start(self._classifier_path or self._default_classifier_path())
 
     def browse_save(self):
-        """Native picker for where train saves the classifier."""
-        if self._file_dialog is None:
-            start = self._classifier_path or self._default_classifier_path() + CLASSIFIER_SUFFIX
-            self._file_dialog = ("save", pfd.save_file("Save classifier as", start, _CLF_FILTERS))
+        """Ask where train saves the classifier."""
+        self._save_prompt.start(self._classifier_path or self._default_classifier_path() + CLASSIFIER_SUFFIX)
 
-    def _poll_file_dialog(self):
-        if self._file_dialog is None or not self._file_dialog[1].ready(0):
-            return
-        kind, dialog = self._file_dialog
-        self._file_dialog = None
-        result = dialog.result()
-        if not result:
-            return
-        if kind == "open":
-            self.select_classifier(result[0])
-        elif kind == "hdf5":
-            self.open_paths(result)
-        elif kind == "folder":
-            self.open_paths([result])
-        else:
-            self._classifier_path = result
+    def _draw_prompts(self):
+        for prompt in (self._results_prompt, self._folder_prompt, self._classifier_prompt):
+            path = draw_path_prompt(prompt)
+            if path is None:
+                continue
+            paths = [p.strip() for p in path.split(";") if p.strip()] if prompt is self._results_prompt else [path]
+            missing = [p for p in paths if not os.path.exists(p)]
+            if missing:
+                prompt.status = f"not found on this machine: {missing[0]}"
+                continue
+            prompt.open = False
+            if prompt is self._classifier_prompt:
+                self.select_classifier(path)
+            else:
+                self.open_paths(paths)
+        path = draw_path_prompt(self._save_prompt)
+        if path is not None:
+            self._save_prompt.open = False
+            self._classifier_path = path
 
     def _classifier_hint(self) -> str:
         missing = self._adapter_missing()
@@ -1553,7 +1588,6 @@ class ClassificationVis:
         w = em(6.5)
         row_w = w * 2 + em(0.6)
         with card("##clf", "CLASSIFIER", h):
-            self._poll_file_dialog()
             imgui.text("save to")
             imgui.same_line(0, em(0.4))
             imgui.set_next_item_width(row_w - em(6.4))
@@ -1664,15 +1698,7 @@ class ClassificationVis:
         imgui.end_disabled()
         imgui.end_disabled()
         imgui.same_line(0, em(1.0))
-        if imgui.button("help"):
-            self._help_open = not self._help_open
-        imgui.same_line(0, em(0.4))
-        imgui.text_disabled("(h)")
-        imgui.same_line(0, em(0.6))
-        if imgui.button("keybinds"):
-            self._keybinds_open = not self._keybinds_open
-        imgui.same_line(0, em(0.4))
-        imgui.text_disabled("(k)")
+        self._help_open, self._keybinds_open = draw_help_buttons(self._help_open, self._keybinds_open, "Classification Guide")
         imgui.same_line(0, em(1.0))
         if self._loading is not None or self._clf_busy:
             # negative fraction is imgui's indeterminate bar: it keeps moving while we work
@@ -1709,81 +1735,6 @@ class ClassificationVis:
                 self.goto_next_unlabeled()
             imgui.same_line(0, em(0.3))
             imgui.text_disabled("(u)")
-
-    _HELP_STEPS = (
-        "Load demixing result picks one or more demixing_results.hdf5 sessions, load folder takes every .hdf5 "
-        "in a folder. Loading again appends more sessions; clear all starts over.",
-        "Label each mask: click a label in the list or press its number key (0 clears). "
-        "Up/down moves through the ROIs, u jumps to the next unlabeled one.",
-        "Use VIEW to overlay the mask on a background image or the demixed movie; "
-        "Open full FOV shows where the ROI sits in the field of view.",
-        "When every ROI is labeled (at least 2 per class), click train: a ROICaT classifier is fit on the "
-        "labels and saved to the classifier path.",
-        "On a new session, pick a saved classifier with Select classifier: its classes join the "
-        "label list and every session you load is classified as it arrives (turn that off with "
-        "classify on load). Unlabeled ROIs take the prediction and the "
-        "pred column shows its confidence (red where it disagrees with your label). "
-        "Fix what is wrong, then train again to improve the classifier.",
-        "Open full FOV with class masks on shows every ROI of the session in its class color; "
-        "the eye next to a class hides it.",
-        "Labels are saved automatically as you go.",
-    )
-    _HELP_HDF5 = (
-        "from masknmf.demixing.labels import read_labels\n"
-        "\n"
-        "# reads demixing_results.labels.hdf5 next to the results file\n"
-        'labels, names = read_labels(r"path/to/demixing_results.hdf5")\n'
-        "# labels: (num_rois,) int64, -1 = unlabeled; the sidecar also holds\n"
-        "# roi_masks, class_predictions, class_probabilities, classifier_path\n"
-        "\n"
-        "from masknmf.classification import RoicatClassifier\n"
-        'clf = RoicatClassifier.from_disk(r"path/to/classifier.roicat_classifier")\n'
-        'clf.classify([r"other/demixing_results.hdf5"], write=True)  # writes its sidecar'
-    )
-    _HELP_NPZ = (
-        "import numpy as np\n"
-        "\n"
-        'data = np.load(r"path/to/labels.npz")\n'
-        'names  = data["label_names"]   # class names; row index = label value\n'
-        'labels = data["class_labels"]  # (num_rois,) int64; -1 = unlabeled'
-    )
-
-    def _draw_help_popup(self):
-        if not self._help_open:
-            return
-        opened, self._help_open = popup("Help", self._help_open)
-        if opened:
-            section("Workflow")
-            for i, step in enumerate(self._HELP_STEPS, 1):
-                imgui.text_colored(to_vec4(THEME.accent), f"{i}.")
-                imgui.same_line(em(2.6))
-                imgui.text(textwrap.fill(step, 80))
-                imgui.dummy(imgui.ImVec2(0, em(0.15)))
-            section("Output files")
-            imgui.text_colored(to_vec4(THEME.text_dim), self._autosave_note())
-            imgui.text_colored(
-                to_vec4(THEME.code), self._HELP_NPZ if self._save_files is None else self._HELP_HDF5
-            )
-            if close_button():
-                self._help_open = False
-        imgui.end()
-
-    _KEYBINDS = (
-        ("up / down", "previous / next ROI"),
-        ("shift + up / down", "jump 10 ROIs"),
-        ("left / right", "previous / next background image"),
-        ("shift + left / right", "previous / next label group"),
-        ("1-9", "assign label"),
-        ("0", "clear label"),
-        ("u", "jump to next unlabeled ROI"),
-        ("m", "toggle mask overlay"),
-        ("b", "toggle background"),
-        ("h", "toggle help"),
-        ("k", "toggle keybinds"),
-    )
-
-    def _draw_keybinds_popup(self):
-        self._keybinds_open = draw_keybinds_popup(self._KEYBINDS, self._keybinds_open)
 
     def _draw_table(self):
         names = ("all", "unlabeled", *self._label_names)

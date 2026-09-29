@@ -62,31 +62,50 @@ the default list: each pass builds on the default pass at the same position, and
 masknmf params --pipeline two-photon-calcium --json > configs.json
 masknmf run movie.tif --fs 30 --config configs.json   # the file names the pipeline, so --pipeline can be left out
 
-# rerun with the configs of an earlier run
-masknmf run movie.tif --fs 30 --config ./20260923_120000_two-photon-calcium/config.json
+# rerun with the configs of an earlier run, its frame rate included unless --fs is given
+masknmf run movie.tif --config ./20260923_120000_two-photon-calcium/config.json
+
+# the same configs on many movies, one run folder beside each; quote the glob so masknmf expands it on every shell
+masknmf run "D:/sessions/*/movie.tif" --config ./20260923_120000_two-photon-calcium/config.json
 ```
+
+Several movies, or a glob, run one after another. A movie that cannot be opened stops the batch before any run starts;
+a run that fails is logged and the rest carry on, and the batch ends by listing each movie as done or failed with its
+run folder. A config file's `output_folder` is ignored when movies are given: each run folder goes beside its movie,
+or under `--output-folder`. From python, `TwoPhotonCalciumPipeline.from_config("<run folder>/config.json")` builds the
+same pipeline; pass `frame_rate` and the other run arguments to `run` yourself.
 
 ```json
 {
   "pipeline": "TwoPhotonCalciumPipeline",
-  "motion_correct_config": {"kind": "piecewise-rigid", "minimum_patch_sizes": [64, 64], "max_deviation_rigid": [3, 3]},
-  "compress_config": {"kind": "compress-denoise", "max_components": 30},
-  "filtered_demixing_config": {
-    "kind": "multipass",
-    "DemixingConfigs": [
-      {"InitConfig": {"mad_correlation_threshold": 0.7}},
-      {},
-      {"NMFConfig": {"maxiter": 60}}
-    ]
-  },
-  "device": "cuda"
+  "configs": {
+    "motion_correct_config": {"kind": "piecewise-rigid", "minimum_patch_sizes": [64, 64], "max_deviation_rigid": [3, 3]},
+    "compress_config": {"kind": "compress-denoise", "max_components": 30},
+    "filtered_demixing_config": {
+      "kind": "multipass",
+      "DemixingConfigs": [
+        {"InitConfig": {"mad_correlation_threshold": 0.7}},
+        {},
+        {"NMFConfig": {"maxiter": 60}}
+      ]
+    },
+    "device": "cuda"
+  }
 }
 ```
 
 Flags win over the file: `--device cpu` replaces the file's device, and a `--<section>-kind` naming another config
 than the file's replaces that section with the named config's defaults. A `--<section>-kind` naming the file's own
-config keeps the file's values. A run folder's `config.json` holds every
-config the run used, with `"*"` for values json cannot hold (arrays, detrenders); `"*"` keeps the default.
+config keeps the file's values. A run folder's `config.json` holds the run under `run` (its command line, the device
+and gpu it ran on, when it started and finished, its seconds and whether it is running, done or failed), the movie and
+array files the run read under `inputs`, each with its resolved `path`, file `name`, `bytes`, `modified` time, `shape`,
+`dtype` and, for hdf5, `dataset` by run argument, and every
+config the run used under `configs`, with `"*"` for values json cannot hold (arrays, detrenders); `"*"` keeps the default.
+Under `timings` it holds each step that ran, with its start time, seconds, whether it finished and, on a cuda device,
+its peak cuda memory in GB, updated as the run goes. A step still running after 10 minutes says so in the log, and
+every 10 minutes after.
+A run that resumes from the folder's compression (`--compress-kind skip --output-folder <run folder>`) keeps the
+earlier run's motion correction and compression configs and timings there and replaces the rest.
 
 ---
 
@@ -94,7 +113,9 @@ config the run used, with `"*"` for values json cannot hold (arrays, detrenders)
 
 Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise | skip), `spatial-highpass` (spatial-highpass), `filtered-demixing` / `unfiltered-demixing` (multipass: 2 and 3 passes by default).
 Run args: `MOVIE` (optional), `--fs` (required), `--exclude-border-radius`, `--remove-intermediates`.
-Init args: `--output-folder`, `--frame-batch-size`, `--device {auto,cuda,cpu}`.
+Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device {auto,cuda,cpu}`.
+
+`--load-into-ram true` reads the whole raw movie into RAM before motion correction, so every later pass (moco, compression, the one-photon raw regression) reads memory instead of the file. It needs about the movie's size in free RAM. The glutamate pipeline always does this and has no flag.
 
 Demixing passes without a detrender get the spline detrender the run builds from `--fs`.
 
@@ -120,8 +141,10 @@ masknmf run --pipeline two-photon-calcium registered.tif --fs 30 \
 # plain PMD compression, tuned, and a stronger spatial highpass
 cat > tuned.json <<'EOF'
 {
-  "compress_config": {"kind": "compress", "block_sizes": [32, 32], "max_components": 30, "frame_range": 5000},
-  "spatial_highpass_config": {"filter_sigma": 6}
+  "configs": {
+    "compress_config": {"kind": "compress", "block_sizes": [32, 32], "max_components": 30, "frame_range": 5000},
+    "spatial_highpass_config": {"filter_sigma": 6}
+  }
 }
 EOF
 masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --config tuned.json
@@ -156,8 +179,10 @@ masknmf run --pipeline one-photon-culture voltage.tif --fs 1000 \
 # a 500 frame template, larger compression blocks, keep the compression group
 cat > voltage.json <<'EOF'
 {
-  "motion_correct_config": {"kind": "gradient", "num_frames_template": 500},
-  "compress_config": {"kind": "compress-denoise", "block_sizes": [40, 40], "max_components": 40}
+  "configs": {
+    "motion_correct_config": {"kind": "gradient", "num_frames_template": 500},
+    "compress_config": {"kind": "compress-denoise", "block_sizes": [40, 40], "max_components": 40}
+  }
 }
 EOF
 masknmf run --pipeline one-photon-culture voltage.h5 --dataset data --fs 400 \
@@ -193,8 +218,10 @@ masknmf run --pipeline glutamate-calcium-spine \
 # tune moco and compression; kinds can be left out because each section has one
 cat > spines.json <<'EOF'
 {
-  "motion_correct_config": {"max_shifts": [8, 8]},
-  "compress_config": {"block_sizes": [16, 16], "num_epochs": 5}
+  "configs": {
+    "motion_correct_config": {"max_shifts": [8, 8]},
+    "compress_config": {"block_sizes": [16, 16], "num_epochs": 5}
+  }
 }
 EOF
 masknmf run --pipeline glutamate-calcium-spine \
@@ -206,7 +233,7 @@ masknmf run --pipeline glutamate-calcium-spine \
 Moco and compression only, with no demixing.
 Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise, no skip).
 Run args: `MOVIE`, `--exclude-border-radius`.
-Init args: `--output-folder`, `--frame-batch-size`, `--device`.
+Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device`.
 
 ```bash
 # minimal
@@ -215,8 +242,10 @@ masknmf run --pipeline widefield-singlechannel wf.tif
 # piecewise-rigid + plain compression
 cat > wf.json <<'EOF'
 {
-  "motion_correct_config": {"kind": "piecewise-rigid", "minimum_patch_sizes": [32, 32]},
-  "compress_config": {"kind": "compress", "block_sizes": [16, 16]}
+  "configs": {
+    "motion_correct_config": {"kind": "piecewise-rigid", "minimum_patch_sizes": [32, 32]},
+    "compress_config": {"kind": "compress", "block_sizes": [16, 16]}
+  }
 }
 EOF
 masknmf run --pipeline widefield-singlechannel wf.tif --device cpu --output-folder ./wf_out --config wf.json

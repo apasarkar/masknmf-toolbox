@@ -31,7 +31,7 @@ dependencies = [
     "tensorboard>=2.20.0",
     "fastplotlib[imgui,notebook]>=0.7.0",
     "imgui-bundle==1.92.801",  # wgpu<=0.32 needs cmd_lists_count (gone in 1.92.900), fastplotlib needs the newer add_polyline
-    "imgui_data_loader",
+    "imgui_data_loader>=0.2.0",
     "simplejpeg",
     "glfw",
     "oasis-deconv",
