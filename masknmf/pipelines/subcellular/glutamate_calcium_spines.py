@@ -270,7 +270,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             ca_pmd_demixer_results.export(ca_path)
             ca_pmd_demixer_global.results.export(ca_path, prefix="global")
 
-        return run_folder
+        return self.finish()
 
 
 

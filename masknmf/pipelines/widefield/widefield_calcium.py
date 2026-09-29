@@ -57,5 +57,5 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         with self.step("compression"):
             compressed_results = compress_strategy.compress(moco_data)
             compressed_results.export(results_path)
-        return Path(results_path).parent
+        return self.finish()
 

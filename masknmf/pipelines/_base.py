@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import os
+import threading
 import time
 import numpy as np
 import torch
@@ -28,10 +29,18 @@ from masknmf.utils import display, has_group, drop_group, torch_select_device
 logger = logging.getLogger(__name__)
 
 
+def heartbeat(name: str, start: float, seconds: float, stop: threading.Event):
+    """Log every seconds that the step name, started at start (monotonic), is still running, until stop is set."""
+    while not stop.wait(seconds):
+        logger.info(f"{name} still running after {timedelta(seconds=round(time.monotonic() - start))}")
+
+
 class BasePipeline(ABC):
     """
     Motion correction, compression (and optional demixing) of one session.
     """
+
+    heartbeat_seconds = 600
 
     def __init__(self,
                  output_folder: str | Path | None = None,
@@ -54,6 +63,14 @@ class BasePipeline(ABC):
         self.run_folder = None
         # the scalar arguments of the run in progress, saved to config.json beside the __init__ ones
         self.run_config = {}
+        # the command line that started the run in progress, when the cli did
+        self.command = None
+        # the run in progress as config.json holds it: command, device, gpu, start, and once finish has run, its
+        # end, seconds and status
+        self.run_record = {}
+        # the file each movie or array argument of the run in progress was read from, by argument name, as
+        # config.json holds it: {"path": ..., "name": ...}; the cli fills it
+        self.inputs = {}
         # what config.json keeps from the run whose results a resumed run reuses
         self.configs_reused = {}
         # the seconds, start and status of each step that ran in the run folder, by step name
@@ -104,18 +121,20 @@ class BasePipeline(ABC):
         self.run_folder = candidate
         self.configs_reused = {}
         self.timings = {}
-        self.write_config()
         self.log_to(candidate)
+        self.write_config()
         return candidate
 
     def write_config(self) -> Path:
         """
-        Write ``config.json`` in the run folder: the masknmf version, the pipeline, its __init__ and run arguments
-        under "configs" (those of a reused run's steps over this run's) and the steps that ran under "timings".
+        Write ``config.json`` in the run folder: the masknmf version, the pipeline, the run record under "run", the
+        files its run arguments came from under "inputs", its __init__ and run arguments under "configs" (those of a
+        reused run's steps over this run's) and the steps that ran under "timings".
         """
         path = self.run_folder / "config.json"
         with open(path, "w") as f:
-            json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__,
+            json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__, "run": self.run_record,
+                       "inputs": self.inputs,
                        "configs": {**self.config, **self.run_config, **self.configs_reused}, "timings": self.timings},
                       f, indent=2, default=config_json_value)
         return path
@@ -123,7 +142,8 @@ class BasePipeline(ABC):
     def log_to(self, folder: Path) -> Path:
         """
         Write the masknmf log to ``<folder>/<folder name>.log`` from here on, appending to the file an earlier run
-        left there and closing the file of the run logged until now, and log this run's header line.
+        left there and closing the file of the run logged until now, start the run record (command, device, gpu and
+        start time; finish ends it) and log this run's header line.
         """
         for handler in [h for h in logging.getLogger("masknmf").handlers if isinstance(h, logging.FileHandler)]:
             logging.getLogger("masknmf").removeHandler(handler)
@@ -132,31 +152,55 @@ class BasePipeline(ABC):
         self.log_handler = logging.FileHandler(path, encoding="utf-8")
         self.log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         logging.getLogger("masknmf").addHandler(self.log_handler)
-        logger.info(f"masknmf {__version__} {type(self).__name__} on {self.torch_device}, {self.log_level} log at {path}")
+        device = str(self.torch_device)
+        self.run_record = {"command": self.command, "device": device,
+                           "gpu": torch.cuda.get_device_name() if device.startswith("cuda") else None,
+                           "started": datetime.now().isoformat(timespec="seconds"), "finished": None, "seconds": None,
+                           "status": "running"}
+        logger.info(f"masknmf {__version__} {type(self).__name__} on {device}, {self.log_level} log at {path}")
         return path
 
     @contextmanager
     def step(self, name: str):
         """
-        Log that name starts and, once the block ends, how long it took, or that it failed and after how long, and
-        record its start, seconds and status under name in timings and config.json.
+        Log that name starts, that it is still running every heartbeat_seconds and, once the block ends, how long it
+        took (with its peak cuda memory on a cuda device), or that it failed and after how long, and record its start,
+        seconds, status and peak under name in timings and config.json.
         """
         logger.info(name)
         started = datetime.now().isoformat(timespec="seconds")
         start = time.monotonic()
+        cuda = str(self.torch_device).startswith("cuda")
+        if cuda:
+            torch.cuda.reset_peak_memory_stats()
+        stop = threading.Event()
+        threading.Thread(target=heartbeat, args=(name, start, self.heartbeat_seconds, stop), daemon=True).start()
         status = "failed"
         try:
             yield
             status = "done"
         finally:
+            stop.set()
             seconds = time.monotonic() - start
             self.timings[name] = {"seconds": round(seconds, 1), "started": started, "status": status}
+            peak = ""
+            if cuda:
+                self.timings[name]["peak_cuda_gb"] = round(torch.cuda.max_memory_allocated() / 1e9, 2)
+                peak = f", peak cuda {self.timings[name]['peak_cuda_gb']} GB"
             if self.run_folder is not None:
                 self.write_config()
             if status == "done":
-                logger.info(f"{name} done in {timedelta(seconds=round(seconds))}")
+                logger.info(f"{name} done in {timedelta(seconds=round(seconds))}{peak}")
             else:
-                logger.error(f"{name} failed after {timedelta(seconds=round(seconds))}")
+                logger.error(f"{name} failed after {timedelta(seconds=round(seconds))}{peak}")
+
+    def finish(self, status: Literal["done", "failed"] = "done") -> Path:
+        """Record in the run record and config.json that the run ended now with status and how long it took, and return the run folder."""
+        finished = datetime.now()
+        seconds = (finished - datetime.fromisoformat(self.run_record["started"])).total_seconds()
+        self.run_record.update(finished=finished.isoformat(timespec="seconds"), seconds=round(seconds, 1), status=status)
+        self.write_config()
+        return self.run_folder
 
     def results_path(self, resume: bool = False) -> str:
         """
@@ -173,8 +217,9 @@ class BasePipeline(ABC):
             raise ValueError(f"You specified that compression should be skipped but {path} holds no compression")
         self.run_folder = folder
         # the earlier run's motion correction and compression made the results reused now, so config.json keeps
-        # their configs and timings and takes the rest from this run
+        # their inputs, configs and timings and takes the rest from this run
         earlier = json.loads((folder / "config.json").read_text()) if (folder / "config.json").is_file() else {}
+        self.inputs = {**earlier.get("inputs", {}), **self.inputs}
         self.configs_reused = {name: value for name, value in earlier.get("configs", {}).items()
                                if name in ("motion_correct_config", "compress_config", "exclude_border_radius")}
         self.timings = {name: timing for name, timing in earlier.get("timings", {}).items()

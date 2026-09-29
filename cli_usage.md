@@ -87,9 +87,14 @@ masknmf run movie.tif --fs 30 --config ./20260923_120000_two-photon-calcium/conf
 
 Flags win over the file: `--device cpu` replaces the file's device, and a `--<section>-kind` naming another config
 than the file's replaces that section with the named config's defaults. A `--<section>-kind` naming the file's own
-config keeps the file's values. A run folder's `config.json` holds every
+config keeps the file's values. A run folder's `config.json` holds the run under `run` (its command line, the device
+and gpu it ran on, when it started and finished, its seconds and whether it is running, done or failed), the movie and
+array files the run read under `inputs`, each with its resolved `path`, file `name`, `bytes`, `modified` time, `shape`,
+`dtype` and, for hdf5, `dataset` by run argument, and every
 config the run used under `configs`, with `"*"` for values json cannot hold (arrays, detrenders); `"*"` keeps the default.
-Under `timings` it holds each step that ran, with its start time, seconds and whether it finished, updated as the run goes.
+Under `timings` it holds each step that ran, with its start time, seconds, whether it finished and, on a cuda device,
+its peak cuda memory in GB, updated as the run goes. A step still running after 10 minutes says so in the log, and
+every 10 minutes after.
 A run that resumes from the folder's compression (`--compress-kind skip --output-folder <run folder>`) keeps the
 earlier run's motion correction and compression configs and timings there and replaces the rest.
 
