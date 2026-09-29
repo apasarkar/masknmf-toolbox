@@ -102,7 +102,7 @@ class MultiSessionDemixingVis:
         for index, sess_id in enumerate(self.session_ids):
             fpath = self.tracking_results.session_files[sess_id]
             with h5py.File(fpath, "r") as f:
-                c = torch.from_numpy(f["DemixingResults/c"][:])
+                c = torch.from_numpy(f["DemixingResults/temporal_demixed"][:])
                 curr_shape = tuple([int(i) for i in f["DemixingResults/shape"][:]])
 
             curr_c = c
