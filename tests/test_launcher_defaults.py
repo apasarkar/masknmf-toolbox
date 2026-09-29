@@ -135,7 +135,7 @@ def test_params_json_through_config_reproduces_the_defaults(slug, tmp_path, monk
     spec = cli.spec_for(slug=slug)
     written = json.loads(out.getvalue())
     for section in spec.sections:
-        rebuilt = cli.section_value(section=section, kind=None, value_file=written[section.argument])[1]
+        rebuilt = cli.section_value(section=section, kind=None, value_file=written["configs"][section.argument])[1]
         assert launcher.same(rebuilt, section.default), section.argument
 
 

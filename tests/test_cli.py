@@ -62,7 +62,7 @@ def test_log_level_selects_what_the_log_holds_and_round_trips_through_config(fol
     first, = (tmp_path / "first").iterdir()
     text = (first / f"{first.name}.log").read_text()
     assert "a warning line" in text and "an info line" not in text and "a debug line" not in text
-    assert json.loads((first / "config.json").read_text())["log_level"] == "warning"
+    assert json.loads((first / "config.json").read_text())["configs"]["log_level"] == "warning"
 
     cli.main(["run", "--config", str(first / "config.json"), "--output-folder", str(tmp_path / "second")])
     second, = (tmp_path / "second").iterdir()

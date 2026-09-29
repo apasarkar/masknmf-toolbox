@@ -39,7 +39,7 @@ def test_log_level_sets_the_logger_and_a_run_folder_gets_a_log_beside_its_config
     pipeline = cls(output_folder=str(tmp_path), log_level="debug")
     assert logging.getLogger("masknmf").level == logging.DEBUG
     folder = pipeline.create_run_folder()
-    assert json.loads((folder / "config.json").read_text())["log_level"] == "debug"
+    assert json.loads((folder / "config.json").read_text())["configs"]["log_level"] == "debug"
     logging.getLogger("masknmf").debug("a debug line")
     text = (folder / f"{folder.name}.log").read_text()
     assert masknmf.__version__ in text and cls.__name__ in text
