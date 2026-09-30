@@ -3,24 +3,37 @@ from functools import partial
 
 import numpy as np
 import fastplotlib as fpl
+from fastplotlib.widgets.nd_widget._async import run_sync
+from cmap import Colormap
 from imgui_bundle import imgui
 import h5py
 import torch
 
 import masknmf.arrays
+from masknmf.arrays import SwitchableArray
 from masknmf.multisession import RoicatTrackingResults
 from masknmf.visualization.imgui import (
     RoiOrder,
+    SourceRightClickMenu,
+    TracePlot,
     component_at_pixel,
     draw_keybinds_button,
     draw_keybinds_popup,
     draw_range_filter,
     draw_roi_table,
+    grid,
     help_mark,
     opaque_popups,
+    section,
     tooltip,
 )
 from masknmf.visualization.imgui.keybinds import MULTISESSION, pressed
+
+_UNCLUSTERED_COLOR = (0.45, 0.45, 0.45)
+_SCALAR_CMAP = "viridis"
+# ROICaT's quality_metrics key per table column, one value per cluster label
+_QUALITY = {"similarity": "cluster_intra_means", "silhouette": "cluster_silhouette"}
+_CAPTIONS = ("panels", "color by", "unclustered")
 
 
 class MultiSessionDemixingVis:
@@ -43,10 +56,11 @@ class MultiSessionDemixingVis:
         2. (Optional) You have specified the clusters (i.e. rows of the clustering matrix) you care about.
         3. (Optional) You have a specific subset of tracked sessions you care about
 
-        One window: each session's movie, its MIP under it, and a Tools panel on the right listing the clusters.
-        Selecting a cluster, from the table or by double-clicking a footprint, highlights it in every session.
-
-        figure_shape (rows, cols) lays out the sessions of each block, the movies above the MIPs; by default one row.
+        One window: a panel per session, laid out by figure_shape (rows, cols; default one row), the selected
+        cluster's traces above them and a Tools panel on the right listing the clusters. Each panel shows the
+        signals, their MIP, the aligned FOV image or that FOV overlaid on another session's (right-click a panel,
+        or pick for every panel in Tools). Selecting a cluster, from the table or by double-clicking a footprint,
+        highlights it in every session.
 
         reference_ranges and synchronization:
         In this viewer, time reference space specifies units of time relative to the start of each session. So t = 1 refers to 1 unit after the start of a session.
@@ -135,76 +149,86 @@ class MultiSessionDemixingVis:
         self._session_frame_timings = session_frame_timings
         self._reference_range_timeaxis = reference_range_timeaxis
 
+        self._build_members()
+        self._quality = self._read_quality()
+
         coloring = np.random.uniform(low=30, high=255, size=self.cluster_ids.shape[0] * 3).reshape(
             self.cluster_ids.shape[0], 3).astype('float32')
         coloring /= np.amax(coloring, axis=1, keepdims=True)
         self._coloring = coloring.astype('float32')
+        self._color_by = "cluster"
+        self._show_unclustered = False
+        self._panels = None
+        self._fovs = self._fov_images()
         self._apply_consistent_coloring()
 
-        self._build_members()
+        self._panels = []
+        for j in range(self.num_sessions_displayed):
+            sources = {"signals": self.colorful_ac_arrays[j], "MIP": self._mips[j]}
+            if self._fovs is not None:
+                sources["aligned FOV"] = np.repeat(self._fovs[j][..., None], 3, axis=2)
+                if self.num_sessions_displayed > 1:
+                    sources["FOV overlay"] = self._overlay(j)
+            self._panels.append(SwitchableArray(sources, (*self.colorful_ac_arrays[j].shape[:3], 3)))
 
-        self._mip_session_names = ["MIP " + elt for elt in self.session_names]
         self._ndw = fpl.NDWidget(self.reference_ranges,
                                  extents=self._extents(),
-                                 names=[*self.session_names, *self.mip_session_names],
-                                 controller_ids=[tuple([*self.session_names, *self.mip_session_names])],
-                                 size=(1500, 900))
+                                 names=[*self.session_names],
+                                 controller_ids=[tuple(self.session_names)],
+                                 size=(1500, 1000))
 
         self._nd_image_graphics = []
-        self._nd_mip_graphics = []
-        for k in range(self.num_sessions_displayed):
-            timings = self.session_frame_timings[k]
-            graphic = self._ndw[self.session_names[k]].add_nd_image(
-                self.colorful_ac_arrays[k],
+        self._signal_clims = []
+        for j in range(self.num_sessions_displayed):
+            timings = self.session_frame_timings[j]
+            graphic = self._ndw[self.session_names[j]].add_nd_image(
+                self._panels[j],
                 (self.reference_range_timeaxis, "m", "n", "c"),
                 ("m", "n", "c"),
                 rgb_dim="c",
                 compute_histogram=False,
                 slider_maps=None if timings is None else {self.reference_range_timeaxis: timings},
-                name=self.session_names[k],
+                name=self.session_names[j],
             )
             self._nd_image_graphics.append(graphic)
-            self._ndw.figure[self.session_names[k]].title = self.session_names[k]
-
-            mip = self._ndw[self.mip_session_names[k]].add_nd_image(
-                self.colorful_ac_arrays[k].compute_mip().cpu().numpy(),
-                ("m", "n", "c"),
-                ("m", "n", "c"),
-                rgb_dim="c",
-                compute_histogram=False,
-                name=self.mip_session_names[k],
-            )
-            self._nd_mip_graphics.append(mip)
-            self._ndw.figure[self.mip_session_names[k]].title = self.mip_session_names[k]
+            self._signal_clims.append((graphic.graphic.vmin, graphic.graphic.vmax))
+            self._set_title(j)
+        self._ndw.figure.set_imgui_right_click(SourceRightClickMenu(self._panel_choices, self._set_source))
 
         self._image_highlight_selectors = []
-        for index in range(self.num_sessions_displayed):
+        for j in range(self.num_sessions_displayed):
             selector = fpl.ImageHighlightSelector(lut="tab10",
                                                   lut_wrap="repeat",
-                                                  selection_options={"pixels": self.ac_arrays[index].contours},
+                                                  selection_options={"pixels": self.ac_arrays[j].contours},
                                                   options_color="w",
                                                   options_alpha=0.0,
                                                   alpha=0.95)
-            selector.add_graphic(self._nd_image_graphics[index].graphic)
-            selector.add_graphic(self._nd_mip_graphics[index].graphic)
+            selector.add_graphic(self._nd_image_graphics[j].graphic)
             selector.selection = None
             self._image_highlight_selectors.append(selector)
-
-        for index in range(self.num_sessions_displayed):
-            self._nd_image_graphics[index].graphic.add_event_handler(partial(self.neuron_selection, index), "double_click")
-            self._nd_mip_graphics[index].graphic.add_event_handler(partial(self.neuron_selection, index), "double_click")
+            self._nd_image_graphics[j].graphic.add_event_handler(partial(self.neuron_selection, j), "double_click")
 
         for subplot in self._ndw.figure:
             subplot.tooltip.enabled = False
             subplot.toolbar = False
 
-        self._order = RoiOrder(
-            {"sessions": self.clustering_mat.sum(axis=1), **{
-                name: np.where(self._first_member[:, j] >= 0, self._first_member[:, j], np.nan)
-                for j, name in enumerate(self.session_names)
-            }},
-            len(self.cluster_ids),
+        self._trace_x, self._session_x = self._trace_axes()
+        self._traces = TracePlot(
+            self.session_names,
+            len(self._trace_x),
+            None if self.session_frame_timings[0] is None else self._trace_x,
+            autofit=False,
         )
+        self._traces.dock(self._ndw.figure, size=min(90 + 110 * self.num_sessions_displayed, 520))
+        if self.reference_range_timeaxis in self.reference_index.ref_ranges:
+            self._traces.link(self.reference_index, dim=self.reference_range_timeaxis)
+
+        columns = {"sessions": self.clustering_mat.sum(axis=1), **self._quality}
+        columns.update({
+            name: np.where(self._first_member[:, j] >= 0, self._first_member[:, j], np.nan)
+            for j, name in enumerate(self.session_names)
+        })
+        self._order = RoiOrder(columns, len(self.cluster_ids))
         self._order.set_range_column("sessions")
         self._order.rebuild()
         self._active = None
@@ -214,49 +238,164 @@ class MultiSessionDemixingVis:
         self._ndw.figure.add_imgui_window(
             self._draw_side_panel,
             location="right",
-            size=round(28 * self._ndw.figure.default_imgui_font.legacy_size),
+            size=round(30 * self._ndw.figure.default_imgui_font.legacy_size),
             title="Tools",
         )
 
     def _extents(self) -> dict:
-        """The session grid of figure_shape twice over, the movies in the top half and the MIPs under them."""
+        """One panel per session on the figure_shape grid."""
         rows, cols = self.figure_shape
         extents = {}
-        for k in range(self.num_sessions_displayed):
+        for k, name in enumerate(self.session_names):
             row, col = divmod(k, cols)
-            x0, x1 = col / cols, (col + 1) / cols
-            extents[self.session_names[k]] = (x0, x1, row / (2 * rows), (row + 1) / (2 * rows))
-            extents[self.mip_session_names[k]] = (x0, x1, 0.5 + row / (2 * rows), 0.5 + (row + 1) / (2 * rows))
+            extents[name] = (col / cols, (col + 1) / cols, row / rows, (row + 1) / rows)
         return extents
 
     def _build_members(self):
-        """_first_member[row, j] is the first ROI of displayed cluster row in displayed session j (-1: none); _member_count counts them."""
+        """
+        _rows_by_session[j] maps each ROI of displayed session j to its displayed cluster row (-1: none);
+        _first_member[row, j] is the cluster's first ROI there (-1: none) and _member_count[row, j] counts them.
+        """
         row_of = np.full(self.tracking_results.num_clusters, -1, dtype=np.int64)
         row_of[self.cluster_ids] = np.arange(len(self.cluster_ids))
         self._row_of = row_of
+        self._rows_by_session = []
         self._first_member = np.full((len(self.cluster_ids), self.num_sessions_displayed), -1, dtype=np.int64)
         self._member_count = np.zeros((len(self.cluster_ids), self.num_sessions_displayed), dtype=np.int64)
         for j, sess_id in enumerate(self.session_ids):
             labels = self.tracking_results.labels_by_session[sess_id]
             rows = np.where(labels >= 0, row_of[np.maximum(labels, 0)], -1)
+            self._rows_by_session.append(rows)
             for local in np.flatnonzero(rows >= 0)[::-1]:
                 self._first_member[rows[local], j] = local
             np.add.at(self._member_count[:, j], rows[rows >= 0], 1)
+
+    def _read_quality(self) -> dict:
+        """ROICaT's per-cluster quality metrics, one value per displayed cluster row; empty when the results lack them."""
+        metrics = self.tracking_results.results.get("clusters", {}).get("quality_metrics")
+        if not metrics or "cluster_labels_unique" not in metrics:
+            return {}
+        labels = np.asarray(metrics["cluster_labels_unique"]).astype(np.int64)
+        quality = {}
+        for name, key in _QUALITY.items():
+            if metrics.get(key) is None:
+                continue
+            values = np.full(self.tracking_results.num_clusters, np.nan)
+            keep = labels >= 0
+            values[labels[keep]] = np.asarray(metrics[key], dtype=np.float64)[keep]
+            quality[name] = values[self.cluster_ids]
+        return quality
+
+    def _fov_images(self) -> list[np.ndarray] | None:
+        """Each displayed session's aligned FOV image scaled to 0-1, or None when the run data lacks them."""
+        images = self.tracking_results.aligned_fov_images
+        if images is None:
+            return None
+        fovs = []
+        for sess_id in self.session_ids:
+            image = np.nan_to_num(np.asarray(images[sess_id], dtype=np.float32))
+            top = np.percentile(image, 99.5)
+            fovs.append(np.clip(image / top if top > 0 else image, 0, 1))
+        return fovs
+
+    def _overlay_partner(self, j: int) -> int:
+        """The session a panel's FOV overlay compares against: the first displayed one, or the second for the first."""
+        return 1 if j == 0 else 0
+
+    def _overlay(self, j: int) -> np.ndarray:
+        """Session j's FOV in magenta over its partner's in green: aligned structure reads white."""
+        own, other = self._fovs[j], self._fovs[self._overlay_partner(j)]
+        return np.stack([own, other, own], axis=2)
+
+    def _trace_axes(self) -> tuple[np.ndarray, list[np.ndarray]]:
+        """The trace plot's x samples, the longest session's frames or timings, and each session's own."""
+        lengths = [array.shape[0] for array in self.ac_arrays]
+        if self.session_frame_timings[0] is None:
+            own = [np.arange(n, dtype=np.float64) for n in lengths]
+        else:
+            own = [np.asarray(t, dtype=np.float64) for t in self.session_frame_timings]
+        return own[int(np.argmax(lengths))], own
+
+    def _set_title(self, j: int):
+        current = self._panels[j].current
+        title = f"{self.session_names[j]} - {current}"
+        if current == "FOV overlay":
+            title += f" (green: {self.session_names[self._overlay_partner(j)]})"
+        self._ndw.figure[self.session_names[j]].title = title
+
+    def _panel_choices(self, panel: str) -> tuple[list, str]:
+        """What ``panel`` can show and what it shows, for its right-click menu."""
+        array = self._panels[self.session_names.index(panel)]
+        return list(array.sources), array.current
+
+    def _set_source(self, panel: str, name: str):
+        """Show ``name`` in ``panel``; the zoom and the highlighted cluster stay."""
+        j = self.session_names.index(panel)
+        self._panels[j].current = name
+        self._set_title(j)
+        self._refresh_panel(j)
+
+    def _refresh_panel(self, j: int):
+        """Re-slice panel j now, with the color limits of what it shows: the signals' own, 0-1 for the stills."""
+        graphic = self._nd_image_graphics[j]
+        run_sync(graphic._set_indices_())
+        vmin, vmax = self._signal_clims[j] if self._panels[j].current == "signals" else (0.0, 1.0)
+        graphic.graphic.vmin, graphic.graphic.vmax = vmin, vmax
+
+    def _row_colors(self) -> np.ndarray:
+        """(clusters displayed, 3) rgb per cluster row under the current color-by."""
+        if self._color_by == "cluster":
+            return self._coloring
+        values = self.clustering_mat.sum(axis=1) if self._color_by == "sessions" else self._quality[self._color_by]
+        values = np.asarray(values, dtype=np.float64)
+        finite = values[np.isfinite(values)]
+        lo, hi = (finite.min(), finite.max()) if finite.size else (0.0, 1.0)
+        scaled = np.clip((values - lo) / (hi - lo), 0, 1) if hi > lo else np.full_like(values, 0.5)
+        colors = np.asarray(Colormap(_SCALAR_CMAP)(np.nan_to_num(scaled, nan=0.0)))[:, :3].astype(np.float32)
+        colors[~np.isfinite(values)] = _UNCLUSTERED_COLOR
+        return colors
+
+    def _apply_consistent_coloring(self):
+        """Color every session's ROIs by their cluster row, mask the rest (gray when shown), and remake the MIPs."""
+        self._current_colors = self._row_colors()
+        self._mips = []
+        for j in range(self.num_sessions_displayed):
+            rows = self._rows_by_session[j]
+            tracked = rows >= 0
+            colorful = self.colorful_ac_arrays[j]
+            self.ac_arrays[j].mask = torch.from_numpy(tracked)
+            colors = np.tile(np.asarray(_UNCLUSTERED_COLOR, np.float32), (len(rows), 1))
+            colors[tracked] = self._current_colors[rows[tracked]]
+            colorful.colors = torch.from_numpy(colors).float()
+            colorful.mask = torch.from_numpy(tracked)
+            mip = colorful.compute_mip().cpu().numpy()
+            if self._show_unclustered:
+                # compute_mip scales each pixel to its brightest channel, which turns gray white: the unclustered
+                # get a pass of their own, dimmed, under the tracked
+                colorful.mask = torch.from_numpy(~tracked)
+                under = colorful.compute_mip().cpu().numpy() * _UNCLUSTERED_COLOR[0]
+                empty = mip.max(axis=2) == 0
+                mip[empty] = under[empty]
+                colorful.mask = torch.ones(len(rows), dtype=torch.bool)
+            self._mips.append(mip)
+        if self._panels is not None:
+            for j, array in enumerate(self._panels):
+                array.sources["MIP"] = self._mips[j]
+                self._refresh_panel(j)
 
     def neuron_selection(self,
                          display_sess_index: int,
                          ev):
         curr_ac = self.ac_arrays[display_sess_index]
-        labels = self.tracking_results.labels_by_session[self.session_ids[display_sess_index]]
-        tracked = torch.as_tensor(np.isin(labels, self.cluster_ids), dtype=torch.bool)
+        rows = self._rows_by_session[display_sess_index]
         neuron = component_at_pixel(curr_ac.spatial_demixed,
                                     curr_ac.centers,
                                     curr_ac.shape[1:],
                                     ev.pick_info['index'],
-                                    mask=tracked)
+                                    mask=torch.from_numpy(rows >= 0))
         if neuron is None:
             return
-        row = int(self._row_of[labels[neuron]])
+        row = int(rows[neuron])
         self._order.reveal(row)
         self._scroll_to_current = True
         self.select_cluster(row)
@@ -267,8 +406,26 @@ class MultiSessionDemixingVis:
         for j, selector in enumerate(self._image_highlight_selectors):
             local = -1 if row is None else int(self._first_member[row, j])
             selector.selection = None if local < 0 else local
+        self._update_traces()
         if row is not None and center:
             self._center_on(row)
+
+    def _update_traces(self):
+        """Every panel of the trace plot gets its session's ROIs of the selected cluster, on the plot's x samples."""
+        for j, name in enumerate(self.session_names):
+            if self._active is None:
+                self._traces.set(name, [])
+                continue
+            temporal = self.ac_arrays[j].temporal_demixed
+            lines = []
+            members = np.flatnonzero(self._rows_by_session[j] == self._active)
+            for local in members:
+                trace = temporal[:, int(local)].float().cpu().numpy()
+                resampled = np.interp(self._trace_x, self._session_x[j], trace, left=np.nan, right=np.nan)
+                # a lone line named after its panel draws no legend; the status line names its roi
+                label = name if len(members) == 1 else f"roi {local}"
+                lines.append((label, resampled, tuple(self._current_colors[self._active])))
+            self._traces.set(name, lines, fit=True)
 
     def _center_on(self, row: int):
         """
@@ -315,6 +472,21 @@ class MultiSessionDemixingVis:
         step = index.ref_ranges[axis].step if axis in index.ref_ranges else 1
         index.set({axis: index[axis] + delta * step})
 
+    def _set_color_by(self, name: str):
+        self._color_by = name
+        self._apply_consistent_coloring()
+        self._update_traces()
+
+    def _set_unclustered(self, show: bool):
+        self._show_unclustered = show
+        self._apply_consistent_coloring()
+
+    def show_in_every_panel(self, name: str):
+        """Show source ``name`` in every panel that has it."""
+        for j, array in enumerate(self._panels):
+            if name in array.sources:
+                self._set_source(self.session_names[j], name)
+
     def _handle_keys(self):
         if imgui.get_io().want_text_input:
             return
@@ -331,6 +503,8 @@ class MultiSessionDemixingVis:
             self._center_on(self._active)
         if pressed(MULTISESSION["reset"]):
             self._reset_view()
+        if pressed(MULTISESSION["unclustered"]):
+            self._set_unclustered(not self._show_unclustered)
         if pressed(MULTISESSION["escape"]):
             if self._keybinds_open:
                 self._keybinds_open = False
@@ -340,7 +514,7 @@ class MultiSessionDemixingVis:
             self._keybinds_open = not self._keybinds_open
 
     def _draw_side_panel(self):
-        """Docked at "right" (the NDWidget owns "bottom"): the keybinds button, then the clusters and sessions tabs."""
+        """Docked at "right" (the NDWidget owns "bottom", the traces "top"): the view options, then the clusters and sessions tabs."""
         opaque_popups()
         self._handle_keys()
         right = imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x
@@ -348,6 +522,7 @@ class MultiSessionDemixingVis:
         imgui.text_disabled(f"{len(self.cluster_ids)} clusters, {self.num_sessions_displayed} sessions")
         self._keybinds_open = draw_keybinds_button(self._keybinds_open, right=right)
         self._keybinds_open = draw_keybinds_popup(MULTISESSION, self._keybinds_open)
+        self._draw_view_options()
         if imgui.begin_tab_bar("##side"):
             if imgui.begin_tab_item("Clusters")[0]:
                 imgui.begin_child("##clusters_tab")
@@ -361,6 +536,49 @@ class MultiSessionDemixingVis:
                 imgui.end_tab_item()
             imgui.end_tab_bar()
 
+    def _draw_view_options(self):
+        section("View")
+        g = grid(_CAPTIONS)
+        names = list(self._panels[0].sources)
+        currents = {array.current for array in self._panels}
+        g.row("panels")
+        imgui.set_next_item_width(g.span)
+        preview = currents.pop() if len(currents) == 1 else "mixed"
+        if imgui.begin_combo("##panels", preview):
+            for name in names:
+                if imgui.selectable(name, name == preview)[0]:
+                    self.show_in_every_panel(name)
+            imgui.end_combo()
+        imgui.same_line()
+        help_mark(
+            "what every panel shows; right-click a panel to change just that one\n"
+            "- signals: the tracked ROIs' activity, in their cluster colors\n"
+            "- MIP: each ROI at its peak\n"
+            "- aligned FOV: the session's FOV image after ROICaT's registration\n"
+            "- FOV overlay: that FOV in magenta over another session's in green; aligned structure reads white"
+        )
+
+        options = ["cluster", "sessions", *self._quality]
+        g.row("color by")
+        imgui.set_next_item_width(g.span)
+        if imgui.begin_combo("##color_by", self._color_by):
+            for name in options:
+                if imgui.selectable(name, name == self._color_by)[0] and name != self._color_by:
+                    self._set_color_by(name)
+            imgui.end_combo()
+        imgui.same_line()
+        help_mark(
+            f"cluster: a random color per cluster; the others map the column onto {_SCALAR_CMAP}, low to high\n"
+            "- similarity: ROICaT's mean similarity within the cluster\n"
+            "- silhouette: how much closer the cluster's ROIs are to each other than to other clusters"
+        )
+
+        g.row("unclustered")
+        changed, show = imgui.checkbox("show in gray##unclustered", self._show_unclustered)
+        if changed:
+            self._set_unclustered(show)
+        imgui.dummy(imgui.ImVec2(0, imgui.get_style().item_spacing.y))
+
     def _draw_clusters_tab(self):
         if self._order.range_span[0] < self._order.range_span[1]:
             imgui.align_text_to_frame_padding()
@@ -372,7 +590,7 @@ class MultiSessionDemixingVis:
                 self._order.rebuild()
         footer = imgui.get_frame_height_with_spacing() * 2.5
         if imgui.begin_child("##cluster_table", imgui.ImVec2(0, -footer)):
-            columns = ("cluster", "sessions", *self.session_names)
+            columns = ("cluster", "sessions", *self._quality, *self.session_names)
             self._scroll_to_current = draw_roi_table(
                 self._order,
                 columns,
@@ -381,8 +599,9 @@ class MultiSessionDemixingVis:
                 table_id="clusters",
                 cursor=self._active is not None,
                 on_select=self._table_select,
-                row_color=lambda row: self.coloring[row],
+                row_color=lambda row: self._current_colors[row],
                 row_label=lambda row: f"{self.cluster_ids[row]}",
+                fit_headers=True,
             )
         imgui.end_child()
         imgui.separator()
@@ -396,6 +615,9 @@ class MultiSessionDemixingVis:
     def _format_cell(self, name: str, row: int) -> str:
         if name == "sessions":
             return f"{int(self._order.columns[name][row])}"
+        if name in self._quality:
+            value = self._quality[name][row]
+            return "" if np.isnan(value) else f"{value:.2f}"
         j = self.session_names.index(name)
         local = self._first_member[row, j]
         if local < 0:
@@ -420,7 +642,6 @@ class MultiSessionDemixingVis:
             imgui.table_setup_column(name)
         imgui.table_headers_row()
         for j, sess_id in enumerate(self.session_ids):
-            labels = self.tracking_results.labels_by_session[sess_id]
             imgui.table_next_row()
             imgui.table_next_column()
             imgui.text(self.session_names[j])
@@ -428,9 +649,9 @@ class MultiSessionDemixingVis:
             imgui.table_next_column()
             imgui.text(f"{self.ac_arrays[j].shape[0]}")
             imgui.table_next_column()
-            imgui.text(f"{len(labels)}")
+            imgui.text(f"{len(self._rows_by_session[j])}")
             imgui.table_next_column()
-            imgui.text(f"{int(np.isin(labels, self.cluster_ids).sum())}")
+            imgui.text(f"{int((self._rows_by_session[j] >= 0).sum())}")
         imgui.end_table()
 
     def _validate_session_ids(self, session_ids: np.ndarray):
@@ -453,7 +674,9 @@ class MultiSessionDemixingVis:
         if not self._coloring.shape == new_coloring.shape:
             raise ValueError(
                 f"The new coloring must be same shape as old coloring. New coloring had shape {new_coloring.shape}, old coloring had shape {self._coloring.shape}")
-        self._coloring = new_coloring
+        self._coloring = np.asarray(new_coloring, dtype=np.float32)
+        self._apply_consistent_coloring()
+        self._update_traces()
 
     @property
     def ac_arrays(self) -> list[masknmf.SignalsArray]:
@@ -462,22 +685,6 @@ class MultiSessionDemixingVis:
     @property
     def colorful_ac_arrays(self) -> list[masknmf.ColorfulSignalsArray]:
         return self._colorful_ac_arrays
-
-    def _apply_consistent_coloring(self):
-        cluster_id_to_index = np.zeros((self.tracking_results.num_clusters,)).astype('int')
-        cluster_id_to_index[self.cluster_ids] = np.arange(len(self.cluster_ids)).astype('int')
-        for index, sess_id in enumerate(self.session_ids):
-            curr_ac_array = self.ac_arrays[index]
-            curr_colorful_ac_array = self.colorful_ac_arrays[index]
-            curr_labels = self.tracking_results.labels_by_session[sess_id]
-            mask = np.isin(curr_labels, self.cluster_ids)
-            curr_ac_array.mask = torch.from_numpy(mask)
-            curr_colorful_ac_array.mask = torch.from_numpy(mask)
-
-            curr_coloring = np.zeros((int(curr_ac_array.spatial_demixed.shape[1]), 3)).astype('float32')
-            cluster_indices = cluster_id_to_index[curr_labels[mask]]
-            curr_coloring[mask, :] = self.coloring[cluster_indices, :]
-            curr_colorful_ac_array.colors = torch.from_numpy(curr_coloring).float()
 
     @property
     def reference_ranges(self):
@@ -502,10 +709,6 @@ class MultiSessionDemixingVis:
     @property
     def figure_shape(self) -> tuple[int, int]:
         return self._figure_shape
-
-    @property
-    def mip_session_names(self) -> list[str]:
-        return self._mip_session_names
 
     @property
     def clustering_mat(self) -> np.ndarray:
@@ -545,6 +748,10 @@ class MultiSessionDemixingVis:
     @property
     def fov_widget(self) -> fpl.NDWidget:
         return self._ndw
+
+    @property
+    def traces(self) -> TracePlot:
+        return self._traces
 
     def show(self):
         return self._ndw.show()
