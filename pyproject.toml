@@ -60,7 +60,6 @@ dev = [
 
 [project.scripts]
 masknmf = "masknmf.cli:main"
-classification = "masknmf.visualization.classification_vis:main"
 
 [project.urls]
 Homepage = "https://github.com/apasarkar/masknmf-toolbox"

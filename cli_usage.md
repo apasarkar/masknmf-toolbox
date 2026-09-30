@@ -10,7 +10,11 @@
 | `masknmf params --pipeline P --json` | print P's default configs as a `--config` file |
 | `masknmf run --pipeline P ...` | build P from flags and a `--config` file, and call `P.run(...)` |
 | `masknmf run --pipeline P --help` | argparse help showing only P's flags |
-| `masknmf view RESULTS.hdf5 ...` | open the viewers for the stages a results file holds |
+| `masknmf view RESULTS.hdf5 ...` | open the viewer for the stages a results file holds |
+| `masknmf view RESULTS... --classify` | label ROIs across one or more results files or globs |
+| `masknmf train-classifier RESULTS... --out NAME` | train a ROI classifier on the saved labels |
+| `masknmf classify RESULTS... --classifier F` | classify the ROIs in results files with a trained classifier |
+| `masknmf --version` | print the masknmf version |
 
 ```bash
 masknmf pipelines
@@ -113,7 +117,7 @@ earlier run's motion correction and compression configs and timings there and re
 
 Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise | skip), `spatial-highpass` (spatial-highpass), `filtered-demixing` / `unfiltered-demixing` (multipass: 2 and 3 passes by default).
 Run args: `MOVIE` (optional), `--fs` (required), `--exclude-border-radius`, `--remove-intermediates`.
-Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device {auto,cuda,cpu}`.
+Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device {auto,cuda,cpu}`, `--log-level {debug,info,warning}`.
 
 `--load-into-ram true` reads the whole raw movie into RAM before motion correction, so every later pass (moco, compression, the one-photon raw regression) reads memory instead of the file. It needs about the movie's size in free RAM. The glutamate pipeline always does this and has no flag.
 
@@ -161,7 +165,7 @@ masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --device cpu --frame
 
 Sections: `motion-correct` (gradient | skip), `compress` (compress | compress-denoise | skip), `demixing` (multipass: 2 passes by default, no detrending).
 Run args: `MOVIE`, `--fs` (required), `--indicator-sign {negative,positive}` (required), `--active-frames FILE.npy` (required), `--remove-intermediates`.
-Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device`.
+Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device`, `--log-level`.
 
 `--active-frames` is a 1-D `.npy` with one 0/1 entry per frame. It is used as the compression frame weighting.
 Gradient motion correction registers to the mean of the first `num_frames_template` frames (default 300).
@@ -197,10 +201,11 @@ masknmf run --pipeline one-photon-culture voltage.tif --fs 400 \
 
 ## glutamate-calcium-spine (`GlutamateCalciumSpinePipeline`)
 
-Two movie arguments, so both are flags and neither is positional.
+Two movie arguments, so both are flags and neither is positional. Either one can be left out, though `masknmf params`
+lists both as required. The run folder holds `results.glutamate.hdf5` and `results.calcium.hdf5` instead of `results.hdf5`.
 Sections: `motion-correct` (rigid), `compress` (compress-denoise), `demixing` (multipass: 2 passes tuned for spines by default).
 Run args: `--glutamate-channel`, `--calcium-channel`, `--exclude-initial-frames` (default 200).
-Init args: `--output-folder`, `--frame-batch-size`, `--device`.
+Init args: `--output-folder`, `--frame-batch-size`, `--device`, `--log-level`.
 
 ```bash
 # both channels
@@ -233,7 +238,7 @@ masknmf run --pipeline glutamate-calcium-spine \
 Moco and compression only, with no demixing.
 Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise, no skip).
 Run args: `MOVIE`, `--exclude-border-radius`.
-Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device`.
+Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device`, `--log-level`.
 
 ```bash
 # minimal
@@ -259,10 +264,34 @@ masknmf run --pipeline widefield-singlechannel wf.tif --motion-correct-kind skip
 
 ## view
 
+`RESULTS` is one or more `.h5`/`.hdf5` files or globs, quoted so masknmf expands them on every shell; `**` walks every
+folder below. Globs never enter `.zarr` stores and leave out `.labels.hdf5` sidecars. The demixing viewer opens one
+file; several need `--classify`.
+
 ```bash
-masknmf view results.hdf5 --list                  # print which stage groups the file holds
-masknmf view results.hdf5                         # demixing (or compression-only) viewer
-masknmf view results.hdf5 --raw movie.tif --fs 30 # + motion and compression viewers (need the raw movie)
+masknmf view "sessions/*/results.hdf5" --list      # print which stage groups each file holds
+masknmf view results.hdf5                          # demixing viewer (compression only when there is no demixing)
+masknmf view results.hdf5 --raw movie.tif --fs 30  # + raw and registered panels; a registration-only file needs --raw
+masknmf view results.hdf5 --raw movie.tif --compression  # + lag-1 autocorrelation images of the registered, compressed and residual movies
 masknmf view results.hdf5 --raw raw.h5 --dataset /mov --device cpu
 masknmf view results.glutamate.hdf5 --prefix global  # the glutamate pipeline's whole-dendrite result
 ```
+
+## classification
+
+Label ROIs by hand, train a ROICaT classifier on the labels, then classify new sessions. Each results file with
+top-level demixing results is one session; files without them are skipped. Labels and predictions are saved beside
+each results file, `results.hdf5 -> results.labels.hdf5`.
+
+```bash
+# label ROIs across sessions; --classifier is where Train saves, and an existing file is selected for Classify
+masknmf view "sessions/*/results.hdf5" --classify --labels soma,dendrite,junk --classifier cells.roicat_classifier
+
+# train on the labels; every ROI in every session must be labeled. writes cells.roicat_classifier and cells.training.json
+masknmf train-classifier "sessions/*/results.hdf5" --out cells
+
+# classify new sessions; unlabeled ROIs take the predictions
+masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classifier --device cpu
+```
+
+`--classify` reads only the top-level demixing results, so it takes neither `--prefix`, `--raw` nor `--compression`.
