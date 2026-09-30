@@ -662,6 +662,20 @@ def view_tracking(args: argparse.Namespace) -> None:
         tracking = masknmf.multisession.RoicatTrackingResults.from_roicat_dir(folder, session_files=files)
     except ValueError as error:
         fail(str(error))
+    if files is not None:
+        counts = {}
+        for filepath in files:
+            with h5py.File(filepath, "r") as f:
+                counts[filepath] = f[f"{group_name_demixing()}/temporal_demixed"].shape[1]
+        if list(counts.values()) != list(tracking.num_roi_per_session):
+            # globs sort by name, so put each file at the session with its roi count
+            ordered = []
+            for session, count in enumerate(tracking.num_roi_per_session):
+                matches = [filepath for filepath, n in counts.items() if n == count]
+                if len(matches) != 1:
+                    fail(f"session {session} has {count} rois and {len(matches)} results files do; pass the files in session order")
+                ordered.append(matches[0])
+            tracking.session_files = ordered
     print(tracking)
     missing = [filepath for filepath in tracking.session_files if not os.path.isfile(filepath)]
     for session, filepath in enumerate(tracking.session_files):
