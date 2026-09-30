@@ -18,6 +18,8 @@ here enumerates a parameter by hand:
     masknmf view results.hdf5 --raw movie.tif --compression
     masknmf view results.hdf5 --classify --labels soma,dendrite,junk
     masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
+    masknmf view tracking_folder
+    masknmf view tracking_folder day1/results.hdf5 day2/results.hdf5
     masknmf train-classifier "sessions/*/results.hdf5" --out cells
     masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classifier
 """
@@ -197,6 +199,12 @@ def expand_results(entries: list[str]) -> list[str]:
     if len(stores) > 0:
         print(f"warning: skipped {len(stores)} .zarr store(s) without looking inside, e.g. {stores[0]}")
     return list(dict.fromkeys(files))
+
+
+def is_tracking_folder(entry: str) -> bool:
+    """Whether entry is a folder RoicatTrackingResults.to_roicat_dir wrote."""
+    folder = Path(entry).expanduser()
+    return folder.is_dir() and any(folder.glob("*.tracking.results_all.*"))
 
 
 def demixing_sessions(files: list[str]) -> list[str]:
@@ -644,8 +652,37 @@ def command_run(args: argparse.Namespace) -> None:
             raise SystemExit(1)
 
 
+def view_tracking(args: argparse.Namespace) -> None:
+    """Open the multisession viewer on a tracking folder; results files after it replace the sessions it recorded."""
+    if args.classify or args.raw is not None or args.compression or args.prefix or args.fs is not None:
+        fail("a tracking folder opens only the multisession viewer; drop --classify, --raw, --compression, --prefix and --fs")
+    folder, entries_sessions = args.results[0], args.results[1:]
+    files = expand_results(entries=entries_sessions) if len(entries_sessions) > 0 else None
+    try:
+        tracking = masknmf.multisession.RoicatTrackingResults.from_roicat_dir(folder, session_files=files)
+    except ValueError as error:
+        fail(str(error))
+    print(tracking)
+    missing = [filepath for filepath in tracking.session_files if not os.path.isfile(filepath)]
+    for session, filepath in enumerate(tracking.session_files):
+        print(f"  {session}  {filepath}" + ("  (missing)" if filepath in missing else ""))
+    if args.list:
+        return
+    if len(missing) > 0:
+        fail(f"results files not found; pass them in session order after the folder: masknmf view {folder} day1.hdf5 day2.hdf5 ...")
+
+    import fastplotlib as fpl
+
+    device = str(masknmf.utils.torch_select_device()) if args.device == "auto" else args.device
+    masknmf.MultiSessionDemixingVis(tracking, device=device).show()
+    fpl.loop.run()
+
+
 def command_view(args: argparse.Namespace) -> None:
     """Open the viewers for whatever stages the results files hold; --classify opens only the classification viewer."""
+    if is_tracking_folder(entry=args.results[0]):
+        view_tracking(args=args)
+        return
     files = expand_results(entries=args.results)
     present = {filepath: groups_present(filepath_results=filepath) for filepath in files}
     for filepath, names in present.items():
@@ -820,7 +857,8 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
 
     parser_view = subparsers.add_parser("view", help="open the viewers for a results file")
     parser_view.add_argument(
-        "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several need --classify"
+        "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several need --classify. "
+        "Or a tracking folder, optionally followed by its results files in session order",
     )
     parser_view.add_argument("--raw", default=None, help="the raw movie the results came from")
     parser_view.add_argument("--dataset", default=None)
