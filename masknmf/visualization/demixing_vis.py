@@ -491,8 +491,12 @@ class SingleSessionDemixingVis:
             subplot.tooltip.enabled = False
             subplot.toolbar = False
 
+        # 31.5 em fits the Panels, Static images, guide and keybinds buttons on one row, with a few px to spare
         self._ndw_fov.figure.add_imgui_window(
-            self._draw_side_panel, location="right", size=340, title="Tools"
+            self._draw_side_panel,
+            location="right",
+            size=round(31.5 * self._ndw_fov.figure.default_imgui_font.legacy_size),
+            title="Tools",
         )
         if self._has_ac and len(self._footprints):
             self._select_component(0)
