@@ -107,6 +107,7 @@ def draw_roi_table(
     prefix_rows: Sequence[tuple] = (),
     hidden: Container[str] = (),
     row_label: Optional[Callable[[int], str]] = None,
+    fit_headers: bool = False,
 ) -> bool:
     """
     Sortable, clipped ROI table. Returns the new ``scroll_to_current`` flag.
@@ -120,6 +121,7 @@ def draw_roi_table(
     else to ``on_select``. ``row_color`` tints the id cell (rgb in 0-1).
     ``prefix_rows`` are ``(item, label)`` pairs pinned above the sorted rows, outside
     ``order`` but routed to the same formatters and callbacks. ``row_label`` names an item's id cell (default: the item).
+    ``fit_headers`` sizes every column to its header and scrolls sideways when they overflow, rather than truncating.
     """
     flags = (
         imgui.TableFlags_.sortable
@@ -128,16 +130,23 @@ def draw_roi_table(
         | imgui.TableFlags_.hideable
         | imgui.TableFlags_.scroll_y
     )
+    if fit_headers:
+        flags |= imgui.TableFlags_.scroll_x
+    # the sort arrow and the cell padding beside each header
+    fit = (lambda name: imgui.calc_text_size(name).x + imgui.get_font_size() * 1.6) if fit_headers else None
     avail = imgui.get_content_region_avail()
     if not imgui.begin_table(table_id, len(column_names), flags, imgui.ImVec2(0, avail.y)):
         return scroll_to_current
     imgui.table_setup_scroll_freeze(0, 1)
     # the current sort seeds imgui's default, so it survives a change of columns
     descending = 0 if order.ascending else imgui.TableColumnFlags_.prefer_sort_descending
+    width = imgui.TableColumnFlags_.width_fixed if fit_headers else 0
     imgui.table_setup_column(
         column_names[0],
         imgui.TableColumnFlags_.no_hide
+        | width
         | (imgui.TableColumnFlags_.default_sort | descending if order.sort_by is None else 0),
+        fit(column_names[0]) if fit_headers else 0.0,
     )
     for name in column_names[1:]:
         sortable = name in order.columns
@@ -146,7 +155,7 @@ def draw_roi_table(
             flags |= imgui.TableColumnFlags_.default_sort | descending
         if name in hidden:
             flags |= imgui.TableColumnFlags_.default_hide
-        imgui.table_setup_column(name, flags)
+        imgui.table_setup_column(name, flags | width, fit(name) if fit_headers else 0.0)
     imgui.table_headers_row()
 
     specs = imgui.table_get_sort_specs()
