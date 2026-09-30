@@ -521,7 +521,7 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     x += 6.5 * em
     arrow(dl, x + 0.4 * em, x + 2.4 * em, y + bh / 2)
     x += 2.8 * em
-    box(dl, x, y, 13 * em, bh, "<time>.curated.hdf5", KEY)
+    box(dl, x, y, 15 * em, bh, "results.<time>.curated.hdf5", KEY)
     imgui.dummy(imgui.ImVec2(w, 1.4 * em + bh + 1.4 * em))
     imgui.text_colored(
         DIM,

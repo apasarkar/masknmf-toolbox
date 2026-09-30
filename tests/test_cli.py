@@ -165,6 +165,24 @@ def test_results_globs_expand_without_sidecars_or_zarr_stores(tmp_path, capsys):
         cli.expand_results([str(tmp_path / "*" / "*.h5")])
 
 
+def test_a_glob_takes_each_results_files_newest_curated_file_and_a_named_file_as_given(tmp_path, capsys):
+    for relative in ["a/results.hdf5", "a/results.2026-09-30-10-00-00.curated.hdf5", "a/results.2026-09-30-11-00-00.curated.hdf5",
+                     "a/results.2026-09-30-11-00-00.curated.labels.hdf5", "b/results.calcium.hdf5",
+                     "b/results.glutamate.hdf5", "b/results.calcium.2026-09-30-10-00-00.curated.hdf5"]:
+        (tmp_path / relative).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / relative).touch()
+
+    assert cli.expand_results([str(tmp_path / "*" / "*.hdf5")]) == [
+        str(tmp_path / "a" / "results.2026-09-30-11-00-00.curated.hdf5"),
+        str(tmp_path / "b" / "results.calcium.2026-09-30-10-00-00.curated.hdf5"),
+        str(tmp_path / "b" / "results.glutamate.hdf5"),
+    ]
+    assert "3 file(s) left out" in capsys.readouterr().out
+    assert cli.expand_results([str(tmp_path / "*" / "results.hdf5")]) == [str(tmp_path / "a" / "results.hdf5")]
+    named = str(tmp_path / "a" / "results.2026-09-30-10-00-00.curated.hdf5")
+    assert cli.expand_results([named]) == [named]
+
+
 def test_view_opens_several_results_only_to_classify_them(tmp_path, capsys):
     for name in ["a", "b"]:
         (tmp_path / name).mkdir()
