@@ -374,8 +374,8 @@ class TracePlot:
         traces = [trace for p in panels for _, trace, _ in self._lines[p]]
         if not traces:
             return None
-        lo = min(float(t.min()) for t in traces)
-        hi = max(float(t.max()) for t in traces)
+        lo = min(float(np.nanmin(t)) for t in traces)
+        hi = max(float(np.nanmax(t)) for t in traces)
         pad = (hi - lo) * 0.05 or 1.0
         return lo - pad, hi + pad
 
