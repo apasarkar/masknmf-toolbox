@@ -106,6 +106,7 @@ def draw_roi_table(
     row_color: Optional[Callable[[int], Optional[tuple]]] = None,
     prefix_rows: Sequence[tuple] = (),
     hidden: Container[str] = (),
+    row_label: Optional[Callable[[int], str]] = None,
 ) -> bool:
     """
     Sortable, clipped ROI table. Returns the new ``scroll_to_current`` flag.
@@ -118,7 +119,7 @@ def draw_roi_table(
     shift clicks route to ``on_ctrl_select`` / ``on_shift_select`` when given,
     else to ``on_select``. ``row_color`` tints the id cell (rgb in 0-1).
     ``prefix_rows`` are ``(item, label)`` pairs pinned above the sorted rows, outside
-    ``order`` but routed to the same formatters and callbacks.
+    ``order`` but routed to the same formatters and callbacks. ``row_label`` names an item's id cell (default: the item).
     """
     flags = (
         imgui.TableFlags_.sortable
@@ -169,7 +170,7 @@ def draw_roi_table(
                 highlighted = is_grouped is not None and is_grouped(item)
             else:
                 item = int(order.order[row - pinned])
-                label = f"{item}"
+                label = f"{item}" if row_label is None else row_label(item)
                 highlighted = (cursor and row - pinned == order.pos) or (is_grouped is not None and is_grouped(item))
             imgui.table_next_row()
             imgui.table_next_column()

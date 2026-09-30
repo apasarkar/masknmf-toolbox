@@ -109,3 +109,15 @@ CLASSIFICATION: Mapping[str, Bind] = {
     "help": HELP,
     "keybinds": KEYBINDS,
 }
+
+MULTISESSION: Mapping[str, Bind] = {
+    "up": UP,
+    "down": DOWN,
+    "left": Bind("left", "previous frame (shift: by 10)", imgui.Key.left_arrow, repeat=True),
+    "right": Bind("right", "next frame (shift: by 10)", imgui.Key.right_arrow, repeat=True),
+    "double_click": Bind("double-click", "on a footprint in any panel: select its cluster in every session"),
+    "center": Bind("c", "center every panel on the selected cluster", imgui.Key.c),
+    "reset": Bind("r", "zoom every panel out to the whole fov", imgui.Key.r),
+    "escape": Bind("esc", "close the keybinds window, else deselect", imgui.Key.escape),
+    "keybinds": KEYBINDS,
+}
