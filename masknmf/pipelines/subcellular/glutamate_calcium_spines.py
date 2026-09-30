@@ -218,8 +218,13 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                                                           )
                 glu_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
+            glu_global_results = glu_pmd_demixer_global.results
+            with self.step("glutamate raw traces"):
+                for results in (glu_pmd_demixer_results, glu_global_results):
+                    results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
+                        results, glu_video, device=device, nonneg=True, frame_batch_size=self.frame_batch_size)
             glu_pmd_demixer_results.export(glu_path)
-            glu_pmd_demixer_global.results.export(glu_path, prefix="global")
+            glu_global_results.export(glu_path, prefix="global")
 
             if pmd_ca is not None:
                 ## Pull out the spatial/temporal footprints from the glutamate movie
@@ -246,8 +251,14 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                                                              )
                     ca_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
-                ca_pmd_demixer.results.export(ca_path)
-                ca_pmd_demixer_global.results.export(ca_path, prefix="global")
+                ca_results = ca_pmd_demixer.results
+                ca_global_results = ca_pmd_demixer_global.results
+                with self.step("calcium raw traces"):
+                    for results in (ca_results, ca_global_results):
+                        results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
+                            results, calcium_video, device=device, nonneg=True, frame_batch_size=self.frame_batch_size)
+                ca_results.export(ca_path)
+                ca_global_results.export(ca_path, prefix="global")
 
 
         else: #In this case there is only a calcium channel
@@ -269,8 +280,13 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                                                          )
                 ca_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
+            ca_global_results = ca_pmd_demixer_global.results
+            with self.step("calcium raw traces"):
+                for results in (ca_pmd_demixer_results, ca_global_results):
+                    results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
+                        results, calcium_video, device=device, nonneg=True, frame_batch_size=self.frame_batch_size)
             ca_pmd_demixer_results.export(ca_path)
-            ca_pmd_demixer_global.results.export(ca_path, prefix="global")
+            ca_global_results.export(ca_path, prefix="global")
 
         return self.finish()
 
