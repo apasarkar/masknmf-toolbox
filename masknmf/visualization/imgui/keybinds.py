@@ -118,6 +118,7 @@ MULTISESSION: Mapping[str, Bind] = {
     "double_click": Bind("double-click", "on a footprint in any panel: select its cluster in every session"),
     "center": Bind("c", "center every panel on the selected cluster", imgui.Key.c),
     "reset": Bind("r", "zoom every panel out to the whole fov", imgui.Key.r),
+    "unclustered": Bind("u", "toggle the unclustered ROIs, in gray", imgui.Key.u),
     "escape": Bind("esc", "close the keybinds window, else deselect", imgui.Key.escape),
     "keybinds": KEYBINDS,
 }
