@@ -44,6 +44,10 @@ def _to_rgba(arr: np.ndarray, cmap_name: str, lo: float, hi: float) -> np.ndarra
     a = np.asarray(arr, dtype=np.float32)
     span = max(hi - lo, 1e-12)
     n = np.clip((a - lo) / span, 0.0, 1.0)
+    # an (H, W, 3) image keeps its own colors: contrast applies, the colormap does not
+    if n.ndim == 3:
+        n = np.concatenate([n, np.ones_like(n[..., :1])], axis=2)
+        return np.ascontiguousarray((n * 255).astype(np.uint8))
     rgba = (Colormap(cmap_name)(n) * 255).astype(np.uint8)
     return np.ascontiguousarray(rgba)
 
@@ -148,7 +152,7 @@ class _GpuImage:
 
 class SummaryImageViewer:
     """
-    Popup viewer over a {name: 2D array} image set. Call open() to show and
+    Popup viewer over a {name: 2D or (H, W, 3) rgb array} image set. Call open() to show and
     draw() every imgui frame (it is a no-op while closed).
     """
 
@@ -219,7 +223,7 @@ class SummaryImageViewer:
     def _image(self, key: str) -> np.ndarray:
         """The image for a source, reading the plane out of a stack the first time it is shown"""
         arr = self._images[key]
-        if getattr(arr, "ndim", 2) != 3:
+        if getattr(arr, "ndim", 2) != 3 or arr.shape[-1] == 3:
             return arr
         i = 0 if self._index is None else int(self._index)
         cached = self._planes.get(key)
@@ -379,7 +383,7 @@ class SummaryImageViewer:
             sy = canvas_pos.y + self._pan_y + y * z + z * 0.5
             for x in range(x0, x1):
                 sx = canvas_pos.x + self._pan_x + x * z + z * 0.5
-                txt = _format_value(float(arr[y, x]), arr.dtype)
+                txt = _format_value(float(np.max(arr[y, x])), arr.dtype)
                 color = black if luma[y, x] > 140 else white
                 draw_list.add_text(
                     imgui.ImVec2(sx - len(txt) * 3.0, sy - 6.5), color, txt
@@ -487,7 +491,7 @@ class SummaryImageViewer:
             px = int((io.mouse_pos.x - img_min.x) / max(self._zoom, 1e-6))
             py = int((io.mouse_pos.y - img_min.y) / max(self._zoom, 1e-6))
             if 0 <= px < w and 0 <= py < h:
-                readout = f"px ({py}, {px}) = {float(arr[py, px]):.4g}"
+                readout = f"px ({py}, {px}) = " + ", ".join(f"{v:.4g}" for v in np.atleast_1d(arr[py, px]))
         imgui.end_child()
 
         amin, amax = _data_range(arr)
