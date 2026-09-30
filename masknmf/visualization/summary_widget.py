@@ -301,7 +301,9 @@ class SummaryImageViewer:
         return h
 
     def _draw_toolbar(self, keys: list) -> str:
-        imgui.set_next_item_width(180)
+        # as wide as the longest name, so none is cut off in the preview
+        longest = max((imgui.calc_text_size(str(k)).x for k in keys), default=0.0)
+        imgui.set_next_item_width(max(180, longest + imgui.get_frame_height() + 2 * imgui.get_style().frame_padding.x))
         changed, idx = imgui.combo("image", self._selected, list(keys))
         if changed:
             self._selected = idx

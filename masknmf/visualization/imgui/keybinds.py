@@ -116,9 +116,14 @@ MULTISESSION: Mapping[str, Bind] = {
     "left": Bind("left", "previous frame (shift: by 10)", imgui.Key.left_arrow, repeat=True),
     "right": Bind("right", "next frame (shift: by 10)", imgui.Key.right_arrow, repeat=True),
     "double_click": Bind("double-click", "on a footprint in any panel: select its cluster in every session"),
-    "center": Bind("c", "center every panel on the selected cluster", imgui.Key.c),
-    "reset": Bind("r", "zoom every panel out to the whole fov", imgui.Key.r),
+    "scroll": Bind("shift / alt + scroll", "in the trace plot, zoom x only / y only"),
+    "contours": Bind("c", "toggle every other footprint's contour", imgui.Key.c),
+    "follow": Bind("f", "center every panel on the selected cluster and keep following it", imgui.Key.f),
+    "trace_follow": Bind(
+        "t", "toggle center in the traces: the current frame stays in the middle as the movie plays", imgui.Key.t
+    ),
     "unclustered": Bind("u", "toggle the unclustered ROIs, in gray", imgui.Key.u),
+    "reset": Bind("r", "zoom every panel out to the whole fov", imgui.Key.r),
     "escape": Bind("esc", "close the keybinds window, else deselect", imgui.Key.escape),
     "keybinds": KEYBINDS,
 }

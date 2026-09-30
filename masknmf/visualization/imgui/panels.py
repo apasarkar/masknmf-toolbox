@@ -1,6 +1,6 @@
 """Small imgui panels shared by the viewers."""
 
-from typing import Mapping
+from typing import Callable, Mapping
 
 from imgui_bundle import icons_fontawesome_6 as fa
 from imgui_bundle import imgui
@@ -81,3 +81,39 @@ def draw_help_buttons(help_open: bool, keys_open: bool, guide: str) -> tuple[boo
         help_open = not help_open
     imgui.same_line(0, em(0.4))
     return help_open, draw_keybinds_button(keys_open)
+
+
+PANELS_LABEL = f"{fa.ICON_FA_TABLE_CELLS_LARGE} Panels"
+PANELS_TIP = "which movie each panel shows, as an array x panel matrix; a panel's right-click menu offers the same choice"
+
+
+def draw_panels_popup(panels: Mapping, is_open: bool, on_pick: Callable[[str, str], None]) -> bool:
+    """
+    The array x panel matrix: one row per source of the first panel, one radio column per panel, headed by its name.
+    ``panels`` maps a panel name to its SwitchableArray; ``on_pick(panel, source)`` switches one. Returns the new open state.
+    """
+    if not is_open:
+        return False
+    opened, is_open = popup("Panels", is_open)
+    if opened:
+        sources = next(iter(panels.values())).sources
+        if imgui.begin_table("##panel_matrix", 1 + len(panels), imgui.TableFlags_.sizing_fixed_fit):
+            imgui.table_setup_column("##array")
+            for name in panels:
+                width = max(imgui.get_frame_height(), imgui.calc_text_size(name).x)
+                imgui.table_setup_column(name, imgui.TableColumnFlags_.width_fixed, width)
+            imgui.table_headers_row()
+            for source in sources:
+                imgui.table_next_row()
+                imgui.table_next_column()
+                imgui.align_text_to_frame_padding()
+                imgui.text(source)
+                for name, panel in panels.items():
+                    imgui.table_next_column()
+                    if source not in panel.sources:
+                        continue
+                    if imgui.radio_button(f"##{source}-{name}", panel.current == source) and panel.current != source:
+                        on_pick(name, source)
+            imgui.end_table()
+    imgui.end()
+    return is_open

@@ -25,6 +25,9 @@ from masknmf.visualization.imgui import (
     TracePlot,
     component_at_pixel,
     draw_keybinds_popup,
+    draw_panels_popup,
+    PANELS_LABEL,
+    PANELS_TIP,
     draw_path_prompt,
     draw_help_buttons,
     help_buttons_width,
@@ -1644,10 +1647,10 @@ class SingleSessionDemixingVis:
                 imgui.end_menu()
             imgui.end_menu_bar()
         imgui.end_child()
-        if imgui.button(f"{fa.ICON_FA_TABLE_CELLS_LARGE} Panels"):
+        if imgui.button(PANELS_LABEL):
             self._panels_open = True
         if imgui.is_item_hovered():
-            imgui.set_tooltip("which movie each panel shows, as an array x panel matrix; a panel's right-click menu offers the same choice")
+            imgui.set_tooltip(PANELS_TIP)
         imgui.same_line()
         stills = self._stills
         imgui.begin_disabled(not stills)
@@ -1714,27 +1717,7 @@ class SingleSessionDemixingVis:
                 self._results_prompt.open = False
             except (OSError, KeyError, ValueError, TypeError) as e:
                 self._results_prompt.status = f"load failed: {e}"
-        if self._panels_open:
-            opened, self._panels_open = popup("Panels", self._panels_open)
-            if opened:
-                # the array x panel matrix: one row per movie, one radio column per panel
-                movies = next(iter(self._panels.values())).sources
-                if imgui.begin_table("##panel_matrix", 1 + len(self._panels), imgui.TableFlags_.sizing_fixed_fit):
-                    imgui.table_setup_column("##array")
-                    for name in self._panels:
-                        imgui.table_setup_column(name, imgui.TableColumnFlags_.width_fixed, imgui.get_frame_height())
-                    imgui.table_headers_row()
-                    for movie in movies:
-                        imgui.table_next_row()
-                        imgui.table_next_column()
-                        imgui.align_text_to_frame_padding()
-                        imgui.text(movie)
-                        for name, panel in self._panels.items():
-                            imgui.table_next_column()
-                            if imgui.radio_button(f"##{movie}-{name}", panel.current == movie) and panel.current != movie:
-                                self._set_source(name, movie)
-                    imgui.end_table()
-            imgui.end()
+        self._panels_open = draw_panels_popup(self._panels, self._panels_open, self._set_source)
         self._summary.draw()
 
     def _table_select(self, component):
