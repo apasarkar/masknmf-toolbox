@@ -989,10 +989,10 @@ class SingleSessionDemixingVis:
             support = torch.as_tensor(
                 ypix.astype(np.int64) * self._shape[2] + xpix, device=results.spatial_demixed.device
             )
-            # the signal movie averaged over the footprint's support, like the stored roi averages
-            signal = torch.sparse.mm(
-                torch.index_select(results.spatial_demixed, 0, support), results.temporal_demixed.T
-            ).mean(dim=0)
+            # the signal movie averaged over the footprint's support, like the stored roi averages; averaging the
+            # footprints first keeps a huge roi from building a (pixels, frames) matrix
+            weights = torch.sparse.sum(torch.index_select(results.spatial_demixed, 0, support), dim=0).to_dense() / len(support)
+            signal = results.temporal_demixed @ weights
             traces = (
                 results.compression_array_roi_averages[k],
                 signal,
@@ -1006,9 +1006,7 @@ class SingleSessionDemixingVis:
                 )
             ]
             if self._show_raw_trace and results.temporal_demixed_raw is not None:
-                raw = torch.sparse.mm(
-                    torch.index_select(results.spatial_demixed, 0, support), results.temporal_demixed_raw.T
-                ).mean(dim=0)
+                raw = results.temporal_demixed_raw @ weights
                 # before the signal line so the signal draws over it
                 lines.insert(1, ("raw (placeholder)", raw.cpu().numpy(), _RAW_LINE_COLOR))
         else:
