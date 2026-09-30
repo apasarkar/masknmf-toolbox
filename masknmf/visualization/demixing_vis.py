@@ -201,9 +201,9 @@ class SingleSessionDemixingVis:
         cell_order: Sequence[int] | np.ndarray | str | os.PathLike | None = None,
     ):
         self._results_path = None if results_path is None else str(results_path)
-        base = NMFConfig() if nmf_config is None else nmf_config
+        base = NMFConfig(min_brightness=0) if nmf_config is None else nmf_config
         self._min_brightness_cache = (
-            1.0 if base.min_brightness is None else base.min_brightness
+            0.0 if base.min_brightness is None else base.min_brightness
         )
         # "filter dim rois" starts off: a hand-drawn roi that never gets bright would vanish from the pass
         self._nmf_config = replace(base, min_brightness=None)
