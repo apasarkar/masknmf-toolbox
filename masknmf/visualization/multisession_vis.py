@@ -26,7 +26,6 @@ from masknmf.visualization.imgui import (
     draw_keybinds_button,
     draw_keybinds_popup,
     draw_panels_popup,
-    draw_range_filter,
     draw_roi_table,
     em,
     grid,
@@ -44,7 +43,7 @@ _SCALAR_CMAP = "viridis"
 # ROICaT's quality_metrics key per table column, one value per cluster label
 _QUALITY = {"similarity": "cluster_intra_means", "silhouette": "cluster_silhouette"}
 _CAPTIONS = ("contours", "sel contours", "color by", "unclustered", "traces")
-_DEFAULT_PANELS = 4
+_DEFAULT_PANELS = 3
 # panel name -> DemixingResults attribute, and the hdf5 dataset that has to hold something for it to be offered
 _MOVIES = OrderedDict(
     [
@@ -143,7 +142,7 @@ class MultiSessionDemixingVis:
         2. (Optional) You have specified the clusters (i.e. rows of the clustering matrix) you care about.
         3. (Optional) You have a specific subset of tracked sessions you care about
 
-        One window: a grid of panels, figure_shape (rows, cols; default one row of up to four), each showing one
+        One window: a grid of panels, figure_shape (rows, cols; default one row of up to three), each showing one
         session, picked in the Sessions tab or paged through with [ and ] so any number of sessions fits; the
         selected cluster's traces above them, those of the sessions on screen (or every session) in one panel, each
         in its own color and shown or hidden in the Sessions tab, and a Tools panel on the right listing the clusters.
@@ -341,7 +340,6 @@ class MultiSessionDemixingVis:
             for j, name in enumerate(self.session_names)
         })
         self._order = RoiOrder(columns, len(self.cluster_ids))
-        self._order.set_range_column("sessions")
         self._order.rebuild()
         self._active = None
         self._follow = True
@@ -876,16 +874,9 @@ class MultiSessionDemixingVis:
 
     def _draw_clusters_tab(self):
         imgui.text_disabled(f"{len(self.cluster_ids)} clusters over {self.num_sessions_displayed} sessions")
-        if self._order.range_span[0] < self._order.range_span[1]:
-            imgui.align_text_to_frame_padding()
-            imgui.text_disabled("sessions")
-            imgui.same_line()
-            if draw_range_filter(self._order, "sessions", width=imgui.get_content_region_avail().x - em(1.5)):
-                self._order.rebuild()
-            help_mark("show the clusters found in this many of the displayed sessions")
         footer = imgui.get_frame_height_with_spacing() * 2.5
         if imgui.begin_child("##cluster_table", imgui.ImVec2(0, -footer)):
-            columns = ("cluster", "sessions", *self._quality, *self.session_names)
+            columns = ("cluster", "sessions", *self._quality, *(self.session_names[j] for j in self._on_screen()))
             self._scroll_to_current = draw_roi_table(
                 self._order,
                 columns,
