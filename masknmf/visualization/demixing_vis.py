@@ -199,12 +199,19 @@ class SingleSessionDemixingVis:
         registered: masknmf.ArrayLike | None = None,
         cell_stats: CellStats | str | os.PathLike | None = None,
         cell_order: Sequence[int] | np.ndarray | str | os.PathLike | None = None,
+        frame_batch_size: int = 300,
     ):
         self._results_path = None if results_path is None else str(results_path)
-        base = NMFConfig(min_brightness=0) if nmf_config is None else nmf_config
+        if nmf_config is None:
+            ## At a baseline, we don't want to modify user-input ROIs
+            base = NMFConfig(maxiter=40,
+                             update_frequency=45)
+        else:
+            base = nmf_config
         self._min_brightness_cache = (
             0.0 if base.min_brightness is None else base.min_brightness
         )
+        self.frame_batch_size=frame_batch_size ## Useful for any interactive analysis
         # "filter dim rois" starts off: a hand-drawn roi that never gets bright would vanish from the pass
         self._nmf_config = replace(base, min_brightness=None)
         self._worker = None
@@ -769,6 +776,7 @@ class SingleSessionDemixingVis:
                 drop,
                 self._nmf_config,
                 device=self.device,
+                frame_batch_size=self.frame_batch_size
             )
             path = write_curated(self._results_path, results, drop, masks.shape[-1], filters)
             self._pending = (results, path)
