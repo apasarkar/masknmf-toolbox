@@ -8,10 +8,14 @@ summary_image widget; renders through fastplotlib's wgpu imgui backend.
 from typing import *
 import numpy as np
 import wgpu
+import fastplotlib as fpl
 from cmap import Colormap
 from imgui_bundle import imgui
 
+from masknmf.visualization.imgui.layout import is_notebook_canvas
 from masknmf.visualization.imgui.movie_player import MoviePlayer
+from masknmf.visualization.imgui.options import OPTIONS
+from masknmf.visualization.imgui.theme import opaque_popups
 
 _CMAPS = ("gray", "viridis", "magma", "inferno", "turbo")
 _CONTRAST_MODES = ("full", "auto", "manual")
@@ -152,12 +156,15 @@ class _GpuImage:
 
 class SummaryImageViewer:
     """
-    Popup viewer over a {name: 2D or (H, W, 3) rgb array} image set. Call open() to show and
-    draw() every imgui frame (it is a no-op while closed).
+    Viewer over a {name: 2D or (H, W, 3) rgb array} image set. Call open() to show and
+    draw() every imgui frame of ``figure`` (it is a no-op while closed). It is a popup inside ``figure``, or
+    with File > Options' separate window on, an OS window of its own; a notebook always gets the popup.
     """
 
     def __init__(self, figure, images: Optional[dict] = None, title: str = "Full FOV"):
         self._figure = figure
+        self._window: Optional[fpl.Figure] = None  # the figure of its own, while it is a separate window
+        figure.canvas.add_event_handler(self._on_figure_close, "close")
         self._title = title
         self._images: dict = images or {}
         self._movies: dict = {}
@@ -218,7 +225,7 @@ class SummaryImageViewer:
 
     @property
     def is_open(self) -> bool:
-        return self._popup_open
+        return self._popup_open and (self._window is None or not self._window.canvas.get_closed())
 
     def _image(self, key: str) -> np.ndarray:
         """The image for a source, reading the plane out of a stack the first time it is shown"""
@@ -241,8 +248,10 @@ class SummaryImageViewer:
         self._highlight = rect
 
     def _backend(self):
+        # textures are registered with the imgui backend of the figure that draws them
+        figure = self._figure if self._window is None else self._window
         try:
-            return self._figure.imgui_renderer.backend
+            return figure.imgui_renderer.backend
         except AttributeError:
             return None
 
@@ -390,6 +399,31 @@ class SummaryImageViewer:
                 )
 
     def draw(self):
+        """From the figure's imgui frame: draw the popup, or keep the separate window in step with File > Options."""
+        if self._window is not None and self._window.canvas.get_closed():
+            self._popup_open = False
+        separate = self._popup_open and OPTIONS.separate_image_window and not is_notebook_canvas(self._figure)
+        if separate and self._window is None:
+            self.cleanup()
+            self._reset_view()
+            # a new figure makes its imgui context current; this frame needs its own back
+            context = imgui.get_current_context()
+            self._window = fpl.Figure(size=(900, 950), canvas_kwargs={"title": self._title, "max_fps": 60.0})
+            self._window[0, 0].toolbar = False
+            self._window.add_imgui_window(
+                self._draw_viewer,
+                extent=(0.0, 1.0, 0.0, 1.0),
+                window_flags=imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.no_background | imgui.WindowFlags_.no_inputs,
+            )
+            self._window.show()
+            imgui.set_current_context(context)
+        elif not separate and self._window is not None:
+            self.cleanup()
+            self._reset_view()
+        if self._window is None:
+            self._draw_viewer()
+
+    def _draw_viewer(self):
         if not self._popup_open or not (self._images or self._movies):
             return
         keys = list(self._images) + list(self._movies)
@@ -397,20 +431,28 @@ class SummaryImageViewer:
             self._selected = 0
 
         viewport = imgui.get_main_viewport()
-        em = imgui.get_font_size()
-        w = min(52.0 * em, viewport.size.x * 0.92)
-        h = min(56.0 * em, viewport.size.y * 0.92)
-        imgui.set_next_window_size(imgui.ImVec2(w, h), imgui.Cond_.first_use_ever)
-        imgui.set_next_window_pos(
-            viewport.get_center(), imgui.Cond_.first_use_ever, pivot=imgui.ImVec2(0.5, 0.5)
-        )
+        flags = imgui.WindowFlags_.no_saved_settings
+        if self._window is not None:
+            # the separate window's own imgui frame: fill it, the OS window carries the title and close button
+            opaque_popups()
+            imgui.set_next_window_pos(viewport.pos, imgui.Cond_.always)
+            imgui.set_next_window_size(viewport.size, imgui.Cond_.always)
+            flags |= imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.no_move | imgui.WindowFlags_.no_resize
+        else:
+            em = imgui.get_font_size()
+            w = min(52.0 * em, viewport.size.x * 0.92)
+            h = min(56.0 * em, viewport.size.y * 0.92)
+            imgui.set_next_window_size(imgui.ImVec2(w, h), imgui.Cond_.first_use_ever)
+            imgui.set_next_window_pos(
+                viewport.get_center(), imgui.Cond_.first_use_ever, pivot=imgui.ImVec2(0.5, 0.5)
+            )
 
         background = imgui.get_style().color_(imgui.Col_.window_bg)
         imgui.push_style_color(imgui.Col_.window_bg, imgui.ImVec4(background.x, background.y, background.z, 1.0))
         opened, self._popup_open = imgui.begin(
             f"{self._title}###summary_image_popup",
             self._popup_open,
-            flags=imgui.WindowFlags_.no_saved_settings,
+            flags=flags,
         )
         imgui.pop_style_color()
         if not opened:
@@ -506,3 +548,9 @@ class SummaryImageViewer:
             gpu.destroy()
         self._gpu.clear()
         self._hist_cache.clear()
+        if self._window is not None:
+            self._window.canvas.close()
+            self._window = None
+
+    def _on_figure_close(self, event):
+        self.cleanup()

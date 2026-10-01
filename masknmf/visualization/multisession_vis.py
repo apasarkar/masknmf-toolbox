@@ -37,6 +37,7 @@ from masknmf.visualization.imgui import (
     tooltip,
 )
 from masknmf.visualization.imgui.keybinds import MULTISESSION, pressed
+from masknmf.visualization.imgui.options import draw_options_menu, draw_options_popup
 from masknmf.visualization.imgui.panels import KEYBINDS_LABEL, hint_button_width
 from masknmf.visualization.summary_widget import SummaryImageViewer
 
@@ -348,6 +349,7 @@ class MultiSessionDemixingVis:
         self._follow = False
         self._scroll_to_current = False
         self._keybinds_open = False
+        self._options_open = False
         self._panels_open = False
         self._summary = SummaryImageViewer(self._ndw.figure, title="Static images")
         self._stills = None
@@ -765,8 +767,8 @@ class MultiSessionDemixingVis:
         if pressed(MULTISESSION["reset"]):
             self._reset_view()
         if pressed(MULTISESSION["escape"]):
-            if self._keybinds_open:
-                self._keybinds_open = False
+            if self._keybinds_open or self._options_open:
+                self._keybinds_open = self._options_open = False
             else:
                 self.select_cluster(None)
         if pressed(MULTISESSION["keybinds"]):
@@ -774,11 +776,13 @@ class MultiSessionDemixingVis:
 
     def _draw_side_panel(self):
         """
-        Docked at "right" (the NDWidget owns "bottom", the traces "top"): the Panels and Static images buttons with
-        the keybinds on their row, then the clusters, display and sessions tabs.
+        Docked at "right" (the NDWidget owns "bottom", the traces "top"): a File menu, the Panels and Static images
+        buttons with the keybinds on their row, then the clusters, display and sessions tabs.
         """
         opaque_popups()
         self._handle_keys()
+        if draw_options_menu():
+            self._options_open = True
         if imgui.button(PANELS_LABEL):
             self._panels_open = True
         if imgui.is_item_hovered():
@@ -816,6 +820,7 @@ class MultiSessionDemixingVis:
                 imgui.end_tab_item()
             imgui.end_tab_bar()
         self._keybinds_open = draw_keybinds_popup(MULTISESSION, self._keybinds_open)
+        self._options_open = draw_options_popup(self._ndw.figure, self._options_open)
         self._panels_open = draw_panels_popup(self._panels, self._panels_open, self._set_source)
         self._summary.draw()
 
