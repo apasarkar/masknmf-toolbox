@@ -964,6 +964,9 @@ class ClassificationVis:
                         self._summary.set_movies(
                             {"demixed movie": self._dmrs[sess].signals_array}
                         )
+                        if self._peak_frames is not None:
+                            self._summary.player.set_movie(self._dmrs[sess].signals_array)
+                            self._summary.player.jump_to(int(self._peak_frames[roi]))
         if roi is None:
             self._summary.set_highlight(None)
         self._fg.data = rgba
@@ -1086,6 +1089,8 @@ class ClassificationVis:
             sess = int(self._session_of[self.current])
             self._summary.set_movies({"demixed movie": self._dmrs[sess].signals_array})
             if self._peak_frames is not None:
+                # the player clamps a jump to the movie it holds
+                self._summary.player.set_movie(self._dmrs[sess].signals_array)
                 self._summary.player.jump_to(int(self._peak_frames[self.current]))
         else:
             self._summary.set_movies({})
