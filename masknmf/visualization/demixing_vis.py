@@ -529,10 +529,11 @@ class SingleSessionDemixingVis:
     def _refresh_masks(self):
         if not self._mask_overlays:
             return
+        visible = self._show_masks or self._show_selected_masks
         rgba = (
             self._footprints.rgba(
                 tuple(self._shape[1:3]),
-                self._mask_opacity,
+                self._mask_opacity if self._show_masks else 0.0,
                 self._active_component if self._show_selected_masks else None,
                 self._marked,
                 {
@@ -544,11 +545,11 @@ class SingleSessionDemixingVis:
                 else {},
                 self._selected_mask_opacity,
             )
-            if self._show_masks
+            if visible
             else None
         )
         for overlay in self._mask_overlays.values():
-            overlay.visible = self._show_masks
+            overlay.visible = visible
             if rgba is not None:
                 overlay.data = rgba
 
