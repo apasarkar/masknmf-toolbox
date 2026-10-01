@@ -14,6 +14,7 @@
 | `masknmf view RESULTS... --classify` | label ROIs across one or more results files or globs |
 | `masknmf train-classifier RESULTS... --out NAME` | train a ROI classifier on the saved labels |
 | `masknmf classify RESULTS... --classifier F` | classify the ROIs in results files with a trained classifier |
+| `masknmf view TRACKING_FOLDER [RESULTS...]` | open the multisession viewer on a ROICaT tracking run |
 | `masknmf --version` | print the masknmf version |
 
 ```bash
@@ -295,3 +296,32 @@ masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classi
 ```
 
 `--classify` reads only the top-level demixing results, so it takes neither `--prefix`, `--raw` nor `--compression`.
+
+## multisession
+
+Tracking runs from Python: `RoicatDataAdapter.from_masknmf(files)` -> `RoicatTracker().run_tracking(...)` ->
+`.to_roicat_dir(folder)`. The folder holds `<name>.tracking.results_all.richfile.zip`, `<name>.tracking.run_data.richfile.zip`,
+`<name>.tracking.params.yaml` and `<name>.tracking.masknmf_sessions.json`, the results file of each session as the run saw it.
+`masknmf view` opens that folder in the multisession viewer.
+
+```bash
+# the sessions' results files where the tracking run recorded them
+masknmf view ./tracking
+
+# the results files moved (another machine, a shared drive): pass them after the folder, as paths or a glob
+masknmf view ./tracking "sessions/day*/*/results.hdf5"
+
+# print the sessions and the file each one reads, marking missing files, without opening the viewer
+masknmf view ./tracking "sessions/day*/*/results.hdf5" --list
+```
+
+Results files given after the folder replace the recorded ones. Each goes to the session with its ROI count, so a glob
+can match them in any order; files already in session order stay as given, and two sessions with the same ROI count need
+the files in session order. Of the view flags, a tracking folder uses only `--device` and `--list`.
+
+Keep the `.richfile.zip` files zipped. Unzipping `run_data` on Windows silently drops every file past the 260 character
+path limit and the folder no longer loads; a zip beside its unzipped copy is refused as two results.
+
+The viewer shows up to three sessions side by side. The Sessions tab picks which session each panel shows and which
+sessions' traces are drawn, and `[` / `]` page every panel through the sessions. The Clusters table lists each cluster,
+the number of sessions it was found in, its similarity and silhouette, and its ROI in each session on screen.
