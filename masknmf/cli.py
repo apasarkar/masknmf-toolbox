@@ -655,6 +655,28 @@ def command_run(args: argparse.Namespace) -> None:
             raise SystemExit(1)
 
 
+def print_tracking(tracking: "masknmf.multisession.RoicatTrackingResults", folder: str) -> list[str]:
+    """Summarize a tracking run and list its sessions' results files; returns the files that do not exist."""
+    clustered = sum(int((labels >= 0).sum()) for labels in tracking.labels_by_session)
+    spans = tracking.num_sessions_per_cluster
+    print(f"tracking {Path(folder).resolve()}")
+    print(f"  sessions   {tracking.num_sessions}")
+    print(f"  rois       {tracking.num_roi_total}, every session's together")
+    print(f"  clusters   {tracking.num_clusters}, each one cell matched across sessions; "
+          f"{int((spans == tracking.num_sessions).sum())} found in every session")
+    print(f"  clustered  {clustered / max(tracking.num_roi_total, 1):.0%} of the rois ({clustered}) belong to a cluster; "
+          f"the other {tracking.num_roi_total - clustered} matched no roi of another session")
+    missing = [filepath for filepath in tracking.session_files if not os.path.isfile(filepath)]
+    root = os.path.commonpath([os.path.dirname(filepath) for filepath in tracking.session_files])
+    print(f"  results files under {root}:")
+    print("    session  rois  clustered  file")
+    for session, filepath in enumerate(tracking.session_files):
+        labels = tracking.labels_by_session[session]
+        print(f"    {session:>7}  {len(labels):>4}  {int((labels >= 0).sum()):>9}  {os.path.relpath(filepath, root)}"
+              + ("  (missing)" if filepath in missing else ""))
+    return missing
+
+
 def view_tracking(args: argparse.Namespace) -> None:
     """Open the multisession viewer on a tracking folder; results files after it replace the sessions it recorded."""
     if args.classify or args.raw is not None or args.compression or args.prefix or args.fs is not None:
@@ -682,23 +704,7 @@ def view_tracking(args: argparse.Namespace) -> None:
                     fail(f"session {session} has {count} rois and {len(matches)} results files do; pass the files in session order")
                 ordered.append(matches[0])
             tracking.session_files = ordered
-    clustered = sum(int((labels >= 0).sum()) for labels in tracking.labels_by_session)
-    spans = tracking.num_sessions_per_cluster
-    print(f"tracking {Path(folder).resolve()}")
-    print(f"  sessions   {tracking.num_sessions}")
-    print(f"  rois       {tracking.num_roi_total}, every session's together")
-    print(f"  clusters   {tracking.num_clusters}, each one cell matched across sessions; "
-          f"{int((spans == tracking.num_sessions).sum())} found in every session")
-    print(f"  clustered  {clustered / max(tracking.num_roi_total, 1):.0%} of the rois ({clustered}) belong to a cluster; "
-          f"the other {tracking.num_roi_total - clustered} matched no roi of another session")
-    missing = [filepath for filepath in tracking.session_files if not os.path.isfile(filepath)]
-    root = os.path.commonpath([os.path.dirname(filepath) for filepath in tracking.session_files])
-    print(f"  results files under {root}:")
-    print("    session  rois  clustered  file")
-    for session, filepath in enumerate(tracking.session_files):
-        labels = tracking.labels_by_session[session]
-        print(f"    {session:>7}  {len(labels):>4}  {int((labels >= 0).sum()):>9}  {os.path.relpath(filepath, root)}"
-              + ("  (missing)" if filepath in missing else ""))
+    missing = print_tracking(tracking=tracking, folder=folder)
     if args.list:
         return
     if len(missing) > 0:
@@ -849,9 +855,12 @@ def command_track(args: argparse.Namespace) -> None:
         print(f"  {session}  {filepath}")
     tracker = RoicatTracker()
     tracker.params["general"]["use_GPU"] = args.device != "cpu"
-    tracking = tracker.run_tracking(RoicatDataAdapter.from_masknmf(sessions, um_per_pixel=args.um_per_pixel))
-    print(tracking)
-    print(f"saved to {tracking.to_roicat_dir(args.out)}")
+    # richfile and roicat warn about their own metadata, nothing the user can act on; roicat's progress still prints
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        tracking = tracker.run_tracking(RoicatDataAdapter.from_masknmf(sessions, um_per_pixel=args.um_per_pixel))
+        folder = tracking.to_roicat_dir(args.out)
+    print_tracking(tracking=tracking, folder=str(folder))
 
 
 def timings(num_frames: int, frame_rate: Optional[float]):
