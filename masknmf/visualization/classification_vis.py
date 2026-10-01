@@ -14,6 +14,7 @@ from masknmf.visualization.imgui.classification_help import draw_classification_
 from masknmf.visualization.imgui.keybinds import CLASSIFICATION, LABEL_KEYS, pressed
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, opaque_popups
+from masknmf.demixing.curation import latest_results
 from masknmf.demixing.labels import (
     CLASSIFIER_SUFFIX,
     SIDECAR_SUFFIX,
@@ -52,17 +53,17 @@ def _is_demixing_file(path: str) -> bool:
 
 
 def _hdf5_paths(paths: Sequence[str]) -> list[str]:
-    """Expand folders to the demixing result .hdf5 files in them or their subfolders"""
+    """Expand folders to the demixing result .hdf5 files in them or their subfolders, each results file's newest curated file in its place"""
     import glob
 
     files = []
     for p in map(str, paths):
         if os.path.isdir(p):
             found = glob.glob(os.path.join(p, "*.h*5")) + glob.glob(os.path.join(p, "*", "*.h*5"))
-            files += sorted(
+            files += latest_results(sorted(
                 f for f in found
                 if f.endswith((".h5", ".hdf5")) and not f.endswith(SIDECAR_SUFFIX) and _is_demixing_file(f)
-            )
+            ))
         else:
             files.append(p)
     return files

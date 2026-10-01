@@ -45,6 +45,7 @@ import numpy as np
 
 import masknmf
 from masknmf.classification import RoicatClassifier
+from masknmf.demixing.curation import latest_results
 from masknmf.demixing.labels import SIDECAR_SUFFIX, read_labels
 from masknmf.multisession import RoicatDataAdapter, RoicatTracker
 from masknmf.pipelines import scraper
@@ -157,7 +158,9 @@ def groups_present(filepath_results: str) -> list[str]:
 
 def expand_results(entries: list[str]) -> list[str]:
     """
-    The .h5/.hdf5 results files a list of paths and globs names, labels sidecars left out.
+    The .h5/.hdf5 results files a list of paths and globs names, labels sidecars left out. A named file is used as
+    given; of what a glob matches, each results file stands in for itself only when no curated file of it matched,
+    else the newest curated file does (``masknmf.demixing.latest_results``).
 
     Powershell and cmd hand globs over unexpanded, so they are expanded here, one path
     level at a time; ** walks every folder below. Neither ever enters a .zarr store,
@@ -198,7 +201,10 @@ def expand_results(entries: list[str]) -> list[str]:
         ]
         if len(matches) == 0:
             fail(f"no results file matches {entry}")
-        files.extend(matches)
+        kept = latest_results(matches)
+        if len(kept) < len(matches):
+            print(f"{entry}: {len(matches) - len(kept)} file(s) left out, each replaced by a newer curated file")
+        files.extend(kept)
     if len(stores) > 0:
         print(f"warning: skipped {len(stores)} .zarr store(s) without looking inside, e.g. {stores[0]}")
     return list(dict.fromkeys(files))
@@ -687,10 +693,12 @@ def view_tracking(args: argparse.Namespace) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         try:
-            tracking = masknmf.multisession.RoicatTrackingResults.from_roicat_dir(folder, session_files=files)
+            tracking = masknmf.multisession.RoicatTrackingResults.from_roicat_dir(folder)
         except ValueError as error:
             fail(str(error))
     if files is not None:
+        if len(files) != tracking.num_sessions:
+            fail(f"the tracking has {tracking.num_sessions} sessions, got {len(files)} results files")
         counts = {}
         for filepath in files:
             with h5py.File(filepath, "r") as f:
@@ -700,10 +708,16 @@ def view_tracking(args: argparse.Namespace) -> None:
             ordered = []
             for session, count in enumerate(tracking.num_roi_per_session):
                 matches = [filepath for filepath, n in counts.items() if n == count]
-                if len(matches) != 1:
+                if len(matches) > 1:
                     fail(f"session {session} has {count} rois and {len(matches)} results files do; pass the files in session order")
-                ordered.append(matches[0])
-            tracking.session_files = ordered
+                ordered.append(matches[0] if len(matches) == 1 else None)
+            # a file that fits no session takes an open one, so the check below names it
+            unplaced = iter([filepath for filepath in files if filepath not in ordered])
+            files = [next(unplaced) if filepath is None else filepath for filepath in ordered]
+        try:
+            tracking.session_files = files
+        except ValueError as error:
+            fail(str(error))
     missing = print_tracking(tracking=tracking, folder=folder)
     if args.list:
         return

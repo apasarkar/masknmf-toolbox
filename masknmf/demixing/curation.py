@@ -50,11 +50,40 @@ def update_signals(
     return demixer.results
 
 
+CURATED_SUFFIX = ".curated.hdf5"
+
+
+def results_stem(path) -> str:
+    """
+    The name of the results file ``path`` is or descends from, without its extension:
+    ``results.calcium.hdf5`` and ``results.calcium.<timestamp>.curated.hdf5`` both give ``results.calcium``.
+    """
+    name = os.path.basename(str(path))
+    if name.endswith(CURATED_SUFFIX):
+        return name[: -len(CURATED_SUFFIX)].rsplit(".", 1)[0]
+    return os.path.splitext(name)[0]
+
+
+def latest_results(paths: Sequence) -> list[str]:
+    """
+    One file per results file among ``paths``: its newest curated file when one is among them, else the results
+    file itself, in the order each first appears. Only files in the same folder stand for each other.
+    """
+    latest = {}
+    for path in map(str, paths):
+        key = (os.path.dirname(os.path.abspath(path)), results_stem(path))
+        # curated beats uncurated; among curated the timestamp in the name sorts by time
+        if key not in latest or (path.endswith(CURATED_SUFFIX), path) > (latest[key].endswith(CURATED_SUFFIX), latest[key]):
+            latest[key] = path
+    return list(latest.values())
+
+
 def write_curated(
     path, results: DemixingResults, drop: Sequence[int] = (), num_masks: int = 0, filters: Sequence[dict] = ()
 ) -> str:
     """
-    Write ``results`` to a new ``<timestamp>.curated.hdf5`` beside ``path``; the file at ``path`` is never
+    Write ``results`` to a new ``<stem>.<timestamp>.curated.hdf5`` beside ``path``, the stem being the results
+    file it descends from (``results.hdf5 -> results.<timestamp>.curated.hdf5``); the file at ``path`` is never
     changed. The new file's ``description`` attribute says what was done, and which range filter removed
     which signals: each of ``filters`` has a ``column``, a ``range`` (lo, hi), ``outside`` (which side of the
     range it took) and the ``signals`` it marked.
@@ -62,7 +91,7 @@ def write_curated(
     Returns:
         the path written
     """
-    out = os.path.join(os.path.dirname(str(path)), f"{get_timestamp()}.curated.hdf5")
+    out = os.path.join(os.path.dirname(str(path)), f"{results_stem(path)}.{get_timestamp()}{CURATED_SUFFIX}")
     results.export(out)
     by_filter = "; ".join(
         f"{flt['column']} {'outside' if flt['outside'] else 'inside'} {flt['range'][0]:g} to {flt['range'][1]:g}: "
