@@ -1462,7 +1462,10 @@ class SingleSessionDemixingVis:
         self._status = f"undone, {len(self._undo)} more"
 
     def _delete_selected(self):
-        """The Delete action: drop an active drawn roi, else the active pixel average, else mark the selected signals."""
+        """
+        The Delete action: drop an active drawn roi, else the active pixel average, else mark the selected signals;
+        marking a single signal selects the next row, so a review keeps its place in the table.
+        """
         if self._active_roi is not None:
             self._delete_roi(self._active_roi)
         elif self._active_pixel is not None:
@@ -1475,7 +1478,14 @@ class SingleSessionDemixingVis:
             self._update_traces()
         elif self._active_component is not None or any(isinstance(k, int) for k in self._group):
             signals = [k for k in self._group if isinstance(k, int)] or [self._active_component]
-            self._mark(signals, not all(k in self._marked for k in signals))
+            on = not all(k in self._marked for k in signals)
+            # a marked signal joins the marked rows at the top of the table: the selection moves on to the row after it
+            view = [int(k) for k in self._order.order]
+            follows = view[view.index(signals[0]) + 1] if on and len(signals) == 1 and signals[0] in view[:-1] else None
+            self._mark(signals, on)
+            if follows is not None:
+                self.group_clear()
+                self._select_component(follows)
 
     def _clear_traces(self):
         self._active_pixel = None
