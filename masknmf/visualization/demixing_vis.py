@@ -112,9 +112,9 @@ class SingleSessionDemixingVis:
 
     With ``results_path`` set, "Demix" runs the drawn ROIs and the signals marked with "Delete" through the
     demixer's NMF pass (``nmf_config``, the pipeline defaults when None) and writes the outcome to a new
-    ``<timestamp>.curated.hdf5`` beside the file, never over it: drawn ROIs become ordinary signals,
-    marked signals are gone, the new file's description says what was done, and the viewer moves on to it so
-    further passes chain.
+    ``<stem>.<timestamp>.curated.hdf5`` beside the file (``results.hdf5 -> results.<timestamp>.curated.hdf5``),
+    never over it: drawn ROIs become ordinary signals, marked signals are gone, the new file's description says
+    what was done, and the viewer moves on to it so further passes chain.
 
     The "Signals" tab lists every demixed signal; ctrl / shift select a group whose traces share the plot.
     Traces plot only with the Curation tab's "show selected traces" on (off by default): selecting then only

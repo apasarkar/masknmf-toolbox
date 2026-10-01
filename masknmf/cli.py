@@ -41,6 +41,7 @@ import numpy as np
 
 import masknmf
 from masknmf.classification import RoicatClassifier
+from masknmf.demixing.curation import latest_results
 from masknmf.demixing.labels import SIDECAR_SUFFIX, read_labels
 from masknmf.pipelines import scraper
 
@@ -152,7 +153,9 @@ def groups_present(filepath_results: str) -> list[str]:
 
 def expand_results(entries: list[str]) -> list[str]:
     """
-    The .h5/.hdf5 results files a list of paths and globs names, labels sidecars left out.
+    The .h5/.hdf5 results files a list of paths and globs names, labels sidecars left out. A named file is used as
+    given; of what a glob matches, each results file stands in for itself only when no curated file of it matched,
+    else the newest curated file does (``masknmf.demixing.latest_results``).
 
     Powershell and cmd hand globs over unexpanded, so they are expanded here, one path
     level at a time; ** walks every folder below. Neither ever enters a .zarr store,
@@ -193,7 +196,10 @@ def expand_results(entries: list[str]) -> list[str]:
         ]
         if len(matches) == 0:
             fail(f"no results file matches {entry}")
-        files.extend(matches)
+        kept = latest_results(matches)
+        if len(kept) < len(matches):
+            print(f"{entry}: {len(matches) - len(kept)} file(s) left out, each replaced by a newer curated file")
+        files.extend(kept)
     if len(stores) > 0:
         print(f"warning: skipped {len(stores)} .zarr store(s) without looking inside, e.g. {stores[0]}")
     return list(dict.fromkeys(files))

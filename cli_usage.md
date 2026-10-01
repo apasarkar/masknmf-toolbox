@@ -265,8 +265,9 @@ masknmf run --pipeline widefield-singlechannel wf.tif --motion-correct-kind skip
 ## view
 
 `RESULTS` is one or more `.h5`/`.hdf5` files or globs, quoted so masknmf expands them on every shell; `**` walks every
-folder below. Globs never enter `.zarr` stores and leave out `.labels.hdf5` sidecars. The demixing viewer opens one
-file; several need `--classify`.
+folder below. Globs never enter `.zarr` stores and leave out `.labels.hdf5` sidecars and any results file a newer
+curated file replaces ([curated results files](#curated-results-files)). The demixing viewer opens one file; several
+need `--classify`.
 
 ```bash
 masknmf view "sessions/*/results.hdf5" --list      # print which stage groups each file holds
@@ -295,3 +296,56 @@ masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classi
 ```
 
 `--classify` reads only the top-level demixing results, so it takes neither `--prefix`, `--raw` nor `--compression`.
+
+## curated results files
+
+The demixing viewer's Demix (Python: `SingleSessionDemixingVis(..., results_path=...)`, or
+`masknmf.demixing.update_signals` then `write_curated`) never changes a results file. It writes a new one beside it,
+named after the results file it descends from:
+
+| file | holds |
+|---|---|
+| `results.hdf5` | the run: registration, compression and demixing groups |
+| `results.<yyyy-mm-dd-HH-MM-SS>.curated.hdf5` | only `DemixingResults`, after the full NMF pass; its `description` attribute says which signals were removed (and by which filter) and how many drawn ROIs were added |
+| `results.<yyyy-mm-dd-HH-MM-SS>.curated.labels.hdf5` | the curated file's own labels; the parent's are not copied, curation renumbers the ROIs |
+
+Curating a curated file writes another `results.<later stamp>.curated.hdf5`; the stem stays `results`. The glutamate
+pipeline's files give `results.calcium.<stamp>.curated.hdf5` and `results.glutamate.<stamp>.curated.hdf5`. Curated
+files from before 2026-09-30 are named `<stamp>.curated.hdf5`; rename them to `results.<stamp>.curated.hdf5` so they
+are grouped with their results file.
+
+Which file a command reads:
+
+| RESULTS given as | file used |
+|---|---|
+| a file path | exactly that file |
+| a glob (CLI), or a folder (classification viewer's Open) | for each results file, its newest curated file when the glob matched one, else the results file; the CLI prints how many it left out |
+
+```bash
+masknmf view "sessions/*/*.hdf5" --classify              # one file per run: the newest curated one, else results.hdf5
+masknmf view "sessions/*/results.hdf5" --classify        # the uncurated results only: the glob matches no curated file
+masknmf view sessions/day1/results.2026-09-30-12-27-07.curated.hdf5   # one given version
+```
+
+Per command:
+
+- `masknmf view FILE`: the demixing viewer on that file. A curated file holds no registration group, so there are no
+  shift traces or registered panel; `--raw` still adds the raw panel. Demix again writes the next curated file.
+- `masknmf view ... --classify`, `train-classifier`, `classify`: each file used is one session, labeled in its own
+  `.labels.hdf5`; a curated file starts unlabeled.
+- Tracking (Python only: `RoicatDataAdapter.from_masknmf(files)`, `RoicatTracker().run_tracking(...)`,
+  `.to_roicat_dir(folder)`) tracks exactly the files given, and its clusters index each file's ROIs by position, so a
+  tracking belongs to those files. Curate every day first, then track; a day curated later needs tracking again.
+- `masknmf view TRACKING_FOLDER [FILES...]`: the multisession viewer on the files the tracking recorded; files after
+  the folder replace them in session order. A file whose ROI count differs from the tracking's is refused
+  (`session 1: ... holds 60 ROIs, the tracking 63; the file was curated or re-run after tracking, so track the
+  sessions' current files again`).
+
+Python:
+
+| call | does |
+|---|---|
+| `masknmf.demixing.write_curated(path, results, drop, num_masks, filters)` | writes `<stem>.<stamp>.curated.hdf5` beside `path`, returns its path |
+| `masknmf.demixing.results_stem(path)` | the results file a file is or descends from: `results.calcium.<stamp>.curated.hdf5 -> results.calcium` |
+| `masknmf.demixing.latest_results(paths)` | the glob rule above: one file per results file, its newest curated one when present |
+| `RoicatTrackingResults(..., session_files=...)`, `.session_files = ...`, `from_roicat_dir(..., session_files=...)` | refuse a file whose ROI count differs from the tracking's |
