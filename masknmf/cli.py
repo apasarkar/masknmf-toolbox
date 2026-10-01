@@ -35,6 +35,7 @@ import os
 import shutil
 import sys
 import time
+import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -658,10 +659,13 @@ def view_tracking(args: argparse.Namespace) -> None:
         fail("a tracking folder opens only the multisession viewer; drop --classify, --raw, --compression, --prefix and --fs")
     folder, entries_sessions = args.results[0], args.results[1:]
     files = expand_results(entries=entries_sessions) if len(entries_sessions) > 0 else None
-    try:
-        tracking = masknmf.multisession.RoicatTrackingResults.from_roicat_dir(folder, session_files=files)
-    except ValueError as error:
-        fail(str(error))
+    # richfile and roicat warn about their own metadata on every load, nothing the user can act on
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            tracking = masknmf.multisession.RoicatTrackingResults.from_roicat_dir(folder, session_files=files)
+        except ValueError as error:
+            fail(str(error))
     if files is not None:
         counts = {}
         for filepath in files:
@@ -676,10 +680,23 @@ def view_tracking(args: argparse.Namespace) -> None:
                     fail(f"session {session} has {count} rois and {len(matches)} results files do; pass the files in session order")
                 ordered.append(matches[0])
             tracking.session_files = ordered
-    print(tracking)
+    clustered = sum(int((labels >= 0).sum()) for labels in tracking.labels_by_session)
+    spans = tracking.num_sessions_per_cluster
+    print(f"tracking {Path(folder).resolve()}")
+    print(f"  sessions   {tracking.num_sessions}")
+    print(f"  rois       {tracking.num_roi_total}, every session's together")
+    print(f"  clusters   {tracking.num_clusters}, each one cell matched across sessions; "
+          f"{int((spans == tracking.num_sessions).sum())} found in every session")
+    print(f"  clustered  {clustered / max(tracking.num_roi_total, 1):.0%} of the rois ({clustered}) belong to a cluster; "
+          f"the other {tracking.num_roi_total - clustered} matched no roi of another session")
     missing = [filepath for filepath in tracking.session_files if not os.path.isfile(filepath)]
+    root = os.path.commonpath([os.path.dirname(filepath) for filepath in tracking.session_files])
+    print(f"  results files under {root}:")
+    print("    session  rois  clustered  file")
     for session, filepath in enumerate(tracking.session_files):
-        print(f"  {session}  {filepath}" + ("  (missing)" if filepath in missing else ""))
+        labels = tracking.labels_by_session[session]
+        print(f"    {session:>7}  {len(labels):>4}  {int((labels >= 0).sum()):>9}  {os.path.relpath(filepath, root)}"
+              + ("  (missing)" if filepath in missing else ""))
     if args.list:
         return
     if len(missing) > 0:
@@ -688,7 +705,9 @@ def view_tracking(args: argparse.Namespace) -> None:
     import fastplotlib as fpl
 
     device = str(masknmf.utils.torch_select_device()) if args.device == "auto" else args.device
-    masknmf.MultiSessionDemixingVis(tracking, device=device).show()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        masknmf.MultiSessionDemixingVis(tracking, device=device).show()
     fpl.loop.run()
 
 
