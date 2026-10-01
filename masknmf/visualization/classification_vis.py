@@ -12,6 +12,7 @@ from masknmf.visualization.imgui.panels import draw_help_buttons, draw_keybinds_
 from masknmf.visualization.imgui.files import PathPrompt, draw_path_prompt
 from masknmf.visualization.imgui.classification_help import draw_classification_help
 from masknmf.visualization.imgui.keybinds import CLASSIFICATION, LABEL_KEYS, pressed
+from masknmf.visualization.imgui.options import draw_options_menu, draw_options_popup
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, opaque_popups
 from masknmf.demixing.labels import (
@@ -151,6 +152,7 @@ class ClassificationVis:
         self._roi_alpha = 1.0
         self._advance_on_label = True
         self._keybinds_open = False
+        self._options_open = False
         self._dmrs: Optional[list] = None
         self._peak_frames: Optional[np.ndarray] = None
         self._movie_player = MoviePlayer()
@@ -167,7 +169,7 @@ class ClassificationVis:
         self.set_roi_images(roi_images, class_labels)
 
         self._figure.add_imgui_window(
-            self._draw_panel, location="top", size=228, title="Classification"
+            self._draw_panel, location="top", size=268, title="Classification"
         )
         self._figure.add_imgui_window(
             self._draw_table, location="right", size=360, title="ROIs"
@@ -1053,7 +1055,7 @@ class ClassificationVis:
         if pressed(CLASSIFICATION["undo"]):
             self.undo_label()
         if pressed(CLASSIFICATION["escape"]):
-            self._help_open = self._keybinds_open = False
+            self._help_open = self._keybinds_open = self._options_open = False
         if pressed(CLASSIFICATION["help"]):
             self._help_open = not self._help_open
         if pressed(CLASSIFICATION["keybinds"]):
@@ -1277,6 +1279,8 @@ class ClassificationVis:
         self._poll_load()
         self._poll_classifier()
         self._handle_keys()
+        if draw_options_menu():
+            self._options_open = True
         self._slider_w = em(9)
         h = imgui.get_content_region_avail().y - em(1.8)
         self._draw_nav_card(h)
@@ -1291,6 +1295,7 @@ class ClassificationVis:
         self._draw_prompts()
         self._help_open, self._keybinds_open = draw_classification_help(self._help_open, self._keybinds_open)
         self._keybinds_open = draw_keybinds_popup(CLASSIFICATION, self._keybinds_open)
+        self._options_open = draw_options_popup(self._figure, self._options_open)
 
     def _draw_nav_card(self, h: float):
         with card("##nav", "NAVIGATE", h):

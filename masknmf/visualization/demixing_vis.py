@@ -49,6 +49,7 @@ from masknmf.visualization.imgui import (
 )
 from masknmf.visualization.imgui.curation_help import draw_curation_help
 from masknmf.visualization.imgui.keybinds import DEMIXING, pressed
+from masknmf.visualization.imgui.options import OPTIONS_LABEL, draw_options_popup
 from masknmf.visualization.rois import MARKED_COLOR, SELECTED_ALPHA, FootprintSet
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.demixing import CellStats, update_signals, write_curated
@@ -399,6 +400,7 @@ class SingleSessionDemixingVis:
         self._scroll_to_current = False
         self._keybinds_open = False
         self._help_open = False
+        self._options_open = False
         self._show_masks = show_masks
         self._mask_opacity = mask_opacity
         self._show_selected_masks = True
@@ -1538,8 +1540,8 @@ class SingleSessionDemixingVis:
         if pressed(DEMIXING["delete"]) and self._worker is None:
             self._delete_selected()
         if pressed(DEMIXING["escape"]):
-            if self._help_open or self._keybinds_open:
-                self._help_open = self._keybinds_open = False
+            if self._help_open or self._keybinds_open or self._options_open:
+                self._help_open = self._keybinds_open = self._options_open = False
             elif self._armed:
                 self._armed = False
             elif self._region is not None:
@@ -1643,6 +1645,9 @@ class SingleSessionDemixingVis:
                     "- .csv / .tsv: a header row of names, then one row per signal\n"
                     "- .txt: signal ids in a custom order, becomes the 'order' column"
                 )
+                imgui.separator()
+                if imgui.menu_item_simple(OPTIONS_LABEL):
+                    self._options_open = True
                 imgui.end_menu()
             imgui.end_menu_bar()
         imgui.end_child()
@@ -1685,6 +1690,7 @@ class SingleSessionDemixingVis:
             imgui.end_tab_bar()
         self._keybinds_open = draw_keybinds_popup(DEMIXING, self._keybinds_open)
         self._help_open, self._keybinds_open = draw_curation_help(self._help_open, self._keybinds_open)
+        self._options_open = draw_options_popup(self._ndw_fov.figure, self._options_open)
         path = draw_path_prompt(self._export_prompt)
         if path is not None:
             try:
