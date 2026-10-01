@@ -19,6 +19,7 @@ here enumerates a parameter by hand:
     masknmf view results.hdf5 --classify --labels soma,dendrite,junk
     masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
     masknmf view tracking_folder
+    masknmf view tracking_folder/2026-10-01-18-04-15_roicat-tracking-manifest.json
     masknmf view tracking_folder day1/results.hdf5 day2/results.hdf5
     masknmf train-classifier "sessions/*/results.hdf5" --out cells
     masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classifier
@@ -53,6 +54,7 @@ from masknmf.pipelines import scraper
 
 SUFFIXES_TIFF = (".tif", ".tiff")
 SUFFIXES_HDF5 = (".h5", ".hdf5")
+GLOB_TRACKING_MANIFEST = "*_roicat-tracking-manifest.json"
 
 NAMES_ALIAS = {"frame_rate": "--fs"}
 
@@ -210,10 +212,23 @@ def expand_results(entries: list[str]) -> list[str]:
     return list(dict.fromkeys(files))
 
 
-def is_tracking_folder(entry: str) -> bool:
-    """Whether entry is a folder RoicatTrackingResults.to_roicat_dir wrote."""
-    folder = Path(entry).expanduser()
-    return folder.is_dir() and any(folder.glob("*.tracking.results_all.*"))
+def find_tracking(entry: str) -> Optional[Path]:
+    """
+    The tracking run a view entry names: a ``*_roicat-tracking-manifest.json`` file as given; for a folder, the
+    manifest with the latest timestamp in it or, with none there, in its ``tracking`` subfolder; else the folder
+    itself when it holds ROICaT's files, as RoicatTrackingResults.to_roicat_dir wrote them before manifests. None
+    for anything else.
+    """
+    path = Path(entry).expanduser()
+    if path.is_file():
+        return path if path.match(GLOB_TRACKING_MANIFEST) else None
+    if not path.is_dir():
+        return None
+    # a manifest's name starts with its timestamp, so the last by name is the newest
+    manifests = sorted(path.glob(GLOB_TRACKING_MANIFEST)) or sorted(path.glob(f"tracking/{GLOB_TRACKING_MANIFEST}"))
+    if len(manifests) > 0:
+        return manifests[-1]
+    return path if any(path.glob("*.tracking.results_all.*")) else None
 
 
 def demixing_sessions(files: list[str]) -> list[str]:
@@ -683,8 +698,11 @@ def print_tracking(tracking: "masknmf.multisession.RoicatTrackingResults", folde
     return missing
 
 
-def view_tracking(args: argparse.Namespace) -> None:
-    """Open the multisession viewer on a tracking folder; results files after it replace the sessions it recorded."""
+def view_tracking(args: argparse.Namespace, source: Path) -> None:
+    """
+    Open the multisession viewer on a tracking run, its manifest or a folder from before manifests; results files
+    after it replace the sessions it recorded.
+    """
     if args.classify or args.raw is not None or args.compression or args.prefix or args.fs is not None:
         fail("a tracking folder opens only the multisession viewer; drop --classify, --raw, --compression, --prefix and --fs")
     folder, entries_sessions = args.results[0], args.results[1:]
@@ -693,7 +711,10 @@ def view_tracking(args: argparse.Namespace) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         try:
-            tracking = masknmf.multisession.RoicatTrackingResults.from_roicat_dir(folder)
+            if source.is_file():
+                tracking = masknmf.multisession.RoicatTrackingResults.from_manifest(source)
+            else:
+                tracking = masknmf.multisession.RoicatTrackingResults.from_roicat_dir(source)
         except ValueError as error:
             fail(str(error))
     if files is not None:
@@ -718,7 +739,7 @@ def view_tracking(args: argparse.Namespace) -> None:
             tracking.session_files = files
         except ValueError as error:
             fail(str(error))
-    missing = print_tracking(tracking=tracking, folder=folder)
+    missing = print_tracking(tracking=tracking, folder=str(source))
     if args.list:
         return
     if len(missing) > 0:
@@ -735,8 +756,9 @@ def view_tracking(args: argparse.Namespace) -> None:
 
 def command_view(args: argparse.Namespace) -> None:
     """Open the viewers for whatever stages the results files hold; --classify opens only the classification viewer."""
-    if is_tracking_folder(entry=args.results[0]):
-        view_tracking(args=args)
+    tracking = find_tracking(entry=args.results[0])
+    if tracking is not None:
+        view_tracking(args=args, source=tracking)
         return
     files = expand_results(entries=args.results)
     present = {filepath: groups_present(filepath_results=filepath) for filepath in files}
@@ -930,7 +952,7 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_view = subparsers.add_parser("view", help="open the viewers for a results file")
     parser_view.add_argument(
         "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several need --classify. "
-        "Or a tracking folder, optionally followed by its results files in session order",
+        "Or a tracking folder (its newest run) or one run's *-manifest.json, optionally followed by its results files in session order",
     )
     parser_view.add_argument("--raw", default=None, help="the raw movie the results came from")
     parser_view.add_argument("--dataset", default=None)
@@ -983,7 +1005,10 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_track.add_argument(
         "results", nargs="+", help="results .hdf5 files or globs, one per session; sessions are numbered in this order"
     )
-    parser_track.add_argument("--out", required=True, help="the folder the tracking results are saved in")
+    parser_track.add_argument(
+        "--out", required=True,
+        help="the tracking folder; each run adds <timestamp>_roicat-tracking/ and its -manifest.json there",
+    )
     parser_track.add_argument("--um-per-pixel", default=1.2, type=float, help="imaging resolution; default 1.2")
     parser_track.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     parser_track.set_defaults(handler=command_track)

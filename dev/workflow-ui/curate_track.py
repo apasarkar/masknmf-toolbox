@@ -14,7 +14,6 @@ import masknmf
 from masknmf.demixing import latest_results
 from masknmf.demixing.labels import SIDECAR_SUFFIX
 from masknmf.multisession import RoicatDataAdapter, RoicatTracker, RoicatTrackingResults
-from masknmf.utils import get_timestamp
 
 import roicat
 
@@ -62,7 +61,7 @@ tracker.params["general"]["use_GPU"] = DEVICE != "cpu"
 tracker.params["ROInet"]["dataloader"]["numWorkers_dataloader"] = 0
 tracker.params["ROInet"]["dataloader"]["persistentWorkers_dataloader"] = False
 tracking = tracker.run_tracking(RoicatDataAdapter.from_masknmf(files, um_per_pixel=UM_PER_PIXEL))
-folder = tracking.to_roicat_dir(f"{ROOT}/tracking/{get_timestamp()}")
+folder = tracking.to_roicat_dir(f"{ROOT}/tracking")
 print(tracking)
 print(folder)
 
