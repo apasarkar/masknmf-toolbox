@@ -20,6 +20,7 @@ here enumerates a parameter by hand:
     masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
     masknmf train-classifier "sessions/*/results.hdf5" --out cells
     masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classifier
+    masknmf track "sessions/*/results.hdf5" --out tracking
 """
 
 from typing import Any, Optional
@@ -42,6 +43,7 @@ import numpy as np
 import masknmf
 from masknmf.classification import RoicatClassifier
 from masknmf.demixing.labels import SIDECAR_SUFFIX, read_labels
+from masknmf.multisession import RoicatDataAdapter, RoicatTracker
 from masknmf.pipelines import scraper
 
 
@@ -768,6 +770,20 @@ def command_classify(args: argparse.Namespace) -> None:
         print(f"{filepath}  {counts}")
 
 
+def command_track(args: argparse.Namespace) -> None:
+    """Track ROIs across sessions with ROICaT, one session per results file in the order given, and save the tracking folder."""
+    sessions = demixing_sessions(files=expand_results(entries=args.results))
+    if len(sessions) < 2:
+        fail(f"tracking needs at least two sessions, got {len(sessions)}")
+    for session, filepath in enumerate(sessions):
+        print(f"  {session}  {filepath}")
+    tracker = RoicatTracker()
+    tracker.params["general"]["use_GPU"] = args.device != "cpu"
+    tracking = tracker.run_tracking(RoicatDataAdapter.from_masknmf(sessions, um_per_pixel=args.um_per_pixel))
+    print(tracking)
+    print(f"saved to {tracking.to_roicat_dir(args.out)}")
+
+
 def timings(num_frames: int, frame_rate: Optional[float]):
     """Frame times in seconds, or None when no acquisition rate was given."""
     if frame_rate is None:
@@ -868,6 +884,15 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_classify.add_argument("--classifier", required=True, help="a .roicat_classifier from masknmf train-classifier")
     parser_classify.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     parser_classify.set_defaults(handler=command_classify)
+
+    parser_track = subparsers.add_parser("track", help="track ROIs across sessions with ROICaT")
+    parser_track.add_argument(
+        "results", nargs="+", help="results .hdf5 files or globs, one per session; sessions are numbered in this order"
+    )
+    parser_track.add_argument("--out", required=True, help="the folder the tracking results are saved in")
+    parser_track.add_argument("--um-per-pixel", default=1.2, type=float, help="imaging resolution; default 1.2")
+    parser_track.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
+    parser_track.set_defaults(handler=command_track)
 
     return parser
 
