@@ -284,6 +284,7 @@ class MultiSessionDemixingVis:
         self._contour_opacity = 0.9
         self._show_selected_contours = True
         self._selected_contour_opacity = 0.7
+        self._masks_shown = np.ones(self.num_sessions_displayed, dtype=bool)
         self._image_highlight_selectors = []
         for j in range(self.num_sessions_displayed):
             selector = fpl.ImageHighlightSelector(lut="tab10",
@@ -675,13 +676,13 @@ class MultiSessionDemixingVis:
     def _set_contours(self, show: bool):
         """``show`` draws every other footprint's contour at the contour opacity; the selection's has its own pair."""
         self._show_contours = show
-        for selector in self._image_highlight_selectors:
-            selector.options_alpha = self._contour_opacity if show else 0.0
+        for j, selector in enumerate(self._image_highlight_selectors):
+            selector.options_alpha = self._contour_opacity if show and self._masks_shown[j] else 0.0
 
     def _set_selected_contours(self, show: bool):
         self._show_selected_contours = show
-        for selector in self._image_highlight_selectors:
-            selector.alpha = self._selected_contour_opacity if show else 0.0
+        for j, selector in enumerate(self._image_highlight_selectors):
+            selector.alpha = self._selected_contour_opacity if show and self._masks_shown[j] else 0.0
 
     def _step(self, delta: int):
         if self._active is None:
@@ -937,11 +938,11 @@ class MultiSessionDemixingVis:
             imgui.same_line()
         imgui.new_line()
         flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.borders_inner_h | imgui.TableFlags_.scroll_x
-        if not imgui.begin_table("##sessions", 5 + num_panels, flags):
+        if not imgui.begin_table("##sessions", 6 + num_panels, flags):
             return
         for k in range(num_panels):
             imgui.table_setup_column(f"{k + 1}", imgui.TableColumnFlags_.width_fixed)
-        for name in ("traces", "session", "frames", "rois", "tracked"):
+        for name in ("traces", "masks", "session", "frames", "rois", "tracked"):
             imgui.table_setup_column(name, imgui.TableColumnFlags_.width_fixed)
         imgui.table_headers_row()
         for j, sess_id in enumerate(self.session_ids):
@@ -964,6 +965,13 @@ class MultiSessionDemixingVis:
                 f"{self.session_names[j]}'s traces in the trace panel, in this color, while a panel shows it "
                 "(always with Display's traces \"all sessions\")"
             )
+            imgui.table_next_column()
+            changed, shown = imgui.checkbox(f"##masks{j}", bool(self._masks_shown[j]))
+            if changed:
+                self._masks_shown[j] = shown
+                self._set_contours(self._show_contours)
+                self._set_selected_contours(self._show_selected_contours)
+            tooltip(f"{self.session_names[j]}'s contours on the panels showing it, as Display's contour checkboxes set them")
             imgui.table_next_column()
             imgui.text_colored(imgui.ImVec4(r, g, b, 1.0), self.session_names[j])
             tooltip(str(self.tracking_results.session_files[sess_id]))
