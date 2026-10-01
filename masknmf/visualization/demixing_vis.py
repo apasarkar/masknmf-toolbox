@@ -19,10 +19,12 @@ from masknmf.utils import display
 from functools import partial
 from masknmf.visualization.imgui import (
     THEME,
+    GROUP_COLORS,
     PathPrompt,
     RoiOrder,
     SourceRightClickMenu,
     TracePlot,
+    CLICK_SLOP,
     component_at_pixel,
     draw_keybinds_popup,
     draw_panels_popup,
@@ -66,9 +68,6 @@ _ROI_COLORS = (
 _NPZ_FILTERS = ["NumPy archive", "*.npz", "All files", "*"]
 _STATS_FILTERS = ["Cell stats", "*.npy *.npz *.csv *.tsv *.txt", "All files", "*"]
 _HDF5_FILTERS = ["masknmf demixing results", "*.hdf5 *.h5", "All files", "*"]
-_CLICK_SLOP = (
-    4  # px the pointer may travel between press and release and still be a click
-)
 _UNDO_DEPTH = 50  # ctrl+z snapshots kept
 # every grid's captions, so the caption column is one width across the sections and the tabs
 # what the panels open on, first come: raw | compressed+denoised | signals when a raw movie is there
@@ -79,15 +78,6 @@ _CAPTIONS = (
 )
 # signals selected together, in order of mutual contrast on the dark plot; no red, a mask marked for
 # deletion is red
-_GROUP_COLORS = (
-    (1.00, 0.55, 0.10),
-    (0.25, 0.85, 0.35),
-    (0.95, 0.35, 0.90),
-    (0.35, 0.80, 1.00),
-    (1.00, 0.95, 0.35),
-    (0.65, 0.50, 1.00),
-    (1.00, 1.00, 1.00),
-)
 # compressed/signal/background/residual, in that order, so the 4 base lines read apart in the legend
 _BASE_LINE_COLORS = (
     (0.85, 0.85, 0.85),
@@ -682,7 +672,7 @@ class SingleSessionDemixingVis:
         # pygfx reports any two quick presses on one panel as a double-click, however far apart
         self._same_spot = (
             self._press is not None
-            and abs(ev.x - self._press[0]) + abs(ev.y - self._press[1]) <= _CLICK_SLOP
+            and abs(ev.x - self._press[0]) + abs(ev.y - self._press[1]) <= CLICK_SLOP
         )
         self._press = (ev.x, ev.y)
         self._press_drawn = self._drawing()
@@ -817,7 +807,7 @@ class SingleSessionDemixingVis:
             return
         # pygfx reports a click after any press and release on one graphic, a pan drag included
         if self._press is not None and (
-            abs(ev.x - self._press[0]) + abs(ev.y - self._press[1]) > _CLICK_SLOP
+            abs(ev.x - self._press[0]) + abs(ev.y - self._press[1]) > CLICK_SLOP
         ):
             return
         col, row = ev.pick_info["index"]
@@ -926,7 +916,7 @@ class SingleSessionDemixingVis:
         if len(self._group) < 2:
             return {}
         return {
-            k: _GROUP_COLORS[i % len(_GROUP_COLORS)] for i, k in enumerate(self._group)
+            k: GROUP_COLORS[i % len(GROUP_COLORS)] for i, k in enumerate(self._group)
         }
 
     def _highlighted(self) -> list:
@@ -977,7 +967,7 @@ class SingleSessionDemixingVis:
             self._selected_signals = []
             lines = []
             for i, k in enumerate(self._group):
-                rgb = _GROUP_COLORS[i % len(_GROUP_COLORS)]
+                rgb = GROUP_COLORS[i % len(GROUP_COLORS)]
                 if isinstance(k, tuple):
                     lines.append(
                         (f"pixel avg ({k[0]}, {k[1]})", self._pixels[k][0], rgb)
@@ -2061,11 +2051,12 @@ class SingleSessionDemixingVis:
             if imgui.button(f"{fa.ICON_FA_TRASH}##delete", size):
                 self._delete_selected()
         imgui.end_disabled()
+        key = DEMIXING["delete"].label
         tooltip(
-            f"Unmark: the {len(signals)} selected signal(s) stay in the next demix (delete)"
+            f"Unmark: the {len(signals)} selected signal(s) stay in the next demix ({key})"
             if unmark
             else f"Mark for deletion: the {len(signals)} selected signal(s) are removed by the next demix and kept "
-            "until then; a selected drawn roi or pixel average is dropped right away (delete)"
+            f"until then; a selected drawn roi or pixel average is dropped right away ({key})"
         )
         imgui.same_line(0, gap)
         imgui.begin_disabled(True)

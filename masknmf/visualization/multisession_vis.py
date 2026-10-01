@@ -18,10 +18,12 @@ from masknmf.visualization.imgui import (
     PANELS_LABEL,
     PANELS_TIP,
     THEME,
+    GROUP_COLORS,
     RoiOrder,
     SourceRightClickMenu,
     TracePlot,
     button_colors,
+    CLICK_SLOP,
     component_at_pixel,
     draw_keybinds_button,
     draw_keybinds_popup,
@@ -281,6 +283,8 @@ class MultiSessionDemixingVis:
 
         # one selector per session, holding the graphics of whichever panels show that session
         self._show_contours = False
+        self._press = None  # screen position of the last pointer press on a panel
+        self._same_spot = False  # that press landed where the one before it did
         self._contour_opacity = 0.9
         self._show_selected_contours = True
         self._selected_contour_opacity = 0.7
@@ -321,8 +325,6 @@ class MultiSessionDemixingVis:
         self._trace_x, self._session_x = self._trace_axes()
         # every session's traces share one panel, each session in its own color, shown or hidden from the Sessions tab
         n = self.num_sessions_displayed
-        colors = Colormap("tab10")(np.arange(n)) if n <= 10 else Colormap("hsv")(np.linspace(0, 1, n, endpoint=False))
-        self._session_colors = np.asarray(colors)[:, :3]
         self._trace_shown = np.ones(n, dtype=bool)
         self._traces_all_sessions = False
         self._traces = TracePlot(
@@ -343,7 +345,7 @@ class MultiSessionDemixingVis:
         self._order = RoiOrder(columns, len(self.cluster_ids))
         self._order.rebuild()
         self._active = None
-        self._follow = True
+        self._follow = False
         self._scroll_to_current = False
         self._keybinds_open = False
         self._panels_open = False
@@ -378,6 +380,7 @@ class MultiSessionDemixingVis:
         """Hook panel k's graphic to its session: that session's contours and double-click selection, then its title and color limits."""
         graphic = self._nd_image_graphics[k].graphic
         self._image_highlight_selectors[self._panel_session[k]].add_graphic(graphic)
+        graphic.add_event_handler(self._pointer_down, "pointer_down")
         graphic.add_event_handler(partial(self.neuron_selection, k), "double_click")
         self._set_title(k)
         self._refresh_panel(k)
@@ -397,9 +400,16 @@ class MultiSessionDemixingVis:
         self._panel_session[k] = j
         timings = self.session_frame_timings[j]
         nd_image.slicer.slider_maps = None if timings is None else {self.reference_range_timeaxis: timings}
-        # a new graphic instance: the selector and the click handler go onto it
+        # a new graphic instance: the selector and the click handler go onto it, and the panels keep their zoom
+        cameras = [subplot.camera.get_state() for subplot in self._ndw.figure]
         nd_image.data = array
         self._bind_panel(k)
+        for subplot, state in zip(self._ndw.figure, cameras):
+            subplot.camera.set_state(state)
+        # a session moved into a panel shows its contours as Display sets them, whatever its masks box said before
+        self._masks_shown[j] = True
+        self._set_contours(self._show_contours)
+        self._set_selected_contours(self._show_selected_contours)
         # the stills, the overlay's partner and the traces follow the sessions on screen
         self._refresh_stills()
         self._update_traces(fit=False)
@@ -587,9 +597,18 @@ class MultiSessionDemixingVis:
                 self._refresh_panel(k)
             self._refresh_stills()
 
+    def _pointer_down(self, ev):
+        # pygfx reports any two quick presses on one panel as a double-click, however far apart
+        self._same_spot = (
+            self._press is not None and abs(ev.x - self._press[0]) + abs(ev.y - self._press[1]) <= CLICK_SLOP
+        )
+        self._press = (ev.x, ev.y)
+
     def neuron_selection(self,
                          panel: int,
                          ev):
+        if not self._same_spot:
+            return
         curr_ac = self.ac_arrays[self._panel_session[panel]]
         rows = self._rows_by_session[self._panel_session[panel]]
         neuron = component_at_pixel(curr_ac.spatial_demixed,
@@ -621,6 +640,7 @@ class MultiSessionDemixingVis:
         """
         lines = []
         on_screen = set(self._panel_session)
+        colors = self._session_colors()
         for j, name in enumerate(self.session_names):
             if self._active is None or not self._trace_shown[j]:
                 continue
@@ -632,8 +652,19 @@ class MultiSessionDemixingVis:
                 trace = temporal[:, int(local)].float().cpu().numpy()
                 resampled = np.interp(self._trace_x, self._session_x[j], trace, left=np.nan, right=np.nan)
                 label = name if len(members) == 1 else f"{name} roi {local}"
-                lines.append((label, resampled, tuple(self._session_colors[j])))
+                lines.append((label, resampled, colors[j]))
         self._traces.set("traces", lines, fit=fit)
+
+    def _session_colors(self) -> list[tuple]:
+        """
+        Each session's trace color, as the demixing viewer colors grouped traces: the sessions on screen take the
+        contrasting colors first in panel order, so they always differ; the rest follow in session order.
+        """
+        order = self._on_screen() + [j for j in range(self.num_sessions_displayed) if j not in self._panel_session]
+        colors = [None] * self.num_sessions_displayed
+        for i, j in enumerate(order):
+            colors[j] = GROUP_COLORS[i % len(GROUP_COLORS)]
+        return colors
 
     def _center_on(self, row: int):
         """
@@ -937,6 +968,7 @@ class MultiSessionDemixingVis:
         for name in ("traces", "masks", "session", "frames", "rois", "tracked"):
             imgui.table_setup_column(name, imgui.TableColumnFlags_.width_fixed)
         imgui.table_headers_row()
+        colors = self._session_colors()
         for j, sess_id in enumerate(self.session_ids):
             imgui.table_next_row()
             # a panel column per panel: the radio picks the session that panel shows
@@ -946,7 +978,7 @@ class MultiSessionDemixingVis:
                     self.set_session(k, j)
                 tooltip(f"show {self.session_names[j]} in panel {k + 1}")
             imgui.table_next_column()
-            r, g, b = self._session_colors[j]
+            r, g, b = colors[j]
             imgui.push_style_color(imgui.Col_.check_mark, imgui.ImVec4(r, g, b, 1.0))
             changed, shown = imgui.checkbox(f"##trace{j}", bool(self._trace_shown[j]))
             imgui.pop_style_color()

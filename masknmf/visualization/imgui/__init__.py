@@ -1,5 +1,6 @@
 from masknmf.visualization.imgui.widgets import CheckboxWindow, SourceRightClickMenu
 from masknmf.visualization.imgui.picking import (
+    CLICK_SLOP,
     component_at_pixel,
     contours_to_bbox,
     zoom_to_bbox,
@@ -25,6 +26,7 @@ from masknmf.visualization.imgui.files import NATIVE_DIALOGS, PathPrompt, draw_p
 from masknmf.visualization.imgui.theme import (
     Theme,
     THEME,
+    GROUP_COLORS,
     to_vec4,
     em,
     card,
