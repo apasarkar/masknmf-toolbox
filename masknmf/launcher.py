@@ -39,6 +39,12 @@ FILETYPES_MOVIE = [
     idl.FileType("All Files", "*"),
 ]
 FILETYPES_ARRAY = [idl.FileType("NumPy", "*.npy")]
+FILETYPES_RESULTS = [
+    idl.FileType("Results", "*.h5 *.hdf5"),
+    idl.FileType("All Files", "*"),
+]
+
+NAME_TRACKING = "tracking"
 
 COLOR_TITLE = imgui.ImVec4(1.0, 0.85, 0.4, 1.0)
 COLOR_SUBSECTION = imgui.ImVec4(0.55, 0.75, 1.0, 1.0)
@@ -313,6 +319,10 @@ class Launcher:
         self.buffers: dict[str, str] = {}
         self.errors: dict[str, str] = {}
         self.dataset = ""
+        # the tracking entry of the pipeline combo: results rows results_0, results_1, ... and the out folder
+        self.tracking = False
+        self.paths_tracking: dict[str, str] = {"out": "", "results_0": ""}
+        self.um_per_pixel = 1.2
         self.picker = None
         self.target_picker: Optional[tuple[dict, str]] = None
         self.argv: Optional[list[str]] = None
@@ -449,6 +459,13 @@ class Launcher:
 
     def problems(self) -> list[str]:
         """Everything that has to be fixed before the pipeline can run."""
+        if self.tracking:
+            rows = [p.strip() for k, p in self.paths_tracking.items() if k.startswith("results_") and p.strip() != ""]
+            problems = [] if len(rows) > 0 else ["choose the sessions' results files"]
+            problems += [f"not found: {p}" for p in rows if not any(c in p for c in "*?[") and not Path(p).expanduser().exists()]
+            if self.paths_tracking["out"].strip() == "":
+                problems.append("choose the folder the tracking is saved in")
+            return problems
         problems = []
         movies = self.movies_given()
         if len(movies) == 0:
@@ -479,6 +496,9 @@ class Launcher:
 
     def build_argv(self) -> list[str]:
         """The `masknmf` arguments the window's values amount to, writing changed configs to a json file."""
+        if self.tracking:
+            rows = [p.strip() for k, p in self.paths_tracking.items() if k.startswith("results_") and p.strip() != ""]
+            return ["track", *rows, "--out", self.paths_tracking["out"].strip(), "--um-per-pixel", f"{self.um_per_pixel:.6g}"]
         spec = self.spec
         argv = ["run", "--pipeline", spec.slug]
         for param in spec.movie_params:
@@ -604,29 +624,66 @@ class Launcher:
         ):
             self.draw_pipeline()
             draw_divider()
-            self.draw_input()
-            draw_divider()
-            self.draw_output()
-            draw_divider()
-            self.draw_run_parameters()
-            draw_divider()
-            self.draw_stages()
-            draw_divider()
-            self.draw_runtime()
-            draw_divider()
-            self.draw_modified()
+            if self.tracking:
+                self.draw_tracking()
+            else:
+                self.draw_input()
+                draw_divider()
+                self.draw_output()
+                draw_divider()
+                self.draw_run_parameters()
+                draw_divider()
+                self.draw_stages()
+                draw_divider()
+                self.draw_runtime()
+                draw_divider()
+                self.draw_modified()
         self.poll_picker()
 
     def draw_pipeline(self) -> None:
-        """Which pipeline runs."""
-        draw_subsection(text="Pipeline", hint="Which masknmf pipeline runs. Switching resets every value but the movie.")
+        """Which pipeline runs, or tracking."""
+        draw_subsection(
+            text="Pipeline",
+            hint="Which masknmf pipeline runs. Switching resets every value but the movie. "
+            "tracking matches ROIs across sessions' results files with ROICaT instead.",
+        )
         imgui.spacing()
-        imgui.set_next_item_width(max(self.width_combo(items=self.slugs), hello_imgui.em_size(WIDTH_INPUT_EM)))
-        changed, index = imgui.combo("##pipeline", self.index_pipeline, self.slugs)
+        items = [*self.slugs, NAME_TRACKING]
+        imgui.set_next_item_width(max(self.width_combo(items=items), hello_imgui.em_size(WIDTH_INPUT_EM)))
+        changed, index = imgui.combo("##pipeline", len(self.slugs) if self.tracking else self.index_pipeline, items)
         if changed:
-            self.select_pipeline(index=index)
-        same_line_if_fits(width=imgui.calc_text_size(self.spec.cls.__name__).x)
-        imgui.text_colored(COLOR_DIM, self.spec.cls.__name__)
+            self.tracking = index == len(self.slugs)
+            if not self.tracking:
+                self.select_pipeline(index=index)
+        name = "RoicatTracker" if self.tracking else self.spec.cls.__name__
+        same_line_if_fits(width=imgui.calc_text_size(name).x)
+        imgui.text_colored(COLOR_DIM, name)
+
+    def draw_tracking(self) -> None:
+        """The sessions' results files, one path or glob per row, the folder the tracking is saved in, and the resolution."""
+        draw_subsection(
+            text="Results files",
+            hint="One masknmf results .hdf5 per session: a path or a glob per row, e.g. sessions/*/results.hdf5. "
+            "Sessions are numbered in this order, a glob's matches in name order. A new row opens as the last one fills.",
+        )
+        imgui.spacing()
+        keys = [k for k in self.paths_tracking if k.startswith("results_")]
+        for key in keys:
+            self.draw_path(target=self.paths_tracking, key=key, filetypes=FILETYPES_RESULTS, folders=False,
+                           hint="path or glob, e.g. sessions/*/results.hdf5")
+        if self.paths_tracking[keys[-1]].strip() != "":
+            self.paths_tracking[f"results_{len(keys)}"] = ""
+        draw_divider()
+        draw_subsection(text="Tracking folder", hint="Where the tracking results and the ROICaT params are saved.")
+        imgui.spacing()
+        self.draw_path(target=self.paths_tracking, key="out", filetypes=None, folders=True, hint="required")
+        draw_divider()
+        draw_subsection(text="Recording", hint="The imaging resolution, the same for every session.")
+        imgui.spacing()
+        imgui.set_next_item_width(hello_imgui.em_size(WIDTH_INPUT_EM))
+        _, self.um_per_pixel = imgui.input_float("##um_per_pixel", self.um_per_pixel, 0.0, 0.0, "%.6g")
+        imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+        draw_wrapped(text="um per pixel")
 
     def draw_input(self) -> None:
         """The movie(s), the hdf5 dataset, and any .npy inputs the pipeline takes."""
@@ -1029,7 +1086,7 @@ class Launcher:
                 hint,
             )
         path = target[key].strip()
-        if path != "" and not Path(path).expanduser().exists():
+        if path != "" and not any(c in path for c in "*?[") and not Path(path).expanduser().exists():
             imgui.text_colored(COLOR_ERROR, "not found on this machine")
 
     def draw_param(self, param: scraper.Param) -> None:
@@ -1093,8 +1150,8 @@ class Launcher:
         with anything blocking the run under them.
         """
         problems = self.problems()
-        nothing_modified = len(self.modified()) == 0
-        label_run = f"{fa.ICON_FA_PLAY}  Run {self.spec.slug}"
+        nothing_modified = self.tracking or len(self.modified()) == 0
+        label_run = f"{fa.ICON_FA_PLAY}  Run {NAME_TRACKING if self.tracking else self.spec.slug}"
         label_defaults = f"{fa.ICON_FA_ARROW_ROTATE_LEFT}  Defaults"
         label_quit = "Quit"
         spacing = imgui.get_style().item_spacing.x
