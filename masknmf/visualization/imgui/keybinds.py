@@ -113,8 +113,8 @@ CLASSIFICATION: Mapping[str, Bind] = {
 MULTISESSION: Mapping[str, Bind] = {
     "up": UP,
     "down": DOWN,
-    "left": Bind("left", "previous frame (shift: by 10)", imgui.Key.left_arrow, repeat=True),
-    "right": Bind("right", "next frame (shift: by 10)", imgui.Key.right_arrow, repeat=True),
+    "left": Bind("left", "every panel back one session: the panels scroll right", imgui.Key.left_arrow, repeat=True),
+    "right": Bind("right", "every panel on one session: the panels scroll left", imgui.Key.right_arrow, repeat=True),
     "page_back": Bind("[", "every panel back one page of sessions", imgui.Key.left_bracket),
     "page_next": Bind("]", "every panel on one page of sessions", imgui.Key.right_bracket),
     "double_click": Bind("double-click", "on a footprint in any panel: select its cluster in every session"),

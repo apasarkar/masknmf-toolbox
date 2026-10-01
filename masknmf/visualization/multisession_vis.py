@@ -415,11 +415,10 @@ class MultiSessionDemixingVis:
             self._stills = self._static_images()
             self._summary.set_images(self._stills)
 
-    def _page_sessions(self, delta: int):
-        """Move every panel ``delta`` pages of sessions along, wrapping: with 4 panels over 30 sessions, the next 4."""
-        num_panels = len(self._panel_names)
-        for k in range(num_panels):
-            self.set_session(k, (self._panel_session[k] + delta * num_panels) % self.num_sessions_displayed)
+    def _shift_sessions(self, delta: int):
+        """Move every panel ``delta`` sessions along, wrapping: on sessions 0, 1, 2, -1 shows the last, 0 and 1."""
+        for k in range(len(self._panel_names)):
+            self.set_session(k, (self._panel_session[k] + delta) % self.num_sessions_displayed)
 
     def _static_images(self) -> dict:
         """
@@ -693,13 +692,6 @@ class MultiSessionDemixingVis:
             self._scroll_to_current = True
             self.select_cluster(self._order.current)
 
-    def _step_frame(self, delta: int):
-        """Move the time index by delta; every movie follows."""
-        axis = self.reference_range_timeaxis
-        index = self.reference_index
-        step = index.ref_ranges[axis].step if axis in index.ref_ranges else 1
-        index.set({axis: index[axis] + delta * step})
-
     def _set_color_by(self, name: str):
         self._color_by = name
         self._apply_consistent_coloring()
@@ -724,13 +716,13 @@ class MultiSessionDemixingVis:
         if pressed(MULTISESSION["up"]):
             self._step(-stride)
         if pressed(MULTISESSION["right"]):
-            self._step_frame(stride)
+            self._shift_sessions(1)
         if pressed(MULTISESSION["left"]):
-            self._step_frame(-stride)
+            self._shift_sessions(-1)
         if pressed(MULTISESSION["page_back"]):
-            self._page_sessions(-1)
+            self._shift_sessions(-len(self._panel_names))
         if pressed(MULTISESSION["page_next"]):
-            self._page_sessions(1)
+            self._shift_sessions(len(self._panel_names))
         if pressed(MULTISESSION["contours"]):
             self._set_contours(not self._show_contours)
         if pressed(MULTISESSION["follow"]):
@@ -924,11 +916,11 @@ class MultiSessionDemixingVis:
     def _draw_sessions_tab(self):
         num_panels = len(self._panel_names)
         if imgui.button(f"{fa.ICON_FA_ANGLE_LEFT}##page_back"):
-            self._page_sessions(-1)
+            self._shift_sessions(-num_panels)
         tooltip(f"every panel back {num_panels} sessions ([)")
         imgui.same_line()
         if imgui.button(f"{fa.ICON_FA_ANGLE_RIGHT}##page_next"):
-            self._page_sessions(1)
+            self._shift_sessions(num_panels)
         tooltip(f"every panel on {num_panels} sessions (])")
         imgui.same_line(0, em(1.2))
         for label, shown in (("show all", True), ("hide all", False)):
