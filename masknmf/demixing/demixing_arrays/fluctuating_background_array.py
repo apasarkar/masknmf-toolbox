@@ -1,5 +1,5 @@
 import numpy as np
-from masknmf.utils import SparseCOOTensor
+from masknmf.utils import SparseCOOTensor, is_cpu
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
@@ -30,6 +30,8 @@ class FluctuatingBackgroundArray(ArrayLike):
                 raise ValueError("Normalizer from flyweight had dimensions not equal to the fov dimensions")
 
         self._rescale = rescale
+
+        self._spatial_compressed_csr = self.spatial_compressed.cpu().to_sparse_csr()
 
     @classmethod
     def from_tensors(cls,
@@ -180,7 +182,10 @@ class FluctuatingBackgroundArray(ArrayLike):
             implied_fov = pixel_space_crop.shape
 
         else:
-            u_crop = self.spatial_compressed
+            if is_cpu(self.device):
+                u_crop = self._spatial_compressed_csr
+            else:
+                u_crop = self.spatial_compressed
             normalizer_crop = self.normalizer[None, ...]
             implied_fov = self.shape[1], self.shape[2]
 
