@@ -1,7 +1,7 @@
 import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
-from masknmf.utils import SparseCOOTensor
+from masknmf.utils import SparseCOOTensor, is_cpu
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
 
 class ColorfulSignalsArray(ArrayLike):
@@ -36,6 +36,8 @@ class ColorfulSignalsArray(ArrayLike):
         colors = colors.reshape((num_neurons, 3))
         color_sum = np.sum(colors, axis=1, keepdims=True)
         self._colors = torch.from_numpy(colors / color_sum).to(self.device).float()
+
+        self._spatial_demixed_csr = self.spatial_demixed.cpu().to_sparse_csr()
 
     @property
     def flyweight(self) -> TensorFlyWeight:
@@ -189,7 +191,10 @@ class ColorfulSignalsArray(ArrayLike):
             product = product.reshape(implied_fov + (temporal_demixed_crop.shape[1],) + (3,))
             product = product.permute(product.ndim - 2, *range(product.ndim - 2), 3)
         else:
-            spatial_demixed_crop = self.spatial_demixed
+            if is_cpu(self.device):
+                spatial_demixed_crop = self._spatial_demixed_csr
+            else:
+                spatial_demixed_crop = self.spatial_demixed
             implied_fov = self.shape[1], self.shape[2]
 
             product_list = []
