@@ -14,8 +14,9 @@
 | `masknmf view RESULTS... --classify` | label ROIs across one or more results files or globs |
 | `masknmf train-classifier RESULTS... --out NAME` | train a ROI classifier on the saved labels |
 | `masknmf classify RESULTS... --classifier F` | classify the ROIs in results files with a trained classifier |
-| `masknmf track RESULTS... --out FOLDER` | track ROIs across sessions with ROICaT, saving a tracking folder |
-| `masknmf view TRACKING_FOLDER [RESULTS...]` | open the multisession viewer on a ROICaT tracking run |
+| `masknmf track RESULTS... --out FOLDER` | track ROIs across sessions with ROICaT, adding a run to a tracking folder |
+| `masknmf view TRACKING_FOLDER [RESULTS...]` | open the multisession viewer on a tracking folder's newest run |
+| `masknmf view MANIFEST.json [RESULTS...]` | open the multisession viewer on the run a manifest names |
 | `masknmf --version` | print the masknmf version |
 
 ```bash
@@ -273,9 +274,17 @@ folder below. Globs never enter `.zarr` stores and leave out `.labels.hdf5` side
 curated file replaces ([curated results files](#curated-results-files)). The demixing viewer opens one file; several
 need `--classify`.
 
+A folder is opened by what it holds, looked for in this order:
+
+| the folder holds | opens |
+|---|---|
+| a `*_roicat-tracking-manifest.json`, directly or in its `tracking` subfolder | the multisession viewer on the newest run ([multisession](#multisession)) |
+| `*results*.hdf5` files | those files, as the glob `FOLDER/*results*.hdf5` would: each results file's newest curated file, else the results file |
+
 ```bash
 masknmf view "sessions/*/results.hdf5" --list      # print which stage groups each file holds
 masknmf view results.hdf5                          # demixing viewer (compression only when there is no demixing)
+masknmf view ./20260923T120000_two-photon-calcium   # the run folder's results.hdf5, or its newest curated file
 masknmf view results.hdf5 --raw movie.tif --fs 30  # + raw and registered panels; a registration-only file needs --raw
 masknmf view results.hdf5 --raw movie.tif --compression  # + lag-1 autocorrelation images of the registered, compressed and residual movies
 masknmf view results.hdf5 --raw raw.h5 --dataset /mov --device cpu
@@ -313,23 +322,61 @@ masknmf track day1/results.hdf5 day2/results.hdf5 day3/results.hdf5 --out ./trac
 masknmf track "sessions/day*/*/results*.hdf5" --out ./tracking --um-per-pixel 0.8 --device cpu
 ```
 
-The `--out` folder holds `<timestamp>.tracking.results_all.richfile.zip`, `<timestamp>.tracking.run_data.richfile.zip`,
-`<timestamp>.tracking.params.yaml` and `<timestamp>.tracking.masknmf_sessions.json`, the results file of each session
-as the run saw it. The launcher's `tracking` entry builds the same command. From Python:
-`RoicatTracker().run_tracking(RoicatDataAdapter.from_masknmf(files))` then `.to_roicat_dir(folder)`.
+`--out` is the experiment's tracking folder, kept beside the sessions. Each run adds a folder and a manifest to it,
+both named by the time the run was saved, so one experiment can hold several runs:
 
-`masknmf view` opens a tracking folder in the multisession viewer:
+```
+experiment/
+  day1/<run folder>/results.hdf5
+  day2/<run folder>/results.hdf5
+  tracking/
+    20261001T180415_roicat-tracking/
+    20261001T180415_roicat-tracking-manifest.json
+    20261003T091240_roicat-tracking/
+    20261003T091240_roicat-tracking-manifest.json
+```
+
+The run's folder holds `<timestamp>.tracking.results_all.richfile.zip`, `<timestamp>.tracking.run_data.richfile.zip`,
+`<timestamp>.tracking.params.yaml` and `<timestamp>.tracking.masknmf_sessions.json`, the results file of each session
+as the run saw it. The manifest is what `masknmf view` opens the run from:
+
+```json
+{
+    "tracking": "20261001T180415_roicat-tracking",
+    "sessions": ["../day1/<run folder>/results.hdf5", "../day2/<run folder>/results.hdf5"]
+}
+```
+
+`tracking` is the run's folder and `sessions` each session's results file, in session order. Paths are relative to
+the manifest and written with forward slashes, so the experiment opens the same after it is moved, under another
+drive letter or mount point, or on another operating system. Only a results file on another drive than the tracking
+folder, which has no relative path, is recorded by its absolute path. `masknmf view` finds a manifest by its
+`_roicat-tracking-manifest.json` name.
+
+The launcher's `tracking` entry builds the same command. From Python:
+`RoicatTracker().run_tracking(RoicatDataAdapter.from_masknmf(files))` then `.to_roicat_dir(folder)`, which returns the
+run's folder; `RoicatTrackingResults.from_manifest(path)` loads a run back.
+
+`masknmf view` opens a tracking in the multisession viewer:
 
 ```bash
-# the sessions' results files where the tracking run recorded them
+# the newest run of a tracking folder: the manifest with the latest timestamp
 masknmf view ./tracking
 
-# the results files moved (another machine, a shared drive): pass them after the folder, as paths or a glob
+# the same, from the folder holding the tracking folder
+masknmf view .
+
+# one run of several
+masknmf view ./tracking/20261001T180415_roicat-tracking-manifest.json
+
+# results files the manifest no longer finds: pass them after it, as paths or a glob
 masknmf view ./tracking "sessions/day*/*/results.hdf5"
 
 # print the sessions and the file each one reads, marking missing files, without opening the viewer
 masknmf view ./tracking "sessions/day*/*/results.hdf5" --list
 ```
+
+A tracking folder saved before manifests, the ROICaT files directly in it, still opens as `masknmf view FOLDER`.
 
 Results files given after the folder replace the recorded ones. Each goes to the session with its ROI count, so a glob
 can match them in any order; files already in session order stay as given, and two sessions with the same ROI count need
@@ -367,7 +414,7 @@ Which file a command reads:
 | RESULTS given as | file used |
 |---|---|
 | a file path | exactly that file |
-| a glob (CLI), or a folder (classification viewer's Open) | for each results file, its newest curated file when the glob matched one, else the results file; the CLI prints how many it left out |
+| a glob (CLI), or a folder (`masknmf view FOLDER`, classification viewer's Open) | for each results file, its newest curated file when the glob matched one, else the results file; the CLI prints how many it left out |
 
 ```bash
 masknmf view "sessions/*/*.hdf5" --classify              # one file per run: the newest curated one, else results.hdf5
@@ -383,7 +430,7 @@ Per command:
   `.labels.hdf5`; a curated file starts unlabeled.
 - `masknmf track` tracks the files used, and its clusters index each file's ROIs by position, so a
   tracking belongs to those files. Curate every day first, then track; a day curated later needs tracking again.
-- `masknmf view TRACKING_FOLDER [FILES...]`: the multisession viewer on the files the tracking recorded; files after
+- `masknmf view TRACKING_FOLDER [FILES...]`: the multisession viewer on the files the newest run's manifest lists; files after
   the folder replace them, each placed at the session with its ROI count. A file whose ROI count differs from the tracking's is refused
   (`session 1: ... holds 60 ROIs, the tracking 63; the file was curated or re-run after tracking, so track the
   sessions' current files again`).

@@ -13,7 +13,7 @@ from roicat import helpers
 from roicat.util import RichFile_ROICaT
 import json
 import h5py
-import datetime
+from masknmf.utils import get_timestamp
 
 import warnings
 from typing import Callable, Optional, Sequence
@@ -657,10 +657,18 @@ class RoicatTrackingResults:
     def to_roicat_dir(self,
                       dir_save: str | Path,
                       prefix_name_save=None):
-
-        dir_save = Path(dir_save).resolve()
+        """
+        Write this run under ``dir_save``, the experiment's tracking folder: ROICaT's results, run data and params and
+        the sessions' results files in ``<timestamp>_roicat-tracking/``, and beside that folder
+        ``<timestamp>_roicat-tracking-manifest.json``, what ``masknmf view`` and ``from_manifest`` open the run from.
+        The manifest holds the run's folder and each session's results file, in session order, as forward-slash paths
+        relative to the manifest; only a file on another drive, which has no relative path, is absolute. It is written
+        when every session is one results file, what the multisession viewer opens. Returns the run's folder.
+        """
+        stamp = get_timestamp()
+        dir_save = Path(dir_save).resolve() / f'{stamp}_roicat-tracking'
         dir_save.mkdir(parents=True, exist_ok=True)
-        name = prefix_name_save or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        name = prefix_name_save or stamp
 
         RichFile_ROICaT(
             path=str(dir_save / f'{name}{_STEM_RESULTS}{_EXT_WRITE}'), backend='zip'
@@ -682,7 +690,37 @@ class RoicatTrackingResults:
             encoding='utf-8',
         )
 
+        if all(isinstance(entry, str) for entry in self._session_files):
+            sessions = []
+            for filepath in self._session_files:
+                # resolved like dir_save, so every ".." below is a real parent folder, never a symlink's
+                target = Path(filepath).resolve()
+                try:
+                    # from the manifest's folder: still found after a move, under another drive letter or mount point
+                    target = target.relative_to(dir_save.parent, walk_up=True)
+                except ValueError:
+                    # another drive, so no relative path exists: the absolute one stays
+                    pass
+                # forward slashes are read on every os
+                sessions.append(target.as_posix())
+            dir_save.with_name(f'{dir_save.name}-manifest.json').write_text(
+                json.dumps({"tracking": dir_save.name, "sessions": sessions}, indent=4),
+                encoding='utf-8',
+            )
+
         return dir_save
+
+    @classmethod
+    def from_manifest(cls, path: str | Path):
+        """
+        Load the run a ``<timestamp>_roicat-tracking-manifest.json`` names, on the session files it lists; its paths
+        are taken from the manifest's folder.
+        """
+        path = Path(path).resolve()
+        manifest = json.loads(path.read_text(encoding='utf-8'))
+        # joined to the manifest's folder: a relative entry starts there, an absolute one replaces it; resolve folds the ".."
+        session_files = [str((path.parent / entry).resolve()) for entry in manifest["sessions"]]
+        return cls.from_roicat_dir(path.parent / manifest["tracking"], session_files=session_files)
 
     @classmethod
     def from_roicat_dir(cls,

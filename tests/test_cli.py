@@ -183,6 +183,25 @@ def test_a_glob_takes_each_results_files_newest_curated_file_and_a_named_file_as
     assert cli.expand_results([named]) == [named]
 
 
+def test_view_takes_a_folders_results_files_each_ones_newest_curated_file(tmp_path, capsys):
+    # brackets in the folder's name are glob characters
+    run = tmp_path / "run [day 1]"
+    run.mkdir()
+    for name in ["results.hdf5", "results.20260930T100000.curated.hdf5", "results.20260930T110000.curated.hdf5",
+                 "results.20260930T110000.curated.labels.hdf5", "movie.hdf5"]:
+        h5py.File(run / name, "w").close()
+
+    cli.main(["view", str(run), "--list"])
+    out = capsys.readouterr().out
+    assert "2 file(s) left out" in out
+    assert [line for line in out.splitlines() if line.endswith(".hdf5")] == [str(run / "results.20260930T110000.curated.hdf5")]
+
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(SystemExit):
+        cli.main(["view", str(tmp_path / "empty"), "--list"])
+    assert "no results file matches" in capsys.readouterr().err
+
+
 def test_view_opens_several_results_only_to_classify_them(tmp_path, capsys):
     for name in ["a", "b"]:
         (tmp_path / name).mkdir()
