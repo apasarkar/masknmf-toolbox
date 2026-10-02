@@ -150,8 +150,9 @@ class MultiSessionDemixingVis:
         selected cluster's traces above them, those of the sessions on screen (or every session) in one panel, each
         in its own color and shown or hidden in the Sessions tab, and a Tools panel on the right listing the clusters.
         Each panel shows any movie its session's results hold (the Panels button, or right-click a panel); the stills
-        of the sessions on screen (MIPs, FOVs, mean images, and each FOV over panel 1's, panel 2's for panel 1's
-        session) are in the Static images window. Every movie and still is warped into the tracking's aligned
+        (MIPs, FOVs, mean images, and each FOV over panel 1's, panel 2's for panel 1's session) are in the Static
+        images window, the panels' sessions side by side under one selector that picks the still, the row refitted
+        whole to the window whenever it is resized. Every movie and still is warped into the tracking's aligned
         space, so they line up with each other and with the contours. A session's full results load the first time
         one of its movies other than the tracked signals is shown.
         Selecting a cluster, from the table or by double-clicking a footprint, highlights it in every session.
@@ -434,22 +435,29 @@ class MultiSessionDemixingVis:
 
     def _static_images(self) -> dict:
         """
-        The stills of the sessions on screen, in panel order and in the aligned space, for the Static images window:
-        2-D, or rgb for the MIP and the FOV overlay.
+        The stills for the Static images window, in the aligned space: each kind is one row of (session name, image),
+        a column per panel in panel order; 2-D, or rgb for the MIP and the FOV overlay. A still that some panel's
+        session does not hold is left out.
         """
-        stills = {}
-        for j in self._on_screen():
-            name, sess_id = self.session_names[j], self.session_ids[j]
-            stills[f"{name}: MIP"] = self._mips[j]
-            if self._fovs is not None:
-                stills[f"{name}: aligned FOV"] = self._fovs[j]
-                if len(self._panel_names) > 1:
-                    partner = self.session_names[self._overlay_partner(j)]
-                    stills[f"{name}: FOV overlay (green: {partner})"] = self._overlay(j)
-            stills[f"{name}: ROI projection"] = self.tracking_results.roi_projection(sess_id).astype(np.float32)
-            if self._movie_names[j]:
-                for still, image in self._stills_raw[j].items():
-                    stills[f"{name}: {still}"] = self._sessions[j].warp(image)
+        sessions = self._panel_session
+        names = [self.session_names[j] for j in sessions]
+        stills = {"MIP": [(name, self._mips[j]) for name, j in zip(names, sessions)]}
+        if self._fovs is not None:
+            stills["aligned FOV"] = [(name, self._fovs[j]) for name, j in zip(names, sessions)]
+            if len(sessions) > 1:
+                stills["FOV overlay"] = [
+                    (f"{name} (green: {self.session_names[self._overlay_partner(j)]})", self._overlay(j))
+                    for name, j in zip(names, sessions)
+                ]
+        stills["ROI projection"] = [
+            (name, self.tracking_results.roi_projection(self.session_ids[j]).astype(np.float32))
+            for name, j in zip(names, sessions)
+        ]
+        for still in _STILLS:
+            if all(self._movie_names[j] and still in self._stills_raw[j] for j in sessions):
+                stills[still] = [
+                    (name, self._sessions[j].warp(self._stills_raw[j][still])) for name, j in zip(names, sessions)
+                ]
         return stills
 
     def _extents(self) -> dict:
@@ -793,7 +801,7 @@ class MultiSessionDemixingVis:
                 self._stills = self._static_images()
             self._summary.set_images(self._stills)
             self._summary.open()
-        tooltip("browse every session's stills at full size, in the aligned space: zoom, colormap, contrast, pixel values")
+        tooltip("the panels' sessions side by side, one still at a time, in the aligned space: zoom, colormap, contrast, pixel values")
         # the keybinds button right-aligned on the same row, or on a row of its own when it is too narrow
         keys_w = hint_button_width(KEYBINDS_LABEL, "(k)")
         imgui.same_line()
