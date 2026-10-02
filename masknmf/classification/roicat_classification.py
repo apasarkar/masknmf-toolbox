@@ -1,7 +1,6 @@
 import json
 import os
 import tempfile
-import time
 from collections import Counter
 from pathlib import Path
 from typing import Literal, Optional, Sequence
@@ -19,7 +18,7 @@ from masknmf.demixing.labels import (
     write_predictions,
 )
 from masknmf.multisession.roicat_tracking import RoicatDataAdapter
-from masknmf.utils import torch_select_device, display
+from masknmf.utils import torch_select_device, display, get_timestamp
 
 _ROINET_URL = "https://osf.io/c8m3b/download"
 _ROINET_HASH = "357a8d9b630ec79f3e015d0056a4c2d5"
@@ -241,7 +240,7 @@ class RoicatClassifier:
             path += CLASSIFIER_SUFFIX
         meta = {
             "classifier": os.path.basename(path),
-            "trained_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "trained_at": get_timestamp(),
             "label_names": self.label_names,
             "training_files": [list(f) if isinstance(f, tuple) else f for f in self.training_files],
             "labels": None if self.labels is None else [[str(l) for l in s] for s in self.labels],

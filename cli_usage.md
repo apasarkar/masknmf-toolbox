@@ -70,10 +70,10 @@ masknmf params --pipeline two-photon-calcium --json > configs.json
 masknmf run movie.tif --fs 30 --config configs.json   # the file names the pipeline, so --pipeline can be left out
 
 # rerun with the configs of an earlier run, its frame rate included unless --fs is given
-masknmf run movie.tif --config ./20260923_120000_two-photon-calcium/config.json
+masknmf run movie.tif --config ./20260923T120000_two-photon-calcium/config.json
 
 # the same configs on many movies, one run folder beside each; quote the glob so masknmf expands it on every shell
-masknmf run "D:/sessions/*/movie.tif" --config ./20260923_120000_two-photon-calcium/config.json
+masknmf run "D:/sessions/*/movie.tif" --config ./20260923T120000_two-photon-calcium/config.json
 ```
 
 Several movies, or a glob, run one after another. A movie that cannot be opened stops the batch before any run starts;
@@ -160,7 +160,7 @@ masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --config tuned.json
 
 # resume from an existing run folder's compression, re-running only demixing into the same results.hdf5 (no movie needed)
 masknmf run --pipeline two-photon-calcium --fs 30 --compress-kind skip \
-    --output-folder ./20260923_120000_two-photon-calcium
+    --output-folder ./20260923T120000_two-photon-calcium
 
 # force CPU, smaller batches
 masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --device cpu --frame-batch-size 100
@@ -201,7 +201,7 @@ masknmf run --pipeline one-photon-culture voltage.h5 --dataset data --fs 400 \
 # re-demix an existing run folder's compression
 masknmf run --pipeline one-photon-culture voltage.tif --fs 400 \
     --indicator-sign negative --active-frames active.npy --compress-kind skip \
-    --output-folder ./voltage_out/20260923_120000_one-photon-culture
+    --output-folder ./voltage_out/20260923T120000_one-photon-culture
 ```
 
 ## glutamate-calcium-spine (`GlutamateCalciumSpinePipeline`)
@@ -401,13 +401,17 @@ named after the results file it descends from:
 | file | holds |
 |---|---|
 | `results.hdf5` | the run: registration, compression and demixing groups |
-| `results.<yyyy-mm-dd-HH-MM-SS>.curated.hdf5` | only `DemixingResults`, after the full NMF pass; its `description` attribute says which signals were removed (and by which filter) and how many drawn ROIs were added |
-| `results.<yyyy-mm-dd-HH-MM-SS>.curated.labels.hdf5` | the curated file's own labels; the parent's are not copied, curation renumbers the ROIs |
+| `results.<yyyymmddTHHMMSS>.curated.hdf5` | only `DemixingResults`, after the full NMF pass; its `description` attribute says which signals were removed (and by which filter) and how many drawn ROIs were added |
+| `results.<yyyymmddTHHMMSS>.curated.labels.hdf5` | the curated file's own labels; the parent's are not copied, curation renumbers the ROIs |
 
 Curating a curated file writes another `results.<later stamp>.curated.hdf5`; the stem stays `results`. The glutamate
 pipeline's files give `results.calcium.<stamp>.curated.hdf5` and `results.glutamate.<stamp>.curated.hdf5`. Curated
 files from before 2026-09-30 are named `<stamp>.curated.hdf5`; rename them to `results.<stamp>.curated.hdf5` so they
 are grouped with their results file.
+
+Every stamp masknmf writes is ISO 8601 basic form, `20261001T183740`: curated files, run and tracking folders, log
+lines and the times in `config.json`. `datetime.fromisoformat` reads one back. Files stamped `yyyy-mm-dd-HH-MM-SS`
+by earlier versions still open and count as older than any file stamped since.
 
 Which file a command reads:
 
@@ -419,7 +423,7 @@ Which file a command reads:
 ```bash
 masknmf view "sessions/*/*.hdf5" --classify              # one file per run: the newest curated one, else results.hdf5
 masknmf view "sessions/*/results.hdf5" --classify        # the uncurated results only: the glob matches no curated file
-masknmf view sessions/day1/results.2026-09-30-12-27-07.curated.hdf5   # one given version
+masknmf view sessions/day1/results.20260930T122707.curated.hdf5   # one given version
 ```
 
 Per command:
