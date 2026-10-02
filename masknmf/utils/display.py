@@ -2,11 +2,14 @@ import datetime
 import logging
 import sys
 
+# iso 8601 basic form, 20261001T183740: safe in file names, and datetime.fromisoformat reads it back
+TIMESTAMP_FORMAT = "%Y%m%dT%H%M%S"
+
 logger = logging.getLogger("masknmf")
 logger.setLevel(logging.INFO)
 logger.propagate = False
 handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(logging.Formatter("[%(asctime)s]: %(message)s", datefmt="%y-%m-%d %H:%M:%S"))
+handler.setFormatter(logging.Formatter("[%(asctime)s]: %(message)s", datefmt=TIMESTAMP_FORMAT))
 logger.addHandler(handler)
 
 
@@ -19,5 +22,5 @@ def display(msg):
 
 
 def get_timestamp() -> str:
-    """Now, as yyyy-mm-dd-HH-MM-SS, for file names."""
-    return datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    """Now, as yyyymmddTHHMMSS, for file names, log lines and saved records."""
+    return datetime.datetime.now().strftime(TIMESTAMP_FORMAT)

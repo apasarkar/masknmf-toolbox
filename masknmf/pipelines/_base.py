@@ -24,7 +24,7 @@ from masknmf.motion_correction.moco_preprocessing import construct_moco_template
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig, SinglepassDemixingConfig, SuperpixelInitConfig
-from masknmf.utils import display, has_group, drop_group, torch_select_device
+from masknmf.utils import display, get_timestamp, TIMESTAMP_FORMAT, has_group, drop_group, torch_select_device
 
 logger = logging.getLogger(__name__)
 
@@ -122,11 +122,11 @@ class BasePipeline(ABC):
 
     def create_run_folder(self) -> Path:
         """
-        Make ``<output_folder>/<YYYYmmdd_HHMMSS>_<pipeline slug>/`` (the working directory when output_folder is None),
+        Make ``<output_folder>/<yyyymmddTHHMMSS>_<pipeline slug>/`` (the working directory when output_folder is None),
         adding a numeric suffix when a run started in the same second, and write config.json in it.
         """
         base = Path.cwd() if self.output_folder is None else self.output_folder
-        name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{slugify(name_class=type(self).__name__)}"
+        name = f"{get_timestamp()}_{slugify(name_class=type(self).__name__)}"
         candidate = base / name
         suffix = 0
         while True:
@@ -168,12 +168,12 @@ class BasePipeline(ABC):
             handler.close()
         path = folder / f"{folder.name}.log"
         self.log_handler = logging.FileHandler(path, encoding="utf-8")
-        self.log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        self.log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt=TIMESTAMP_FORMAT))
         logging.getLogger("masknmf").addHandler(self.log_handler)
         device = str(self.torch_device)
         self.run_record = {"command": self.command, "device": device,
                            "gpu": torch.cuda.get_device_name() if device.startswith("cuda") else None,
-                           "started": datetime.now().isoformat(timespec="seconds"), "finished": None, "seconds": None,
+                           "started": get_timestamp(), "finished": None, "seconds": None,
                            "status": "running"}
         logger.info(f"masknmf {__version__} {type(self).__name__} on {device}, {self.log_level} log at {path}")
         return path
@@ -186,7 +186,7 @@ class BasePipeline(ABC):
         seconds, status and peak under name in timings and config.json.
         """
         logger.info(name)
-        started = datetime.now().isoformat(timespec="seconds")
+        started = get_timestamp()
         start = time.monotonic()
         cuda = str(self.torch_device).startswith("cuda")
         if cuda:
@@ -216,7 +216,7 @@ class BasePipeline(ABC):
         """Record in the run record and config.json that the run ended now with status and how long it took, and return the run folder."""
         finished = datetime.now()
         seconds = (finished - datetime.fromisoformat(self.run_record["started"])).total_seconds()
-        self.run_record.update(finished=finished.isoformat(timespec="seconds"), seconds=round(seconds, 1), status=status)
+        self.run_record.update(finished=finished.strftime(TIMESTAMP_FORMAT), seconds=round(seconds, 1), status=status)
         self.write_config()
         return self.run_folder
 

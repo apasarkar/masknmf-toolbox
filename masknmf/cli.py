@@ -579,7 +579,7 @@ def command_run(args: argparse.Namespace) -> None:
             else:
                 size = path.stat().st_size
             inputs[field] = {"path": str(path), "name": path.name, "bytes": size,
-                             "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+                             "modified": datetime.fromtimestamp(path.stat().st_mtime).strftime(masknmf.utils.TIMESTAMP_FORMAT),
                              "shape": list(kwargs_run[field].shape), "dtype": str(kwargs_run[field].dtype)}
             if isinstance(kwargs_run[field], masknmf.Hdf5Array):
                 inputs[field]["dataset"] = args.dataset

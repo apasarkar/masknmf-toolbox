@@ -88,7 +88,7 @@ def test_the_movie_a_run_read_is_kept_in_its_config(folder_pipeline, tmp_path):
     cli.main(["run", "--pipeline", "folder", str(movie), "--output-folder", str(tmp_path / "out")])
     folder, = (tmp_path / "out").iterdir()
     inputs = json.loads((folder / "config.json").read_text())["inputs"]
-    modified = datetime.fromtimestamp(movie.stat().st_mtime).isoformat(timespec="seconds")
+    modified = datetime.fromtimestamp(movie.stat().st_mtime).strftime("%Y%m%dT%H%M%S")
     assert inputs == {"data": {"path": str(movie.resolve()), "name": "movie.tif", "bytes": movie.stat().st_size,
                                "modified": modified, "shape": [2, 8, 8], "dtype": "uint16"}}
 
@@ -166,15 +166,16 @@ def test_results_globs_expand_without_sidecars_or_zarr_stores(tmp_path, capsys):
 
 
 def test_a_glob_takes_each_results_files_newest_curated_file_and_a_named_file_as_given(tmp_path, capsys):
-    for relative in ["a/results.hdf5", "a/results.2026-09-30-10-00-00.curated.hdf5", "a/results.2026-09-30-11-00-00.curated.hdf5",
-                     "a/results.2026-09-30-11-00-00.curated.labels.hdf5", "b/results.calcium.hdf5",
-                     "b/results.glutamate.hdf5", "b/results.calcium.2026-09-30-10-00-00.curated.hdf5"]:
+    # a's first curated file has the dash stamp of earlier versions, which sorts before every iso one
+    for relative in ["a/results.hdf5", "a/results.2026-09-30-10-00-00.curated.hdf5", "a/results.20260930T110000.curated.hdf5",
+                     "a/results.20260930T110000.curated.labels.hdf5", "b/results.calcium.hdf5",
+                     "b/results.glutamate.hdf5", "b/results.calcium.20260930T100000.curated.hdf5"]:
         (tmp_path / relative).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / relative).touch()
 
     assert cli.expand_results([str(tmp_path / "*" / "*.hdf5")]) == [
-        str(tmp_path / "a" / "results.2026-09-30-11-00-00.curated.hdf5"),
-        str(tmp_path / "b" / "results.calcium.2026-09-30-10-00-00.curated.hdf5"),
+        str(tmp_path / "a" / "results.20260930T110000.curated.hdf5"),
+        str(tmp_path / "b" / "results.calcium.20260930T100000.curated.hdf5"),
         str(tmp_path / "b" / "results.glutamate.hdf5"),
     ]
     assert "3 file(s) left out" in capsys.readouterr().out
