@@ -20,7 +20,7 @@ here enumerates a parameter by hand:
     masknmf view results.hdf5 --classify --labels soma,dendrite,junk
     masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
     masknmf view tracking_folder
-    masknmf view tracking_folder/2026-10-01-18-04-15_roicat-tracking-manifest.json
+    masknmf view tracking_folder/20261001T180415_roicat-tracking-manifest.json
     masknmf view tracking_folder day1/results.hdf5 day2/results.hdf5
     masknmf train-classifier "sessions/*/results.hdf5" --out cells
     masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classifier

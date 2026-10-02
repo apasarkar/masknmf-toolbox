@@ -28,8 +28,8 @@ def test_each_run_saves_a_folder_and_a_manifest_and_view_opens_the_newest(tmp_pa
     tracking = RoicatTrackingResults(results=results, run_data={}, session_files=tuple(files))
 
     folder = tmp_path / "experiment" / "tracking"
-    stamps = ["2026-10-01-12-00-00", "2026-10-02-09-30-00"]
-    monkeypatch.setattr(roicat_tracking, "get_timestamp", iter([*stamps, "2026-10-04-00-00-00", "2026-10-05-00-00-00"]).__next__)
+    stamps = ["20261001T120000", "20261002T093000"]
+    monkeypatch.setattr(roicat_tracking, "get_timestamp", iter([*stamps, "20261004T000000", "20261005T000000"]).__next__)
     runs = [tracking.to_roicat_dir(folder) for _ in stamps]
     assert runs == [folder / f"{stamp}_roicat-tracking" for stamp in stamps]
     manifests = [folder / f"{stamp}_roicat-tracking-manifest.json" for stamp in stamps]
@@ -50,7 +50,7 @@ def test_each_run_saves_a_folder_and_a_manifest_and_view_opens_the_newest(tmp_pa
     assert tracking.session_files == tuple(str(moved / f"day{session}" / "results.hdf5") for session in range(2))
 
     # only a tracking manifest's name is looked for: a later-stamped manifest of another kind is passed over
-    (moved / "tracking" / "2026-10-03-00-00-00_other-manifest.json").write_text("{}")
+    (moved / "tracking" / "20261003T000000_other-manifest.json").write_text("{}")
     cli.main(["view", str(moved / "tracking"), "--list"])
     assert capsys.readouterr().out.splitlines()[0] == f"tracking {moved / 'tracking' / manifests[1].name}"
 

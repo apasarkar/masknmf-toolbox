@@ -187,14 +187,14 @@ def test_view_takes_a_folders_results_files_each_ones_newest_curated_file(tmp_pa
     # brackets in the folder's name are glob characters
     run = tmp_path / "run [day 1]"
     run.mkdir()
-    for name in ["results.hdf5", "results.2026-09-30-10-00-00.curated.hdf5", "results.2026-09-30-11-00-00.curated.hdf5",
-                 "results.2026-09-30-11-00-00.curated.labels.hdf5", "movie.hdf5"]:
+    for name in ["results.hdf5", "results.20260930T100000.curated.hdf5", "results.20260930T110000.curated.hdf5",
+                 "results.20260930T110000.curated.labels.hdf5", "movie.hdf5"]:
         h5py.File(run / name, "w").close()
 
     cli.main(["view", str(run), "--list"])
     out = capsys.readouterr().out
     assert "2 file(s) left out" in out
-    assert [line for line in out.splitlines() if line.endswith(".hdf5")] == [str(run / "results.2026-09-30-11-00-00.curated.hdf5")]
+    assert [line for line in out.splitlines() if line.endswith(".hdf5")] == [str(run / "results.20260930T110000.curated.hdf5")]
 
     (tmp_path / "empty").mkdir()
     with pytest.raises(SystemExit):

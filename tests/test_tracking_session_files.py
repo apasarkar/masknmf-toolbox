@@ -57,7 +57,7 @@ def test_view_places_files_given_out_of_order_by_roi_count_and_refuses_a_curated
     rows = [line.split()[-1] for line in capsys.readouterr().out.splitlines() if line.strip().endswith("results.hdf5")]
     assert rows == [str(Path("day1", "results.hdf5")), str(Path("day0", "results.hdf5"))]
 
-    curated = tmp_path / "sessions" / "day0" / "results.2026-10-01-12-00-00.curated.hdf5"
+    curated = tmp_path / "sessions" / "day0" / "results.20261001T120000.curated.hdf5"
     with h5py.File(curated, "w") as f:
         f.create_dataset("DemixingResults/temporal_demixed", data=np.zeros((10, 1), np.float32))
     with pytest.raises(SystemExit):

@@ -284,7 +284,7 @@ A folder is opened by what it holds, looked for in this order:
 ```bash
 masknmf view "sessions/*/results.hdf5" --list      # print which stage groups each file holds
 masknmf view results.hdf5                          # demixing viewer (compression only when there is no demixing)
-masknmf view ./2026-09-23-12-00-00_two-photon-calcium   # the run folder's results.hdf5, or its newest curated file
+masknmf view ./20260923T120000_two-photon-calcium   # the run folder's results.hdf5, or its newest curated file
 masknmf view results.hdf5 --raw movie.tif --fs 30  # + raw and registered panels; a registration-only file needs --raw
 masknmf view results.hdf5 --raw movie.tif --compression  # + lag-1 autocorrelation images of the registered, compressed and residual movies
 masknmf view results.hdf5 --raw raw.h5 --dataset /mov --device cpu
@@ -330,10 +330,10 @@ experiment/
   day1/<run folder>/results.hdf5
   day2/<run folder>/results.hdf5
   tracking/
-    2026-10-01-18-04-15_roicat-tracking/
-    2026-10-01-18-04-15_roicat-tracking-manifest.json
-    2026-10-03-09-12-40_roicat-tracking/
-    2026-10-03-09-12-40_roicat-tracking-manifest.json
+    20261001T180415_roicat-tracking/
+    20261001T180415_roicat-tracking-manifest.json
+    20261003T091240_roicat-tracking/
+    20261003T091240_roicat-tracking-manifest.json
 ```
 
 The run's folder holds `<timestamp>.tracking.results_all.richfile.zip`, `<timestamp>.tracking.run_data.richfile.zip`,
@@ -342,7 +342,7 @@ as the run saw it. The manifest is what `masknmf view` opens the run from:
 
 ```json
 {
-    "tracking": "2026-10-01-18-04-15_roicat-tracking",
+    "tracking": "20261001T180415_roicat-tracking",
     "sessions": ["../day1/<run folder>/results.hdf5", "../day2/<run folder>/results.hdf5"]
 }
 ```
@@ -367,7 +367,7 @@ masknmf view ./tracking
 masknmf view .
 
 # one run of several
-masknmf view ./tracking/2026-10-01-18-04-15_roicat-tracking-manifest.json
+masknmf view ./tracking/20261001T180415_roicat-tracking-manifest.json
 
 # results files the manifest no longer finds: pass them after it, as paths or a glob
 masknmf view ./tracking "sessions/day*/*/results.hdf5"
