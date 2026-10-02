@@ -1,10 +1,12 @@
-from typing import Optional, Literal, Union
+from typing import Optional, Literal
 import masknmf
-from masknmf.compression import PMDArray
+from masknmf.compression import CompressionArray
 from masknmf.compression.denoising import train_total_variance_denoiser
-from masknmf.compression.decomposition import pmd_decomposition
+from masknmf.compression.decomposition import compression_routine
 from masknmf import ArrayLike
 import numpy as np
+import torch
+from masknmf.compression.preprocessing import SplineDetrenderBase
 
 class CompressStrategy:
 
@@ -17,8 +19,10 @@ class CompressStrategy:
                  max_consecutive_failures: int=1,
                  spatial_avg_factor:int=1,
                  temporal_avg_factor:int=1,
-                 compute_normalizer: Optional[bool] = True,
-                 pixel_weighting: Optional[np.ndarray] = None,
+                 compute_normalizer: bool = True,
+                 pixel_weighting: np.ndarray | None = None,
+                 frame_weighting: np.ndarray | torch.Tensor | None = None,
+                 detrender: SplineDetrenderBase | None = None,
                  device: Literal["auto", "cpu", "cuda"] = "auto",
                  ):
 
@@ -29,6 +33,7 @@ class CompressStrategy:
         self._frame_batch_size = frame_batch_size
         self._spatial_avg_factor = spatial_avg_factor
         self._temporal_avg_factor = temporal_avg_factor
+        self._detrender = detrender
         self._device=device
 
         ##Non user-settable parameters
@@ -36,6 +41,7 @@ class CompressStrategy:
         self._max_consecutive_failures=max_consecutive_failures
         self._compute_normalizer = compute_normalizer
         self._pixel_weighting = pixel_weighting
+        self._frame_weighting = frame_weighting
 
         self._results = None
 
@@ -104,30 +110,40 @@ class CompressStrategy:
         self._temporal_avg_factor = new_temporal_avg_factor
 
     @property
-    def device(self) ->str:
+    def detrender(self) -> SplineDetrenderBase | None:
+        return self._detrender
+
+    @detrender.setter
+    def detrender(self, new_detrender: SplineDetrenderBase):
+        self._detrender = new_detrender
+
+    @property
+    def device(self) -> torch.device | str:
         return self._device
 
     @device.setter
-    def device(self, new_device: str):
+    def device(self, new_device: torch.device | str):
         self._device = new_device
 
     @property
-    def results(self) -> PMDArray | None:
+    def results(self) -> CompressionArray | None:
         return self._results
 
-    def compress(self, dataset: Union[masknmf.ArrayLike, np.ndarray]) -> PMDArray:
-        self._results = pmd_decomposition(dataset,
-                                          self.block_sizes,
-                                          frame_range=self.frame_range,
-                                          max_components=self.max_components,
-                                          sim_conf=self._sim_conf,
-                                          frame_batch_size=self.frame_batch_size,
-                                          max_consecutive_failures=self._max_consecutive_failures,
-                                          spatial_avg_factor=self.spatial_avg_factor,
-                                          temporal_avg_factor=self.temporal_avg_factor,
-                                          compute_normalizer=self._compute_normalizer,
-                                          pixel_weighting=self._pixel_weighting,
-                                          device=self.device)
+    def compress(self, dataset: masknmf.ArrayLike | np.ndarray) -> CompressionArray:
+        self._results = compression_routine(dataset,
+                                            self.block_sizes,
+                                            frame_range=self.frame_range,
+                                            max_components=self.max_components,
+                                            sim_conf=self._sim_conf,
+                                            frame_batch_size=self.frame_batch_size,
+                                            max_consecutive_failures=self._max_consecutive_failures,
+                                            spatial_avg_factor=self.spatial_avg_factor,
+                                            temporal_avg_factor=self.temporal_avg_factor,
+                                            compute_normalizer=self._compute_normalizer,
+                                            pixel_weighting=self._pixel_weighting,
+                                            frame_weighting=self._frame_weighting,
+                                            detrender=self.detrender,
+                                            device=self.device)
 
         return self._results
 
@@ -143,11 +159,13 @@ class CompressDenoiseStrategy(CompressStrategy):
                  max_consecutive_failures: int=1,
                  spatial_avg_factor:int=1,
                  temporal_avg_factor:int=1,
-                 compute_normalizer: Optional[bool] = True,
-                 pixel_weighting: Optional[np.ndarray] = None,
+                 compute_normalizer: bool = True,
+                 pixel_weighting: np.ndarray | None = None,
+                 frame_weighting: np.ndarray | torch.Tensor | None = None,
                  device: Literal["auto", "cpu", "cuda"] = "auto",
                  noise_variance_quantile: float = 0.3,
-                 num_epochs: int = 10
+                 num_epochs: int = 10,
+                 detrender: SplineDetrenderBase | None = None,
                  ):
 
         super().__init__(block_sizes,
@@ -160,7 +178,9 @@ class CompressDenoiseStrategy(CompressStrategy):
                          temporal_avg_factor,
                          compute_normalizer,
                          pixel_weighting,
-                         device)
+                         frame_weighting,
+                         detrender=detrender,
+                         device=device)
         self._num_epochs = num_epochs
         self._noise_variance_quantile = noise_variance_quantile
 
@@ -180,41 +200,45 @@ class CompressDenoiseStrategy(CompressStrategy):
     def noise_variance_quantile(self, new_noise_variance_quantile: float):
         self._noise_variance_quantile = new_noise_variance_quantile
 
-    def compress(self, dataset: Union[masknmf.ArrayLike, np.ndarray]):
+    def compress(self, dataset: masknmf.ArrayLike | np.ndarray):
 
-        pmd_no_denoiser = pmd_decomposition(dataset,
-                                            self.block_sizes,
-                                            frame_range=self.frame_range,
-                                            max_components=self.max_components,
-                                            sim_conf=self._sim_conf,
-                                            frame_batch_size=self.frame_batch_size,
-                                            max_consecutive_failures=self._max_consecutive_failures,
-                                            spatial_avg_factor=self.spatial_avg_factor,
-                                            temporal_avg_factor=self.temporal_avg_factor,
-                                            compute_normalizer=self._compute_normalizer,
-                                            pixel_weighting=self._pixel_weighting,
-                                            device=self.device)
+        compression_no_denoiser = compression_routine(dataset,
+                                              self.block_sizes,
+                                              frame_range=self.frame_range,
+                                              max_components=self.max_components,
+                                              sim_conf=self._sim_conf,
+                                              frame_batch_size=self.frame_batch_size,
+                                              max_consecutive_failures=self._max_consecutive_failures,
+                                              spatial_avg_factor=self.spatial_avg_factor,
+                                              temporal_avg_factor=self.temporal_avg_factor,
+                                              compute_normalizer=self._compute_normalizer,
+                                              pixel_weighting=self._pixel_weighting,
+                                              frame_weighting=self._frame_weighting,
+                                              detrender=self.detrender,
+                                              device=self.device)
 
-        v = pmd_no_denoiser.v.cpu()
-        trained_model, _ = masknmf.compression.denoising.train_total_variance_denoiser(v,
+        temporal_compressed_no_denoiser = compression_no_denoiser.temporal_compressed.cpu()
+        trained_model, _ = masknmf.compression.denoising.train_total_variance_denoiser(temporal_compressed_no_denoiser,
                                                                                        max_epochs=self.num_epochs,
                                                                                        batch_size=128,
                                                                                        learning_rate=1e-4)
 
-        curr_temporal_denoiser = masknmf.compression.PMDTemporalDenoiser(trained_model, self.noise_variance_quantile)
+        curr_temporal_denoiser = masknmf.compression.CompressionTemporalDenoiser(trained_model, self.noise_variance_quantile)
 
-        self._results = masknmf.compression.pmd_decomposition(dataset,
-                                                             self.block_sizes,
-                                                             frame_range=self.frame_range,
-                                                             max_components=self.max_components,
-                                                             sim_conf=self._sim_conf,
-                                                             frame_batch_size=self.frame_batch_size,
-                                                             max_consecutive_failures=self._max_consecutive_failures,
-                                                             spatial_avg_factor=self.spatial_avg_factor,
-                                                             temporal_avg_factor=self.temporal_avg_factor,
-                                                             compute_normalizer=self._compute_normalizer,
-                                                             pixel_weighting=self._pixel_weighting,
-                                                             device=self.device,
-                                                             temporal_denoiser=curr_temporal_denoiser)
+        self._results = masknmf.compression.compression_routine(dataset,
+                                                                self.block_sizes,
+                                                                frame_range=self.frame_range,
+                                                                max_components=self.max_components,
+                                                                sim_conf=self._sim_conf,
+                                                                frame_batch_size=self.frame_batch_size,
+                                                                max_consecutive_failures=self._max_consecutive_failures,
+                                                                spatial_avg_factor=self.spatial_avg_factor,
+                                                                temporal_avg_factor=self.temporal_avg_factor,
+                                                                compute_normalizer=self._compute_normalizer,
+                                                                pixel_weighting=self._pixel_weighting,
+                                                                frame_weighting=self._frame_weighting,
+                                                                detrender=self.detrender,
+                                                                device=self.device,
+                                                                temporal_denoiser=curr_temporal_denoiser)
 
         return self._results
