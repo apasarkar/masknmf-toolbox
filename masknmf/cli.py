@@ -15,6 +15,7 @@ here enumerates a parameter by hand:
     masknmf run movie.tif --fs 30 --config configs.json
     masknmf run "sessions/*/movie.tif" --config run_folder/config.json
     masknmf view results.hdf5 --raw movie.tif
+    masknmf view run_folder
     masknmf view results.hdf5 --raw movie.tif --compression
     masknmf view results.hdf5 --classify --labels soma,dendrite,junk
     masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
@@ -755,12 +756,21 @@ def view_tracking(args: argparse.Namespace, source: Path) -> None:
 
 
 def command_view(args: argparse.Namespace) -> None:
-    """Open the viewers for whatever stages the results files hold; --classify opens only the classification viewer."""
+    """
+    Open the viewers for whatever stages the results files hold; --classify opens only the classification viewer.
+    A folder opens its newest tracking manifest in the multisession viewer, else its results files.
+    """
     tracking = find_tracking(entry=args.results[0])
     if tracking is not None:
         view_tracking(args=args, source=tracking)
         return
-    files = expand_results(entries=args.results)
+    # a folder without a manifest stands for the results files in it, each one's newest curated file in its place
+    entries = [
+        # glob characters in the folder's own name are escaped, so only the file pattern matches
+        str(Path(glob.escape(entry)) / "*results*.hdf5") if Path(entry).expanduser().is_dir() else entry
+        for entry in args.results
+    ]
+    files = expand_results(entries=entries)
     present = {filepath: groups_present(filepath_results=filepath) for filepath in files}
     for filepath, names in present.items():
         print(Path(filepath).resolve())
@@ -952,7 +962,8 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_view = subparsers.add_parser("view", help="open the viewers for a results file")
     parser_view.add_argument(
         "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several need --classify. "
-        "Or a tracking folder (its newest run) or one run's *-manifest.json, optionally followed by its results files in session order",
+        "Or a tracking folder (its newest run) or one run's *-manifest.json, optionally followed by its results files in session order. "
+        "Any other folder stands for the *results*.hdf5 files in it, the newest curated one of each",
     )
     parser_view.add_argument("--raw", default=None, help="the raw movie the results came from")
     parser_view.add_argument("--dataset", default=None)

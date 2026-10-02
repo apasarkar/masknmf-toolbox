@@ -274,9 +274,17 @@ folder below. Globs never enter `.zarr` stores and leave out `.labels.hdf5` side
 curated file replaces ([curated results files](#curated-results-files)). The demixing viewer opens one file; several
 need `--classify`.
 
+A folder is opened by what it holds, looked for in this order:
+
+| the folder holds | opens |
+|---|---|
+| a `*_roicat-tracking-manifest.json`, directly or in its `tracking` subfolder | the multisession viewer on the newest run ([multisession](#multisession)) |
+| `*results*.hdf5` files | those files, as the glob `FOLDER/*results*.hdf5` would: each results file's newest curated file, else the results file |
+
 ```bash
 masknmf view "sessions/*/results.hdf5" --list      # print which stage groups each file holds
 masknmf view results.hdf5                          # demixing viewer (compression only when there is no demixing)
+masknmf view ./2026-09-23-12-00-00_two-photon-calcium   # the run folder's results.hdf5, or its newest curated file
 masknmf view results.hdf5 --raw movie.tif --fs 30  # + raw and registered panels; a registration-only file needs --raw
 masknmf view results.hdf5 --raw movie.tif --compression  # + lag-1 autocorrelation images of the registered, compressed and residual movies
 masknmf view results.hdf5 --raw raw.h5 --dataset /mov --device cpu
@@ -406,7 +414,7 @@ Which file a command reads:
 | RESULTS given as | file used |
 |---|---|
 | a file path | exactly that file |
-| a glob (CLI), or a folder (classification viewer's Open) | for each results file, its newest curated file when the glob matched one, else the results file; the CLI prints how many it left out |
+| a glob (CLI), or a folder (`masknmf view FOLDER`, classification viewer's Open) | for each results file, its newest curated file when the glob matched one, else the results file; the CLI prints how many it left out |
 
 ```bash
 masknmf view "sessions/*/*.hdf5" --classify              # one file per run: the newest curated one, else results.hdf5
