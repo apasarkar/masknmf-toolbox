@@ -679,7 +679,8 @@ class MultiSessionDemixingVis:
     def _center_on(self, row: int):
         """
         Pan every panel to the cluster's footprints. Zoomed out to the whole fov, this also zooms in on them with
-        some context; once zoomed in, the zoom is the user's and only the center moves.
+        some context; once zoomed in, the zoom is the user's and only the center moves. The Static images row is
+        centered by the same rule, on its own zoom.
         """
         points = [
             np.asarray(self.ac_arrays[j].contours[local])
@@ -692,14 +693,17 @@ class MultiSessionDemixingVis:
         points = np.concatenate(points)
         (y0, x0), (y1, x1) = points.min(axis=0), points.max(axis=0)
         cy, cx = (y0 + y1) / 2, (x0 + x1) / 2
+        span = max(max(y1 - y0, x1 - x0, 1.0) * 4.0, 80.0)
         camera = self._ndw.figure[self._panel_names[0]].camera
         fov_height, fov_width = self.ac_arrays[0].shape[1:]
         if camera.width >= fov_width or camera.height >= fov_height:
-            width = height = max(max(y1 - y0, x1 - x0, 1.0) * 4.0, 80.0)
+            width = height = span
         else:
             width, height = camera.width, camera.height
         for subplot in self._ndw.figure:
             subplot.camera.show_rect(cx - width / 2, cx + width / 2, cy - height / 2, cy + height / 2)
+        # a pixel's index is its top-left corner in the stills
+        self._summary.center_on(cy + 0.5, cx + 0.5, span)
 
     def _reset_view(self):
         for subplot in self._ndw.figure:
@@ -897,7 +901,7 @@ class MultiSessionDemixingVis:
         with button_colors(THEME.accent, THEME.accent, (0.05, 0.05, 0.05), on=self._follow):
             if imgui.button(f"{fa.ICON_FA_LOCATION_CROSSHAIRS}##follow", size):
                 self._toggle_follow()
-        tooltip("Center: every panel on the selected cluster, following it as the selection moves (f)")
+        tooltip("Center: every panel and the Static images on the selected cluster, following it as the selection moves (f)")
         imgui.same_line(0, em(0.6))
         if imgui.button(f"{fa.ICON_FA_EXPAND}##reset", size):
             self._reset_view()
