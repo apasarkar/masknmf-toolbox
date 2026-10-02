@@ -262,8 +262,8 @@ class SummaryImageViewer:
         """Composite a float (H, W, 4) RGBA layer over the image, e.g. ROI masks"""
         self._overlay = overlay
 
-    def set_highlight(self, rect: Optional[tuple]):
-        """Outline a region of the image: (y0, x0, height, width), or None"""
+    def set_highlight(self, rect: Optional[tuple | list]):
+        """Outline a region of the image: (y0, x0, height, width), or None; for a row, a list with one of either per image"""
         self._highlight = rect
 
     def center_on(self, y: float, x: float, span: float):
@@ -593,8 +593,9 @@ class SummaryImageViewer:
             img_max = imgui.ImVec2(img_min.x + w * self._zoom, img_min.y + h * self._zoom)
             draw_list.push_clip_rect(imgui.ImVec2(x, top), imgui.ImVec2(x + cell_w, top + cell_h), True)
             draw_list.add_image(gpu.ref, img_min, img_max)
-            if self._highlight is not None:
-                y0, x0, hh, ww = self._highlight
+            rect = self._highlight[column] if isinstance(self._highlight, list) else self._highlight
+            if rect is not None:
+                y0, x0, hh, ww = rect
                 p0 = imgui.ImVec2(img_min.x + x0 * self._zoom, img_min.y + y0 * self._zoom)
                 p1 = imgui.ImVec2(p0.x + ww * self._zoom, p0.y + hh * self._zoom)
                 box = imgui.color_convert_float4_to_u32(imgui.ImVec4(1.0, 0.9, 0.2, 0.9))

@@ -427,6 +427,23 @@ class MultiSessionDemixingVis:
         if self._summary.is_open:
             self._stills = self._static_images()
             self._summary.set_images(self._stills)
+        self._box_selection()
+
+    def _box_selection(self):
+        """Box the selected cluster in the Static images: in each panel's image, around its session's ROIs of it."""
+        boxes = []
+        for j in self._panel_session:
+            members = [] if self._active is None else np.flatnonzero(self._rows_by_session[j] == self._active)
+            points = [np.asarray(self.ac_arrays[j].contours[int(local)]) for local in members]
+            points = [p for p in points if p.size]
+            if not points:
+                boxes.append(None)
+                continue
+            points = np.concatenate(points)
+            (y0, x0), (y1, x1) = points.min(axis=0), points.max(axis=0)
+            # two pixels of margin: the box frames the cell instead of covering its edge
+            boxes.append((y0 - 2, x0 - 2, y1 - y0 + 5, x1 - x0 + 5))
+        self._summary.set_highlight(boxes)
 
     def _shift_sessions(self, delta: int):
         """Move every panel ``delta`` sessions along, wrapping: on sessions 0, 1, 2, -1 shows the last, 0 and 1."""
@@ -640,6 +657,7 @@ class MultiSessionDemixingVis:
             local = -1 if row is None else int(self._first_member[row, j])
             selector.selection = None if local < 0 else local
         self._update_traces()
+        self._box_selection()
         if row is not None and self._follow:
             self._center_on(row)
 
@@ -805,7 +823,7 @@ class MultiSessionDemixingVis:
                 self._stills = self._static_images()
             self._summary.set_images(self._stills)
             self._summary.open()
-        tooltip("the panels' sessions side by side, one still at a time, in the aligned space: zoom, colormap, contrast, pixel values")
+        tooltip("the panels' sessions side by side, one still at a time, in the aligned space, the selected cluster boxed: zoom, colormap, contrast, pixel values")
         # the keybinds button right-aligned on the same row, or on a row of its own when it is too narrow
         keys_w = hint_button_width(KEYBINDS_LABEL, "(k)")
         imgui.same_line()
