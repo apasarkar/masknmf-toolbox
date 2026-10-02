@@ -10,11 +10,12 @@ either the results path or the sidecar path.
 """
 
 import os
-import time
 from typing import Optional, Sequence
 
 import h5py
 import numpy as np
+
+from masknmf.utils import get_timestamp
 
 SIDECAR_SUFFIX = ".labels.hdf5"
 CLASSIFIER_SUFFIX = ".roicat_classifier"
@@ -123,7 +124,7 @@ def write_masks(path, masks):
 
 def record_classifier(path, classifier_path: str):
     """Set ``classifier_path`` and append a dated entry to ``classifier_history``."""
-    entry = f"{time.strftime('%Y-%m-%d')} {classifier_path}".encode()
+    entry = f"{get_timestamp()} {classifier_path}".encode()
     with _open(path, "a") as f:
         _write(f, "classifier_path", np.bytes_(classifier_path))
         history = list(f["classifier_history"][()]) if "classifier_history" in f else []

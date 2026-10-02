@@ -394,7 +394,7 @@ def draw_classification_help(is_open: bool, keys_open: bool) -> tuple[bool, bool
     imgui.dummy(imgui.ImVec2(w, y + vh - p.y))
     imgui.text_colored(
         DIM,
-        "the ROI view is the figure; the cards and the table are its windows, the full FOV opens over them",
+        "the ROI view is the figure; the cards and the table are its windows, the full FOV a window of its own (File > Options: over them)",
     )
     table("windows", WINDOWS)
 

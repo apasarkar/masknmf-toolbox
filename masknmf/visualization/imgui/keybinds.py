@@ -1,5 +1,5 @@
 """
-Every viewer's keybinds in one place. A :class:`Bind` is one key with its modifiers and the words the keybinds popup
+Every viewer's keybinds in one place. A :class:`Bind` is a key (or several) with its modifiers and the words the keybinds popup
 and the help pages show for it; a viewer's table maps action names to binds, its key handler asks :func:`pressed`
 about each, and the popup lists the table's rows. Rows without a key (clicks, scrolls) are listed only. Both viewers
 share ``UP``, ``DOWN``, ``MASKS``, ``HELP`` and ``KEYBINDS`` so those read the same everywhere; a custom mapping
@@ -14,7 +14,7 @@ from imgui_bundle import imgui
 class Bind(NamedTuple):
     label: str
     action: str
-    key: imgui.Key | None = None
+    key: imgui.Key | tuple[imgui.Key, ...] | None = None
     ctrl: bool = False
     shift: bool | None = None
     repeat: bool = False
@@ -23,14 +23,16 @@ class Bind(NamedTuple):
 def pressed(bind: Bind) -> bool:
     """
     Whether ``bind``'s key went down this frame with its modifiers: ctrl exactly as given, shift as given or, when
-    None, either way (the handler then reads it as a stride). Never while a text field has the keyboard.
+    None, either way (the handler then reads it as a stride). Any of several keys counts. Never while a text field has
+    the keyboard.
     """
     io = imgui.get_io()
     if bind.key is None or io.want_text_input or io.key_ctrl != bind.ctrl:
         return False
     if bind.shift is not None and io.key_shift != bind.shift:
         return False
-    return imgui.is_key_pressed(bind.key, bind.repeat)
+    keys = bind.key if isinstance(bind.key, tuple) else (bind.key,)
+    return any(imgui.is_key_pressed(key, bind.repeat) for key in keys)
 
 
 UP = Bind("up", "previous in the table (shift: by 10)", imgui.Key.up_arrow, repeat=True)
@@ -72,10 +74,10 @@ DEMIXING: Mapping[str, Bind] = {
         imgui.Key.a,
     ),
     "delete": Bind(
-        "delete",
+        "d / delete",
         "remove the selected roi, drop the active pixel average, or mark the selected signals for deletion (unmark "
         "when all are)",
-        imgui.Key.delete,
+        (imgui.Key.d, imgui.Key.delete),
     ),
     "escape": Bind(
         "esc",
@@ -107,5 +109,25 @@ CLASSIFICATION: Mapping[str, Bind] = {
     "undo": Bind("ctrl + z", "undo the last label change", imgui.Key.z, ctrl=True),
     "escape": Bind("esc", "close the help and keybinds windows", imgui.Key.escape),
     "help": HELP,
+    "keybinds": KEYBINDS,
+}
+
+MULTISESSION: Mapping[str, Bind] = {
+    "up": UP,
+    "down": DOWN,
+    "left": Bind("left", "every panel back one session: the panels scroll right", imgui.Key.left_arrow, repeat=True),
+    "right": Bind("right", "every panel on one session: the panels scroll left", imgui.Key.right_arrow, repeat=True),
+    "page_back": Bind("[", "every panel back one page of sessions", imgui.Key.left_bracket),
+    "page_next": Bind("]", "every panel on one page of sessions", imgui.Key.right_bracket),
+    "double_click": Bind("double-click", "on a footprint in any panel: select its cluster in every session"),
+    "scroll": Bind("shift / alt + scroll", "in the trace plot, zoom x only / y only"),
+    "contours": Bind("c", "toggle every other footprint's contour", imgui.Key.c),
+    "follow": Bind("f", "center every panel on the selected cluster and keep following it", imgui.Key.f),
+    "trace_follow": Bind(
+        "t", "toggle center in the traces: the current frame stays in the middle as the movie plays", imgui.Key.t
+    ),
+    "unclustered": Bind("u", "toggle the unclustered ROIs, in gray", imgui.Key.u),
+    "reset": Bind("r", "zoom every panel out to the whole fov", imgui.Key.r),
+    "escape": Bind("esc", "close the keybinds window, else deselect", imgui.Key.escape),
     "keybinds": KEYBINDS,
 }

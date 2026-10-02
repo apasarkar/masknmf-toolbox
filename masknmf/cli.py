@@ -15,11 +15,16 @@ here enumerates a parameter by hand:
     masknmf run movie.tif --fs 30 --config configs.json
     masknmf run "sessions/*/movie.tif" --config run_folder/config.json
     masknmf view results.hdf5 --raw movie.tif
+    masknmf view run_folder
     masknmf view results.hdf5 --raw movie.tif --compression
     masknmf view results.hdf5 --classify --labels soma,dendrite,junk
     masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
+    masknmf view tracking_folder
+    masknmf view tracking_folder/20261001T180415_roicat-tracking-manifest.json
+    masknmf view tracking_folder day1/results.hdf5 day2/results.hdf5
     masknmf train-classifier "sessions/*/results.hdf5" --out cells
     masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classifier
+    masknmf track "sessions/*/results.hdf5" --out tracking
 """
 
 from typing import Any, Optional
@@ -33,6 +38,7 @@ import os
 import shutil
 import sys
 import time
+import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -43,11 +49,13 @@ import masknmf
 from masknmf.classification import RoicatClassifier
 from masknmf.demixing.curation import latest_results
 from masknmf.demixing.labels import SIDECAR_SUFFIX, read_labels
+from masknmf.multisession import RoicatDataAdapter, RoicatTracker
 from masknmf.pipelines import scraper
 
 
 SUFFIXES_TIFF = (".tif", ".tiff")
 SUFFIXES_HDF5 = (".h5", ".hdf5")
+GLOB_TRACKING_MANIFEST = "*_roicat-tracking-manifest.json"
 
 NAMES_ALIAS = {"frame_rate": "--fs"}
 
@@ -203,6 +211,25 @@ def expand_results(entries: list[str]) -> list[str]:
     if len(stores) > 0:
         print(f"warning: skipped {len(stores)} .zarr store(s) without looking inside, e.g. {stores[0]}")
     return list(dict.fromkeys(files))
+
+
+def find_tracking(entry: str) -> Optional[Path]:
+    """
+    The tracking run a view entry names: a ``*_roicat-tracking-manifest.json`` file as given; for a folder, the
+    manifest with the latest timestamp in it or, with none there, in its ``tracking`` subfolder; else the folder
+    itself when it holds ROICaT's files, as RoicatTrackingResults.to_roicat_dir wrote them before manifests. None
+    for anything else.
+    """
+    path = Path(entry).expanduser()
+    if path.is_file():
+        return path if path.match(GLOB_TRACKING_MANIFEST) else None
+    if not path.is_dir():
+        return None
+    # a manifest's name starts with its timestamp, so the last by name is the newest
+    manifests = sorted(path.glob(GLOB_TRACKING_MANIFEST)) or sorted(path.glob(f"tracking/{GLOB_TRACKING_MANIFEST}"))
+    if len(manifests) > 0:
+        return manifests[-1]
+    return path if any(path.glob("*.tracking.results_all.*")) else None
 
 
 def demixing_sessions(files: list[str]) -> list[str]:
@@ -579,7 +606,7 @@ def command_run(args: argparse.Namespace) -> None:
             else:
                 size = path.stat().st_size
             inputs[field] = {"path": str(path), "name": path.name, "bytes": size,
-                             "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+                             "modified": datetime.fromtimestamp(path.stat().st_mtime).strftime(masknmf.utils.TIMESTAMP_FORMAT),
                              "shape": list(kwargs_run[field].shape), "dtype": str(kwargs_run[field].dtype)}
             if isinstance(kwargs_run[field], masknmf.Hdf5Array):
                 inputs[field]["dataset"] = args.dataset
@@ -650,9 +677,100 @@ def command_run(args: argparse.Namespace) -> None:
             raise SystemExit(1)
 
 
+def print_tracking(tracking: "masknmf.multisession.RoicatTrackingResults", folder: str) -> list[str]:
+    """Summarize a tracking run and list its sessions' results files; returns the files that do not exist."""
+    clustered = sum(int((labels >= 0).sum()) for labels in tracking.labels_by_session)
+    spans = tracking.num_sessions_per_cluster
+    print(f"tracking {Path(folder).resolve()}")
+    print(f"  sessions   {tracking.num_sessions}")
+    print(f"  rois       {tracking.num_roi_total}, every session's together")
+    print(f"  clusters   {tracking.num_clusters}, each one cell matched across sessions; "
+          f"{int((spans == tracking.num_sessions).sum())} found in every session")
+    print(f"  clustered  {clustered / max(tracking.num_roi_total, 1):.0%} of the rois ({clustered}) belong to a cluster; "
+          f"the other {tracking.num_roi_total - clustered} matched no roi of another session")
+    missing = [filepath for filepath in tracking.session_files if not os.path.isfile(filepath)]
+    root = os.path.commonpath([os.path.dirname(filepath) for filepath in tracking.session_files])
+    print(f"  results files under {root}:")
+    print("    session  rois  clustered  file")
+    for session, filepath in enumerate(tracking.session_files):
+        labels = tracking.labels_by_session[session]
+        print(f"    {session:>7}  {len(labels):>4}  {int((labels >= 0).sum()):>9}  {os.path.relpath(filepath, root)}"
+              + ("  (missing)" if filepath in missing else ""))
+    return missing
+
+
+def view_tracking(args: argparse.Namespace, source: Path) -> None:
+    """
+    Open the multisession viewer on a tracking run, its manifest or a folder from before manifests; results files
+    after it replace the sessions it recorded.
+    """
+    if args.classify or args.raw is not None or args.compression or args.prefix or args.fs is not None:
+        fail("a tracking folder opens only the multisession viewer; drop --classify, --raw, --compression, --prefix and --fs")
+    folder, entries_sessions = args.results[0], args.results[1:]
+    files = expand_results(entries=entries_sessions) if len(entries_sessions) > 0 else None
+    # richfile and roicat warn about their own metadata on every load, nothing the user can act on
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            if source.is_file():
+                tracking = masknmf.multisession.RoicatTrackingResults.from_manifest(source)
+            else:
+                tracking = masknmf.multisession.RoicatTrackingResults.from_roicat_dir(source)
+        except ValueError as error:
+            fail(str(error))
+    if files is not None:
+        if len(files) != tracking.num_sessions:
+            fail(f"the tracking has {tracking.num_sessions} sessions, got {len(files)} results files")
+        counts = {}
+        for filepath in files:
+            with h5py.File(filepath, "r") as f:
+                counts[filepath] = f[f"{group_name_demixing()}/temporal_demixed"].shape[1]
+        if list(counts.values()) != list(tracking.num_roi_per_session):
+            # globs sort by name, so put each file at the session with its roi count
+            ordered = []
+            for session, count in enumerate(tracking.num_roi_per_session):
+                matches = [filepath for filepath, n in counts.items() if n == count]
+                if len(matches) > 1:
+                    fail(f"session {session} has {count} rois and {len(matches)} results files do; pass the files in session order")
+                ordered.append(matches[0] if len(matches) == 1 else None)
+            # a file that fits no session takes an open one, so the check below names it
+            unplaced = iter([filepath for filepath in files if filepath not in ordered])
+            files = [next(unplaced) if filepath is None else filepath for filepath in ordered]
+        try:
+            tracking.session_files = files
+        except ValueError as error:
+            fail(str(error))
+    missing = print_tracking(tracking=tracking, folder=str(source))
+    if args.list:
+        return
+    if len(missing) > 0:
+        fail(f"results files not found; pass them in session order after the folder: masknmf view {folder} day1.hdf5 day2.hdf5 ...")
+
+    import fastplotlib as fpl
+
+    device = str(masknmf.utils.torch_select_device()) if args.device == "auto" else args.device
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        masknmf.MultiSessionDemixingVis(tracking, device=device).show()
+    fpl.loop.run()
+
+
 def command_view(args: argparse.Namespace) -> None:
-    """Open the viewers for whatever stages the results files hold; --classify opens only the classification viewer."""
-    files = expand_results(entries=args.results)
+    """
+    Open the viewers for whatever stages the results files hold; --classify opens only the classification viewer.
+    A folder opens its newest tracking manifest in the multisession viewer, else its results files.
+    """
+    tracking = find_tracking(entry=args.results[0])
+    if tracking is not None:
+        view_tracking(args=args, source=tracking)
+        return
+    # a folder without a manifest stands for the results files in it, each one's newest curated file in its place
+    entries = [
+        # glob characters in the folder's own name are escaped, so only the file pattern matches
+        str(Path(glob.escape(entry)) / "*results*.hdf5") if Path(entry).expanduser().is_dir() else entry
+        for entry in args.results
+    ]
+    files = expand_results(entries=entries)
     present = {filepath: groups_present(filepath_results=filepath) for filepath in files}
     for filepath, names in present.items():
         print(Path(filepath).resolve())
@@ -774,6 +892,23 @@ def command_classify(args: argparse.Namespace) -> None:
         print(f"{filepath}  {counts}")
 
 
+def command_track(args: argparse.Namespace) -> None:
+    """Track ROIs across sessions with ROICaT, one session per results file in the order given, and save the tracking folder."""
+    sessions = demixing_sessions(files=expand_results(entries=args.results))
+    if len(sessions) < 2:
+        fail(f"tracking needs at least two sessions, got {len(sessions)}")
+    for session, filepath in enumerate(sessions):
+        print(f"  {session}  {filepath}")
+    tracker = RoicatTracker()
+    tracker.params["general"]["use_GPU"] = args.device != "cpu"
+    # richfile and roicat warn about their own metadata, nothing the user can act on; roicat's progress still prints
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        tracking = tracker.run_tracking(RoicatDataAdapter.from_masknmf(sessions, um_per_pixel=args.um_per_pixel))
+        folder = tracking.to_roicat_dir(args.out)
+    print_tracking(tracking=tracking, folder=str(folder))
+
+
 def timings(num_frames: int, frame_rate: Optional[float]):
     """Frame times in seconds, or None when no acquisition rate was given."""
     if frame_rate is None:
@@ -826,7 +961,9 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
 
     parser_view = subparsers.add_parser("view", help="open the viewers for a results file")
     parser_view.add_argument(
-        "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several need --classify"
+        "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several need --classify. "
+        "Or a tracking folder (its newest run) or one run's *-manifest.json, optionally followed by its results files in session order. "
+        "Any other folder stands for the *results*.hdf5 files in it, the newest curated one of each",
     )
     parser_view.add_argument("--raw", default=None, help="the raw movie the results came from")
     parser_view.add_argument("--dataset", default=None)
@@ -874,6 +1011,18 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_classify.add_argument("--classifier", required=True, help="a .roicat_classifier from masknmf train-classifier")
     parser_classify.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     parser_classify.set_defaults(handler=command_classify)
+
+    parser_track = subparsers.add_parser("track", help="track ROIs across sessions with ROICaT")
+    parser_track.add_argument(
+        "results", nargs="+", help="results .hdf5 files or globs, one per session; sessions are numbered in this order"
+    )
+    parser_track.add_argument(
+        "--out", required=True,
+        help="the tracking folder; each run adds <timestamp>_roicat-tracking/ and its -manifest.json there",
+    )
+    parser_track.add_argument("--um-per-pixel", default=1.2, type=float, help="imaging resolution; default 1.2")
+    parser_track.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
+    parser_track.set_defaults(handler=command_track)
 
     return parser
 

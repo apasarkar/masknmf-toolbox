@@ -40,6 +40,17 @@ class Theme:
 
 THEME = Theme()
 
+# contrasting rgb colors for traces drawn together, given out in the order they are drawn
+GROUP_COLORS = (
+    (1.00, 0.55, 0.10),
+    (0.25, 0.85, 0.35),
+    (0.95, 0.35, 0.90),
+    (0.35, 0.80, 1.00),
+    (1.00, 0.95, 0.35),
+    (0.65, 0.50, 1.00),
+    (1.00, 1.00, 1.00),
+)
+
 
 def em(x: float = 1.0) -> float:
     """x font heights in pixels; only valid inside a frame."""

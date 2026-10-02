@@ -19,12 +19,17 @@ from masknmf.utils import display
 from functools import partial
 from masknmf.visualization.imgui import (
     THEME,
+    GROUP_COLORS,
     PathPrompt,
     RoiOrder,
     SourceRightClickMenu,
     TracePlot,
+    CLICK_SLOP,
     component_at_pixel,
     draw_keybinds_popup,
+    draw_panels_popup,
+    PANELS_LABEL,
+    PANELS_TIP,
     draw_path_prompt,
     draw_help_buttons,
     help_buttons_width,
@@ -44,6 +49,7 @@ from masknmf.visualization.imgui import (
 )
 from masknmf.visualization.imgui.curation_help import draw_curation_help
 from masknmf.visualization.imgui.keybinds import DEMIXING, pressed
+from masknmf.visualization.imgui.options import OPTIONS_LABEL, draw_options_popup
 from masknmf.visualization.rois import MARKED_COLOR, SELECTED_ALPHA, FootprintSet
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.demixing import CellStats, update_signals, write_curated
@@ -63,9 +69,6 @@ _ROI_COLORS = (
 _NPZ_FILTERS = ["NumPy archive", "*.npz", "All files", "*"]
 _STATS_FILTERS = ["Cell stats", "*.npy *.npz *.csv *.tsv *.txt", "All files", "*"]
 _HDF5_FILTERS = ["masknmf demixing results", "*.hdf5 *.h5", "All files", "*"]
-_CLICK_SLOP = (
-    4  # px the pointer may travel between press and release and still be a click
-)
 _UNDO_DEPTH = 50  # ctrl+z snapshots kept
 # every grid's captions, so the caption column is one width across the sections and the tabs
 # what the panels open on, first come: raw | compressed+denoised | signals when a raw movie is there
@@ -76,15 +79,6 @@ _CAPTIONS = (
 )
 # signals selected together, in order of mutual contrast on the dark plot; no red, a mask marked for
 # deletion is red
-_GROUP_COLORS = (
-    (1.00, 0.55, 0.10),
-    (0.25, 0.85, 0.35),
-    (0.95, 0.35, 0.90),
-    (0.35, 0.80, 1.00),
-    (1.00, 0.95, 0.35),
-    (0.65, 0.50, 1.00),
-    (1.00, 1.00, 1.00),
-)
 # compressed/signal/background/residual, in that order, so the 4 base lines read apart in the legend
 _BASE_LINE_COLORS = (
     (0.85, 0.85, 0.85),
@@ -406,6 +400,7 @@ class SingleSessionDemixingVis:
         self._scroll_to_current = False
         self._keybinds_open = False
         self._help_open = False
+        self._options_open = False
         self._show_masks = show_masks
         self._mask_opacity = mask_opacity
         self._show_selected_masks = True
@@ -526,10 +521,11 @@ class SingleSessionDemixingVis:
     def _refresh_masks(self):
         if not self._mask_overlays:
             return
+        visible = self._show_masks or self._show_selected_masks
         rgba = (
             self._footprints.rgba(
                 tuple(self._shape[1:3]),
-                self._mask_opacity,
+                self._mask_opacity if self._show_masks else 0.0,
                 self._active_component if self._show_selected_masks else None,
                 self._marked,
                 {
@@ -541,11 +537,11 @@ class SingleSessionDemixingVis:
                 else {},
                 self._selected_mask_opacity,
             )
-            if self._show_masks
+            if visible
             else None
         )
         for overlay in self._mask_overlays.values():
-            overlay.visible = self._show_masks
+            overlay.visible = visible
             if rgba is not None:
                 overlay.data = rgba
 
@@ -678,7 +674,7 @@ class SingleSessionDemixingVis:
         # pygfx reports any two quick presses on one panel as a double-click, however far apart
         self._same_spot = (
             self._press is not None
-            and abs(ev.x - self._press[0]) + abs(ev.y - self._press[1]) <= _CLICK_SLOP
+            and abs(ev.x - self._press[0]) + abs(ev.y - self._press[1]) <= CLICK_SLOP
         )
         self._press = (ev.x, ev.y)
         self._press_drawn = self._drawing()
@@ -813,7 +809,7 @@ class SingleSessionDemixingVis:
             return
         # pygfx reports a click after any press and release on one graphic, a pan drag included
         if self._press is not None and (
-            abs(ev.x - self._press[0]) + abs(ev.y - self._press[1]) > _CLICK_SLOP
+            abs(ev.x - self._press[0]) + abs(ev.y - self._press[1]) > CLICK_SLOP
         ):
             return
         col, row = ev.pick_info["index"]
@@ -922,7 +918,7 @@ class SingleSessionDemixingVis:
         if len(self._group) < 2:
             return {}
         return {
-            k: _GROUP_COLORS[i % len(_GROUP_COLORS)] for i, k in enumerate(self._group)
+            k: GROUP_COLORS[i % len(GROUP_COLORS)] for i, k in enumerate(self._group)
         }
 
     def _highlighted(self) -> list:
@@ -973,7 +969,7 @@ class SingleSessionDemixingVis:
             self._selected_signals = []
             lines = []
             for i, k in enumerate(self._group):
-                rgb = _GROUP_COLORS[i % len(_GROUP_COLORS)]
+                rgb = GROUP_COLORS[i % len(GROUP_COLORS)]
                 if isinstance(k, tuple):
                     lines.append(
                         (f"pixel avg ({k[0]}, {k[1]})", self._pixels[k][0], rgb)
@@ -1554,8 +1550,8 @@ class SingleSessionDemixingVis:
         if pressed(DEMIXING["delete"]) and self._worker is None:
             self._delete_selected()
         if pressed(DEMIXING["escape"]):
-            if self._help_open or self._keybinds_open:
-                self._help_open = self._keybinds_open = False
+            if self._help_open or self._keybinds_open or self._options_open:
+                self._help_open = self._keybinds_open = self._options_open = False
             elif self._armed:
                 self._armed = False
             elif self._region is not None:
@@ -1659,13 +1655,16 @@ class SingleSessionDemixingVis:
                     "- .csv / .tsv: a header row of names, then one row per signal\n"
                     "- .txt: signal ids in a custom order, becomes the 'order' column"
                 )
+                imgui.separator()
+                if imgui.menu_item_simple(OPTIONS_LABEL):
+                    self._options_open = True
                 imgui.end_menu()
             imgui.end_menu_bar()
         imgui.end_child()
-        if imgui.button(f"{fa.ICON_FA_TABLE_CELLS_LARGE} Panels"):
+        if imgui.button(PANELS_LABEL):
             self._panels_open = True
         if imgui.is_item_hovered():
-            imgui.set_tooltip("which movie each panel shows, as an array x panel matrix; a panel's right-click menu offers the same choice")
+            imgui.set_tooltip(PANELS_TIP)
         imgui.same_line()
         stills = self._stills
         imgui.begin_disabled(not stills)
@@ -1701,6 +1700,7 @@ class SingleSessionDemixingVis:
             imgui.end_tab_bar()
         self._keybinds_open = draw_keybinds_popup(DEMIXING, self._keybinds_open)
         self._help_open, self._keybinds_open = draw_curation_help(self._help_open, self._keybinds_open)
+        self._options_open = draw_options_popup(self._ndw_fov.figure, self._options_open)
         path = draw_path_prompt(self._export_prompt)
         if path is not None:
             try:
@@ -1732,27 +1732,7 @@ class SingleSessionDemixingVis:
                 self._results_prompt.open = False
             except (OSError, KeyError, ValueError, TypeError) as e:
                 self._results_prompt.status = f"load failed: {e}"
-        if self._panels_open:
-            opened, self._panels_open = popup("Panels", self._panels_open)
-            if opened:
-                # the array x panel matrix: one row per movie, one radio column per panel
-                movies = next(iter(self._panels.values())).sources
-                if imgui.begin_table("##panel_matrix", 1 + len(self._panels), imgui.TableFlags_.sizing_fixed_fit):
-                    imgui.table_setup_column("##array")
-                    for name in self._panels:
-                        imgui.table_setup_column(name, imgui.TableColumnFlags_.width_fixed, imgui.get_frame_height())
-                    imgui.table_headers_row()
-                    for movie in movies:
-                        imgui.table_next_row()
-                        imgui.table_next_column()
-                        imgui.align_text_to_frame_padding()
-                        imgui.text(movie)
-                        for name, panel in self._panels.items():
-                            imgui.table_next_column()
-                            if imgui.radio_button(f"##{movie}-{name}", panel.current == movie) and panel.current != movie:
-                                self._set_source(name, movie)
-                    imgui.end_table()
-            imgui.end()
+        self._panels_open = draw_panels_popup(self._panels, self._panels_open, self._set_source)
         self._summary.draw()
 
     def _table_select(self, component):
@@ -2087,11 +2067,12 @@ class SingleSessionDemixingVis:
             if imgui.button(f"{fa.ICON_FA_TRASH}##delete", size):
                 self._delete_selected()
         imgui.end_disabled()
+        key = DEMIXING["delete"].label
         tooltip(
-            f"Unmark: the {len(signals)} selected signal(s) stay in the next demix (delete)"
+            f"Unmark: the {len(signals)} selected signal(s) stay in the next demix ({key})"
             if unmark
             else f"Mark for deletion: the {len(signals)} selected signal(s) are removed by the next demix and kept "
-            "until then; a selected drawn roi or pixel average is dropped right away (delete)"
+            f"until then; a selected drawn roi or pixel average is dropped right away ({key})"
         )
         imgui.same_line(0, gap)
         imgui.begin_disabled(True)
