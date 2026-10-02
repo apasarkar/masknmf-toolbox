@@ -56,7 +56,7 @@ DEMIXING: Mapping[str, Bind] = {
     ),
     "ctrl_click": Bind("ctrl + click", "toggle a signal, drawn roi or pixel average in the group, in the image or the table"),
     "shift_click": Bind("shift + click", "add a signal or drawn roi to the group; in the table, every row up to it"),
-    "scroll": Bind("shift / alt + scroll", "in the trace plot, zoom x only / y only"),
+    "scroll": Bind("shift / ctrl + scroll", "in the trace plot, zoom x only / y only"),
     "masks": MASKS,
     "contours": Bind("c", "toggle every other footprint's contour", imgui.Key.c),
     "follow": Bind("f", "center the view on the selection and keep following it", imgui.Key.f),
@@ -120,7 +120,7 @@ MULTISESSION: Mapping[str, Bind] = {
     "page_back": Bind("[", "every panel back one page of sessions", imgui.Key.left_bracket),
     "page_next": Bind("]", "every panel on one page of sessions", imgui.Key.right_bracket),
     "double_click": Bind("double-click", "on a footprint in any panel: select its cluster in every session"),
-    "scroll": Bind("shift / alt + scroll", "in the trace plot, zoom x only / y only"),
+    "scroll": Bind("shift / ctrl + scroll", "in the trace plot, zoom x only / y only"),
     "contours": Bind("c", "toggle every other footprint's contour", imgui.Key.c),
     "follow": Bind("f", "center every panel on the selected cluster and keep following it", imgui.Key.f),
     "trace_follow": Bind(

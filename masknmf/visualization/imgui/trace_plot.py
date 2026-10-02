@@ -198,16 +198,18 @@ class TracePlot:
 
     def draw(self, reserve: float = 0.0) -> Optional[int]:
         """The stacked panels filling the window but ``reserve`` px; returns the frame when the
-        playhead was dragged. Right-click any panel for autofit/fit/x-axis settings; shift or alt while
+        playhead was dragged. Right-click any panel for autofit/fit/x-axis settings; shift or ctrl while
         scrolling zooms x only or y only."""
         if implot.get_current_context() is None:
             implot.create_context()
+            # implot ignores every input while ctrl is held unless told otherwise
+            implot.get_input_map().override_mod = imgui.Key.mod_none
         fit = self._resolve_fit()
         self._x_target = None if fit else self._follow_target()
         self._held = False
         io = imgui.get_io()
-        # qt on windows reports alt + wheel as a horizontal wheel, which implot ignores
-        if io.key_alt and io.mouse_wheel == 0.0 and io.mouse_wheel_h != 0.0:
+        # browsers report shift + wheel as a horizontal wheel, which implot ignores
+        if (io.key_shift or io.key_ctrl) and io.mouse_wheel == 0.0 and io.mouse_wheel_h != 0.0:
             io.mouse_wheel, io.mouse_wheel_h = -io.mouse_wheel_h, 0.0
         height = max(imgui.get_content_region_avail().y - reserve, em(4))
         flags = implot.SubplotFlags_.link_all_x
@@ -388,10 +390,10 @@ class TracePlot:
         if not implot.begin_plot(name, imgui.ImVec2(0, 0), flags):
             return None
         try:
-            # shift: scroll zooms x only; alt: y only
+            # shift: scroll zooms x only; ctrl: y only
             io = imgui.get_io()
             x_flags = implot.AxisFlags_.none if last else implot.AxisFlags_.no_tick_labels
-            if io.key_alt:
+            if io.key_ctrl:
                 x_flags |= implot.AxisFlags_.lock
             y_flags = implot.AxisFlags_.lock if io.key_shift else implot.AxisFlags_.none
             x_label = ("time" if self._use_time else "frame") if last else ""
