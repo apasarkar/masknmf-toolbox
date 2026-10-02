@@ -24,6 +24,8 @@ _CONTRAST_MANUAL = 2
 
 _PIXEL_VALUES_MIN_ZOOM = 16.0
 _PIXEL_VALUES_MAX_CELLS = 10_000
+# screen pixels between the images of a row
+_ROW_GAP = 2.0
 
 
 def _data_range(arr: np.ndarray) -> tuple[float, float]:
@@ -159,6 +161,10 @@ class SummaryImageViewer:
     Viewer over a {name: 2D or (H, W, 3) rgb array} image set. Call open() to show and
     draw() every imgui frame of ``figure`` (it is a no-op while closed). It is a popup inside ``figure``, or
     with File > Options' separate window on, an OS window of its own; a notebook always gets the popup.
+
+    A name may hold a row instead, a list of (caption, image) pairs of one shape: its images are drawn side by
+    side, ``_ROW_GAP`` pixels apart, under one zoom and pan. The window opens in the row's shape and resizes
+    freely: the row is refitted to it, whole and centered, so resizing never cuts an image off.
     """
 
     def __init__(self, figure, images: Optional[dict] = None, title: str = "Full FOV"):
@@ -180,6 +186,7 @@ class SummaryImageViewer:
         self._pan_x = 0.0
         self._pan_y = 0.0
         self._needs_fit = True
+        self._cell_height: Optional[float] = None  # how tall a row's images were on screen last frame
         self._show_pixel_values = False
         self._highlight: Optional[tuple] = None  # (y0, x0, h, w) in image coords
         self._overlay: Optional[np.ndarray] = None  # float (H, W, 4) drawn over the image
@@ -198,11 +205,15 @@ class SummaryImageViewer:
         A value may be a (N, H, W) stack instead of an image, in which case
         ``index`` picks the plane. Only the plane actually on screen is read, so
         a stack that computes its planes on demand costs nothing until shown.
+        A value may also be a row: a list of (caption, image) pairs drawn side by side.
         """
-        for key, gpu in list(self._gpu.items()):
-            if images.get(key) is not gpu.arr:
+        for (key, column), gpu in list(self._gpu.items()):
+            value = images.get(key)
+            if isinstance(value, list):
+                value = value[column][1] if column < len(value) else None
+            if value is not gpu.arr:
                 gpu.destroy()
-                del self._gpu[key]
+                del self._gpu[key, column]
                 self._hist_cache.pop(key, None)
         self._images = dict(images)
         self._index = index
@@ -226,6 +237,13 @@ class SummaryImageViewer:
     @property
     def is_open(self) -> bool:
         return self._popup_open and (self._window is None or not self._window.canvas.get_closed())
+
+    def _columns(self, key: str) -> list:
+        """What a source shows, as (caption, image) pairs: a row's own, or its one image without a caption"""
+        value = self._images[key]
+        if isinstance(value, list):
+            return value
+        return [("", self._image(key))]
 
     def _image(self, key: str) -> np.ndarray:
         """The image for a source, reading the plane out of a stack the first time it is shown"""
@@ -261,17 +279,18 @@ class SummaryImageViewer:
         self._pan_y = 0.0
         self._needs_fit = True
 
-    def _get_range(self, key: str, arr: np.ndarray) -> tuple[float, float]:
+    def _get_range(self, key: str, arr: np.ndarray, column: int = 0) -> tuple[float, float]:
         if self._contrast_mode == _CONTRAST_AUTO:
             if key in self._movies:
                 # fixed per movie so playback doesn't flicker
                 if key not in self._movie_range:
                     self._movie_range[key] = _auto_range(arr)
                 return self._movie_range[key]
-            cached = self._auto_cache.get(key)
+            # each image of a row has its own auto range; the manual one below is the row's
+            cached = self._auto_cache.get((key, column))
             if cached is None or cached[0] is not arr:
                 cached = (arr, _auto_range(arr))
-                self._auto_cache[key] = cached
+                self._auto_cache[key, column] = cached
             return cached[1]
         if self._contrast_mode == _CONTRAST_MANUAL:
             lo = self._manual_lo.get(key)
@@ -285,16 +304,16 @@ class SummaryImageViewer:
             return lo, hi
         return _data_range(arr)
 
-    def _ensure_gpu(self, key: str, arr: np.ndarray) -> Optional[_GpuImage]:
+    def _ensure_gpu(self, key: str, arr: np.ndarray, column: int = 0) -> Optional[_GpuImage]:
         backend = self._backend()
         if backend is None:
             return None
         cmap = _CMAPS[self._cmap_idx]
-        lo, hi = self._get_range(key, arr)
-        gpu = self._gpu.get(key)
+        lo, hi = self._get_range(key, arr, column)
+        gpu = self._gpu.get((key, column))
         if gpu is None:
             gpu = _GpuImage(backend, arr, cmap, lo, hi, self._overlay)
-            self._gpu[key] = gpu
+            self._gpu[key, column] = gpu
         else:
             gpu.ensure(arr, cmap, lo, hi, self._overlay)
         return gpu
@@ -406,9 +425,17 @@ class SummaryImageViewer:
         if separate and self._window is None:
             self.cleanup()
             self._reset_view()
+            size = (900, 950)
+            keys = list(self._images) + list(self._movies)
+            row = self._images.get(keys[self._selected]) if self._selected < len(keys) else None
+            if isinstance(row, list):
+                # a row opens in its own shape, about 1400 wide at most
+                h, w = row[0][1].shape[:2]
+                cell = float(np.clip(1400 / len(row) * h / w, 300, 800))
+                size = (round(len(row) * cell * w / h), round(cell) + 70)
             # a new figure makes its imgui context current; this frame needs its own back
             context = imgui.get_current_context()
-            self._window = fpl.Figure(size=(900, 950), canvas_kwargs={"title": self._title, "max_fps": 60.0})
+            self._window = fpl.Figure(size=size, canvas_kwargs={"title": self._title, "max_fps": 60.0})
             self._window[0, 0].toolbar = False
             self._window.add_imgui_window(
                 self._draw_viewer,
@@ -442,6 +469,11 @@ class SummaryImageViewer:
             em = imgui.get_font_size()
             w = min(52.0 * em, viewport.size.x * 0.92)
             h = min(56.0 * em, viewport.size.y * 0.92)
+            row = self._images.get(keys[self._selected])
+            if isinstance(row, list):
+                # a row opens no wider than the viewer, so its height follows from the images' shape
+                w = viewport.size.x * 0.92
+                h = min(h, w / len(row) * row[0][1].shape[0] / row[0][1].shape[1] + 7.0 * em)
             imgui.set_next_window_size(imgui.ImVec2(w, h), imgui.Cond_.first_use_ever)
             imgui.set_next_window_pos(
                 viewport.get_center(), imgui.Cond_.first_use_ever, pivot=imgui.ImVec2(0.5, 0.5)
@@ -466,20 +498,21 @@ class SummaryImageViewer:
             if frame_changed or self._movie_frame is None or key != self._movie_key:
                 self._movie_frame = self.player.frame()
                 self._movie_key = key
-            arr = self._movie_frame
+            columns = [("", self._movie_frame)]
         else:
-            arr = self._image(key)
+            columns = self._columns(key)
+        arr = columns[0][1]
         self._draw_contrast_panel(key, arr)
 
-        gpu = self._ensure_gpu(key, arr)
-        if gpu is None:
+        gpus = [self._ensure_gpu(key, image, column) for column, (_, image) in enumerate(columns)]
+        if gpus[0] is None:
             imgui.text_colored(
                 imgui.ImVec4(1.0, 0.3, 0.3, 1.0), "GPU backend unavailable"
             )
             imgui.end()
             return
 
-        h, w = gpu.h, gpu.w
+        h, w = gpus[0].h, gpus[0].w
         imgui.begin_child(
             "##canvas",
             imgui.ImVec2(0, -28),
@@ -492,48 +525,77 @@ class SummaryImageViewer:
         cw = max(canvas_size.x, 1.0)
         ch = max(canvas_size.y, 1.0)
 
+        # every image is drawn in a cell: the whole canvas for one image, a row's cells side by side
+        cell_w, cell_h, left = cw, ch, canvas_pos.x
+        if isinstance(self._images.get(key), list):
+            gaps = _ROW_GAP * (len(columns) - 1)
+            # the whole row always fits the canvas: as tall as it, or as wide when the window is too narrow for that
+            fit = min(ch / h, (cw - gaps) / (len(columns) * w))
+            cell_w, cell_h = w * fit, h * fit
+            left = canvas_pos.x + (cw - len(columns) * cell_w - gaps) * 0.5
+            if self._cell_height is not None and not self._needs_fit:
+                # a resized window takes the zoom and pan along: a fitted image stays fitted
+                self._zoom *= cell_h / self._cell_height
+                self._pan_x *= cell_h / self._cell_height
+                self._pan_y *= cell_h / self._cell_height
+            self._cell_height = cell_h
+        top = canvas_pos.y + (ch - cell_h) * 0.5
+
         if self._needs_fit:
-            self._zoom = float(min(cw / w, ch / h)) if w > 0 and h > 0 else 1.0
-            self._pan_x = (cw - w * self._zoom) * 0.5
-            self._pan_y = (ch - h * self._zoom) * 0.5
+            self._zoom = float(min(cell_w / w, cell_h / h)) if w > 0 and h > 0 else 1.0
+            self._pan_x = (cell_w - w * self._zoom) * 0.5
+            self._pan_y = (cell_h - h * self._zoom) * 0.5
             self._needs_fit = False
 
-        imgui.invisible_button("##pan_capture", imgui.ImVec2(cw, ch))
         io = imgui.get_io()
-        if imgui.is_item_active():
-            self._pan_x += io.mouse_delta.x
-            self._pan_y += io.mouse_delta.y
-        if imgui.is_item_hovered() and io.mouse_wheel != 0.0:
-            mx = io.mouse_pos.x - canvas_pos.x
-            my = io.mouse_pos.y - canvas_pos.y
-            old = self._zoom
-            self._zoom = float(np.clip(old * (1.1**io.mouse_wheel), 0.05, 64.0))
-            scale = self._zoom / old
-            self._pan_x = mx - (mx - self._pan_x) * scale
-            self._pan_y = my - (my - self._pan_y) * scale
-
-        img_min = imgui.ImVec2(canvas_pos.x + self._pan_x, canvas_pos.y + self._pan_y)
-        img_max = imgui.ImVec2(img_min.x + w * self._zoom, img_min.y + h * self._zoom)
-        clip_max = imgui.ImVec2(canvas_pos.x + cw, canvas_pos.y + ch)
-        draw_list = imgui.get_window_draw_list()
-        draw_list.push_clip_rect(canvas_pos, clip_max, True)
-        draw_list.add_image(gpu.ref, img_min, img_max)
-        if self._highlight is not None:
-            y0, x0, hh, ww = self._highlight
-            p0 = imgui.ImVec2(img_min.x + x0 * self._zoom, img_min.y + y0 * self._zoom)
-            p1 = imgui.ImVec2(p0.x + ww * self._zoom, p0.y + hh * self._zoom)
-            box = imgui.color_convert_float4_to_u32(imgui.ImVec4(1.0, 0.9, 0.2, 0.9))
-            draw_list.add_rect(p0, p1, box, 0.0, 2.0)
-        if self._show_pixel_values:
-            self._draw_pixel_values(draw_list, arr, canvas_pos, canvas_size, gpu)
-        draw_list.pop_clip_rect()
+        hovered = None
+        for column in range(len(columns)):
+            x = left + column * (cell_w + _ROW_GAP)
+            imgui.set_cursor_screen_pos(imgui.ImVec2(x, top))
+            imgui.invisible_button(f"##pan_capture{column}", imgui.ImVec2(cell_w, cell_h))
+            if imgui.is_item_active():
+                self._pan_x += io.mouse_delta.x
+                self._pan_y += io.mouse_delta.y
+            if imgui.is_item_hovered():
+                hovered = column
+            if imgui.is_item_hovered() and io.mouse_wheel != 0.0:
+                mx = io.mouse_pos.x - x
+                my = io.mouse_pos.y - top
+                old = self._zoom
+                self._zoom = float(np.clip(old * (1.1**io.mouse_wheel), 0.05, 64.0))
+                scale = self._zoom / old
+                self._pan_x = mx - (mx - self._pan_x) * scale
+                self._pan_y = my - (my - self._pan_y) * scale
 
         readout = ""
-        if imgui.is_item_hovered():
-            px = int((io.mouse_pos.x - img_min.x) / max(self._zoom, 1e-6))
-            py = int((io.mouse_pos.y - img_min.y) / max(self._zoom, 1e-6))
-            if 0 <= px < w and 0 <= py < h:
-                readout = f"px ({py}, {px}) = " + ", ".join(f"{v:.4g}" for v in np.atleast_1d(arr[py, px]))
+        draw_list = imgui.get_window_draw_list()
+        for column, ((caption, image), gpu) in enumerate(zip(columns, gpus)):
+            x = left + column * (cell_w + _ROW_GAP)
+            img_min = imgui.ImVec2(x + self._pan_x, top + self._pan_y)
+            img_max = imgui.ImVec2(img_min.x + w * self._zoom, img_min.y + h * self._zoom)
+            draw_list.push_clip_rect(imgui.ImVec2(x, top), imgui.ImVec2(x + cell_w, top + cell_h), True)
+            draw_list.add_image(gpu.ref, img_min, img_max)
+            if self._highlight is not None:
+                y0, x0, hh, ww = self._highlight
+                p0 = imgui.ImVec2(img_min.x + x0 * self._zoom, img_min.y + y0 * self._zoom)
+                p1 = imgui.ImVec2(p0.x + ww * self._zoom, p0.y + hh * self._zoom)
+                box = imgui.color_convert_float4_to_u32(imgui.ImVec4(1.0, 0.9, 0.2, 0.9))
+                draw_list.add_rect(p0, p1, box, 0.0, 2.0)
+            if self._show_pixel_values:
+                self._draw_pixel_values(draw_list, image, imgui.ImVec2(x, top), imgui.ImVec2(cell_w, cell_h), gpu)
+            if caption:
+                size = imgui.calc_text_size(caption)
+                shade = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.0, 0.0, 0.0, 0.6))
+                draw_list.add_rect_filled(imgui.ImVec2(x, top), imgui.ImVec2(x + size.x + 10, top + size.y + 6), shade)
+                draw_list.add_text(imgui.ImVec2(x + 5, top + 3), imgui.color_convert_float4_to_u32(imgui.ImVec4(1, 1, 1, 1)), caption)
+            draw_list.pop_clip_rect()
+            if column == hovered:
+                # the footer reads the image under the pointer
+                arr = image
+                px = int((io.mouse_pos.x - img_min.x) / max(self._zoom, 1e-6))
+                py = int((io.mouse_pos.y - img_min.y) / max(self._zoom, 1e-6))
+                if 0 <= px < w and 0 <= py < h:
+                    readout = f"{caption}  px ({py}, {px}) = ".lstrip() + ", ".join(f"{v:.4g}" for v in np.atleast_1d(arr[py, px]))
         imgui.end_child()
 
         amin, amax = _data_range(arr)
