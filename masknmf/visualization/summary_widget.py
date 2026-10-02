@@ -186,6 +186,7 @@ class SummaryImageViewer:
         self._pan_x = 0.0
         self._pan_y = 0.0
         self._needs_fit = True
+        self._center: Optional[tuple] = None  # (y, x, span) in image pixels to center on at the next draw
         self._cell_height: Optional[float] = None  # how tall a row's images were on screen last frame
         self._show_pixel_values = False
         self._highlight: Optional[tuple] = None  # (y0, x0, h, w) in image coords
@@ -265,6 +266,13 @@ class SummaryImageViewer:
         """Outline a region of the image: (y0, x0, height, width), or None"""
         self._highlight = rect
 
+    def center_on(self, y: float, x: float, span: float):
+        """
+        Center every image on image point (y, x) at the next draw. With the whole image in view this also zooms in
+        until ``span`` image pixels fill the cell; once zoomed in, the zoom is kept and only the center moves.
+        """
+        self._center = (y, x, span)
+
     def _backend(self):
         # textures are registered with the imgui backend of the figure that draws them
         figure = self._figure if self._window is None else self._window
@@ -278,6 +286,7 @@ class SummaryImageViewer:
         self._pan_x = 0.0
         self._pan_y = 0.0
         self._needs_fit = True
+        self._center = None
 
     def _get_range(self, key: str, arr: np.ndarray, column: int = 0) -> tuple[float, float]:
         if self._contrast_mode == _CONTRAST_AUTO:
@@ -546,6 +555,15 @@ class SummaryImageViewer:
             self._pan_x = (cell_w - w * self._zoom) * 0.5
             self._pan_y = (cell_h - h * self._zoom) * 0.5
             self._needs_fit = False
+
+        if self._center is not None:
+            y, x, span = self._center
+            self._center = None
+            # with the whole image in view, zoom in on the point; a zoom the user set stays and only the center moves
+            if self._zoom <= min(cell_w / w, cell_h / h) * 1.001:
+                self._zoom = float(np.clip(min(cell_w, cell_h) / span, 0.05, 64.0))
+            self._pan_x = cell_w * 0.5 - x * self._zoom
+            self._pan_y = cell_h * 0.5 - y * self._zoom
 
         io = imgui.get_io()
         hovered = None
