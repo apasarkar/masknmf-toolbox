@@ -1,5 +1,5 @@
 import numpy as np
-from masknmf.utils import SparseCOOTensor
+from masknmf.utils import SparseCOOTensor, is_cpu
 from masknmf import TensorFlyWeight
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
@@ -31,6 +31,7 @@ class StandardCorrelationImages(ArrayLike):
             (1, self.temporal_compressed.shape[1]), device=self.device, dtype=torch.float
         )
 
+        self._spatial_compressed_csr = self.spatial_compressed.cpu().to_sparse_csr()
 
 
     @classmethod
@@ -168,7 +169,10 @@ class StandardCorrelationImages(ArrayLike):
             )
             implied_fov = pixel_space_crop.shape
         else:
-            u_crop = self.spatial_compressed
+            if is_cpu(self.device):
+                u_crop = self._spatial_compressed_csr
+            else:
+                u_crop = self.spatial_compressed
             mean_crop = self.standard_correlation_image_mean
             movie_normalizer_crop = self.standard_correlation_image_normalizer
             implied_fov = self.shape[1], self.shape[2]

@@ -30,3 +30,6 @@ def torch_select_device(device: str | torch.device = "auto", log_warning: bool =
                 )
 
     return torch.device(device)
+
+def is_cpu(device: torch.device | str | None) -> bool:
+    return device is not None and torch.device(device).type == "cpu"

@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Optional
 import numpy as np
 import torch
-from masknmf.utils import SparseCOOTensor
+from masknmf.utils import SparseCOOTensor, is_cpu
 import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
@@ -41,6 +41,7 @@ class SignalsArray(ArrayLike):
                 if self.flyweight.normalizer.shape[0] != self.shape[1] or self.flyweight.normalizer.shape[1] != self.shape[2]:
                     raise ValueError("Normalizer from flyweight had dimensions not equal to the fov dimensions")
 
+        self._spatial_demixed_csr = self.spatial_demixed.cpu().to_sparse_csr()
     @classmethod
     def from_tensors(cls,
                      fov_shape: tuple[int, int],
@@ -286,7 +287,10 @@ class SignalsArray(ArrayLike):
             product = product.permute(-1, *range(product.ndim - 1))
 
         else:
-            spatial_demixed_crop = self.spatial_demixed
+            if is_cpu(self.device):
+                spatial_demixed_crop = self._spatial_demixed_csr
+            else:
+                spatial_demixed_crop = self.spatial_demixed
             normalizer_crop  = self.normalizer[None, :, :]
             implied_fov = self.shape[-2], self.shape[-1]
             product = torch.sparse.mm(spatial_demixed_crop, temporal_demixed_crop.T)
