@@ -1,11 +1,12 @@
 from typing import *
+import asyncio
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
 import cv2
 import numpy as np
 import fastplotlib as fpl
-from fastplotlib.widgets.nd_widget._async import run_sync
 from cmap import Colormap
 from imgui_bundle import imgui, icons_fontawesome_6 as fa
 import h5py
@@ -305,6 +306,8 @@ class MultiSessionDemixingVis:
         self._nd_image_graphics = []
         self._signal_clims = {}
         self._movie_clims = {}
+        # frames are sliced on this one thread: torch keeps a pool of worker threads for every thread it computes on
+        self._slice_thread = ThreadPoolExecutor(max_workers=1)
         for k, name in enumerate(self._panel_names):
             timings = self.session_frame_timings[self._panel_session[k]]
             graphic = self._ndw[name].add_nd_image(
@@ -389,33 +392,30 @@ class MultiSessionDemixingVis:
         self._refresh_panel(k)
 
     def set_session(self, k: int, j: int):
-        """Show displayed session ``j`` in panel ``k``, on the movie the panel showed when session j has it; the zoom stays."""
+        """
+        Show displayed session ``j`` in panel ``k``, on its signals; the zoom stays. The caller refreshes the stills
+        and the traces, once for all the panels it moves.
+        """
         if self._panel_session[k] == j:
             return
         name = self._panel_names[k]
         nd_image = self._nd_image_graphics[k]
         self._image_highlight_selectors[self._panel_session[k]].remove_graphic(nd_image.graphic)
-        keep = self._panels[name].current
-        array = self._session_array(j)
-        if keep in array.sources:
-            array.current = keep
-        self._panels[name] = array
+        self._panels[name] = self._session_array(j)
         self._panel_session[k] = j
         timings = self.session_frame_timings[j]
         nd_image.slicer.slider_maps = None if timings is None else {self.reference_range_timeaxis: timings}
-        # a new graphic instance: the selector and the click handler go onto it, and the panels keep their zoom
-        cameras = [subplot.camera.get_state() for subplot in self._ndw.figure]
-        nd_image.data = array
-        self._bind_panel(k)
-        for subplot, state in zip(self._ndw.figure, cameras):
-            subplot.camera.set_state(state)
+        # the panel keeps its graphic, so its zoom and click handlers stay: only the array under it changes
+        nd_image.slicer.data = self._panels[name]
+        self._refresh_panel(k)
         # a session moved into a panel shows its contours as Display sets them, whatever its masks box said before
         self._masks_shown[j] = True
-        self._set_contours(self._show_contours)
-        self._set_selected_contours(self._show_selected_contours)
-        # the stills, the overlay's partner and the traces follow the sessions on screen
-        self._refresh_stills()
-        self._update_traces(fit=False)
+        selector = self._image_highlight_selectors[j]
+        selector.add_graphic(nd_image.graphic)
+        # a selector with no panel skips its redraw, so the opacities and the selection are written now
+        selector.options_alpha = self._contour_opacity if self._show_contours else 0.0
+        selector.alpha = self._selected_contour_opacity if self._show_selected_contours else 0.0
+        self._set_title(k)
 
     def _on_screen(self) -> list[int]:
         """The sessions the panels show, each once, in panel order."""
@@ -449,6 +449,9 @@ class MultiSessionDemixingVis:
         """Move every panel ``delta`` sessions along, wrapping: on sessions 0, 1, 2, -1 shows the last, 0 and 1."""
         for k in range(len(self._panel_names)):
             self.set_session(k, (self._panel_session[k] + delta) % self.num_sessions_displayed)
+        # the stills, the overlay's partner and the traces follow the sessions on screen
+        self._refresh_stills()
+        self._update_traces(fit=False)
 
     def _static_images(self) -> dict:
         """
@@ -567,7 +570,7 @@ class MultiSessionDemixingVis:
         its session's signals are shown, and for a movie its percentiles on the first frame it was shown at.
         """
         graphic = self._nd_image_graphics[k]
-        run_sync(graphic._set_indices_())
+        self._slice_thread.submit(asyncio.run, graphic._set_indices_()).result()
         j = self._panel_session[k]
         current = self._panels[self._panel_names[k]].current
         if current == "signals":
@@ -1011,6 +1014,8 @@ class MultiSessionDemixingVis:
                 imgui.table_next_column()
                 if imgui.radio_button(f"##panel{k}-{j}", self._panel_session[k] == j):
                     self.set_session(k, j)
+                    self._refresh_stills()
+                    self._update_traces(fit=False)
                 tooltip(f"show {self.session_names[j]} in panel {k + 1}")
             imgui.table_next_column()
             r, g, b = colors[j]
@@ -1145,5 +1150,6 @@ class MultiSessionDemixingVis:
         return self._ndw.show()
 
     def close(self):
+        self._slice_thread.shutdown(wait=False)
         self._summary.cleanup()
         self._ndw.close()
