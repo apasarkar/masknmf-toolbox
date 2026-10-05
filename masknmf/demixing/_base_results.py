@@ -45,6 +45,11 @@ class BaseResults:
         return None
 
     @property
+    def shifts(self) -> np.ndarray | None:
+        """ By default, a pipeline does NOT have registration shifts"""
+        return None
+
+    @property
     def residual_array(self) -> ArrayLike | None:
         raise NotImplementedError
 
