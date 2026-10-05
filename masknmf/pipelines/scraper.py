@@ -31,7 +31,6 @@ class Param:
     """One settable value, either a config dataclass field or a plain argument."""
 
     name: str
-    section: Optional[str]
     field: str
     annotation: Any
     default: Any
@@ -267,7 +266,6 @@ def scrape_dataclass(cls_config: type, name_section: str) -> list[Param]:
         params.append(
             Param(
                 name=f"{name_section}.{field.name}",
-                section=name_section,
                 field=field.name,
                 annotation=annotation,
                 default=default,
@@ -521,7 +519,6 @@ def scrape(cls_pipeline: type) -> PipelineSpec:
         scalars.append(
             Param(
                 name=name.replace("_", "-"),
-                section=None,
                 field=name,
                 annotation=annotation,
                 default=parameter.default if has_default else None,
@@ -542,7 +539,6 @@ def scrape(cls_pipeline: type) -> PipelineSpec:
         run_params.append(
             Param(
                 name=name.replace("_", "-"),
-                section=None,
                 field=name,
                 annotation=annotation,
                 default=parameter.default if has_default else None,
