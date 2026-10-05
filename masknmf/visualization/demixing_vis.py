@@ -427,8 +427,9 @@ class SingleSessionDemixingVis:
         self._set_gray_cmaps()
 
         # no autofit: the zoom set on one signal's traces is kept while selecting others
+
         self._traces = TracePlot(
-            (*(("shift (px)",) if self._shift_lines else ()), *(("traces",) if self._pmd_array is not None else ())),
+            (*(("shift (px)",) if self._shift_lines else ()), *(("traces",) if self._pmd_array is not None or self._has_ac else ())),
             self._shape[0],
             frame_timings,
             autofit=False,
