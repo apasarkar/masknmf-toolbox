@@ -55,6 +55,7 @@ from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.demixing import CellStats, update_signals, write_curated
 from masknmf.diagnostics import pmd_autocovariance_diagnostics
 from masknmf.pipelines.configs.demixing_configs import NMFConfig
+from masknmf.demixing._base_results import BaseResults
 
 _ROI_COLORS = (
     (1.00, 0.50, 0.05),
@@ -175,7 +176,7 @@ class SingleSessionDemixingVis:
 
     def __init__(
         self,
-        demixing_results: masknmf.DemixingResults
+        demixing_results: BaseResults | masknmf.DemixingResults
         | masknmf.CompressionArray
         | masknmf.BaseRegistrationArray,
         frame_timings: np.ndarray | list[np.ndarray] | None = None,
@@ -217,7 +218,8 @@ class SingleSessionDemixingVis:
         self._demixing_results = demixing_results
         self._device = device
 
-        self._has_ac = isinstance(demixing_results, masknmf.DemixingResults)
+        self._is_masknmf_result = isinstance(demixing_results, masknmf.DemixingResults)
+        self._has_ac = hasattr(demixing_results, "signals_array")
         self._is_registration = isinstance(demixing_results, masknmf.BaseRegistrationArray)
         # a registration array computes on its strategy's device and hands frames over from output_device
         if not self._is_registration:
@@ -227,7 +229,7 @@ class SingleSessionDemixingVis:
         folder = None if self._results_path is None else Path(self._results_path).parent
         num_signals = demixing_results.spatial_demixed.shape[1] if self._has_ac else 0
         # the results' own stats, hidden; given stats join them, shown, replacing same-named columns
-        self._cell_stats = CellStats.from_results(demixing_results) if self._has_ac else None
+        self._cell_stats = CellStats.from_results(demixing_results) if self._is_masknmf_result else None
         self._hidden_stats = set() if self._cell_stats is None else set(self._cell_stats.names)
         if isinstance(cell_stats, (str, os.PathLike)):
             cell_stats = CellStats.read(cell_stats)
@@ -554,7 +556,10 @@ class SingleSessionDemixingVis:
             self._residual_array = self.demixing_results.residual_array
             self._ac_array = self.demixing_results.signals_array
             # an all-zero background term means the demixer never fit one
-            self._has_background = bool(torch.count_nonzero(self.demixing_results.factorized_background_term1))
+            if self._is_masknmf_result:
+                self._has_background = bool(torch.count_nonzero(self.demixing_results.factorized_background_term1))
+            else:
+                self._has_background = self.demixing_results.fluctuating_background_array is not None ## Ok to show nothing here for now
         else:
             self._pmd_array = None if self._is_registration else self.demixing_results
             self._fluctuating_background_array = None
@@ -2105,6 +2110,7 @@ class SingleSessionDemixingVis:
         imgui.begin_disabled(
             (not self._rois and not self._marked)
             or self._ac_array is None
+            or not self._is_masknmf_result
             or self._results_path is None
             or self._worker is not None
         )
