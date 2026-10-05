@@ -40,6 +40,23 @@ class Param:
     required: bool
     kind: str
 
+    @property
+    def flag(self) -> str:
+        """The long flag a run or constructor argument is given under."""
+        return f"--{self.field.replace('_', '-')}"
+
+    @property
+    def description(self) -> str:
+        """One line of command line help: the choices, then required or the default."""
+        pieces = []
+        if self.choices is not None:
+            pieces.append("one of " + ", ".join(str(c) for c in self.choices))
+        if self.required:
+            pieces.append("required")
+        else:
+            pieces.append(f"default {self.default!r}")
+        return "; ".join(pieces)
+
 
 @dataclasses.dataclass
 class Section:
@@ -64,6 +81,18 @@ class Section:
     def default_kind(self) -> str:
         """The kind of the config the pipeline uses when the argument is not given."""
         return kind_of(value=self.default)
+
+    @property
+    def kinds_buildable(self) -> tuple[str, ...]:
+        """The kinds that can be built without Python, which leaves out configs requiring arrays."""
+        kinds = []
+        for kind in self.kinds:
+            try:
+                self.value_for(kind=kind)
+            except ValueError:
+                continue
+            kinds.append(kind)
+        return tuple(kinds)
 
     def value_for(self, kind: str) -> Any:
         """
