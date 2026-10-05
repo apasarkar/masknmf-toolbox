@@ -1028,7 +1028,7 @@ class SingleSessionDemixingVis:
             if self._show_raw_trace and results.temporal_demixed_raw is not None:
                 raw = results.temporal_demixed_raw @ weights
                 # before the signal line so the signal draws over it
-                lines.insert(1, ("raw (placeholder)", raw.cpu().numpy(), _RAW_LINE_COLOR))
+                lines.insert(1, ("raw", raw.cpu().numpy(), _RAW_LINE_COLOR))
         else:
             self._selected_signals = None
             self._clear_traces()
@@ -2011,8 +2011,7 @@ class SingleSessionDemixingVis:
                         self._show_raw_trace,
                         self._toggle_raw_trace,
                         "Raw trace: with one signal selected, also plot its signal line from the traces re-estimated "
-                        "on the raw movie, with no compression or denoising, under the signal line. For now a "
-                        "placeholder: the demixed trace plus noise",
+                        "on the raw movie, with no compression or denoising, under the signal line",
                     )
                 )
             # icon toggle buttons, lit while on
