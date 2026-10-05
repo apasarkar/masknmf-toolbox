@@ -50,6 +50,16 @@ class BaseResults:
         return None
 
     @property
+    def raw_array(self) -> ArrayLike | None:
+        """By default, a pipeline does NOT have the raw movie"""
+        return None
+
+    @property
+    def registered_array(self) -> ArrayLike | None:
+        """By default, a pipeline does NOT have the registered movie"""
+        return None
+
+    @property
     def residual_array(self) -> ArrayLike | None:
         raise NotImplementedError
 

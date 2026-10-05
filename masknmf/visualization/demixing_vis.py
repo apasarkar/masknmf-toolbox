@@ -144,7 +144,8 @@ class SingleSessionDemixingVis:
     ``raw`` (a movie, or a .tif path) adds the raw movie, ``registered`` (the results' registration replayed
     on it, for compression or demixing results) the registered one, and ``shifts`` (an array, or a motion
     correction hdf5 path) adds the registration shifts as a panel above the traces (piecewise rigid: the
-    largest block shift per frame); results that hold their own ``shifts`` show those when none are given.
+    largest block shift per frame); results that hold their own ``raw_array``, ``registered_array`` or
+    ``shifts`` show those when none are given.
     With ``results_path`` set, a lone .tif beside the results, and the
     registration shifts from the results file itself or from a motion_correction.hdf5 beside it, are picked up
     when their frames match the results; given ones must match. Up to three panels, one per movie the results
@@ -248,6 +249,10 @@ class SingleSessionDemixingVis:
         found_raw = found_shifts = False
         if raw is None and self._is_registration:
             raw = demixing_results.input_movie
+        if raw is None and isinstance(demixing_results, BaseResults):
+            raw = demixing_results.raw_array
+        if registered is None and isinstance(demixing_results, BaseResults):
+            registered = demixing_results.registered_array
         if shifts is None and (self._is_registration or isinstance(demixing_results, BaseResults)):
             shifts = demixing_results.shifts
         if raw is None and folder is not None:
@@ -334,7 +339,7 @@ class SingleSessionDemixingVis:
         self._registered = registered
         if self._is_registration:
             template = demixing_results.strategy.template
-        elif registered is not None:
+        elif isinstance(registered, masknmf.BaseRegistrationArray):
             template = registered.strategy.template
         self._template = (
             None
