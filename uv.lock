@@ -816,17 +816,22 @@ wheels = [
 
 [[package]]
 name = "fastplotlib"
-version = "0.6.1"
-source = { git = "https://github.com/fastplotlib/fastplotlib?rev=2fb2b84fd7e305fe2955951c15cef450f78c7dc5#2fb2b84fd7e305fe2955951c15cef450f78c7dc5" }
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cmap" },
     { name = "numpy" },
     { name = "pygfx" },
     { name = "wgpu" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/88/9ce8cc41cde1d57ac6051dddaa0ea986437752b88caec8a19a6ccc85a63d/fastplotlib-0.7.0.tar.gz", hash = "sha256:6c77270ddb7480454c36384a4c178d5c12f1eccb37414ca547723f48a8361ac0", size = 305878, upload-time = "2026-09-24T01:08:38.666Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/68/ffed6fe5bd0d8af90128dd48033636b42d120d8aa7254cb014676f87c655/fastplotlib-0.7.0-py3-none-any.whl", hash = "sha256:a7af7c4ba06a296e5b517909f256a5a18e2ae58d191f5d8ea8ba28d686ea351d", size = 359653, upload-time = "2026-09-24T01:08:37.317Z" },
+]
 
 [package.optional-dependencies]
 imgui = [
+    { name = "imgui-bundle" },
     { name = "wgpu", extra = ["imgui"] },
 ]
 notebook = [
@@ -1410,6 +1415,18 @@ wheels = [
 ]
 
 [[package]]
+name = "imgui-data-loader"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "imgui-bundle" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/47/8b/fe5029879264405a04617c5f18d6dc00bd3f2e02c4e30cc1e37036d16827/imgui_data_loader-0.2.0.tar.gz", hash = "sha256:4b54032a0cadd724593093fa4073bceb0b6f22788c9f835b6c4942e651d23437", size = 26904, upload-time = "2026-09-28T19:41:04.703Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f7/f8/d8fe7875e149768d61d30fdfebf99d756d317da41a7fb7adda8b769ee1eb/imgui_data_loader-0.2.0-py3-none-any.whl", hash = "sha256:3623a6e273d4da251340836b181feaf9a953f4270955f1d439294278211bda9d", size = 21404, upload-time = "2026-09-28T19:41:05.401Z" },
+]
+
+[[package]]
 name = "iniconfig"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1595,6 +1612,23 @@ wheels = [
 ]
 
 [[package]]
+name = "jupyter"
+version = "1.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "ipykernel" },
+    { name = "ipywidgets" },
+    { name = "jupyter-console" },
+    { name = "jupyterlab" },
+    { name = "nbconvert" },
+    { name = "notebook" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/58/f3/af28ea964ab8bc1e472dba2e82627d36d470c51f5cd38c37502eeffaa25e/jupyter-1.1.1.tar.gz", hash = "sha256:d55467bceabdea49d7e3624af7e33d59c37fff53ed3a350e1ac957bed731de7a", size = 5714959, upload-time = "2024-08-30T07:15:48.299Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/64/285f20a31679bf547b75602702f7800e74dbabae36ef324f716c02804753/jupyter-1.1.1-py2.py3-none-any.whl", hash = "sha256:7a59533c22af65439b24bbe60373a4e95af8f16ac65a6c00820ad378e3f7cc83", size = 2657, upload-time = "2024-08-30T07:15:47.045Z" },
+]
+
+[[package]]
 name = "jupyter-bokeh"
 version = "4.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1621,6 +1655,25 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/71/22/bf9f12fdaeae18019a468b68952a60fe6dbab5d67cd2a103cac7659b41ca/jupyter_client-8.6.3.tar.gz", hash = "sha256:35b3a0947c4a6e9d589eb97d7d4cd5e90f910ee73101611f01283732bd6d9419", size = 342019, upload-time = "2024-09-17T10:44:17.613Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/11/85/b0394e0b6fcccd2c1eeefc230978a6f8cb0c5df1e4cd3e7625735a0d7d1e/jupyter_client-8.6.3-py3-none-any.whl", hash = "sha256:e8a19cc986cc45905ac3362915f410f3af85424b4c0905e94fa5f2cb08e8f23f", size = 106105, upload-time = "2024-09-17T10:44:15.218Z" },
+]
+
+[[package]]
+name = "jupyter-console"
+version = "6.6.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "ipykernel" },
+    { name = "ipython" },
+    { name = "jupyter-client" },
+    { name = "jupyter-core" },
+    { name = "prompt-toolkit" },
+    { name = "pygments" },
+    { name = "pyzmq" },
+    { name = "traitlets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/bd/2d/e2fd31e2fc41c14e2bcb6c976ab732597e907523f6b2420305f9fc7fdbdb/jupyter_console-6.6.3.tar.gz", hash = "sha256:566a4bf31c87adbfadf22cdf846e3069b59a71ed5da71d6ba4d8aaad14a53539", size = 34363, upload-time = "2023-03-06T14:13:31.02Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ca/77/71d78d58f15c22db16328a476426f7ac4a60d3a5a7ba3b9627ee2f7903d4/jupyter_console-6.6.3-py3-none-any.whl", hash = "sha256:309d33409fcc92ffdad25f0bcdf9a4a9daa61b6f341177570fdac03de5352485", size = 24510, upload-time = "2023-03-06T14:13:28.229Z" },
 ]
 
 [[package]]
@@ -2146,6 +2199,7 @@ dependencies = [
     { name = "glfw" },
     { name = "h5py" },
     { name = "imgui-bundle" },
+    { name = "imgui-data-loader" },
     { name = "jupyterlab" },
     { name = "matplotlib" },
     { name = "networkx" },
@@ -2154,8 +2208,10 @@ dependencies = [
     { name = "opencv-contrib-python-headless" },
     { name = "plotly" },
     { name = "pytorch-lightning" },
+    { name = "roicat", extra = ["latest"] },
     { name = "scikit-image" },
     { name = "scipy" },
+    { name = "scipy-stubs" },
     { name = "simplejpeg" },
     { name = "tensorboard" },
     { name = "torch" },
@@ -2163,9 +2219,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-classification = [
-    { name = "roicat", extra = ["classification-latest"] },
-]
 dev = [
     { name = "imageio", extra = ["ffmpeg"] },
     { name = "nbmake" },
@@ -2187,19 +2240,16 @@ docs = [
     { name = "sphinx-design" },
     { name = "sphinx-gallery" },
 ]
-multisession = [
-    { name = "onnx2torch" },
-    { name = "roicat", extra = ["tracking-latest"] },
-]
 
 [package.metadata]
 requires-dist = [
     { name = "cvxpy", specifier = ">=1.6.5" },
-    { name = "fastplotlib", extras = ["imgui", "notebook"], git = "https://github.com/fastplotlib/fastplotlib?rev=2fb2b84fd7e305fe2955951c15cef450f78c7dc5" },
+    { name = "fastplotlib", extras = ["imgui", "notebook"], specifier = ">=0.7.0" },
     { name = "glfw" },
     { name = "h5py" },
     { name = "imageio", extras = ["ffmpeg"], marker = "extra == 'docs'" },
     { name = "imgui-bundle", specifier = "==1.92.801" },
+    { name = "imgui-data-loader", specifier = ">=0.2.0" },
     { name = "jupyterlab" },
     { name = "masknmf", extras = ["docs"], marker = "extra == 'dev'" },
     { name = "matplotlib" },
@@ -2207,18 +2257,17 @@ requires-dist = [
     { name = "networkx" },
     { name = "numpy" },
     { name = "oasis-deconv" },
-    { name = "onnx2torch", marker = "extra == 'multisession'" },
     { name = "opencv-contrib-python-headless" },
     { name = "pandoc", marker = "extra == 'docs'" },
     { name = "plotly" },
     { name = "pydata-sphinx-theme", marker = "extra == 'docs'" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4.0" },
     { name = "pytorch-lightning", specifier = ">=2.5.2" },
-    { name = "roicat", extras = ["classification-latest"], marker = "extra == 'classification'", specifier = ">=1.7.7" },
-    { name = "roicat", extras = ["tracking-latest"], marker = "extra == 'multisession'", specifier = ">=1.7.7" },
+    { name = "roicat", extras = ["latest"], specifier = ">=1.7.10" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11.13" },
     { name = "scikit-image" },
     { name = "scipy" },
+    { name = "scipy-stubs", specifier = "~=1.15.3" },
     { name = "simplejpeg" },
     { name = "sphinx", marker = "extra == 'docs'" },
     { name = "sphinx-copybutton", marker = "extra == 'docs'" },
@@ -2228,7 +2277,7 @@ requires-dist = [
     { name = "torch", specifier = ">2" },
     { name = "tqdm" },
 ]
-provides-extras = ["docs", "multisession", "classification", "dev"]
+provides-extras = ["docs", "dev"]
 
 [[package]]
 name = "mat73"
@@ -2576,6 +2625,22 @@ wheels = [
 ]
 
 [[package]]
+name = "notebook"
+version = "7.4.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jupyter-server" },
+    { name = "jupyterlab" },
+    { name = "jupyterlab-server" },
+    { name = "notebook-shim" },
+    { name = "tornado" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/dc/21/4f83b15e483da4f4f63928edd0cb08b6e7d33f8a15c23b116a90c44c6235/notebook-7.4.3.tar.gz", hash = "sha256:a1567481cd3853f2610ee0ecf5dfa12bb508e878ee8f92152c134ef7f0568a76", size = 13881668, upload-time = "2025-05-26T14:27:21.656Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/76/1b/16c809d799e3ddd7a97c8b43734f79624b74ddef9707e7d92275a13777bc/notebook-7.4.3-py3-none-any.whl", hash = "sha256:9cdeee954e04101cadb195d90e2ab62b7c9286c1d4f858bf3bb54e40df16c0c3", size = 14286402, upload-time = "2025-05-26T14:27:17.339Z" },
+]
+
+[[package]]
 name = "notebook-shim"
 version = "0.2.4"
 source = { registry = "https://pypi.org/simple" }
@@ -2902,21 +2967,6 @@ wheels = [
 ]
 
 [[package]]
-name = "onnx2torch"
-version = "1.5.15"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-    { name = "onnx" },
-    { name = "torch" },
-    { name = "torchvision" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/06/51/bb56a5dfee431aa61f13a297e33f6ae0654e55d3ba93d62b88b673182af3/onnx2torch-1.5.15.tar.gz", hash = "sha256:d2a239cf0871cbbeec13d43e2a72ac2f8b3c8dcf80695e4d1040c3deed2b14a2", size = 49786, upload-time = "2024-08-07T14:04:01.076Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/84/80/cec13a9bcb7525cbd941958037ccb5cd499e8466915130f3d2ee3772d34f/onnx2torch-1.5.15-py3-none-any.whl", hash = "sha256:123258e0f147e07b259cf845c8113c5634b8260e52c5fb26b7d507226732d9e5", size = 80965, upload-time = "2024-08-07T14:04:09.985Z" },
-]
-
-[[package]]
 name = "onnxruntime"
 version = "1.29.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2993,6 +3043,55 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f4/aa/05f5e3f662cc96a4c478fc3446b8ed6359825a2b504ecb614a9ac84e4a4d/optuna-4.9.0.tar.gz", hash = "sha256:b322e5cbdf1655fb84c37646c4a7a1f391de1b47806bbe222e015825d0a82b87", size = 485834, upload-time = "2026-06-01T06:23:30.424Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ab/f3/e5fcd5d9b15771ed6dc10e3a7eeddc672e418f4f4c4653d216cc1d857e2d/optuna-4.9.0-py3-none-any.whl", hash = "sha256:f52f3be6148654850c92a5860d398fd88ec6b2c84ab68d9c3d07dcff02e7afee", size = 425553, upload-time = "2026-06-01T06:23:28.804Z" },
+]
+
+[[package]]
+name = "optype"
+version = "0.17.1"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux'",
+    "python_full_version < '3.12' and platform_machine != 's390x' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and platform_machine != 's390x' and sys_platform == 'emscripten'",
+    "(python_full_version < '3.12' and platform_machine != 's390x' and platform_machine != 'x86_64' and sys_platform == 'linux') or (python_full_version < '3.12' and platform_machine != 's390x' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version < '3.12' and platform_machine == 's390x' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and platform_machine == 's390x' and sys_platform == 'emscripten'",
+    "python_full_version < '3.12' and platform_machine == 's390x' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9b/86/e6f1f6f3487492dfcf3b7a2d4e2534d27af6ac05b364b276706906c34865/optype-0.17.1.tar.gz", hash = "sha256:07bfa32b795dea28fba8605a6288d36370d072f25183fb9c29b5a90f4b6f5638", size = 53572, upload-time = "2026-05-17T22:13:28.725Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2f/d4/c6a2b043e33f0dd012486dcebe0593585588d400175d22aad42049c88321/optype-0.17.1-py3-none-any.whl", hash = "sha256:82f2508ca31cb21e53a41648482d890fe1f5c6cb153720551af41161555adaf1", size = 65954, upload-time = "2026-05-17T22:13:27.549Z" },
+]
+
+[[package]]
+name = "optype"
+version = "0.19.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.13' and platform_machine == 'x86_64' and sys_platform == 'linux'",
+    "python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux'",
+    "python_full_version >= '3.13' and platform_machine != 's390x' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and platform_machine != 's390x' and sys_platform == 'win32'",
+    "python_full_version >= '3.13' and platform_machine != 's390x' and sys_platform == 'emscripten'",
+    "python_full_version == '3.12.*' and platform_machine != 's390x' and sys_platform == 'emscripten'",
+    "(python_full_version >= '3.13' and platform_machine != 's390x' and platform_machine != 'x86_64' and sys_platform == 'linux') or (python_full_version >= '3.13' and platform_machine != 's390x' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "(python_full_version == '3.12.*' and platform_machine != 's390x' and platform_machine != 'x86_64' and sys_platform == 'linux') or (python_full_version == '3.12.*' and platform_machine != 's390x' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version >= '3.13' and platform_machine == 's390x' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and platform_machine == 's390x' and sys_platform == 'win32'",
+    "python_full_version >= '3.13' and platform_machine == 's390x' and sys_platform == 'emscripten'",
+    "python_full_version == '3.12.*' and platform_machine == 's390x' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.13' and platform_machine == 's390x' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.12.*' and platform_machine == 's390x' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version == '3.12.*'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/51/cc/ab0d908a4fd70493628cde3ce0f809c2b0d69b645af52202da4f1b0aeea3/optype-0.19.0.tar.gz", hash = "sha256:50ce4c0ca419026eeae4130dc90c6a0b9a0b54ffe1d940fc26e8d0058903de4c", size = 116633, upload-time = "2026-10-02T23:14:27.141Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a9/2c/8de9d2c9a328419b28feb53081460d901e950b8b676914959a6e1beecc83/optype-0.19.0-py3-none-any.whl", hash = "sha256:31bff7d2e51e88916a11affed80dbe306ca9e74c76b93b143f1355bb127a7a8c", size = 141516, upload-time = "2026-10-02T23:14:25.686Z" },
 ]
 
 [[package]]
@@ -3556,7 +3655,7 @@ wheels = [
 
 [[package]]
 name = "pygfx"
-version = "0.16.0"
+version = "0.17.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "freetype-py" },
@@ -3568,9 +3667,9 @@ dependencies = [
     { name = "uharfbuzz" },
     { name = "wgpu" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/af/94/292a7debdd35dc6a00b2c2156fc311d7ec446c9da1dc914b959fc972d5f9/pygfx-0.16.0.tar.gz", hash = "sha256:6beed9f235b4a117cbbb29ca484b031e71c0e228bca88c3ffc78612ceda66bd9", size = 1146210, upload-time = "2026-03-03T10:07:56.131Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/53/cd5d8a4852c2209db6978d6d8d064e098958d74459ded659ff5c8d26c536/pygfx-0.17.0.tar.gz", hash = "sha256:97759f7e4e8a35b278dab04426fd1b89a32499b117035d3e6074f69990b31553", size = 1149585, upload-time = "2026-07-19T15:50:54.528Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cf/da/a6b67c8c1ce854c9f08126064339d02083a625844dbb76cc19383fabad03/pygfx-0.16.0-py3-none-any.whl", hash = "sha256:02ff5ab21956e2db8b4a6d62fdef8e960286d8c2693474ce6ab486d97be26b61", size = 1229093, upload-time = "2026-03-03T10:07:54.569Z" },
+    { url = "https://files.pythonhosted.org/packages/20/c2/c3e1261089bc2368a33a617a37f9f31022961e6097fda6e6eea595d44da5/pygfx-0.17.0-py3-none-any.whl", hash = "sha256:cea9776c75e9925ed5ce9dd8890ee365644ad911919d79a7e8f8de843dc69f59", size = 1233312, upload-time = "2026-07-19T15:50:52.573Z" },
 ]
 
 [[package]]
@@ -3889,49 +3988,28 @@ wheels = [
 
 [[package]]
 name = "roicat"
-version = "1.7.7"
+version = "1.7.11"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/09/d5/755987b9a57d79dd4e3b29eff5654194f0a8b968fcf4644259fa7ea747c3/roicat-1.7.7.tar.gz", hash = "sha256:8a19aedcbfaa7828bfafa641126df3559411fc279fce865172360f7d26726a03", size = 347265, upload-time = "2026-08-03T01:57:56.404Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c8/ec/fc068d0c531d7292194a74507d03f26ad8695990b2907894a11c2249b8fa/roicat-1.7.11.tar.gz", hash = "sha256:d21c4b45de577590d50cb43f233db75481265fdda7bd5793b9eb937822f9bd1b", size = 396359, upload-time = "2026-09-26T21:47:53.116Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c0/c4/4652a11398fef1008140d997b6e393107a34b8abd3ef222d6d981c12e79d/roicat-1.7.7-py3-none-any.whl", hash = "sha256:51e390049ac28010a6164b0edc52d883e5b106bb1a4c0863816f160fa4c6e990", size = 291417, upload-time = "2026-08-03T01:57:54.509Z" },
+    { url = "https://files.pythonhosted.org/packages/af/41/dc06d73df680c92c0a00486a758014d1d176af35b99953aed41c6063b827/roicat-1.7.11-py3-none-any.whl", hash = "sha256:625b985390dbb4886c620a57a2926e872e7f9c95def81cc6c07092d34090a5cf", size = 309808, upload-time = "2026-09-26T21:47:51.447Z" },
 ]
 
 [package.optional-dependencies]
-classification-latest = [
+latest = [
     { name = "bokeh" },
-    { name = "holoviews", extra = ["recommended"] },
-    { name = "jupyter-bokeh" },
-    { name = "mat73" },
-    { name = "matplotlib" },
-    { name = "natsort" },
-    { name = "numpy" },
-    { name = "onnx" },
-    { name = "onnxruntime" },
-    { name = "optuna" },
-    { name = "pandas" },
-    { name = "pillow" },
-    { name = "psutil" },
-    { name = "py-cpuinfo" },
-    { name = "pyyaml" },
-    { name = "richfile" },
-    { name = "scikit-learn" },
-    { name = "scipy" },
-    { name = "seaborn" },
-    { name = "skl2onnx" },
-    { name = "sparse" },
-    { name = "sparse-convolution" },
-    { name = "torch" },
-    { name = "torchvision" },
-    { name = "tqdm" },
-    { name = "umap-learn" },
-]
-tracking-latest = [
     { name = "fast-hdbscan" },
+    { name = "h5py" },
+    { name = "holoviews", extra = ["recommended"] },
+    { name = "ipython" },
+    { name = "jupyter" },
+    { name = "jupyter-bokeh" },
     { name = "kornia" },
     { name = "kymatio" },
     { name = "mat73" },
     { name = "matplotlib" },
     { name = "natsort" },
+    { name = "numba" },
     { name = "numpy" },
     { name = "onnx" },
     { name = "onnxruntime" },
@@ -3942,10 +4020,12 @@ tracking-latest = [
     { name = "psutil" },
     { name = "py-cpuinfo" },
     { name = "pyyaml" },
+    { name = "requests" },
     { name = "richfile" },
     { name = "roiextractors" },
     { name = "romatch-roicat" },
     { name = "romatch-roicat", extra = ["fused-local-corr"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "scikit-image" },
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "seaborn" },
@@ -3955,6 +4035,7 @@ tracking-latest = [
     { name = "torch" },
     { name = "torchvision" },
     { name = "tqdm" },
+    { name = "umap-learn" },
 ]
 
 [[package]]
@@ -4275,6 +4356,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/8e/038ccfe29d272b30086b25a4960f757f97122cb2ec42e62b460d02fe98e9/scipy-1.15.3-cp313-cp313t-musllinux_1_2_aarch64.whl", hash = "sha256:40e54d5c7e7ebf1aa596c374c49fa3135f04648a0caabcb66c52884b943f02b4", size = 36393132, upload-time = "2025-05-08T16:08:15.34Z" },
     { url = "https://files.pythonhosted.org/packages/10/7e/5c12285452970be5bdbe8352c619250b97ebf7917d7a9a9e96b8a8140f17/scipy-1.15.3-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:5e721fed53187e71d0ccf382b6bf977644c533e506c4d33c3fb24de89f5c3ed5", size = 38979503, upload-time = "2025-05-08T16:08:21.513Z" },
     { url = "https://files.pythonhosted.org/packages/81/06/0a5e5349474e1cbc5757975b21bd4fad0e72ebf138c5592f191646154e06/scipy-1.15.3-cp313-cp313t-win_amd64.whl", hash = "sha256:76ad1fb5f8752eabf0fa02e4cc0336b4e8f021e2d5f061ed37d6d264db35e3ca", size = 40308097, upload-time = "2025-05-08T16:08:27.627Z" },
+]
+
+[[package]]
+name = "scipy-stubs"
+version = "1.15.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "optype", version = "0.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "optype", version = "0.19.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0b/5f/35c43bd7d412add4adcd68475702571b2489b50c40b6564f808b2355e452/scipy_stubs-1.15.3.0.tar.gz", hash = "sha256:e8f76c9887461cf9424c1e2ad78ea5dac71dd4cbb383dc85f91adfe8f74d1e17", size = 275699, upload-time = "2025-05-08T16:58:35.139Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6c/42/cd8dc81f8060de1f14960885ad5b2d2651f41de8b93d09f3f919d6567a5a/scipy_stubs-1.15.3.0-py3-none-any.whl", hash = "sha256:a251254cf4fd6e7fb87c55c1feee92d32ddbc1f542ecdf6a0159cdb81c2fb62d", size = 459062, upload-time = "2025-05-08T16:58:33.356Z" },
 ]
 
 [[package]]
