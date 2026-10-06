@@ -367,12 +367,6 @@ class Suite2pResults(BaseResults):
             return None
         return self._temporal_demixed_raw.T - self.signal_roi_averages - self.fluctuating_background_roi_averages
 
-    @property
-    def compression_array_roi_averages(self) -> torch.Tensor | None:
-        """Not applicable here"""
-        # return None
-        return torch.zeros_like(self.fluctuating_background_roi_averages)
-
     def make_masks_from_suite2p_statfile(self):
         Ly, Lx = int(self.ops["Ly"]), int(self.ops["Lx"])
         allow_overlap = bool(s2p_setting(self.ops, "allow_overlap", "allow_overlap", False))

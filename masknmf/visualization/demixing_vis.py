@@ -1005,22 +1005,24 @@ class SingleSessionDemixingVis:
             # footprints first keeps a huge roi from building a (pixels, frames) matrix
             weights = torch.sparse.sum(torch.index_select(results.spatial_demixed, 0, support), dim=0).to_dense() / len(support)
             signal = results.temporal_demixed @ weights
+            # roi averages the results don't have are None and leave their line out
             traces = (
-                results.compression_array_roi_averages[k],
+                results.compression_array_roi_averages,
                 signal,
-                results.fluctuating_background_roi_averages[k],
-                results.residual_roi_averages[k],
+                results.fluctuating_background_roi_averages,
+                results.residual_roi_averages,
             )
             lines = [
-                (label, trace.cpu().numpy(), rgb)
+                (label, (trace if trace is signal else trace[k]).cpu().numpy(), rgb)
                 for label, trace, rgb in zip(
                     self._base_lines, traces, _BASE_LINE_COLORS
                 )
+                if trace is not None
             ]
             if self._show_raw_trace and results.temporal_demixed_raw is not None:
                 raw = results.temporal_demixed_raw @ weights
                 # before the signal line so the signal draws over it
-                lines.insert(1, ("raw", raw.cpu().numpy(), _RAW_LINE_COLOR))
+                lines.insert(0 if traces[0] is None else 1, ("raw", raw.cpu().numpy(), _RAW_LINE_COLOR))
         else:
             self._selected_signals = None
             self._clear_traces()

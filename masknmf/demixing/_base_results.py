@@ -64,8 +64,9 @@ class BaseResults:
         raise NotImplementedError
 
     @property
-    def compression_array_roi_averages(self) -> np.ndarray:
-        raise NotImplementedError
+    def compression_array_roi_averages(self) -> torch.Tensor | None:
+        """By default, a pipeline does NOT have a compression array to average"""
+        return None
 
     @property
     def fluctuating_background_roi_averages(self) -> np.ndarray:
