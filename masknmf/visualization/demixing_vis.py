@@ -652,32 +652,24 @@ class SingleSessionDemixingVis:
             min(height, row + self._roi_radius + 1),
         )
 
-        pmd_trace = np.mean(
-            self._pmd_array[:, row_start:row_stop, col_start:col_stop], axis=(1, 2)
-        )
-        residual_trace = np.mean(
-            self._residual_array[:, row_start:row_stop, col_start:col_stop], axis=(1, 2)
-        )
-        background_trace = np.mean(
-            self._fluctuating_background_array[
-                :, row_start:row_stop, col_start:col_stop
-            ],
-            axis=(1, 2),
-        )
-
         separated_ac_signals, unique_signals = extract_per_trace_roi_averages(
             self._ac_array, slice(row_start, row_stop), slice(col_start, col_stop)
         )
         self._selected_signals = None
-        lines = [("compressed", pmd_trace, _BASE_LINE_COLORS[0])]
+        # results without a compression, background or residual (suite2p) show the lines they have
+        lines = []
+        if self._pmd_array is not None:
+            lines.append(("compressed", np.mean(self._pmd_array[:, row_start:row_stop, col_start:col_stop], axis=(1, 2)), _BASE_LINE_COLORS[0]))
         if separated_ac_signals is not None:
             # each source in its mask's color, so the split reads against the panels and the table
             lines += [
                 (f"signal {k}", trace, self._footprints.color(int(k)))
                 for k, trace in zip(unique_signals, separated_ac_signals)
             ]
-        lines.append(("background", background_trace, _BASE_LINE_COLORS[2]))
-        lines.append(("residual", residual_trace, _BASE_LINE_COLORS[3]))
+        if self._fluctuating_background_array is not None:
+            lines.append(("background", np.mean(self._fluctuating_background_array[:, row_start:row_stop, col_start:col_stop], axis=(1, 2)), _BASE_LINE_COLORS[2]))
+        if self._residual_array is not None:
+            lines.append(("residual", np.mean(self._residual_array[:, row_start:row_stop, col_start:col_stop], axis=(1, 2)), _BASE_LINE_COLORS[3]))
         self._traces.set("traces", lines)
         self._set_trace_mode("source")
         self._status = f"sources over the {row_stop - row_start}x{col_stop - col_start} square at ({row}, {col})"
