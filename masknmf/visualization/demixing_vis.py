@@ -1224,7 +1224,9 @@ class SingleSessionDemixingVis:
             if indices.shape[0] == 0:
                 continue
             first = roi["trace"] is None
-            roi["trace"] = self._pmd_average(indices[:, 1], indices[:, 0])
+            # without a compressed movie the roi keeps no trace and the plot skips it
+            if self._pmd_array is not None:
+                roi["trace"] = self._pmd_average(indices[:, 1], indices[:, 0])
             roi["area"] = int(indices.shape[0])
             if first:
                 self._seed_group()
