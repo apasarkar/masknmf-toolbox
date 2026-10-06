@@ -202,7 +202,7 @@ def popup(title: str, is_open: bool, theme: Theme = THEME) -> tuple[bool, bool]:
         imgui.get_main_viewport().get_center(), imgui.Cond_.appearing, pivot=imgui.ImVec2(0.5, 0.5)
     )
     imgui.push_style_var(imgui.StyleVar_.window_rounding, theme.rounding)
-    imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(em(1.0), em(0.8)))
+    imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(em(1.0), round(em(0.8))))
     background = imgui.get_style().color_(imgui.Col_.window_bg)
     imgui.push_style_color(imgui.Col_.window_bg, imgui.ImVec4(background.x, background.y, background.z, 1.0))
     opened, is_open = imgui.begin(
