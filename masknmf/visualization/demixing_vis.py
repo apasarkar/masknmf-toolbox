@@ -157,6 +157,8 @@ class SingleSessionDemixingVis:
     array, whose input movie is its raw and whose shifts are the shift traces). Switching keeps the zoom and
     the drawn rois. A registration array has no compressed movie to average, so pixel traces and drawn rois
     are off for it.
+    ``movie_names`` maps any of those names to the one shown in its place (panel title, Panels matrix,
+    right-click menu).
 
     The Signals table always carries the results' own stats (:meth:`CellStats.from_results`: mean, std, snr
     and skew of each demixed trace; fit, resid and bkgd from the roi averages the results hold), hidden until
@@ -197,6 +199,7 @@ class SingleSessionDemixingVis:
         cell_stats: CellStats | str | os.PathLike | None = None,
         cell_order: Sequence[int] | np.ndarray | str | os.PathLike | None = None,
         frame_batch_size: int = 300,
+        movie_names: dict[str, str] | None = None,
     ):
         self._results_path = None if results_path is None else str(results_path)
         if nmf_config is None:
@@ -366,9 +369,11 @@ class SingleSessionDemixingVis:
         self._lag1 = {}
         self._stills = self._static_images()
         # one panel per movie, up to three, each switchable to any of them; they open in _DEFAULT_ORDER
+        self._movie_names = {} if movie_names is None else movie_names
         movies = self._movies()
         self._panels = OrderedDict()
-        for i, name in enumerate([name for name in _DEFAULT_ORDER if name in movies][:3], start=1):
+        order = [self._movie_names.get(name, name) for name in _DEFAULT_ORDER]
+        for i, name in enumerate([name for name in order if name in movies][:3], start=1):
             self._panels[str(i)] = SwitchableArray(movies, self._shape)
             self._panels[str(i)].current = name
         n = len(self._panels)
@@ -591,7 +596,7 @@ class SingleSessionDemixingVis:
             movies["background"] = self._fluctuating_background_array
         if self._ac_array is not None:
             movies["signals"] = self._ac_array
-        return movies
+        return OrderedDict((self._movie_names.get(name, name), movie) for name, movie in movies.items())
 
     def _static_images(self) -> dict:
         """The stills the results hold, name to 2-D image, for the Static images window."""
