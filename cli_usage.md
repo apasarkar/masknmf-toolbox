@@ -111,7 +111,7 @@ A run folder's `config.json`:
 
 ## two-photon-calcium (`TwoPhotonCalciumPipeline`)
 
-Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise | skip), `spatial-highpass` (spatial-highpass), `filtered-demixing` (multipass: 2 passes by default | skip), `unfiltered-demixing` (multipass: 3 passes by default).
+Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise | skip), `spatial-highpass` (spatial-highpass), `filtered-demixing` (multipass: 2 passes by default | skip: the run ends after compression), `unfiltered-demixing` (multipass: 3 passes by default | skip: the filtered passes' results are the run's demixing).
 Run args: `MOVIE` (optional), `--fs` (required), `--exclude-border-radius`, `--remove-intermediates`, `--stop-after {registration,compression,demixing}`, `--resume-from RESULTS`.
 Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device {auto,cuda,cpu}`, `--log-level {debug,info,warning}`.
 
@@ -165,7 +165,7 @@ masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --device cpu --frame
 
 ## one-photon-culture (`OnePhotonCulturePipeline`)
 
-Sections: `motion-correct` (gradient | skip), `compress` (compress | compress-denoise | skip), `demixing` (multipass: 2 passes by default, no detrending).
+Sections: `motion-correct` (gradient | skip), `compress` (compress | compress-denoise | skip), `demixing` (multipass: 2 passes by default, no detrending | skip: the run ends after compression).
 Run args: `MOVIE`, `--fs` (required), `--indicator-sign {negative,positive}` (required), `--active-frames FILE.npy` (required), `--remove-intermediates`, `--stop-after {registration,compression,demixing}`, `--resume-from RESULTS`.
 Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device`, `--log-level`.
 
@@ -190,7 +190,7 @@ masknmf run --pipeline one-photon-culture voltage.tif --fs 400 \
 
 ## glutamate-calcium-spine (`GlutamateCalciumSpinePipeline`)
 
-Sections: `motion-correct` (rigid), `compress` (compress-denoise), `demixing` (multipass: 2 passes tuned for spines by default).
+Sections: `motion-correct` (rigid | piecewise-rigid | skip: the channels are compressed as recorded), `compress` (compress | compress-denoise), `demixing` (multipass: 2 passes tuned for spines by default | skip: the run ends after compression).
 Run args: `--glutamate-channel`, `--calcium-channel`, `--exclude-initial-frames` (default 200), `--stop-after {registration,compression,demixing}`.
 Init args: `--output-folder`, `--frame-batch-size`, `--device`, `--log-level`.
 
@@ -215,7 +215,7 @@ masknmf run --pipeline glutamate-calcium-spine \
 ## widefield-singlechannel (`WidefieldSinglechannelPipeline`)
 
 Moco and compression only, no demixing.
-Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise, no skip).
+Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise | skip: the run ends after motion correction).
 Run args: `MOVIE`, `--exclude-border-radius`, `--stop-after {registration,compression}`, `--resume-from RESULTS`.
 Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device`, `--log-level`.
 

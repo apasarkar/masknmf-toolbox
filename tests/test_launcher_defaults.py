@@ -14,6 +14,7 @@ from functools import partial
 from pathlib import Path
 from typing import Literal, Optional
 
+import h5py
 import numpy as np
 import pytest
 from imgui_bundle import imgui
@@ -211,6 +212,38 @@ def test_load_run_fills_the_window_from_a_runs_config_json(tmp_path):
     assert argv[:3] == ["run", "--pipeline", "two-photon-calcium"] and str(tmp_path / "movie.h5") in argv
     assert "--dataset" in argv and "--config" not in argv
     assert window.load_run(source=str(tmp_path)) == f"no config.json in {tmp_path}"
+
+
+def test_load_run_reads_a_config_json_from_before_configs_were_nested(tmp_path):
+    flat = {"masknmf_version": "0.1.0", "pipeline": "TwoPhotonCalciumPipeline", "frame_batch_size": 77,
+            "compress_config": {"kind": "compress", "max_components": 9}, "output_folder": str(tmp_path)}
+    (tmp_path / "config.json").write_text(json.dumps(flat))
+    window = launcher.Launcher(slug_initial="widefield-singlechannel")
+    assert window.load_run(source=str(tmp_path / "config.json")) is None
+    assert window.spec.slug == "two-photon-calcium" and window.texts["frame-batch-size"] == "77"
+    assert scraper.kind_of(value=window.values["compress_config"]) == "compress"
+    assert window.values["compress_config"].max_components == 9
+
+
+def test_start_from_a_loaded_runs_compression_resumes_it_and_back_to_the_movie_restores_the_config(tmp_path):
+    cls = scraper.pipeline_registry()["two-photon-calcium"]
+    pipeline = cls(output_folder=str(tmp_path), device="cpu")
+    folder = pipeline.create_run_folder()
+    logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
+    pipeline.log_handler.close()
+    with h5py.File(folder / "results.hdf5", "w") as file:
+        for name in ("RigidMotionCorrector", "RigidRegistrationArray", "CompressionArray"):
+            file.create_group(name)
+    window = launcher.Launcher()
+    assert window.load_run(source=str(folder)) is None
+    assert window.starts_available() == ["registration", "compression"]
+    window.select_start(start="compression")
+    argv = window.argv_run()
+    assert argv[argv.index("--resume-from") + 1] == str(folder / "results.hdf5") and "--config" in argv
+    assert window.values["compress_config"] == "skip"
+    window.select_start(start="movie")
+    assert launcher.same(window.values["compress_config"], cls.default_configs()["compress_config"])
+    assert "--resume-from" not in window.argv_run()
 
 
 def test_tracking_rows_grow_and_build_a_track_command(tmp_path):

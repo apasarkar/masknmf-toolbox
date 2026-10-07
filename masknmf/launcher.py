@@ -142,7 +142,7 @@ IO_BOXES = (("movie", guide.TEXT), ("run folder", guide.ACCENT), ("results.hdf5"
 # the files a run reads and writes, and what lands beside the results later
 IO_FILES = (
     ("movie", "a .tif/.tiff file, a folder of tiffs read in name order, or an .h5/.hdf5 file with the name of its dataset"),
-    ("output folder", "each run makes a timestamped folder here; empty uses the folder masknmf was started from"),
+    ("output folder", "each run makes a timestamped folder here; empty puts it beside the movie"),
     ("results.hdf5", "one file per run holding every stage it reached; Open results reads it at any stage"),
     ("config.json", "the values the run used, which masknmf run --config reads back"),
     ("<results>.<time>.curated.hdf5", "a Demix from the viewer, beside the original, which is never changed; the newest opens in its place"),
@@ -451,6 +451,10 @@ class Launcher:
         self.paths_load: dict[str, str] = {"run": ""}
         self.loaded_run: Optional[str] = None
         self.message_load = ""
+        # where a run starts: "movie", or the loaded run's "registration" or "compression", and the stage values
+        # loaded, which a compression start replaces with skip
+        self.start_from = "movie"
+        self.values_loaded: dict[str, Any] = {}
         # Open results: the path and the raw movie with its dataset, the viewer picked, and what the path holds
         self.paths_open: dict[str, str] = {"source": "", "raw": ""}
         self.dataset_raw = ""
@@ -500,6 +504,7 @@ class Launcher:
         self.errors = {}
         self.loaded_run = None
         self.message_load = ""
+        self.start_from = "movie"
         for param in (*self.spec.movie_params, *self.spec.array_params):
             self.paths.setdefault(param.field, "")
 
@@ -608,7 +613,7 @@ class Launcher:
 
     def load_run(self, source: str) -> Optional[str]:
         """
-        Fill Run pipeline with a run's parameters from the config.json beside it.
+        Fill Run pipeline with a run's parameters from the config.json beside it, the run starting from the movie.
 
         Parameters
         ----------
@@ -626,14 +631,14 @@ class Launcher:
         if not filepath.is_file():
             return f"no config.json in {folder}"
         try:
-            loaded = json.loads(filepath.read_text())
+            loaded = cli.config_record(loaded=json.loads(filepath.read_text()))
         except (OSError, ValueError) as error:
             return f"could not read {filepath.name}: {error}"
-        configs = loaded.get("configs") if isinstance(loaded, dict) else None
-        name_class = loaded.get("pipeline") if isinstance(loaded, dict) else None
+        name_class = None if loaded is None else loaded.get("pipeline")
         slug = next((s for s, cls in scraper.pipeline_registry().items() if cls.__name__ == name_class), None)
-        if not isinstance(configs, dict) or slug is None:
+        if slug is None:
             return f"{filepath.name} names no masknmf pipeline"
+        configs = loaded["configs"]
         self.select_pipeline(index=self.slugs.index(slug))
         try:
             for section in self.spec.sections:
@@ -645,10 +650,13 @@ class Launcher:
             self.select_pipeline(index=self.index_pipeline)
             return f"{filepath.name} does not fit {slug}"
         for param in (*self.spec.run_scalars, *self.spec.scalars):
-            if param.field in configs and widget_for(param=param) != "folder":
-                self.texts[param.name] = text_value(value=configs[param.field])
-        for param in self.params_folder():
-            self.texts[param.name] = str(folder.parent)
+            # a None the parameter does not take was recorded before it existed; where to start is chosen anew
+            if param.field not in configs or param.field == "resume_from":
+                continue
+            if configs[param.field] is None and param.default is not None:
+                continue
+            self.texts[param.name] = text_value(value=configs[param.field])
+        self.values_loaded = copy.deepcopy(self.values)
         inputs = loaded.get("inputs", {})
         for param in (*self.spec.movie_params, *self.spec.array_params):
             if param.field in inputs:
@@ -657,6 +665,48 @@ class Launcher:
                     self.dataset = inputs[param.field]["dataset"]
         self.loaded_run = str(folder)
         return None
+
+    def starts_available(self) -> list[str]:
+        """
+        Where a run of the loaded pipeline can start besides the movie: the loaded run's registration, and its
+        compression, when its results.hdf5 holds them and the pipeline can resume from them.
+
+        Returns
+        -------
+        list[str]
+            "registration" and "compression", as available.
+        """
+        filepath = None if self.loaded_run is None else Path(self.loaded_run) / "results.hdf5"
+        if filepath is None or not filepath.is_file() or not any(p.field == "resume_from" for p in self.spec.run_scalars):
+            return []
+        names = cli.groups_present(filepath_results=str(filepath))
+        starts = ["registration"] if any(n in names for n in cli.group_names_registration()) else []
+        compress = next((s for s in self.spec.sections if s.argument == "compress_config"), None)
+        if cli.group_name_compression() in names and compress is not None and compress.allows_skip:
+            starts.append("compression")
+        return starts
+
+    def select_start(self, start: str) -> None:
+        """
+        Start the run from the movie, or reuse the loaded run's registration or compression: resume from its
+        results.hdf5, the compression reused by its compress config "skip".
+
+        Parameters
+        ----------
+        start : str
+            "movie", "registration" or "compression".
+        """
+        self.start_from = start
+        resume = next(p for p in self.spec.run_scalars if p.field == "resume_from")
+        self.texts[resume.name] = "" if start == "movie" else str(Path(self.loaded_run) / "results.hdf5")
+        compress = next((s for s in self.spec.sections if s.argument == "compress_config"), None)
+        if compress is None:
+            return
+        if start == "compression":
+            self.select_kind(section=compress, kind="skip")
+        elif isinstance(self.values[compress.argument], str):
+            self.values[compress.argument] = copy.deepcopy(self.values_loaded.get(compress.argument, compress.default))
+            self.forget(path=compress.argument)
 
     def inspect(self) -> None:
         """Read what the Open results path holds, once per change of the path."""
@@ -1204,7 +1254,21 @@ class Launcher:
         self.step(1, "Pipeline", "which pipeline runs; switching keeps the movie paths and resets the rest")
         gap = 1.0 * em
         card_w = (w - gap) / 2
-        card_h = 8.5 * em
+        # each stage's chip names the config it runs: the selected pipeline's as set, the others' defaults
+        chips = {}
+        for i, slug in enumerate(self.slugs):
+            rows, line, x = [], [], 0.0
+            for section in cli.spec_for(slug=slug).sections:
+                kind = kind_or_none(value=self.values[section.argument]) if i == self.index_pipeline else section.default_kind
+                cw = imgui.calc_text_size(f"{section.name}  {kind}").x + 0.8 * em
+                if x + cw > card_w - 1.4 * em and len(line) > 0:
+                    rows.append(line)
+                    line, x = [], 0.0
+                line.append((section.name, kind, cw))
+                x += cw + 0.4 * em
+            rows.append(line)
+            chips[slug] = rows
+        card_h = 5.4 * em + max(len(rows) for rows in chips.values()) * 1.5 * em
         for i, slug in enumerate(self.slugs):
             if i % 2:
                 imgui.same_line(0, gap)
@@ -1212,46 +1276,51 @@ class Launcher:
             clicked, a = guide.card_button(dl, f"pipeline_{slug}", imgui.ImVec2(card_w, card_h), selected)
             dl.add_text(imgui.ImVec2(a.x + 0.7 * em, a.y + 0.6 * em), guide.u32(COLOR_TITLE if selected else guide.TEXT), slug)
             dl.add_text(imgui.get_font(), em, imgui.ImVec2(a.x + 0.7 * em, a.y + 2.0 * em), guide.u32(COLOR_DIM), DESCRIPTIONS.get(slug, ""), None, card_w - 1.4 * em)
-            # the stage chips, wrapped into rows anchored to the card's bottom
-            rows, line, x = [], [], 0.0
-            for section in cli.spec_for(slug=slug).sections:
-                cw = imgui.calc_text_size(section.name).x + 0.8 * em
-                if x + cw > card_w - 1.4 * em and len(line) > 0:
-                    rows.append(line)
-                    line, x = [], 0.0
-                line.append((section.name, cw))
-                x += cw + 0.4 * em
-            rows.append(line)
-            y = a.y + card_h - 0.7 * em - len(rows) * 1.5 * em + 0.2 * em
-            for line in rows:
+            y = a.y + card_h - 0.7 * em - len(chips[slug]) * 1.5 * em + 0.2 * em
+            for line in chips[slug]:
                 x = a.x + 0.7 * em
-                for name, cw in line:
+                for name, kind, cw in line:
                     dl.add_rect_filled(imgui.ImVec2(x, y), imgui.ImVec2(x + cw, y + 1.3 * em), guide.u32(COLOR_SUBSECTION, 0.15), 3.0)
                     dl.add_rect(imgui.ImVec2(x, y), imgui.ImVec2(x + cw, y + 1.3 * em), guide.u32(COLOR_SUBSECTION, 0.5), 3.0)
-                    dl.add_text(imgui.ImVec2(x + 0.4 * em, y + 0.15 * em), guide.u32(guide.TEXT), name)
+                    dl.add_text(imgui.ImVec2(x + 0.4 * em, y + 0.15 * em), guide.u32(COLOR_DIM), name)
+                    dl.add_text(imgui.ImVec2(x + 0.4 * em + imgui.calc_text_size(f"{name}  ").x, y + 0.15 * em),
+                                guide.u32(COLOR_DIM if kind == "skip" else COLOR_TITLE), kind)
                     x += cw + 0.4 * em
                 y += 1.5 * em
             if clicked and not selected:
                 self.select_pipeline(index=i)
         imgui.dummy(imgui.ImVec2(0, 0.3 * em))
-        if self.begin_form(name="run_from"):
-            self.row(caption="from a run")
+        if self.begin_form(name="load_config"):
+            self.row(caption="load config")
             if imgui.button(f"{fa.ICON_FA_FILE_LINES}  Load##load_run"):
                 self.message_load = self.load_run(source=self.paths_load["run"]) or ""
                 if self.message_load == "":
                     self.store.record_selection(idl.DialogResult(paths=[self.paths_load["run"].strip()]))
             if imgui.is_item_hovered():
-                idl.wrapped_tooltip("Load: the pipeline, every parameter, the movie and the output folder of an earlier run, from "
-                                    "the config.json in its folder; untouched, Run reproduces that run")
+                idl.wrapped_tooltip("Load config: the pipeline, every parameter, the movie and the output folder an earlier run "
+                                    "recorded in its config.json; untouched, Run reproduces that run")
             imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
             self.draw_path(target=self.paths_load, key="run", filetypes=FILETYPES_RUN, folders=True,
-                           hint="a run folder, its config.json, or a results file in it")
+                           hint="a config.json, its run folder, or a results file beside it")
+            starts = self.starts_available()
+            if len(starts) > 0:
+                self.row(caption="start from")
+                for start, label in (("movie", "the movie"), ("registration", "its registration"), ("compression", "its compression")):
+                    if start != "movie" and start not in starts:
+                        continue
+                    if imgui.radio_button(f"{label}##start_{start}", self.start_from == start) and self.start_from != start:
+                        self.select_start(start=start)
+                    imgui.same_line(0, hello_imgui.em_size(1.2))
+                imgui.new_line()
+                if imgui.is_item_hovered():
+                    idl.wrapped_tooltip("Start from: run every stage on the movie, or copy the loaded run's registration (replayed on "
+                                        "the movie) or its compression into the new run folder and carry on from there")
             imgui.end_table()
         if self.message_load != "":
             draw_wrapped(text=f"{fa.ICON_FA_CIRCLE_INFO}  {self.message_load}", color=COLOR_WARN)
         elif self.loaded_run is not None:
             recorded = any(self.paths[p.field].strip() != "" for p in self.spec.movie_params)
-            draw_wrapped(text=f"{fa.ICON_FA_FILE_LINES}  the parameters and output folder of {self.loaded_run}"
+            draw_wrapped(text=f"{fa.ICON_FA_FILE_LINES}  the parameters of {self.loaded_run}"
                               + ("" if recorded else "; its movie was not recorded, choose one"), color=COLOR_DIM)
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
@@ -1273,24 +1342,21 @@ class Launcher:
                                hint="required" if param.required else "optional")
             for param in self.params_folder():
                 self.row(caption="output folder")
-                self.draw_path(target=self.texts, key=param.name, filetypes=None, folders=True, hint="working directory")
+                self.draw_path(target=self.texts, key=param.name, filetypes=None, folders=True, hint="beside the movie")
             for param in spec.run_scalars:
+                # set by start from, under load config
+                if param.field == "resume_from":
+                    continue
                 color = COLOR_ERROR if self.error_for(param=param) is not None else COLOR_MODIFIED if self.is_modified(param=param) else None
                 self.row(caption=param.field.replace("_", " "), color=color)
-                if param.field == "resume_from":
-                    # a results file, not the folder its annotation would get
-                    self.draw_path(target=self.texts, key=param.name, filetypes=FILETYPES_RESULTS, folders=False,
-                                   hint="optional: an earlier results file; its registration is replayed, its compression reused with compress skip")
-                else:
-                    self.draw_param(param=param, named=False)
+                self.draw_param(param=param, named=False)
             imgui.end_table()
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
         rows = self.modified()
-        state = "all at the pipeline's defaults" if len(rows) == 0 else f"{len(rows)} value{'' if len(rows) == 1 else 's'} changed"
         self.step(3, "Parameters", "every stage's config and its fields, the runtime, and what differs from the pipeline's "
                                    "defaults; a run needs none of them changed")
-        if imgui.collapsing_header(f"{fa.ICON_FA_SLIDERS}  Stage configs   -   {state}###parameters"):
+        if imgui.collapsing_header(f"{fa.ICON_FA_SLIDERS}  Stage configs###parameters"):
             with (
                 imgui_ctx.push_style_var(imgui.StyleVar_.item_spacing, hello_imgui.em_to_vec2(0.55, 0.3)),
                 imgui_ctx.push_style_var(imgui.StyleVar_.frame_padding, hello_imgui.em_to_vec2(0.35, 0.18)),

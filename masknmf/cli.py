@@ -294,6 +294,29 @@ def kinds_buildable(section: scraper.Section) -> list[str]:
     return kinds
 
 
+KEYS_RECORD = ("masknmf_version", "pipeline", "run", "inputs", "timings")
+
+
+def config_record(loaded: Any) -> Optional[dict]:
+    """
+    A config file's object with the argument values under "configs". Run folders from before they were nested
+    there hold them at the top level, beside "pipeline".
+
+    Args:
+        loaded (Any): The parsed json
+    Returns:
+        dict | None: The object, or None when it holds no argument values
+    """
+    if not isinstance(loaded, dict):
+        return None
+    if isinstance(loaded.get("configs"), dict):
+        return loaded
+    if "pipeline" not in loaded:
+        return None
+    return {**{k: loaded[k] for k in KEYS_RECORD if k in loaded},
+            "configs": {k: v for k, v in loaded.items() if k not in KEYS_RECORD}}
+
+
 def read_config_file(filepath: str) -> dict:
     """
     Read a --config file: the json `masknmf params --json` prints, or a run folder's config.json, an object
@@ -313,9 +336,10 @@ def read_config_file(filepath: str) -> dict:
         loaded = json.loads(path.read_text())
     except json.JSONDecodeError as error:
         fail(f"{path.name} is not valid json: {error}")
-    if not isinstance(loaded, dict) or not isinstance(loaded.get("configs"), dict):
+    record = config_record(loaded=loaded)
+    if record is None:
         fail(f"{path.name} should hold a json object with argument names to values under \"configs\"")
-    return loaded
+    return record
 
 
 def slug_of(name_class: str) -> str:
