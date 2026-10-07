@@ -52,6 +52,10 @@ FILETYPES_CLASSIFIER = [
     idl.FileType("Classifier", "*.roicat_classifier"),
     idl.FileType("All Files", "*"),
 ]
+FILETYPES_RUN = [
+    idl.FileType("Run records", "config.json *.h5 *.hdf5"),
+    idl.FileType("All Files", "*"),
+]
 
 COLOR_TITLE = guide.KEY
 COLOR_SUBSECTION = guide.ACCENT
@@ -442,17 +446,18 @@ class Launcher:
         self.buffers: dict[str, str] = {}
         self.errors: dict[str, str] = {}
         self.dataset = ""
-        # the run folder whose config.json filled Run pipeline, until the pipeline is switched
+        # the run to load Run pipeline from, the folder it was loaded from until the pipeline is switched, and why
+        # the last load failed
+        self.paths_load: dict[str, str] = {"run": ""}
         self.loaded_run: Optional[str] = None
-        # Open results: the path and the raw movie with its dataset, the viewer picked, what the path holds, and why
-        # its run could not be loaded
+        self.message_load = ""
+        # Open results: the path and the raw movie with its dataset, the viewer picked, and what the path holds
         self.paths_open: dict[str, str] = {"source": "", "raw": ""}
         self.dataset_raw = ""
         self.viewer = ""
         self.compression_check = False
         self.inspected: Optional[str] = None
-        self.found: dict[str, Any] = {"kind": "", "detail": "", "stages": {}, "files": [], "run": ""}
-        self.message_run = ""
+        self.found: dict[str, Any] = {"kind": "", "detail": "", "stages": {}, "files": []}
         # Track sessions: results rows results_0, results_1, ... and the out folder
         self.paths_tracking: dict[str, str] = {"out": "", "results_0": ""}
         self.um_per_pixel = 1.2
@@ -494,6 +499,7 @@ class Launcher:
         self.buffers = {}
         self.errors = {}
         self.loaded_run = None
+        self.message_load = ""
         for param in (*self.spec.movie_params, *self.spec.array_params):
             self.paths.setdefault(param.field, "")
 
@@ -658,25 +664,23 @@ class Launcher:
         if source == self.inspected:
             return
         self.inspected = source
-        self.message_run = ""
         stages = {"registration": False, "compression": False, "demixing": False, "curated": False}
-        self.found = {"kind": "", "detail": "", "stages": stages, "files": [], "run": ""}
+        self.found = {"kind": "", "detail": "", "stages": stages, "files": []}
         if source == "":
             return
         path = Path(source).expanduser()
         folder = path if path.is_dir() else path.parent
-        if (folder / "config.json").is_file():
-            self.found["run"] = str(folder)
-            # the raw movie the run read serves the registration and compression views
-            if self.paths_open["raw"].strip() == "":
-                try:
-                    inputs = json.loads((folder / "config.json").read_text()).get("inputs", {})
-                except (OSError, ValueError):
-                    inputs = {}
-                movie = next((v for v in inputs.values() if isinstance(v, dict) and not str(v.get("path", "")).lower().endswith(".npy")), None)
-                if movie is not None and Path(movie["path"]).expanduser().exists():
-                    self.paths_open["raw"] = movie["path"]
-                    self.dataset_raw = movie.get("dataset", "")
+        # the raw movie the run read, from the config.json beside its results, serves the registration and
+        # compression views
+        if (folder / "config.json").is_file() and self.paths_open["raw"].strip() == "":
+            try:
+                inputs = json.loads((folder / "config.json").read_text()).get("inputs", {})
+            except (OSError, ValueError):
+                inputs = {}
+            movie = next((v for v in inputs.values() if isinstance(v, dict) and not str(v.get("path", "")).lower().endswith(".npy")), None)
+            if movie is not None and Path(movie["path"]).expanduser().exists():
+                self.paths_open["raw"] = movie["path"]
+                self.dataset_raw = movie.get("dataset", "")
         try:
             tracking = cli.find_tracking(entry=source)
             if tracking is not None:
@@ -1229,8 +1233,26 @@ class Launcher:
                 y += 1.5 * em
             if clicked and not selected:
                 self.select_pipeline(index=i)
-        if self.loaded_run is not None:
-            draw_wrapped(text=f"{fa.ICON_FA_FILE_LINES}  the parameters, movie and output folder of {self.loaded_run}", color=COLOR_DIM)
+        imgui.dummy(imgui.ImVec2(0, 0.3 * em))
+        if self.begin_form(name="run_from"):
+            self.row(caption="from a run")
+            if imgui.button(f"{fa.ICON_FA_FILE_LINES}  Load##load_run"):
+                self.message_load = self.load_run(source=self.paths_load["run"]) or ""
+                if self.message_load == "":
+                    self.store.record_selection(idl.DialogResult(paths=[self.paths_load["run"].strip()]))
+            if imgui.is_item_hovered():
+                idl.wrapped_tooltip("Load: the pipeline, every parameter, the movie and the output folder of an earlier run, from "
+                                    "the config.json in its folder; untouched, Run reproduces that run")
+            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+            self.draw_path(target=self.paths_load, key="run", filetypes=FILETYPES_RUN, folders=True,
+                           hint="a run folder, its config.json, or a results file in it")
+            imgui.end_table()
+        if self.message_load != "":
+            draw_wrapped(text=f"{fa.ICON_FA_CIRCLE_INFO}  {self.message_load}", color=COLOR_WARN)
+        elif self.loaded_run is not None:
+            recorded = any(self.paths[p.field].strip() != "" for p in self.spec.movie_params)
+            draw_wrapped(text=f"{fa.ICON_FA_FILE_LINES}  the parameters and output folder of {self.loaded_run}"
+                              + ("" if recorded else "; its movie was not recorded, choose one"), color=COLOR_DIM)
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
         # read after the cards: a click on one switched the pipeline
@@ -1343,20 +1365,6 @@ class Launcher:
                         imgui.text_colored(guide.TEXT if present else COLOR_DIM, stage)
                         imgui.same_line(0, 0.6 * em)
                         imgui.text_colored(COLOR_DIM, STAGE_NOTES[stage])
-            if self.found["run"] != "":
-                imgui.dummy(imgui.ImVec2(0, 0.3 * em))
-                if imgui.small_button(f"{fa.ICON_FA_PLAY}  Run again##run_again"):
-                    self.message_run = self.load_run(source=self.found["run"]) or ""
-                    if self.message_run == "":
-                        self.store.record_selection(idl.DialogResult(paths=[self.found["run"]]))
-                        self.page = "run"
-                if imgui.is_item_hovered():
-                    idl.wrapped_tooltip("Run again: Run pipeline takes this run's pipeline, parameters, movie and output folder "
-                                        "from its config.json; untouched, it reproduces the run")
-                imgui.same_line(0, 0.8 * em)
-                imgui.text_colored(COLOR_DIM, f"{fa.ICON_FA_FILE_LINES}  config.json beside it records the run")
-                if self.message_run != "":
-                    imgui.text_colored(COLOR_WARN, self.message_run)
         imgui.pop_style_var()
         imgui.pop_style_color()
 
