@@ -9,11 +9,13 @@ import copy
 import dataclasses
 import io
 import json
+from functools import partial
 from pathlib import Path
 from typing import Literal, Optional
 
 import numpy as np
 import pytest
+from imgui_bundle import imgui
 
 from masknmf import cli, launcher
 from masknmf.pipelines import scraper
@@ -112,7 +114,7 @@ def assert_untouched(window: launcher.Launcher) -> None:
         assert launcher.same(window.values[section.argument], defaults[section.argument]), section.argument
     assert window.modified() == []
     assert window.errors == {}
-    assert "--config" not in window.build_argv()
+    assert "--config" not in window.argv_run()
 
 
 @pytest.mark.parametrize("slug", SLUGS)
@@ -186,7 +188,7 @@ def test_switching_a_nested_config_and_back_restores_its_default(odd_registry):
 
 def test_tracking_rows_grow_and_build_a_track_command(tmp_path):
     window = launcher.Launcher()
-    window.tracking = True
+    window.page = "track"
     window.paths_tracking["results_0"] = str(tmp_path / "*" / "results.hdf5")
     assert window.problems() == ["choose the folder the tracking is saved in"]
     render_frames(window=window)
@@ -197,3 +199,17 @@ def test_tracking_rows_grow_and_build_a_track_command(tmp_path):
     assert args.handler is cli.command_track
     assert args.results == [str(tmp_path / "*" / "results.hdf5")]
     assert args.out == str(tmp_path / "tracking") and args.um_per_pixel == 1.2
+
+
+def click_card(original, slug: str, label: str, *args, **kwargs) -> bool:
+    """imgui.invisible_button reporting a click on one pipeline's card."""
+    return original(label, *args, **kwargs) or label == f"##card_pipeline_{slug}"
+
+
+def test_switching_pipeline_from_a_card_mid_frame_draws_on(monkeypatch):
+    window = launcher.Launcher(slug_initial="two-photon-calcium")
+    window.page = "run"
+    monkeypatch.setattr(imgui, "invisible_button", partial(click_card, imgui.invisible_button, "widefield-singlechannel"))
+    render_frames(window=window)
+    assert window.spec.slug == "widefield-singlechannel"
+    assert_untouched(window=window)

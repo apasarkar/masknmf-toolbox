@@ -4,7 +4,7 @@
 
 | command | what it does |
 |---|---|
-| `masknmf` | open the launcher window, which builds and runs a `masknmf run` or `masknmf track` command |
+| `masknmf` | open the launcher window: an overview, then pages that build and run a `masknmf run`, `view` or `track` command |
 | `masknmf pipelines` | list the pipelines and their config sections |
 | `masknmf params --pipeline P` | list every parameter P accepts and the value it uses by default |
 | `masknmf params --pipeline P --json` | print P's default configs as a `--config` file |
@@ -294,7 +294,7 @@ experiment/
 - keep the `.richfile.zip` files zipped: unzipping `run_data` on Windows silently drops files past the 260 character path limit, and a zip beside its unzipped copy is refused
 
 From Python: `RoicatTracker().run_tracking(RoicatDataAdapter.from_masknmf(files))` then `.to_roicat_dir(folder)`;
-`RoicatTrackingResults.from_manifest(path)` loads a run back. The launcher's `tracking` entry builds the same command.
+`RoicatTrackingResults.from_manifest(path)` loads a run back. The launcher's Track sessions page builds the same command.
 
 ```bash
 # newest run of a tracking folder
