@@ -15,7 +15,7 @@ from imgui_bundle import icons_fontawesome_6 as fa
 from imgui_bundle import imgui
 from wgpu.utils.imgui import ImguiRenderer
 
-from masknmf.visualization.imgui.guide import ACCENT, CARD, DIM, EDGE, KEY, PLOT, TEXT, arrow, box, heading, u32
+from masknmf.visualization.imgui.guide import ACCENT, CARD, DIM, EDGE, KEY, PLOT, TEXT, arrow, box, u32
 from masknmf.visualization.imgui.keybinds import DEMIXING
 from masknmf.visualization.imgui.panels import draw_keybinds_button, draw_keybinds_popup
 from masknmf.visualization.imgui.theme import popup
@@ -136,19 +136,18 @@ MOUSE = (
     ("drag", "pan; the selection stays"),
     ("right-click", "pick the panel's movie, over the usual menu"),
 )
-# the OVERLAY row's trace buttons as (icon, name, color): show traces lit, raw greyed
+# the OVERLAY row's trace buttons as (icon, name, color): show traces lit
 OVERLAY_BUTTONS = (
     (fa.ICON_FA_ARROWS_LEFT_RIGHT_TO_LINE, "center (t)", TEXT),
     (fa.ICON_FA_EYE_DROPPER, "pixel traces (p)", TEXT),
     (fa.ICON_FA_CHART_LINE, "show traces", KEY),
-    (fa.ICON_FA_WAVE_SQUARE, "raw traces", DIM),
 )
 # the SELECTION row's buttons as (icon, name, color): draw lit, the rest as they sit
 TOOL_BUTTONS = (
     (fa.ICON_FA_DRAW_POLYGON, "draw (a)", KEY),
     (fa.ICON_FA_SIGNATURE, "freehand", DIM),
     (fa.ICON_FA_PLUS, "add roi (r)", TEXT),
-    (fa.ICON_FA_TRASH, "delete", DROP),
+    (fa.ICON_FA_TRASH, "delete (d)", DROP),
     (fa.ICON_FA_OBJECT_GROUP, "merge", DIM),
     (fa.ICON_FA_LOCATION_CROSSHAIRS, "center (f)", ACCENT),
 )
@@ -173,7 +172,6 @@ PIXEL_LINE = (("slow", 5, GROUP[2]),)
 OVERLAY = (
     ("control", "does"),
     ("masks (m)", "every footprint feathered by its weights; sel masks: the selection at its own peak, white rim"),
-    ("weighting", "own peak or signal peak, as above"),
     ("contours (c)", "every footprint's outline; sel contours: the selection's, in its mask color"),
     ("color by", "masks and table ids by a column's rank instead of signal id"),
     ("center (t)", "keep the current frame centered in the traces"),
@@ -195,7 +193,7 @@ TOOLS = (
         "nmf pass with it; r with nothing drawn starts drawing; Export writes the drawn rois to a .npz",
     ),
     (
-        "delete",
+        "delete (d)",
         "mark the selected signals for the next demix, again unmarks; a selected roi or pixel average is "
         "dropped right away",
     ),
@@ -272,6 +270,13 @@ def plot(dl, w: float, title: str, specs: tuple, h: float, frame: float, tint: i
     p = imgui.get_cursor_screen_pos()
     lines(dl, p.x, card(dl, p.x, p.y, w, 1.2 * em + h, title, tint), w, h, specs, frame, t0)
     imgui.dummy(imgui.ImVec2(w, 1.2 * em + h))
+
+
+def heading(icon: str, text: str) -> None:
+    em = imgui.get_font_size()
+    imgui.dummy(imgui.ImVec2(0, 2.4 * em))
+    imgui.text_colored(ACCENT, f"{icon}  {text}")
+    imgui.dummy(imgui.ImVec2(0, 0.1 * em))
 
 
 def table(name: str, rows: tuple) -> None:
@@ -363,7 +368,7 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     imgui.pop_style_color(2)
 
     # the Panels heading with the compressed movie's parts centered beside it, over the six panels
-    imgui.dummy(imgui.ImVec2(0, 0.7 * em))
+    imgui.dummy(imgui.ImVec2(0, 2.4 * em))
     p = imgui.get_cursor_screen_pos()
     bh = 1.9 * em
     title = f"{fa.ICON_FA_TABLE_CELLS_LARGE}  Panels"
@@ -520,10 +525,11 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     )
 
     imgui.dummy(imgui.ImVec2(0, 0.5 * em))
-    half = (w - 1.4 * em) / 2
-    plot(dl, half, "center off", CENTER_LINES, 3 * em, frame)
+    cw = 0.38 * w
+    imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + (w - 2 * cw - 1.4 * em) / 2)
+    plot(dl, cw, "center off", CENTER_LINES, 3 * em, frame)
     imgui.same_line(0, 1.4 * em)
-    plot(dl, half, "center on (t)", CENTER_LINES, 3 * em, 30, PLOT, frame - 30)
+    plot(dl, cw, "center on (t)", CENTER_LINES, 3 * em, 30, PLOT, frame - 30)
     imgui.text_colored(
         DIM,
         "Toggle center traces (t) to keep the current frame centered in the moving traces window; the zoom is "
@@ -558,15 +564,19 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     table("overlay", OVERLAY)
 
     heading(fa.ICON_FA_SLIDERS, "Selection tools")
+    imgui.dummy(imgui.ImVec2(0, 0.6 * em))
     p = imgui.get_cursor_screen_pos()
     bw, bh, bgap = 4.6 * em, 2.2 * em, 0.6 * em
-    for i, (icon, name, color) in enumerate(TOOL_BUTTONS):
-        x = p.x + i * (bw + bgap)
+    # the row centered: the buttons, then the side switch, outside picked and lit as while the region or the
+    # filter drives the selection
+    switch_w = imgui.calc_text_size("inside").x + 3.4 * em + imgui.calc_text_size("outside").x
+    x = p.x + (w - len(TOOL_BUTTONS) * (bw + bgap) - em - switch_w) / 2
+    for icon, name, color in TOOL_BUTTONS:
         box(dl, x, p.y, bw, bh, icon, color, 0.18 if color in (KEY, ACCENT) else 0.0)
         size = imgui.calc_text_size(name)
         dl.add_text(imgui.ImVec2(x + (bw - size.x) / 2, p.y + bh + 0.3 * em), u32(DIM), name)
-    # the side switch, outside picked and lit as while the region or the filter drives the selection
-    x = p.x + len(TOOL_BUTTONS) * (bw + bgap) + em
+        x += bw + bgap
+    x += em
     dl.add_text(imgui.ImVec2(x, p.y + 0.55 * em), u32(DIM), "inside")
     x += imgui.calc_text_size("inside").x + 0.5 * em
     pill = imgui.ImVec2(x, p.y + 0.45 * em), imgui.ImVec2(x + 2.4 * em, p.y + 1.65 * em)
@@ -575,6 +585,7 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     dl.add_circle_filled(imgui.ImVec2(x + 1.8 * em, p.y + 1.05 * em), 0.45 * em, u32(TEXT))
     dl.add_text(imgui.ImVec2(x + 2.9 * em, p.y + 0.55 * em), u32(TEXT), "outside")
     imgui.dummy(imgui.ImVec2(w, bh + 1.6 * em))
+    imgui.dummy(imgui.ImVec2(0, 0.6 * em))
     imgui.text_colored(
         DIM,
         "the Curation tab's SELECTION row and its side switch; a mode that is on is lit, a tool with nothing "
