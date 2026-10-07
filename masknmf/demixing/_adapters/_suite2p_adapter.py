@@ -165,12 +165,52 @@ def load_bin_file(s2p_zip_path: str | bytes | os.PathLike,
     return my_data
 
 
-def s2p_setting(ops: dict, old_key: str, new_key: str, default):
-    """suite2p <= 0.14 keeps flat keys in ops.npy; newer versions nest them under ops['extraction']."""
+def s2p_setting(ops: dict, old_key: str, new_key: str, default, section: str = "extraction"):
+    """suite2p <= 0.14 keeps flat keys in ops.npy; newer versions nest them under a section, e.g.
+    ops['extraction']['neuropil_coefficient'] or ops['registration']['nonrigid']."""
     if old_key in ops:
         return ops[old_key]
-    return ops.get("extraction", {}).get(new_key, default)
+    return ops.get(section, {}).get(new_key, default)
 
+def load_suite2p_ops(folder: str | os.PathLike) -> dict:
+    """
+    The ops dict for a suite2p plane folder, from any suite2p version.
+    suite2p <= 0.14 writes everything (settings and registration/detection outputs) into ops.npy. suite2p 1.x
+    always writes db.npy, settings.npy, reg_outputs.npy and detect_outputs.npy, and only also writes their merge
+    as ops.npy when settings['io']['save_ops_orig'] is on. Keys missing from ops.npy (or all of them, if there is
+    no ops.npy) are filled from those files, merged in suite2p's own order {**db, **settings, **reg, **detect}.
+    """
+    folder = os.path.abspath(folder)
+    ops_path = os.path.join(folder, "ops.npy")
+    ops = np.load(ops_path, allow_pickle=True).item() if os.path.exists(ops_path) else {}
+    parts = {}
+    for name in ("db.npy", "settings.npy", "reg_outputs.npy", "detect_outputs.npy"):
+        path = os.path.join(folder, name)
+        if os.path.exists(path):
+            parts.update(np.load(path, allow_pickle=True).item())
+    if not ops and not parts:
+        raise FileNotFoundError(f"{folder} holds neither ops.npy nor suite2p 1.x's db/settings/reg_outputs.npy")
+    return {**parts, **ops}
+
+def suite2p_shifts(ops: dict, fov_shape: tuple[int, int]) -> np.ndarray | None:
+    """
+    suite2p's registration as the (height, width) shift applied to each frame, shape (num_frames, 2), or with
+    nonrigid registration to each block of it, shape (num_frames, height blocks, width blocks, 2). suite2p
+    stores how far each frame sat from the reference (yoff, xoff) and how far each block still sat after that
+    was corrected (yoff1, xoff1), so the shift applied is minus their sum. None when suite2p did not register.
+    """
+    if 'yoff' not in ops:
+        return None
+    rigid = np.stack([ops['yoff'], ops['xoff']], axis=-1).astype(np.float32)
+    # suite2p stores yoff1/xoff1 only when nonrigid registration ran, in every version; the 'nonrigid' and
+    # 'block_size' settings are flat in ops.npy for <= 0.14 but nested under ops['registration'] in 1.x
+    if ops.get('yoff1') is None:
+        return -rigid
+    block_size = s2p_setting(ops, 'block_size', 'block_size', (128, 128), section='registration')
+    # suite2p's blocks run row by row, ceil(1.5 * L / block size) of them along an axis (nonrigid.calculate_nblocks)
+    blocks = [1 if size >= L else int(np.ceil(1.5 * L / size)) for L, size in zip(fov_shape, block_size)]
+    nonrigid = np.stack([ops['yoff1'], ops['xoff1']], axis=-1).reshape(-1, *blocks, 2)
+    return -(rigid[:, None, None] + nonrigid)
 
 def suite2p_spatial_matrices(stat, Ly: int, Lx: int, allow_overlap: bool = False):
     """
@@ -210,7 +250,7 @@ class Suite2pResults(BaseResults):
                  folder: str | os.PathLike,
                  device: str | torch.device ="cpu",
                  motion_corrected_data: ArrayLike | None = None,
-                 residual_compress: bool = True):
+                 residual_compress: bool = False):
         """
         Assumes that folder contains the following suite2p results:
         F.npy
@@ -229,7 +269,8 @@ class Suite2pResults(BaseResults):
         self._temporal_demixed = torch.from_numpy(np.load(os.path.join(folder, "F.npy"), allow_pickle=True))
         self._temporal_neuropil_demixed = torch.from_numpy(np.load(os.path.join(folder, "Fneu.npy"), allow_pickle=True))
         self.stat = np.load(os.path.join(folder, "stat.npy"), allow_pickle=True)
-        self.ops = np.load(os.path.join(folder, 'ops.npy'), allow_pickle=True).item()
+        self.ops = load_suite2p_ops(folder)
+
 
         # Now let's do neuropil correction (suite2p <= 0.14: ops['neucoeff']; 1.x: ops['extraction']['neuropil_coefficient'])
         neucoeff = float(s2p_setting(self.ops, "neucoeff", "neuropil_coefficient", 0.7))
@@ -242,12 +283,10 @@ class Suite2pResults(BaseResults):
 
         self.make_masks_from_suite2p_statfile()
 
-        print("DONE")
         self._signals_array = SignalsArray.from_tensors(self.shape[1:],
                                                                 self.spatial_demixed,
                                                                 self.temporal_demixed)
 
-        print("DONE")
         self._fluctuating_background_array = SignalsArray.from_tensors(self.shape[1:],
                                                                                self._neuropil_spatial_demixed,
                                                                                self._temporal_neuropil_demixed)
@@ -308,16 +347,7 @@ class Suite2pResults(BaseResults):
         stores how far each frame sat from the reference (yoff, xoff) and how far each block still sat after that
         was corrected (yoff1, xoff1), so the shift applied is minus their sum. None when suite2p did not register
         """
-        if 'yoff' not in self.ops:
-            return None
-        rigid = np.stack([self.ops['yoff'], self.ops['xoff']], axis=-1).astype(np.float32)
-        if not self.ops['nonrigid']:
-            return -rigid
-        # suite2p's blocks run row by row, ceil(1.5 * L / block size) of them along an axis (nonrigid.calculate_nblocks)
-        blocks = [1 if size >= L else int(np.ceil(1.5 * L / size)) for L, size in
-                  zip(self.shape[1:], self.ops['block_size'])]
-        nonrigid = np.stack([self.ops['yoff1'], self.ops['xoff1']], axis=-1).reshape(-1, *blocks, 2)
-        return -(rigid[:, None, None] + nonrigid)
+        return suite2p_shifts(self.ops, self.shape[1:])
 
     @property
     def temporal_demixed(self) -> torch.Tensor:
