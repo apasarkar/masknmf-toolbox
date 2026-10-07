@@ -389,12 +389,11 @@ def add_pipeline_options(parser: argparse.ArgumentParser, spec: scraper.Pipeline
         if len(spec.movie_params) > 1:
             parser.add_argument(flag_for(param), help=f"imaging movie for {param.field}", default=None)
             continue
-        _, allows_none = scraper.annotation_members(annotation=param.annotation)
         parser.add_argument(
             param.field,
-            nargs="*" if allows_none else "+",
+            nargs="*",
             help=f"imaging movie(s) for {param.field}; several movies or a glob run one after another, each in its "
-                 f"own run folder",
+                 f"own run folder; left out, the movie a --config run folder recorded is used",
             default=None,
         )
 
@@ -537,6 +536,25 @@ def command_run(args: argparse.Namespace) -> None:
     if len(unknown) > 0:
         fail(f"the config file sets {', '.join(sorted(unknown))}, which {spec.slug} does not take")
 
+    # a run folder's config.json records the files its run read; a movie or array not given comes from there
+    inputs_file = loaded.get("inputs", {})
+    for param in (*spec.movie_params, *spec.array_params):
+        positional = param.kind == "movie" and len(spec.movie_params) == 1
+        name = param.field if positional else option_name(flag_for(param))
+        if getattr(args, name, None) or param.field not in inputs_file:
+            continue
+        recorded = inputs_file[param.field]
+        path = Path(recorded["path"]).expanduser()
+        if path.is_file() and path.stat().st_size != recorded.get("bytes", path.stat().st_size):
+            print(f"{path.name} is not the size the config's run recorded; it may have changed", file=sys.stderr)
+        setattr(args, name, [str(path)] if positional else str(path))
+        if args.dataset is None and "dataset" in recorded:
+            args.dataset = recorded["dataset"]
+    if len(spec.movie_params) == 1 and not getattr(args, spec.movie_params[0].field):
+        _, allows_none = scraper.annotation_members(annotation=spec.movie_params[0].annotation)
+        if not allows_none:
+            fail(f"{spec.slug} needs a movie: pass one, or a --config from a run that recorded it")
+
     kwargs_init = {}
     for param in spec.scalars:
         if param.field in values_file:
@@ -667,6 +685,12 @@ def command_run(args: argparse.Namespace) -> None:
             finished.append((movie, None))
             continue
         logger.info(f"done in {timedelta(seconds=round(time.monotonic() - start))}: {run_folder}")
+        argv_view = ["view", str(run_folder)]
+        if len(spec.movie_params) == 1 and spec.movie_params[0].field in filepaths_input:
+            argv_view += ["--raw", filepaths_input[spec.movie_params[0].field]]
+            if args.dataset is not None:
+                argv_view += ["--dataset", args.dataset]
+        print(f"open it with: masknmf {format_command(argv=argv_view)}")
         finished.append((movie, run_folder))
 
     if len(movies) > 1:

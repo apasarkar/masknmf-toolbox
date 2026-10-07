@@ -103,18 +103,21 @@ A run folder's `config.json`:
 - `timings`: each step's start time, seconds, whether it finished, and peak cuda memory (GB) on cuda; updated as the run goes
 - a step still running after 10 minutes is logged, and again every 10 minutes
 - resuming from compression (`--compress-kind skip --output-folder <run folder>`) keeps the earlier moco and compression configs and timings
+- `inputs`: the movie and arrays the run read, with their size and modification time; `masknmf run --config <run folder>/config.json` reruns on them unless a movie is given
+- a finished run prints the `masknmf view` line that opens it, with the movie as `--raw`
 
 ---
 
 ## two-photon-calcium (`TwoPhotonCalciumPipeline`)
 
 Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise | skip), `spatial-highpass` (spatial-highpass), `filtered-demixing` (multipass: 2 passes by default | skip), `unfiltered-demixing` (multipass: 3 passes by default).
-Run args: `MOVIE` (optional), `--fs` (required), `--exclude-border-radius`, `--remove-intermediates`.
+Run args: `MOVIE` (optional), `--fs` (required), `--exclude-border-radius`, `--remove-intermediates`, `--stop-after {registration,compression,demixing}`, `--resume-from RESULTS`.
 Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device {auto,cuda,cpu}`, `--log-level {debug,info,warning}`.
 
 - `--load-into-ram true` reads the raw movie into RAM before moco; needs about the movie's size in free RAM
 - demixing passes without a detrender get a spline detrender built from `--fs`
-- `--filtered-demixing-kind skip` stops after compression; a later `--compress-kind skip` run demixes it
+- `--stop-after registration` writes the shifts and template and ends; `--stop-after compression` (or the older `--filtered-demixing-kind skip`) ends once the compression is written; a later `--compress-kind skip` run demixes it
+- `--resume-from <results.hdf5>` replays that run's registration on the movie instead of estimating one, so compression can be re-run with other settings
 
 ```bash
 # all defaults -> <movie's folder>/<timestamp>_two-photon-calcium/results.hdf5
@@ -131,6 +134,17 @@ masknmf run --pipeline two-photon-calcium raw.h5 --dataset /mov --fs 15
 # piecewise-rigid moco at its defaults
 masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --motion-correct-kind piecewise-rigid
 
+# registration only, then check it: raw beside registered with the shifts
+masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --stop-after registration
+masknmf view ./20260923T120000_two-photon-calcium --raw movie.tif
+
+# the same registration, compression re-run with other settings
+masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --stop-after compression \
+    --resume-from ./20260923T120000_two-photon-calcium/results.hdf5 --compress-kind compress
+
+# the run again, exactly as recorded
+masknmf run --config ./20260923T120000_two-photon-calcium/config.json
+
 # already registered: skip moco, zero the border of the shift mask
 masknmf run --pipeline two-photon-calcium registered.tif --fs 30 \
     --motion-correct-kind skip --exclude-border-radius 10
@@ -146,7 +160,7 @@ masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --device cpu --frame
 ## one-photon-culture (`OnePhotonCulturePipeline`)
 
 Sections: `motion-correct` (gradient | skip), `compress` (compress | compress-denoise | skip), `demixing` (multipass: 2 passes by default, no detrending).
-Run args: `MOVIE`, `--fs` (required), `--indicator-sign {negative,positive}` (required), `--active-frames FILE.npy` (required), `--remove-intermediates`.
+Run args: `MOVIE`, `--fs` (required), `--indicator-sign {negative,positive}` (required), `--active-frames FILE.npy` (required), `--remove-intermediates`, `--stop-after {compression,demixing}`.
 Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device`, `--log-level`.
 
 - `--active-frames`: 1-D `.npy`, one 0/1 per frame, used as the compression frame weighting
@@ -171,7 +185,7 @@ masknmf run --pipeline one-photon-culture voltage.tif --fs 400 \
 ## glutamate-calcium-spine (`GlutamateCalciumSpinePipeline`)
 
 Sections: `motion-correct` (rigid), `compress` (compress-denoise), `demixing` (multipass: 2 passes tuned for spines by default).
-Run args: `--glutamate-channel`, `--calcium-channel`, `--exclude-initial-frames` (default 200).
+Run args: `--glutamate-channel`, `--calcium-channel`, `--exclude-initial-frames` (default 200), `--stop-after {registration,compression,demixing}`.
 Init args: `--output-folder`, `--frame-batch-size`, `--device`, `--log-level`.
 
 - both movies are flags, and either can be left out (`masknmf params` lists both as required)
@@ -196,7 +210,7 @@ masknmf run --pipeline glutamate-calcium-spine \
 
 Moco and compression only, no demixing.
 Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise, no skip).
-Run args: `MOVIE`, `--exclude-border-radius`.
+Run args: `MOVIE`, `--exclude-border-radius`, `--stop-after {registration,compression}`, `--resume-from RESULTS`.
 Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device`, `--log-level`.
 
 ```bash
