@@ -1194,10 +1194,10 @@ class Launcher:
         flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.borders_inner_h
         if imgui.begin_table("##flow", 3, flags, imgui.ImVec2(w, 0)):
             imgui.table_setup_column("stage", imgui.TableColumnFlags_.width_fixed, 7.5 * em)
-            imgui.table_setup_column("does", imgui.TableColumnFlags_.width_stretch, 1.2)
+            imgui.table_setup_column("description", imgui.TableColumnFlags_.width_stretch, 1.2)
             imgui.table_setup_column("check", imgui.TableColumnFlags_.width_stretch, 1.0)
             imgui.table_next_row()
-            for heading in ("stage", "does", "check"):
+            for heading in ("stage", "description", "check"):
                 imgui.table_next_column()
                 imgui.text_colored(COLOR_DIM, heading)
             for stage, _check, does, what in FLOW:

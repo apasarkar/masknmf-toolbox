@@ -125,7 +125,7 @@ BACKGROUNDS = (
     ("demixed movie", "the demixed movie around the ROI, from its peak frame; the player plays it"),
 )
 LABELS = (
-    ("action", "does"),
+    ("action", "description"),
     ("click a row, or its key", "labels the current ROI and moves to the next"),
     ("0, unlabel", "clears its label"),
     ("add", "a new class, colored in order; its key is its position"),
@@ -135,7 +135,7 @@ LABELS = (
     ("next unlabeled (u)", "the next ROI in view without a label"),
 )
 CLASSIFY = (
-    ("button", "does"),
+    ("button", "description"),
     (
         "train",
         "fits a ROICaT classifier on the labels, every ROI labeled and at least 2 per class, and saves it to "

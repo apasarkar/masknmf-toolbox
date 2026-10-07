@@ -128,7 +128,7 @@ SOURCES = (
     "needs demixed signals and traces shown; both presses on one spot",
 )
 MOUSE = (
-    ("mouse", "does"),
+    ("mouse", "description"),
     ("click", "select a signal or roi; an empty pixel adds its 5x5 average (pixel traces on)"),
     ("ctrl + click", "toggle it in the group"),
     ("shift + click", "add it; in the table, every row up to it"),
@@ -170,7 +170,7 @@ WEIGHTINGS = (
 CENTER_LINES = (("bumps", 0, SIGNAL), ("slow", 0, BACKGROUND))
 PIXEL_LINE = (("slow", 5, GROUP[2]),)
 OVERLAY = (
-    ("control", "does"),
+    ("control", "description"),
     ("masks (m)", "every footprint feathered by its weights; sel masks: the selection at its own peak, white rim"),
     ("contours (c)", "every footprint's outline; sel contours: the selection's, in its mask color"),
     ("color by", "masks and table ids by a column's rank instead of signal id"),
@@ -179,7 +179,7 @@ OVERLAY = (
     ("show traces", "plot the selection; off, selecting only highlights"),
 )
 TOOLS = (
-    ("tool", "does"),
+    ("tool", "description"),
     (
         "draw (a)",
         "one region at a time, a polygon on any panel: every signal in view whose center is on the switch's "
