@@ -9,6 +9,7 @@ import copy
 import dataclasses
 import io
 import json
+import logging
 from functools import partial
 from pathlib import Path
 from typing import Literal, Optional
@@ -184,6 +185,32 @@ def test_switching_a_nested_config_and_back_restores_its_default(odd_registry):
                          path="stage_config.passes[0].InitConfig")
     assert launcher.same(config_pass.InitConfig, default_pass.InitConfig)
     assert window.modified() == []
+
+
+def test_load_run_fills_the_window_from_a_runs_config_json(tmp_path):
+    cls = scraper.pipeline_registry()["two-photon-calcium"]
+    pipeline = cls(output_folder=str(tmp_path), frame_batch_size=123, device="cpu")
+    pipeline.run_config = {"frame_rate": 7.5, "stop_after": "registration"}
+    folder = pipeline.create_run_folder()
+    pipeline.inputs = {"data": {"path": str(tmp_path / "movie.h5"), "dataset": "mov"}}
+    pipeline.write_config()
+    logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
+    pipeline.log_handler.close()
+
+    window = launcher.Launcher(slug_initial="widefield-singlechannel")
+    assert window.load_run(source=str(folder / "results.hdf5")) is None
+    assert window.spec.slug == "two-photon-calcium" and window.loaded_run == str(folder)
+    assert window.paths["data"] == str(tmp_path / "movie.h5") and window.dataset == "mov"
+    assert window.texts["frame-rate"] == "7.5" and window.texts["stop-after"] == "registration"
+    assert window.texts["frame-batch-size"] == "123" and window.texts["device"] == "cpu"
+    assert window.texts["output-folder"] == str(tmp_path.resolve())
+    assert {row[0] for row in window.modified()} == {"stop_after", "output_folder", "frame_batch_size", "device"}
+    for section in window.spec.sections:
+        assert launcher.same(window.values[section.argument], cls.default_configs()[section.argument]), section.argument
+    argv = window.argv_run()
+    assert argv[:3] == ["run", "--pipeline", "two-photon-calcium"] and str(tmp_path / "movie.h5") in argv
+    assert "--dataset" in argv and "--config" not in argv
+    assert window.load_run(source=str(tmp_path)) == f"no config.json in {tmp_path}"
 
 
 def test_tracking_rows_grow_and_build_a_track_command(tmp_path):

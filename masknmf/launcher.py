@@ -147,7 +147,8 @@ IO_FILES = (
 )
 # the commands the functions amount to, as the footer spells them
 COMMANDS = (
-    ("run --pipeline <pipeline> <movie> ...", "a pipeline over a movie; values changed under Parameters travel in a json config"),
+    ("run --pipeline <pipeline> <movie> ... [--stop-after registration]", "a pipeline over a movie, or only its first stages; values changed under Parameters travel in a json config"),
+    ("run --config <run folder>/config.json", "the run again, on the movie it recorded unless another is given"),
     ("view <results.hdf5> [--raw <movie>] [--compression]", "the demixing viewer on one session's results, at whatever stage they reached"),
     ("view <tracking folder or manifest>", "the multisession viewer on a tracking run"),
     ("view <results...> --classify [--labels a,b] [--classifier <path>]", "label and classify ROIs, one session per file"),
@@ -185,15 +186,32 @@ VIEWERS = (
 )
 
 
+def text_value(value: Any) -> str:
+    """
+    A run or constructor argument's value spelled as the command line takes it.
+
+    Parameters
+    ----------
+    value : Any
+        The value; None gives the empty text.
+
+    Returns
+    -------
+    str
+        true or false for a bool, comma separated items for a tuple or list, str(value) otherwise.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (tuple, list)):
+        return ",".join(str(v) for v in value)
+    return str(value)
+
+
 def text_default(param: scraper.Param) -> str:
     """The text a parameter's input starts with: its default, spelled as the command line takes it."""
-    if param.required or param.default is None:
-        return ""
-    if isinstance(param.default, bool):
-        return "true" if param.default else "false"
-    if isinstance(param.default, tuple):
-        return ",".join(str(value) for value in param.default)
-    return str(param.default)
+    return "" if param.required else text_value(value=param.default)
 
 
 def text_of(value: Any) -> str:
@@ -424,13 +442,17 @@ class Launcher:
         self.buffers: dict[str, str] = {}
         self.errors: dict[str, str] = {}
         self.dataset = ""
-        # Open results: the path and the raw movie with its dataset, the viewer picked, and what the path holds
+        # the run folder whose config.json filled Run pipeline, until the pipeline is switched
+        self.loaded_run: Optional[str] = None
+        # Open results: the path and the raw movie with its dataset, the viewer picked, what the path holds, and why
+        # its run could not be loaded
         self.paths_open: dict[str, str] = {"source": "", "raw": ""}
         self.dataset_raw = ""
         self.viewer = ""
         self.compression_check = False
         self.inspected: Optional[str] = None
-        self.found: dict[str, Any] = {"kind": "", "detail": "", "stages": {}, "files": []}
+        self.found: dict[str, Any] = {"kind": "", "detail": "", "stages": {}, "files": [], "run": ""}
+        self.message_run = ""
         # Track sessions: results rows results_0, results_1, ... and the out folder
         self.paths_tracking: dict[str, str] = {"out": "", "results_0": ""}
         self.um_per_pixel = 1.2
@@ -471,6 +493,7 @@ class Launcher:
         self.values = {section.argument: section.value_for(kind=section.default_kind) for section in self.spec.sections}
         self.buffers = {}
         self.errors = {}
+        self.loaded_run = None
         for param in (*self.spec.movie_params, *self.spec.array_params):
             self.paths.setdefault(param.field, "")
 
@@ -577,17 +600,83 @@ class Launcher:
         """The results rows filled in, in session order."""
         return [p.strip() for k, p in target.items() if k.startswith("results_") and p.strip() != ""]
 
+    def load_run(self, source: str) -> Optional[str]:
+        """
+        Fill Run pipeline with a run's parameters from the config.json beside it.
+
+        Parameters
+        ----------
+        source : str
+            A run folder, a results file in one, or the config.json itself.
+
+        Returns
+        -------
+        str | None
+            Why nothing was loaded, or None once the pipeline, its configs, the inputs and the output folder are set.
+        """
+        path = Path(source).expanduser()
+        folder = path if path.is_dir() else path.parent
+        filepath = path if path.name == "config.json" else folder / "config.json"
+        if not filepath.is_file():
+            return f"no config.json in {folder}"
+        try:
+            loaded = json.loads(filepath.read_text())
+        except (OSError, ValueError) as error:
+            return f"could not read {filepath.name}: {error}"
+        configs = loaded.get("configs") if isinstance(loaded, dict) else None
+        name_class = loaded.get("pipeline") if isinstance(loaded, dict) else None
+        slug = next((s for s, cls in scraper.pipeline_registry().items() if cls.__name__ == name_class), None)
+        if not isinstance(configs, dict) or slug is None:
+            return f"{filepath.name} names no masknmf pipeline"
+        self.select_pipeline(index=self.slugs.index(slug))
+        try:
+            for section in self.spec.sections:
+                if section.argument in configs:
+                    passes, value = cli.section_value(section=section, kind=None, value_file=configs[section.argument])
+                    if passes:
+                        self.values[section.argument] = value
+        except SystemExit:
+            self.select_pipeline(index=self.index_pipeline)
+            return f"{filepath.name} does not fit {slug}"
+        for param in (*self.spec.run_scalars, *self.spec.scalars):
+            if param.field in configs and widget_for(param=param) != "folder":
+                self.texts[param.name] = text_value(value=configs[param.field])
+        for param in self.params_folder():
+            self.texts[param.name] = str(folder.parent)
+        inputs = loaded.get("inputs", {})
+        for param in (*self.spec.movie_params, *self.spec.array_params):
+            if param.field in inputs:
+                self.paths[param.field] = inputs[param.field].get("path", "")
+                if "dataset" in inputs[param.field]:
+                    self.dataset = inputs[param.field]["dataset"]
+        self.loaded_run = str(folder)
+        return None
+
     def inspect(self) -> None:
         """Read what the Open results path holds, once per change of the path."""
         source = self.paths_open["source"].strip()
         if source == self.inspected:
             return
         self.inspected = source
+        self.message_run = ""
         stages = {"registration": False, "compression": False, "demixing": False, "curated": False}
-        self.found = {"kind": "", "detail": "", "stages": stages, "files": []}
+        self.found = {"kind": "", "detail": "", "stages": stages, "files": [], "run": ""}
         if source == "":
             return
         path = Path(source).expanduser()
+        folder = path if path.is_dir() else path.parent
+        if (folder / "config.json").is_file():
+            self.found["run"] = str(folder)
+            # the raw movie the run read serves the registration and compression views
+            if self.paths_open["raw"].strip() == "":
+                try:
+                    inputs = json.loads((folder / "config.json").read_text()).get("inputs", {})
+                except (OSError, ValueError):
+                    inputs = {}
+                movie = next((v for v in inputs.values() if isinstance(v, dict) and not str(v.get("path", "")).lower().endswith(".npy")), None)
+                if movie is not None and Path(movie["path"]).expanduser().exists():
+                    self.paths_open["raw"] = movie["path"]
+                    self.dataset_raw = movie.get("dataset", "")
         try:
             tracking = cli.find_tracking(entry=source)
             if tracking is not None:
@@ -672,6 +761,11 @@ class Launcher:
             if path == "" and param.required:
                 problems.append(f"{param.field} needs a .npy file")
             elif path != "" and not Path(path).expanduser().exists():
+                problems.append(f"not found: {path}")
+        # the one run argument that names a file
+        for param in self.spec.run_scalars:
+            path = self.texts[param.name].strip()
+            if param.field == "resume_from" and path != "" and not Path(path).expanduser().exists():
                 problems.append(f"not found: {path}")
         params = [*self.spec.run_scalars, *self.spec.scalars]
         problems += [e for e in (self.error_for(param=p) for p in params) if e is not None]
@@ -1135,6 +1229,8 @@ class Launcher:
                 y += 1.5 * em
             if clicked and not selected:
                 self.select_pipeline(index=i)
+        if self.loaded_run is not None:
+            draw_wrapped(text=f"{fa.ICON_FA_FILE_LINES}  the parameters, movie and output folder of {self.loaded_run}", color=COLOR_DIM)
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
         # read after the cards: a click on one switched the pipeline
@@ -1159,7 +1255,12 @@ class Launcher:
             for param in spec.run_scalars:
                 color = COLOR_ERROR if self.error_for(param=param) is not None else COLOR_MODIFIED if self.is_modified(param=param) else None
                 self.row(caption=param.field.replace("_", " "), color=color)
-                self.draw_param(param=param, named=False)
+                if param.field == "resume_from":
+                    # a results file, not the folder its annotation would get
+                    self.draw_path(target=self.texts, key=param.name, filetypes=FILETYPES_RESULTS, folders=False,
+                                   hint="optional: a results file whose registration is replayed instead of estimated")
+                else:
+                    self.draw_param(param=param, named=False)
             imgui.end_table()
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
@@ -1242,6 +1343,20 @@ class Launcher:
                         imgui.text_colored(guide.TEXT if present else COLOR_DIM, stage)
                         imgui.same_line(0, 0.6 * em)
                         imgui.text_colored(COLOR_DIM, STAGE_NOTES[stage])
+            if self.found["run"] != "":
+                imgui.dummy(imgui.ImVec2(0, 0.3 * em))
+                if imgui.small_button(f"{fa.ICON_FA_PLAY}  Run again##run_again"):
+                    self.message_run = self.load_run(source=self.found["run"]) or ""
+                    if self.message_run == "":
+                        self.store.record_selection(idl.DialogResult(paths=[self.found["run"]]))
+                        self.page = "run"
+                if imgui.is_item_hovered():
+                    idl.wrapped_tooltip("Run again: Run pipeline takes this run's pipeline, parameters, movie and output folder "
+                                        "from its config.json; untouched, it reproduces the run")
+                imgui.same_line(0, 0.8 * em)
+                imgui.text_colored(COLOR_DIM, f"{fa.ICON_FA_FILE_LINES}  config.json beside it records the run")
+                if self.message_run != "":
+                    imgui.text_colored(COLOR_WARN, self.message_run)
         imgui.pop_style_var()
         imgui.pop_style_color()
 
@@ -1755,6 +1870,8 @@ class Launcher:
             with button_colors(COLORS_RUN[0], COLORS_RUN[1]):
                 imgui.begin_disabled(len(problems) > 0)
                 if imgui.button(label, imgui.ImVec2(width_primary, height)):
+                    if self.page == "open":
+                        self.store.record_selection(idl.DialogResult(paths=[self.paths_open["source"].strip()]))
                     self.argv = argv
                     self.quit()
                 imgui.end_disabled()
