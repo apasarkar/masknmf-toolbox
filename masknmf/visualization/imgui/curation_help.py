@@ -15,18 +15,12 @@ from imgui_bundle import icons_fontawesome_6 as fa
 from imgui_bundle import imgui
 from wgpu.utils.imgui import ImguiRenderer
 
+from masknmf.visualization.imgui.guide import ACCENT, CARD, DIM, EDGE, KEY, PLOT, TEXT, arrow, box, heading, u32
 from masknmf.visualization.imgui.keybinds import DEMIXING
 from masknmf.visualization.imgui.panels import draw_keybinds_button, draw_keybinds_popup
 from masknmf.visualization.imgui.theme import popup
 
-ACCENT = imgui.ImVec4(0.40, 0.68, 1.00, 1.0)
-KEY = imgui.ImVec4(1.00, 0.80, 0.20, 1.0)
-DIM = imgui.ImVec4(0.62, 0.62, 0.65, 1.0)
-TEXT = imgui.ImVec4(0.92, 0.92, 0.94, 1.0)
 DROP = imgui.ImVec4(1.00, 0.40, 0.40, 1.0)
-CARD = imgui.ImVec4(0.17, 0.18, 0.21, 1.0)
-EDGE = imgui.ImVec4(0.35, 0.35, 0.37, 1.0)
-PLOT = imgui.ImVec4(0.06, 0.06, 0.08, 1.0)
 # the trace plot's compressed / signal / background / residual line colors, then its first group colors
 COMPRESSED = imgui.ImVec4(0.85, 0.85, 0.85, 1.0)
 SIGNAL = imgui.ImVec4(0.30, 0.85, 0.40, 1.0)
@@ -194,27 +188,6 @@ TOOLS = (
 )
 
 
-def u32(color: imgui.ImVec4, alpha: float = 1.0) -> int:
-    return imgui.color_convert_float4_to_u32(imgui.ImVec4(color.x, color.y, color.z, alpha))
-
-
-def box(dl, x: float, y: float, w: float, h: float, label: str, color: imgui.ImVec4, fill_alpha: float = 0.0):
-    """A rounded box with its label centered; fill_alpha tints it with the label color over the card."""
-    a, b = imgui.ImVec2(x, y), imgui.ImVec2(x + w, y + h)
-    dl.add_rect_filled(a, b, u32(CARD), 4.0)
-    if fill_alpha:
-        dl.add_rect_filled(a, b, u32(color, fill_alpha), 4.0)
-    dl.add_rect(a, b, u32(color, 0.6), 4.0)
-    size = imgui.calc_text_size(label)
-    dl.add_text(imgui.ImVec2(x + (w - size.x) / 2, y + (h - size.y) / 2), u32(color), label)
-
-
-def arrow(dl, x0: float, x1: float, y: float) -> None:
-    col = u32(DIM)
-    dl.add_line(imgui.ImVec2(x0, y), imgui.ImVec2(x1 - 5, y), col, 1.5)
-    dl.add_triangle_filled(imgui.ImVec2(x1, y), imgui.ImVec2(x1 - 7, y - 4), imgui.ImVec2(x1 - 7, y + 4), col)
-
-
 def hash01(a: float, b: float) -> float:
     """A deterministic value in [0, 1) for the pair: the same speckle every run."""
     return math.sin(12.9898 * a + 78.233 * b) * 43758.5453 % 1.0
@@ -268,13 +241,6 @@ def plot(dl, w: float, title: str, specs: tuple, h: float, frame: float, tint: i
     p = imgui.get_cursor_screen_pos()
     lines(dl, p.x, card(dl, p.x, p.y, w, 1.2 * em + h, title, tint), w, h, specs, frame)
     imgui.dummy(imgui.ImVec2(w, 1.2 * em + h))
-
-
-def heading(icon: str, text: str) -> None:
-    em = imgui.get_font_size()
-    imgui.dummy(imgui.ImVec2(0, 0.7 * em))
-    imgui.text_colored(ACCENT, f"{icon}  {text}")
-    imgui.dummy(imgui.ImVec2(0, 0.1 * em))
 
 
 def table(name: str, rows: tuple) -> None:
