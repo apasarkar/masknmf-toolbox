@@ -19,7 +19,8 @@ from masknmf.arrays import ArrayLike
 from masknmf.compression import CompressionArray, CompressStrategy, CompressDenoiseStrategy
 from masknmf.compression.preprocessing import MaximinSplineDetrend
 from masknmf.demixing import SignalDemixer, DemixingResults, NoSignalsDetectedError
-from masknmf.motion_correction import BaseRegistrationArray, RigidMotionCorrector, PiecewiseRigidMotionCorrector
+from masknmf.motion_correction import (BaseRegistrationArray, RigidMotionCorrector, PiecewiseRigidMotionCorrector,
+                                       RigidRegistrationArray, PiecewiseRigidRegistrationArray)
 from masknmf.motion_correction.moco_preprocessing import construct_moco_template
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
@@ -269,13 +270,24 @@ class BasePipeline(ABC):
                        data: np.ndarray | ArrayLike,
                        config: RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig | Literal["skip"] | None,
                        results_path: str,
-                       exclude_border_radius: int = 0) -> tuple[np.ndarray | ArrayLike, np.ndarray]:
+                       exclude_border_radius: int = 0,
+                       resume_from: str | Path | None = None) -> tuple[np.ndarray | ArrayLike, np.ndarray]:
         """
         Register data with a rigid (the default when config is None) or piecewise rigid corrector and export it to
-        results_path, or pass it through for "skip". Also returns a pixel weighting that is 0 where the shifts
-        moved pixels in from outside the fov and on the outer exclude_border_radius pixels.
+        results_path, or pass it through for "skip". With resume_from, the registration stored in that results file
+        is replayed on data instead of estimating one, and exported again. Also returns a pixel weighting that is 0
+        where the shifts moved pixels in from outside the fov and on the outer exclude_border_radius pixels.
         """
-        if isinstance(config, str):
+        if resume_from is not None:
+            stored = [c for c in (RigidRegistrationArray, PiecewiseRigidRegistrationArray) if has_group(resume_from, c.__name__)]
+            if len(stored) == 0:
+                raise ValueError(f"{resume_from} holds no registration to resume from")
+            with self.step("motion correction"):
+                logger.info(f"replaying the registration stored in {resume_from}")
+                moco_data = stored[0].from_hdf5(resume_from, input_movie=data, device=self.device)
+                moco_data.output_device = moco_data.strategy.device
+                moco_data.export(results_path)
+        elif isinstance(config, str):
             if config.lower() != "skip":
                 raise ValueError("Invalid MotionCorrectionConfig input")
             display("Not Running Motion Correction")

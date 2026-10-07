@@ -60,13 +60,18 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
                   path,
                   input_movie: ArrayLike,
                   prefix: str = "",
+                  device: str | torch.device | None = None,
                   **kwargs):
+        """The stored registration replayed on input_movie; device is where the strategy applies the shifts."""
         if cls._strategy_cls is None:
             raise NotImplementedError(
                 f"{cls.__name__} must set `_strategy_cls` to enable from_hdf5"
             )
         prefix = f"{prefix}/" if prefix else ""
-        strat = cls._strategy_cls(**load_dict(path, prefix + cls._strategy_cls.__name__))
+        kwargs_strategy = load_dict(path, prefix + cls._strategy_cls.__name__)
+        if device is not None:
+            kwargs_strategy["device"] = device
+        strat = cls._strategy_cls(**kwargs_strategy)
         reg_arr_dict = load_dict(path, prefix + cls.__name__)
         return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict, **kwargs)
 

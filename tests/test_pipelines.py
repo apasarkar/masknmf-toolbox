@@ -6,6 +6,7 @@ import logging
 import time
 
 import h5py
+import numpy as np
 import pytest
 
 import masknmf
@@ -122,6 +123,43 @@ def test_a_step_records_its_peak_cuda_memory_only_on_a_cuda_device(tmp_path):
         assert ("peak_cuda_gb" in timing) == str(pipeline.torch_device).startswith("cuda")
         logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
         pipeline.log_handler.close()
+
+
+def test_stop_after_registration_writes_the_shifts_and_resume_from_replays_them(tmp_path):
+    rng = np.random.default_rng(0)
+    yy, xx = np.mgrid[:48, :48]
+    frames = []
+    for t in range(40):
+        dy, dx = round(2 * np.sin(t / 5)), round(2 * np.cos(t / 7))
+        frames.append(100 * np.exp(-((yy - 24 - dy) ** 2 + (xx - 24 - dx) ** 2) / 30) + rng.normal(0, 1, (48, 48)))
+    movie = np.stack(frames).astype(np.float32)
+    pipeline = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path), device="cpu")
+    folder = pipeline.run(movie, frame_rate=30, stop_after="registration")
+    with h5py.File(folder / "results.hdf5") as file:
+        assert set(file) == {"RigidMotionCorrector", "RigidRegistrationArray"}
+        shifts = file["RigidRegistrationArray/shifts"][()]
+    config = json.loads((folder / "config.json").read_text())
+    assert config["configs"]["stop_after"] == "registration" and config["run"]["status"] == "done"
+    assert list(config["timings"]) == ["motion correction"]
+
+    replayed = pipeline.run(movie, frame_rate=30, stop_after="registration", resume_from=folder / "results.hdf5")
+    assert replayed != folder
+    with h5py.File(replayed / "results.hdf5") as file:
+        assert np.array_equal(file["RigidRegistrationArray/shifts"][()], shifts)
+    assert json.loads((replayed / "config.json").read_text())["configs"]["resume_from"] == str(folder / "results.hdf5")
+    logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
+    pipeline.log_handler.close()
+
+
+def test_stop_after_refuses_runs_with_nothing_to_write(tmp_path):
+    movie = np.zeros((4, 16, 16), dtype=np.float32)
+    skipped = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path), motion_correct_config="skip")
+    with pytest.raises(ValueError):
+        skipped.run(movie, frame_rate=30, stop_after="registration")
+    resumed = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path), compress_config="skip")
+    with pytest.raises(ValueError):
+        resumed.run(None, frame_rate=30, stop_after="compression")
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize("slug", SLUGS)

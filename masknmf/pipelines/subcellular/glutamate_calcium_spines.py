@@ -79,7 +79,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
     def run(self,
             glutamate_channel: np.ndarray | ArrayLike | None,
             calcium_channel: np.ndarray | ArrayLike | None,
-            exclude_initial_frames: int = 200) -> Path:
+            exclude_initial_frames: int = 200,
+            stop_after: Literal["registration", "compression", "demixing"] = "demixing") -> Path:
         """
         This routine runs the pipeline for processing single-plane glutamate and calcium imaging videos.
         It can analyze joint calcium/glutamate recordings or just process a single channel of either glutamate or calcium data
@@ -90,9 +91,11 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         Args:
             glutamate_channel (np.ndarray | ArrayLike | None):
             calcium_channel (np.ndarray | ArrayLike | None):
+            stop_after: the last stage to run: "registration" ends once both channels' shifts are written,
+                "compression" once their compressions are, "demixing" runs everything
         """
         device = self.torch_device
-        self.run_config = {"exclude_initial_frames": exclude_initial_frames}
+        self.run_config = {"exclude_initial_frames": exclude_initial_frames, "stop_after": stop_after}
         run_folder = self.create_run_folder()
         glu_path = os.path.join(run_folder, "results.glutamate.hdf5")
         ca_path = os.path.join(run_folder, "results.calcium.hdf5")
@@ -167,6 +170,9 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             calcium_moco_array = None
             calcium_moco_array_dense = None
 
+        if stop_after == "registration":
+            return self.finish()
+
         if calcium_moco_array_dense is not None:
             cross_channel_mask = get_std_based_mask(calcium_moco_array_dense)
         else:
@@ -198,6 +204,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         else:
             pmd_ca = None
 
+        if stop_after == "compression":
+            return self.finish()
 
         ## If the demixer has spines in the glutamate channel
         if pmd_glu is not None:

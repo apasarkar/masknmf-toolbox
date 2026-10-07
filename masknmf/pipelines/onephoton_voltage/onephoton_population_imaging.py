@@ -308,7 +308,8 @@ class OnePhotonCulturePipeline(BasePipeline):
             frame_rate: float,
             indicator_sign: Literal["negative", "positive"],
             active_frames: np.ndarray,
-            remove_intermediates: bool = True) -> Path:
+            remove_intermediates: bool = True,
+            stop_after: Literal["compression", "demixing"] = "demixing") -> Path:
         """
                 Uses the API to run rigid motion correction, compression (with denoising), and demixing.
 
@@ -327,6 +328,8 @@ class OnePhotonCulturePipeline(BasePipeline):
                     load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
                     remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
                         results carry the pmd)
+                    stop_after: the last stage to run: "compression" ends once the compression is written,
+                        "demixing" runs everything
 
                 The raw-scale footprints and the denoised and raw-regressed traces over all frames are written to the
                 RawScaleEstimates group as a, c_denoised and c_raw.
@@ -359,9 +362,11 @@ class OnePhotonCulturePipeline(BasePipeline):
                 moco_array.output_device=device
 
         self.run_config = {"frame_rate": frame_rate, "indicator_sign": indicator_sign,
-                           "remove_intermediates": remove_intermediates}
+                           "remove_intermediates": remove_intermediates, "stop_after": stop_after}
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
+                if stop_after != "demixing":
+                    raise ValueError('compress_config "skip" resumes an earlier run for its demixing; stop_after leaves nothing to run')
                 results_path = self.results_path(resume=True)
             else:
                 raise ValueError(f"If compress_config is a string, it can only be `skip`")
@@ -382,6 +387,8 @@ class OnePhotonCulturePipeline(BasePipeline):
                 compressed_results = compress_strategy.compress(moco_array)
                 compressed_results.export(results_path)
 
+        if stop_after == "compression":
+            return self.finish()
         device = self.torch_device
         display("Running demixing analysis")
 

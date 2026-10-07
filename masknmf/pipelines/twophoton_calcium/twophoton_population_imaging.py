@@ -67,7 +67,9 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             data: np.ndarray | ArrayLike | None,
             frame_rate: float,
             exclude_border_radius: int = 0,
-            remove_intermediates: bool = True) -> Path:
+            remove_intermediates: bool = True,
+            stop_after: Literal["registration", "compression", "demixing"] = "demixing",
+            resume_from: str | Path | None = None) -> Path:
         """
                 Uses the API to run rigid motion correction, compression (with denoising), and demixing.
 
@@ -87,14 +89,22 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                     load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
                     remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
                         results carry the pmd); the registration shifts stay
+                    stop_after: the last stage to run: "registration" writes the shifts and template and ends,
+                        "compression" ends once the compression is written, "demixing" runs everything
+                    resume_from: a results file whose registration is replayed on data instead of estimating one
                 """
 
         self.run_config = {"frame_rate": frame_rate, "exclude_border_radius": exclude_border_radius,
-                           "remove_intermediates": remove_intermediates}
+                           "remove_intermediates": remove_intermediates, "stop_after": stop_after,
+                           "resume_from": None if resume_from is None else str(resume_from)}
+        if stop_after == "registration" and isinstance(self.motion_correct_config, str) and resume_from is None:
+            raise ValueError('stop_after "registration" with motion_correct_config "skip" has nothing to write')
         # a resumed run has no registered movie to re-estimate raw traces from
         moco_data = None
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
+                if stop_after != "demixing":
+                    raise ValueError('compress_config "skip" resumes an earlier run for its demixing; stop_after leaves nothing to run')
                 results_path = self.results_path(resume=True)
             else:
                 raise ValueError(f"If compress_config is a string, it can only be `skip`")
@@ -106,7 +116,9 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             if self.load_into_ram:
                 data = self.read_into_ram(data)
             moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
-                                                        exclude_border_radius)
+                                                        exclude_border_radius, resume_from)
+            if stop_after == "registration":
+                return self.finish()
 
             compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
             compress_strategy.detrender = self.spline_detrender(data.shape[0], frame_rate, window_seconds=40,
@@ -116,6 +128,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 compressed_results = compress_strategy.compress(moco_data)
                 compressed_results.export(results_path)
 
+        if stop_after == "compression":
+            return self.finish()
         if isinstance(self.filtered_demixing_config, str):
             if self.filtered_demixing_config.lower() != "skip":
                 raise ValueError(f"If filtered_demixing_config is a string, it can only be `skip`")
