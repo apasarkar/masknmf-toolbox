@@ -150,6 +150,12 @@ TOOL_BUTTONS = (
     (fa.ICON_FA_OBJECT_GROUP, "merge", DIM),
     (fa.ICON_FA_LOCATION_CROSSHAIRS, "center (f)", ACCENT),
 )
+WEIGHTING = (
+    "own peak: near binary, weak and strong alike; to see everything the demixer picked up, junk included",
+    "own peak for axons and other thin or dim processes: scaled by strength they all but vanish",
+    "signal peak: real cells stand out, weak or spurious signals draw faint; the field as the signals movie shows it",
+    "the masks opacity scales both; the selected masks always fade to their own peak",
+)
 TOOLS = (
     ("tool", "does"),
     (
@@ -190,6 +196,12 @@ TOOLS = (
         "overlay",
         "masks (m), the selected masks, contours (c), the selected contours, each with an opacity; color by "
         "ranks a column; traces: center (t) keeps the current frame mid-plot, quick pixel trace (p), show selected traces",
+    ),
+    (
+        "weighting",
+        "how the masks fade: own peak draws every mask solid at its own brightest pixel, signal peak scales each "
+        "by its signal's strength against the field's strongest, as the signals movie shows it",
+        WEIGHTING,
     ),
 )
 
