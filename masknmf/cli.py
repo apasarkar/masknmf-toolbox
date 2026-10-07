@@ -49,12 +49,18 @@ import masknmf
 from masknmf.classification import RoicatClassifier
 from masknmf.demixing.curation import latest_results
 from masknmf.demixing.labels import SIDECAR_SUFFIX, read_labels
+from masknmf.io import (
+    SUFFIXES_HDF5,
+    SUFFIXES_TIFF,
+    group_name_compression,
+    group_name_demixing,
+    open_results,
+    stage_groups,
+)
 from masknmf.multisession import RoicatDataAdapter, RoicatTracker
 from masknmf.pipelines import scraper
 
 
-SUFFIXES_TIFF = (".tif", ".tiff")
-SUFFIXES_HDF5 = (".h5", ".hdf5")
 GLOB_TRACKING_MANIFEST = "*_roicat-tracking-manifest.json"
 
 NAMES_ALIAS = {"frame_rate": "--fs"}
@@ -64,99 +70,25 @@ CHARACTERS_NEEDING_QUOTES = set(" \t\\'&|;<>()$`!*?[]{}~#")
 logger = logging.getLogger("masknmf")
 
 
-def group_names_registration() -> tuple[str, ...]:
-    """The hdf5 group names a registration stage can be stored under."""
-    return (
-        masknmf.RigidRegistrationArray.__name__,
-        masknmf.PiecewiseRigidRegistrationArray.__name__,
-        masknmf.GradientRegistrationArray.__name__,
-    )
-
-
-def group_name_compression() -> str:
-    """The hdf5 group name the compression stage is stored under."""
-    return masknmf.CompressionArray.__name__
-
-
-def group_name_demixing() -> str:
-    """The hdf5 group name the demixing stage is stored under."""
-    return masknmf.DemixingResults.__name__
-
-
 def load_movie(filepath_movie: str, name_dataset: Optional[str] = None):
-    """
-    Open a raw movie with the loader matching its path.
-
-    Args:
-        filepath_movie (str): A tiff file, a directory of tiff files, or an hdf5 file
-        name_dataset (str | None): For hdf5 input, the dataset holding the movie
-    Returns:
-        LazyFrameLoader: A (frames, height, width) lazy array
-    Raises:
-        SystemExit: If the path is not one masknmf can read, a tiff directory is empty,
-            or an hdf5 dataset was not named
-    """
-    path_movie = Path(filepath_movie).expanduser()
-    if not path_movie.exists():
-        fail(f"no such file or directory: {path_movie}")
-
-    if path_movie.is_dir():
-        filepaths_tiffs = sorted(
-            str(p) for p in path_movie.iterdir() if p.suffix.lower() in SUFFIXES_TIFF
-        )
-        if len(filepaths_tiffs) == 0:
-            fail(f"no tiff files in {path_movie}")
-        if len(filepaths_tiffs) == 1:
-            return masknmf.TiffArray(filepaths_tiffs[0])
-        return masknmf.TiffSeriesLoader(filepaths_tiffs)
-
-    suffix = path_movie.suffix.lower()
-    if suffix in SUFFIXES_TIFF:
-        return masknmf.TiffArray(str(path_movie))
-    if suffix in SUFFIXES_HDF5:
-        if name_dataset is None:
-            fail(f"{path_movie.name} is hdf5; name the movie dataset with --dataset")
-        return masknmf.Hdf5Array(str(path_movie), name_dataset)
-
-    fail(
-        f"masknmf cannot read {path_movie.name}; expected a .tif/.tiff file, a directory "
-        "of them, or a .h5/.hdf5 file"
-    )
+    """masknmf.io.load_movie, a path it cannot read ending the command."""
+    try:
+        return masknmf.io.load_movie(filepath_movie, name_dataset)
+    except (OSError, ValueError) as e:
+        fail(f"{e}; an hdf5 movie's dataset is named with --dataset")
 
 
 def has_stage(filepath_results: str, name_group: str) -> bool:
-    """
-    Whether a results file holds a stage group.
-
-    masknmf.utils.has_group opens any path it is handed and raises a bare OSError
-    on a non-hdf5 file, so the suffix is checked here first.
-    """
-    path_results = Path(filepath_results)
-    if path_results.suffix.lower() not in SUFFIXES_HDF5:
-        fail(f"{path_results.name} is not a .h5/.hdf5 results file")
-    return masknmf.utils.has_group(str(path_results), name_group)
+    """Whether a results file holds a stage group; a path that is not a results file ends the command."""
+    return name_group in groups_present(filepath_results)
 
 
 def groups_present(filepath_results: str) -> list[str]:
-    """The masknmf stage groups a results file holds, in pipeline order, then demixing results under a prefix."""
-    names_known = (
-        *group_names_registration(),
-        group_name_compression(),
-        group_name_demixing(),
-    )
-    names = [
-        name
-        for name in names_known
-        if has_stage(filepath_results=filepath_results, name_group=name)
-    ]
-    if len(names) > 0:
-        with h5py.File(filepath_results, "r") as f:
-            names += [
-                f"{key}/{group_name_demixing()}"
-                for key in f
-                if isinstance(f[key], h5py.Group) and group_name_demixing() in f[key]
-            ]
-    return names
+    """masknmf.io.stage_groups, a path that is not a results file ending the command."""
+    try:
+        return stage_groups(filepath_results)
+    except (OSError, ValueError) as e:
+        fail(str(e))
 
 
 def expand_results(entries: list[str]) -> list[str]:
@@ -862,44 +794,22 @@ def command_view(args: argparse.Namespace) -> None:
         str(masknmf.utils.torch_select_device()) if args.device == "auto" else args.device
     )
     raw = None if args.raw is None else load_movie(filepath_movie=args.raw, name_dataset=args.dataset)
-
-    # the file's registration replayed on the raw movie: what the compression saw, and all a registration-only
-    # run has to show
-    name_registration = next((n for n in group_names_registration() if n in names_present), None)
-    registered = None
-    if name_registration is not None and raw is not None:
-        with h5py.File(filepath_results, "r") as f:
-            num_frames = f[name_registration]["shifts"].shape[0]
-        if num_frames != raw.shape[0]:
-            print(
-                f"{args.raw} has {raw.shape[0]} frames, the {name_registration} in {filepath_results} "
-                f"{num_frames}: not the movie the run registered; shifts not applied"
-            )
-        else:
-            registered = getattr(masknmf, name_registration).from_hdf5(filepath_results, input_movie=raw)
-    if name_demixing in names_present:
-        results = masknmf.DemixingResults.from_hdf5(filepath_results, prefix=args.prefix, device=device)
-    elif group_name_compression() in names_present:
-        results = masknmf.CompressionArray.from_hdf5(filepath_results)
-    elif registered is not None:
-        results = registered
-    else:
-        fail(f"{filepath_results} holds only {name_registration}; showing it needs --raw, the movie the run registered")
-    # a raw movie the pipeline trimmed (the glutamate pipeline drops its first frames) no longer lines up
-    raw_fits = raw is not None and tuple(raw.shape) == tuple(results.shape)
-    if raw is not None and not raw_fits:
-        print(f"raw movie is {tuple(raw.shape)}, the results {tuple(results.shape)}; no raw panel")
+    # the demixing results, else the compression, else the registration replayed on the raw movie
+    try:
+        results, raw, registered = open_results(filepath_results, prefix=args.prefix, device=device, raw=raw)
+    except (OSError, ValueError) as e:
+        fail(f"{e}; --raw names the movie")
     if args.compression and isinstance(results, masknmf.BaseRegistrationArray):
         fail(f"{filepath_results} holds no compression")
-    if args.compression and not raw_fits:
+    if args.compression and raw is None:
         fail("--compression needs --raw, the movie the compression saw, with the results' frame count")
     viewer = masknmf.SingleSessionDemixingVis(
         demixing_results=results,
         frame_timings=timings(results.shape[0], args.fs),
         device=device,
         results_path=filepath_results,
-        raw=raw if raw_fits else None,
-        registered=registered if raw_fits and registered is not results else None,
+        raw=raw,
+        registered=registered,
     )
     if args.compression:
         viewer.compute_lag1_acf()
