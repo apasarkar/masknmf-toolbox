@@ -51,18 +51,20 @@ class WidefieldSinglechannelPipeline(BasePipeline):
             resume_from: str | Path | None = None) -> Path:
         """
         Uses the API to run rigid motion correction, compression (with denoising). With stop_after "registration" the
-        run ends once the shifts and template are written; resume_from replays the registration stored in that
-        results file instead of estimating one.
+        run ends once the shifts and template are written; resume_from, an earlier results file, is copied into the new
+        run folder and its registration replayed instead of estimating one.
         """
-        self.run_config = {"exclude_border_radius": exclude_border_radius, "stop_after": stop_after,
-                           "resume_from": None if resume_from is None else str(resume_from)}
         if stop_after == "registration" and isinstance(self.motion_correct_config, str) and resume_from is None:
             raise ValueError('stop_after "registration" with motion_correct_config "skip" has nothing to write')
-        results_path = self.results_path()
+        resume_from, base = self.resume_source(resume_from, reuse_compression=False)
+        self.run_config = {"exclude_border_radius": exclude_border_radius, "stop_after": stop_after,
+                           "resume_from": None if resume_from is None else str(resume_from)}
+        results_path = self.results_path(base)
+        stored = None if resume_from is None else self.resume(resume_from, results_path, reuse_compression=False)
         if self.load_into_ram:
             data = self.read_into_ram(data)
         moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
-                                                    exclude_border_radius, resume_from)
+                                                    exclude_border_radius, stored)
         if stop_after == "registration":
             return self.finish()
 

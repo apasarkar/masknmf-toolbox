@@ -67,7 +67,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             data: np.ndarray | ArrayLike | None,
             frame_rate: float,
             exclude_border_radius: int = 0,
-            remove_intermediates: bool = True,
+            remove_intermediates: bool = False,
             stop_after: Literal["registration", "compression", "demixing"] = "demixing",
             resume_from: str | Path | None = None) -> Path:
         """
@@ -84,42 +84,44 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                     DemixConfig: Config object specifying parameters for demixing the data. With filtered_demixing_config
                         "skip", the run ends after compression, kept for a later run with compress_config "skip"
                     output_folder: Every stage is written to ``<output_folder>/<timestamp>_two-photon-calcium/results.hdf5``,
-                        one hdf5 group per stage. With compress_config "skip", output_folder is instead an existing run
-                        folder whose results.hdf5 holds the compression; demixing is written into that same file
+                        one hdf5 group per stage. With compress_config "skip" and no resume_from, output_folder is
+                        instead an earlier run folder whose compression is reused, and the new run folder goes beside it
                     load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
                     remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
                         results carry the pmd); the registration shifts stay
                     stop_after: the last stage to run: "registration" writes the shifts and template and ends,
                         "compression" ends once the compression is written, "demixing" runs everything
-                    resume_from: a results file whose registration is replayed on data instead of estimating one
+                    resume_from: an earlier results file copied into the new run folder: its registration is replayed on
+                        data instead of estimating one, and with compress_config "skip" its compression is reused too.
+                        The earlier file is left as it is
                 """
 
+        reuse_compression = isinstance(self.compress_config, str)
+        if reuse_compression and self.compress_config.lower() != "skip":
+            raise ValueError(f"If compress_config is a string, it can only be `skip`")
+        if reuse_compression and stop_after != "demixing":
+            raise ValueError('compress_config "skip" reuses a compression for its demixing; stop_after leaves nothing to run')
+        if stop_after == "registration" and isinstance(self.motion_correct_config, str) and resume_from is None:
+            raise ValueError('stop_after "registration" with motion_correct_config "skip" has nothing to write')
+        if data is None and not reuse_compression:
+            raise ValueError("data is None starting from the motion correction step. Specify a dataset")
+        resume_from, base = self.resume_source(resume_from, reuse_compression)
         self.run_config = {"frame_rate": frame_rate, "exclude_border_radius": exclude_border_radius,
                            "remove_intermediates": remove_intermediates, "stop_after": stop_after,
                            "resume_from": None if resume_from is None else str(resume_from)}
-        if stop_after == "registration" and isinstance(self.motion_correct_config, str) and resume_from is None:
-            raise ValueError('stop_after "registration" with motion_correct_config "skip" has nothing to write')
-        # a resumed run has no registered movie to re-estimate raw traces from
+        results_path = self.results_path(base)
+        stored = None if resume_from is None else self.resume(resume_from, results_path, reuse_compression)
+        # a resumed run without the raw movie has no registered movie to re-estimate raw traces from
         moco_data = None
-        if isinstance(self.compress_config, str):
-            if self.compress_config.lower() == "skip":
-                if stop_after != "demixing":
-                    raise ValueError('compress_config "skip" resumes an earlier run for its demixing; stop_after leaves nothing to run')
-                results_path = self.results_path(resume=True)
-            else:
-                raise ValueError(f"If compress_config is a string, it can only be `skip`")
-        else:
-            results_path = self.results_path()
-            ## Decide whether to motion correct data or not
-            if data is None:
-                raise ValueError("data is None starting from the motion correction step. Specify a dataset")
+        if data is not None:
             if self.load_into_ram:
                 data = self.read_into_ram(data)
             moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
-                                                        exclude_border_radius, resume_from)
-            if stop_after == "registration":
-                return self.finish()
+                                                        exclude_border_radius, stored)
+        if stop_after == "registration":
+            return self.finish()
 
+        if not reuse_compression:
             compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
             compress_strategy.detrender = self.spline_detrender(data.shape[0], frame_rate, window_seconds=40,
                                                                 knot_seconds=25, sigma_seconds=0.3)

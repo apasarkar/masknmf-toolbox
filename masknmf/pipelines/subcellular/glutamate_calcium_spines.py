@@ -214,6 +214,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 device=device)
 
             glu_pmd_demixer_results = self.run_multipass(glu_pmd_demixer, self.demixing_config, "glutamate spine demixing")
+            # saved now so a failure in the steps after it still leaves the spines; written again with raw traces
+            glu_pmd_demixer_results.export(glu_path)
 
             ## Now pull out "whole dendrite" events. Can refactor this to a helper function to keep the "run" function readable
             glu_pmd_demixer_global= masknmf.demixing.signal_demixer.SignalDemixer(
@@ -275,6 +277,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 device=device)
 
             ca_pmd_demixer_results = self.run_multipass(ca_pmd_demixer, self.demixing_config, "calcium spine demixing")
+            # saved now so a failure in the steps after it still leaves the spines; written again with raw traces
+            ca_pmd_demixer_results.export(ca_path)
 
 
             ## Now pull out "whole dendrite" events. Can refactor this to a helper function to keep the "run" function readable

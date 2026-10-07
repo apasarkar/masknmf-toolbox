@@ -3,12 +3,14 @@ from contextlib import contextmanager
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 from pathlib import Path
+import functools
 import inspect
 import json
 import logging
 import os
 import threading
 import time
+import h5py
 import numpy as np
 import torch
 from typing import *
@@ -20,7 +22,7 @@ from masknmf.compression import CompressionArray, CompressStrategy, CompressDeno
 from masknmf.compression.preprocessing import MaximinSplineDetrend
 from masknmf.demixing import SignalDemixer, DemixingResults, NoSignalsDetectedError
 from masknmf.motion_correction import (BaseRegistrationArray, RigidMotionCorrector, PiecewiseRigidMotionCorrector,
-                                       RigidRegistrationArray, PiecewiseRigidRegistrationArray)
+                                       RigidRegistrationArray, PiecewiseRigidRegistrationArray, GradientRegistrationArray)
 from masknmf.motion_correction.moco_preprocessing import construct_moco_template
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
@@ -29,11 +31,40 @@ from masknmf.utils import display, get_timestamp, TIMESTAMP_FORMAT, has_group, d
 
 logger = logging.getLogger(__name__)
 
+# the registrations a results file can hold, each stored as its array's group beside its strategy's
+REGISTRATION_ARRAYS = (RigidRegistrationArray, PiecewiseRigidRegistrationArray, GradientRegistrationArray)
+
 
 def heartbeat(name: str, start: float, seconds: float, stop: threading.Event):
     """Log every seconds that the step name, started at start (monotonic), is still running, until stop is set."""
     while not stop.wait(seconds):
         logger.info(f"{name} still running after {timedelta(seconds=round(time.monotonic() - start))}")
+
+
+class RecordsFailure:
+    """
+    A pipeline's run that, when it raises after making its run folder, logs the error and records in config.json
+    that the run failed, then lets the error through. BasePipeline wraps every subclass's run in one, so a run
+    started from Python leaves the same record as one started from the command line.
+    """
+
+    def __init__(self, run):
+        functools.update_wrapper(self, run)
+        self.run = run
+
+    def __get__(self, pipeline, owner=None):
+        return self if pipeline is None else functools.partial(self, pipeline)
+
+    def __call__(self, pipeline, *args, **kwargs):
+        # a folder left from an earlier run of the same pipeline is not this run's
+        pipeline.run_folder = None
+        try:
+            return self.run(pipeline, *args, **kwargs)
+        except BaseException:
+            if pipeline.run_folder is not None:
+                logger.exception(f"{type(pipeline).__name__} failed")
+                pipeline.finish("failed")
+            raise
 
 
 class BasePipeline(ABC):
@@ -42,6 +73,11 @@ class BasePipeline(ABC):
     """
 
     heartbeat_seconds = 600
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if "run" in cls.__dict__:
+            cls.run = RecordsFailure(cls.__dict__["run"])
 
     def __init__(self,
                  output_folder: str | Path | None = None,
@@ -121,12 +157,14 @@ class BasePipeline(ABC):
         """``device`` with "auto" resolved to the device pytorch will use."""
         return torch_select_device(self.device)
 
-    def create_run_folder(self) -> Path:
+    def create_run_folder(self, base: Path | None = None) -> Path:
         """
-        Make ``<output_folder>/<yyyymmddTHHMMSS>_<pipeline slug>/`` (the working directory when output_folder is None),
-        adding a numeric suffix when a run started in the same second, and write config.json in it.
+        Make ``<base>/<yyyymmddTHHMMSS>_<pipeline slug>/``, base being output_folder unless given (the working
+        directory when both are None), adding a numeric suffix when a run started in the same second, and write
+        config.json in it.
         """
-        base = Path.cwd() if self.output_folder is None else self.output_folder
+        if base is None:
+            base = Path.cwd() if self.output_folder is None else self.output_folder
         name = f"{get_timestamp()}_{slugify(name_class=type(self).__name__)}"
         candidate = base / name
         suffix = 0
@@ -221,31 +259,74 @@ class BasePipeline(ABC):
         self.write_config()
         return self.run_folder
 
-    def results_path(self, resume: bool = False) -> str:
-        """
-        ``results.hdf5`` in a new run folder. With ``resume``, the one in output_folder itself, an earlier run
-        folder whose compression is reused; its config.json keeps that run's motion correction and compression.
-        """
-        if not resume:
-            path = os.path.join(self.create_run_folder(), "results.hdf5")
-            display(f"Writing results to {path}")
-            return path
-        folder = Path.cwd() if self.output_folder is None else self.output_folder
-        path = os.path.join(folder, "results.hdf5")
-        if not has_group(path, CompressionArray.__name__):
-            raise ValueError(f"You specified that compression should be skipped but {path} holds no compression")
-        self.run_folder = folder
-        # the earlier run's motion correction and compression made the results reused now, so config.json keeps
-        # their inputs, configs and timings and takes the rest from this run
-        earlier = json.loads((folder / "config.json").read_text()) if (folder / "config.json").is_file() else {}
-        self.inputs = {**earlier.get("inputs", {}), **self.inputs}
-        self.configs_reused = {name: value for name, value in earlier.get("configs", {}).items()
-                               if name in ("motion_correct_config", "compress_config", "exclude_border_radius")}
-        self.timings = {name: timing for name, timing in earlier.get("timings", {}).items()
-                        if name in ("motion correction", "compression")}
-        self.log_to(folder)
-        self.write_config()
+    def results_path(self, base: Path | None = None) -> str:
+        """``results.hdf5`` in a new run folder made in base, or in output_folder unless base is given."""
+        path = os.path.join(self.create_run_folder(base), "results.hdf5")
+        display(f"Writing results to {path}")
         return path
+
+    def resume_source(self, resume_from: str | Path | None, reuse_compression: bool) -> tuple[Path | None, Path | None]:
+        """
+        The earlier results file a run resumes and the folder its new run folder goes in, checked before anything is
+        written. With reuse_compression and no resume_from, as compress_config "skip" asks, it is the results.hdf5 in
+        output_folder, an earlier run folder, and the new run folder goes beside that one.
+
+        Args:
+            resume_from (str | Path | None): The earlier results file, or None
+            reuse_compression (bool): Whether its compression is reused, else only its registration
+        Returns:
+            Path | None: The earlier results file, or None for a run that resumes nothing
+            Path | None: The folder the new run folder goes in, or None for output_folder
+        Raises:
+            FileNotFoundError: If the earlier results file is missing
+            ValueError: If it holds no compression to reuse, or no registration when only that is reused
+        """
+        base = None
+        if resume_from is None and reuse_compression:
+            folder = Path.cwd() if self.output_folder is None else self.output_folder
+            resume_from = folder / "results.hdf5"
+            base = folder.parent
+        if resume_from is None:
+            return None, None
+        path = Path(resume_from).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"no results file to resume from at {path}")
+        if reuse_compression and not has_group(path, CompressionArray.__name__):
+            raise ValueError(f"{path} holds no compression to reuse")
+        if not reuse_compression and not any(has_group(path, c.__name__) for c in REGISTRATION_ARRAYS):
+            raise ValueError(f"{path} holds no registration to resume from")
+        return path, base
+
+    def resume(self, resume_from: Path, results_path: str, reuse_compression: bool) -> type[BaseRegistrationArray] | None:
+        """
+        Copy the registration of an earlier results file, and its compression with reuse_compression, into this run's
+        results_path; the earlier file is left as it is. config.json keeps the inputs, configs and timings of the run
+        that made what is reused.
+
+        Args:
+            resume_from (Path): The earlier results file
+            results_path (str): This run's results file
+            reuse_compression (bool): Whether the compression is copied too
+        Returns:
+            type[BaseRegistrationArray] | None: The registration array class copied, or None when there was none
+        """
+        stored = next((c for c in REGISTRATION_ARRAYS if has_group(resume_from, c.__name__)), None)
+        names = [] if stored is None else [stored.__name__, stored._strategy_cls.__name__]
+        if reuse_compression:
+            names.append(CompressionArray.__name__)
+        with h5py.File(resume_from, "r") as source, h5py.File(results_path, "a") as target:
+            for name in names:
+                source.copy(source[name], target, name=name)
+        logger.info(f"reusing {', '.join(names)} from {resume_from}")
+        filepath_config = resume_from.parent / "config.json"
+        earlier = json.loads(filepath_config.read_text()) if filepath_config.is_file() else {}
+        reused = ["motion_correct_config", "exclude_border_radius"] + (["compress_config"] if reuse_compression else [])
+        steps = ["motion correction"] + (["compression"] if reuse_compression else [])
+        self.inputs = {**earlier.get("inputs", {}), **self.inputs}
+        self.configs_reused = {name: value for name, value in earlier.get("configs", {}).items() if name in reused}
+        self.timings = {name: timing for name, timing in earlier.get("timings", {}).items() if name in steps}
+        self.write_config()
+        return stored
 
     def read_into_ram(self, data: np.ndarray | ArrayLike) -> np.ndarray:
         """
@@ -271,22 +352,17 @@ class BasePipeline(ABC):
                        config: RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig | Literal["skip"] | None,
                        results_path: str,
                        exclude_border_radius: int = 0,
-                       resume_from: str | Path | None = None) -> tuple[np.ndarray | ArrayLike, np.ndarray]:
+                       stored: type[BaseRegistrationArray] | None = None) -> tuple[np.ndarray | ArrayLike, np.ndarray]:
         """
         Register data with a rigid (the default when config is None) or piecewise rigid corrector and export it to
-        results_path, or pass it through for "skip". With resume_from, the registration stored in that results file
-        is replayed on data instead of estimating one, and exported again. Also returns a pixel weighting that is 0
-        where the shifts moved pixels in from outside the fov and on the outer exclude_border_radius pixels.
+        results_path, or pass it through for "skip". With stored, the registration array class resume copied into
+        results_path, that registration is replayed on data instead. Also returns a pixel weighting that is 0 where
+        the shifts moved pixels in from outside the fov and on the outer exclude_border_radius pixels.
         """
-        if resume_from is not None:
-            stored = [c for c in (RigidRegistrationArray, PiecewiseRigidRegistrationArray) if has_group(resume_from, c.__name__)]
-            if len(stored) == 0:
-                raise ValueError(f"{resume_from} holds no registration to resume from")
-            with self.step("motion correction"):
-                logger.info(f"replaying the registration stored in {resume_from}")
-                moco_data = stored[0].from_hdf5(resume_from, input_movie=data, device=self.device)
-                moco_data.output_device = moco_data.strategy.device
-                moco_data.export(results_path)
+        if stored is not None:
+            logger.info(f"replaying the stored {stored.__name__}")
+            moco_data = stored.from_hdf5(results_path, input_movie=data, device=self.device)
+            moco_data.output_device = moco_data.strategy.device
         elif isinstance(config, str):
             if config.lower() != "skip":
                 raise ValueError("Invalid MotionCorrectionConfig input")
