@@ -106,9 +106,8 @@ class SingleSessionDemixingVis:
     CompressionArray before demixing has run, or a registration array (with its raw input movie) before
     compression. Draw and export ROIs for a custom SignalDemixer.initialize_signals(is_custom=True) pass.
     Footprints show as feathered masks and/or contours over the summary image: a mask pixel's opacity is its
-    weight times the signal's peak, against one maximum over the field, so a weak signal draws faint (the
-    weighting switch scales every mask to its own peak instead), and the halo under a tenth of a footprint's
-    own peak is left out, as the contours leave it out.
+    weight times its signal's peak against the field's maximum, or against its own peak with the weighting
+    switch; pixels under a tenth of a footprint's peak are left out, as in the contours.
 
     With ``results_path`` set, "Demix" runs the drawn ROIs and the signals marked with "Delete" through the
     demixer's NMF pass (``nmf_config``, the pipeline defaults when None) and writes the outcome to a new
@@ -1939,8 +1938,7 @@ class SingleSessionDemixingVis:
             if flipped and self._show_masks:
                 self._refresh_masks()
             help_mark(
-                "own peak: every mask solid, to see all that was picked up; signal peak: faint when the signal is weak, "
-                "as the signals movie shows it",
+                "own peak: every mask solid; signal peak: faint where the signal is weak, as the signals movie shows it",
                 g.cell_x[0] + slider_w + em(0.3),
             )
             changed, show = imgui.checkbox("sel masks", self._show_selected_masks)
@@ -1954,7 +1952,7 @@ class SingleSessionDemixingVis:
             )
             if changed and self._show_selected_masks:
                 self._refresh_masks()
-            help_mark("the selected and grouped masks, feathered to this opacity at their peak, with a white rim")
+            help_mark("the selected and grouped masks at this opacity, with a white rim")
             changed, show = imgui.checkbox("contours", self._show_contours)
             if changed:
                 self._set_contours(show)

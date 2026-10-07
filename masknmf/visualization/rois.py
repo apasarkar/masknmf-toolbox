@@ -146,11 +146,10 @@ class FootprintSet:
         by_peak: bool = True,
     ) -> np.ndarray:
         """
-        (ny, nx, 4) uint8 overlay. With ``by_peak`` a pixel's alpha is its weight times the footprint's peak
-        against one maximum over the field, so the masks read like the signals movie; without, every footprint
-        is scaled to its own peak. Pixels under MASK_CUTOFF of a footprint's own peak are dropped as the contours
-        drop them. ``grouped`` (index -> rgb) and then ``selected`` are feathered to ``selected_opacity`` at
-        their own peak with a white rim, and ``marked`` footprints are drawn in MARKED_COLOR.
+        (ny, nx, 4) uint8 overlay. A pixel's alpha is its weight times the footprint's peak against the field's
+        maximum (``by_peak``), or against its own peak; pixels under MASK_CUTOFF of the footprint's peak are
+        dropped, as in the contours. ``grouped`` (index -> rgb) and then ``selected`` are feathered to
+        ``selected_opacity`` at their own peak with a white rim; ``marked`` footprints draw in MARKED_COLOR.
         """
         marked = set(marked)
         grouped = dict(grouped or {})
