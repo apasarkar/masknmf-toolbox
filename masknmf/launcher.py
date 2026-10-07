@@ -28,6 +28,7 @@ from wgpu.utils.imgui import ImguiRenderer
 
 import masknmf
 from masknmf import cli
+from masknmf.io import group_name_compression, group_name_demixing, group_names_registration
 from masknmf.pipelines import scraper
 from masknmf.visualization.imgui import guide
 from masknmf.visualization.imgui.theme import button_colors, tooltip
@@ -680,9 +681,9 @@ class Launcher:
         if filepath is None or not filepath.is_file() or not any(p.field == "resume_from" for p in self.spec.run_scalars):
             return []
         names = cli.groups_present(filepath_results=str(filepath))
-        starts = ["registration"] if any(n in names for n in cli.group_names_registration()) else []
+        starts = ["registration"] if any(n in names for n in group_names_registration()) else []
         compress = next((s for s in self.spec.sections if s.argument == "compress_config"), None)
-        if cli.group_name_compression() in names and compress is not None and compress.allows_skip:
+        if group_name_compression() in names and compress is not None and compress.allows_skip:
             starts.append("compression")
         return starts
 
@@ -750,9 +751,9 @@ class Launcher:
                 self.found.update(kind=kind, detail=detail)
                 return
             names = cli.groups_present(filepath_results=str(path))
-            stages["registration"] = any(n in names for n in cli.group_names_registration())
-            stages["compression"] = cli.group_name_compression() in names
-            stages["demixing"] = cli.group_name_demixing() in names
+            stages["registration"] = any(n in names for n in group_names_registration())
+            stages["compression"] = group_name_compression() in names
+            stages["demixing"] = group_name_demixing() in names
             stages["curated"] = ".curated." in path.name
             if self.found["kind"] == "":
                 self.found.update(kind="results", detail=path.name)
@@ -856,19 +857,19 @@ class Launcher:
             path = self.paths[param.field].strip()
             if path == "":
                 continue
-            argv += [path] if len(spec.movie_params) == 1 else [cli.flag_for(param), path]
+            argv += [path] if len(spec.movie_params) == 1 else [param.flag, path]
         if any(is_hdf5(filepath=p) for p in self.movies_given()):
             argv += ["--dataset", self.dataset.strip()]
         for param in spec.array_params:
             path = self.paths[param.field].strip()
             if path != "":
-                argv += [cli.flag_for(param), path]
+                argv += [param.flag, path]
         for param in spec.run_scalars:
             if param.required or self.is_changed(param=param):
-                argv += [cli.flag_for(param), self.texts[param.name]]
+                argv += [param.flag, self.texts[param.name]]
         for param in spec.scalars:
             if self.is_changed(param=param):
-                argv += [f"--{param.name}", self.texts[param.name]]
+                argv += [param.flag, self.texts[param.name]]
         sections = self.sections_changed()
         if len(sections) > 0:
             configs = {section.argument: self.values[section.argument] for section in sections}
@@ -1512,7 +1513,7 @@ class Launcher:
                     self.reset_section(section=section)
                 if imgui.is_item_hovered():
                     idl.wrapped_tooltip(f"Back to {label_of(kind=section.default_kind, section=section)} with the pipeline's values")
-            kinds = cli.kinds_buildable(section=section)
+            kinds = section.kinds_buildable
             value = self.values[section.argument]
             kind = scraper.kind_of(value=value)
             labels = [label_of(kind=k, section=section) for k in kinds]
@@ -1903,7 +1904,7 @@ class Launcher:
             else:
                 draw_wrapped(text=param.field)
         if imgui.is_item_hovered():
-            idl.wrapped_tooltip(error or cli.describe(param=param))
+            idl.wrapped_tooltip(error or param.description)
         if self.is_modified(param=param) and self.draw_reset(path=key, text_default=text_default(param=param) or "none"):
             self.texts[key] = text_default(param=param)
 
