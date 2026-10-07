@@ -664,15 +664,15 @@ def command_run(args: argparse.Namespace) -> None:
         try:
             run_folder = pipeline.run(**kwargs_run)
         except BaseException as error:
-            logger.exception("run failed" if movie is None else f"run failed on {movie}")
-            if pipeline.run_folder is not None:
-                pipeline.finish("failed")
-            # a failed run keeps its folder only when one of its results files holds a finished compression; its log
-            # file, closed first so windows lets the folder go, moves up to where the folder was
+            # the pipeline logged the error and recorded the failure in config.json
+            logger.error("run failed" if movie is None else f"run failed on {movie}")
+            # a failed run keeps its folder only when one of its results files holds a finished stage; its log file,
+            # closed first so windows lets the folder go, moves up to where the folder was
             folder = pipeline.run_folder
             if folder is not None and not any(
-                has_stage(filepath_results=str(filepath), name_group=group_name_compression())
+                has_stage(filepath_results=str(filepath), name_group=name)
                 for filepath in folder.glob("*.hdf5")
+                for name in (*group_names_registration(), group_name_compression())
             ):
                 logger.removeHandler(pipeline.log_handler)
                 pipeline.log_handler.close()

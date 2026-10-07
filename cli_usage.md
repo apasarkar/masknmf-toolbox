@@ -45,7 +45,7 @@ Pipelines: `two-photon-calcium`, `one-photon-culture`, `glutamate-calcium-spine`
 - `--<section>-kind` naming the default kind keeps the pipeline's defaults; another kind gets that config's own defaults
 
 Parsing:
-- booleans take `true/false/1/0/yes/no/on/off`: `--remove-intermediates false`
+- booleans take `true/false/1/0/yes/no/on/off`: `--remove-intermediates true`
 - fields marked `*` in `masknmf params` (arrays, templates, detrenders, pixel/frame weighting) are Python only
 
 Movie input (`MOVIE`, `--glutamate-channel`, `--calcium-channel`, `view --raw`):
@@ -102,7 +102,8 @@ Batches:
 A run folder's `config.json`:
 - `timings`: each step's start time, seconds, whether it finished, and peak cuda memory (GB) on cuda; updated as the run goes
 - a step still running after 10 minutes is logged, and again every 10 minutes
-- resuming from compression (`--compress-kind skip --output-folder <run folder>`) keeps the earlier moco and compression configs and timings
+- a resumed run (`--resume-from`, or `--compress-kind skip --output-folder <run folder>`) is a new run folder: the registration, and the compression it reuses, are copied in, the earlier folder is left as it is, and config.json keeps the earlier moco and compression configs, inputs and timings
+- a run that fails keeps its folder, marked failed in config.json with the error in its log, whenever it saved a registration or a compression; from Python too
 - `inputs`: the movie and arrays the run read, with their size and modification time; `masknmf run --config <run folder>/config.json` reruns on them unless a movie is given
 - a finished run prints the `masknmf view` line that opens it, with the movie as `--raw`
 
@@ -117,16 +118,17 @@ Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device
 - `--load-into-ram true` reads the raw movie into RAM before moco; needs about the movie's size in free RAM
 - demixing passes without a detrender get a spline detrender built from `--fs`
 - `--stop-after registration` writes the shifts and template and ends; `--stop-after compression` (or the older `--filtered-demixing-kind skip`) ends once the compression is written; a later `--compress-kind skip` run demixes it
-- `--resume-from <results.hdf5>` replays that run's registration on the movie instead of estimating one, so compression can be re-run with other settings
+- `--resume-from <results.hdf5>` copies that run's registration into the new run folder and replays it on the movie instead of estimating one, so compression can be re-run with other settings; with `--compress-kind skip` its compression is reused too, and demixing gets the registered movie back for raw traces
+- `--remove-intermediates true` drops the compression once demixing is done; it is kept by default, so it can be checked
 
 ```bash
 # all defaults -> <movie's folder>/<timestamp>_two-photon-calcium/results.hdf5
 masknmf run --pipeline two-photon-calcium movie.tif --fs 30
 
-# directory of tiffs, run folder under ./session1_out, keep intermediate groups
+# directory of tiffs, run folder under ./session1_out, drop the compression once demixed
 masknmf run --pipeline two-photon-calcium ./session1_tiffs/ --fs 30 \
     --output-folder ./session1_out \
-    --remove-intermediates false
+    --remove-intermediates true
 
 # hdf5 input
 masknmf run --pipeline two-photon-calcium raw.h5 --dataset /mov --fs 15
@@ -149,9 +151,13 @@ masknmf run --config ./20260923T120000_two-photon-calcium/config.json
 masknmf run --pipeline two-photon-calcium registered.tif --fs 30 \
     --motion-correct-kind skip --exclude-border-radius 10
 
-# re-run only demixing from an existing run folder's compression (no movie needed)
+# re-run only demixing on an earlier run's compression, in a new run folder beside it (no movie needed, no raw traces)
 masknmf run --pipeline two-photon-calcium --fs 30 --compress-kind skip \
     --output-folder ./20260923T120000_two-photon-calcium
+
+# the same with the movie, so demixing gets raw traces
+masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --compress-kind skip \
+    --resume-from ./20260923T120000_two-photon-calcium/results.hdf5
 
 # force CPU, smaller batches
 masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --device cpu --frame-batch-size 100
@@ -160,7 +166,7 @@ masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --device cpu --frame
 ## one-photon-culture (`OnePhotonCulturePipeline`)
 
 Sections: `motion-correct` (gradient | skip), `compress` (compress | compress-denoise | skip), `demixing` (multipass: 2 passes by default, no detrending).
-Run args: `MOVIE`, `--fs` (required), `--indicator-sign {negative,positive}` (required), `--active-frames FILE.npy` (required), `--remove-intermediates`, `--stop-after {compression,demixing}`.
+Run args: `MOVIE`, `--fs` (required), `--indicator-sign {negative,positive}` (required), `--active-frames FILE.npy` (required), `--remove-intermediates`, `--stop-after {registration,compression,demixing}`, `--resume-from RESULTS`.
 Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device`, `--log-level`.
 
 - `--active-frames`: 1-D `.npy`, one 0/1 per frame, used as the compression frame weighting
@@ -176,7 +182,7 @@ masknmf run --pipeline one-photon-culture voltage.tif --fs 1000 \
     --indicator-sign positive --active-frames active.npy \
     --motion-correct-kind skip --load-into-ram true
 
-# re-demix an existing run folder's compression
+# re-demix an earlier run's compression, in a new run folder beside it
 masknmf run --pipeline one-photon-culture voltage.tif --fs 400 \
     --indicator-sign negative --active-frames active.npy --compress-kind skip \
     --output-folder ./voltage_out/20260923T120000_one-photon-culture

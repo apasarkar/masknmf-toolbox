@@ -1280,7 +1280,7 @@ class Launcher:
                 if param.field == "resume_from":
                     # a results file, not the folder its annotation would get
                     self.draw_path(target=self.texts, key=param.name, filetypes=FILETYPES_RESULTS, folders=False,
-                                   hint="optional: a results file whose registration is replayed instead of estimated")
+                                   hint="optional: an earlier results file; its registration is replayed, its compression reused with compress skip")
                 else:
                     self.draw_param(param=param, named=False)
             imgui.end_table()
