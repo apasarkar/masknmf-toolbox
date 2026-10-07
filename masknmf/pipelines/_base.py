@@ -21,18 +21,15 @@ from masknmf.arrays import ArrayLike
 from masknmf.compression import CompressionArray, CompressStrategy, CompressDenoiseStrategy
 from masknmf.compression.preprocessing import MaximinSplineDetrend
 from masknmf.demixing import SignalDemixer, DemixingResults, NoSignalsDetectedError
-from masknmf.motion_correction import (BaseRegistrationArray, RigidMotionCorrector, PiecewiseRigidMotionCorrector,
-                                       RigidRegistrationArray, PiecewiseRigidRegistrationArray, GradientRegistrationArray)
+from masknmf.motion_correction import BaseRegistrationArray, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.motion_correction.moco_preprocessing import construct_moco_template
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig, SinglepassDemixingConfig, SuperpixelInitConfig
-from masknmf.utils import display, get_timestamp, TIMESTAMP_FORMAT, has_group, drop_group, torch_select_device
+from masknmf.utils import display, get_timestamp, TIMESTAMP_FORMAT, torch_select_device
+from masknmf.io import REGISTRATION_ARRAYS, has_group, drop_group, create_run_folder, log_to, write_run_config
 
 logger = logging.getLogger(__name__)
-
-# the registrations a results file can hold, each stored as its array's group beside its strategy's
-REGISTRATION_ARRAYS = (RigidRegistrationArray, PiecewiseRigidRegistrationArray, GradientRegistrationArray)
 
 
 def heartbeat(name: str, start: float, seconds: float, stop: threading.Event):
@@ -165,16 +162,7 @@ class BasePipeline(ABC):
         """
         if base is None:
             base = Path.cwd() if self.output_folder is None else self.output_folder
-        name = f"{get_timestamp()}_{slugify(name_class=type(self).__name__)}"
-        candidate = base / name
-        suffix = 0
-        while True:
-            try:
-                candidate.mkdir(parents=True, exist_ok=False)
-                break
-            except FileExistsError:
-                suffix += 1
-                candidate = base / f"{name}_{suffix}"
+        candidate = create_run_folder(base, slugify(name_class=type(self).__name__))
         self.run_folder = candidate
         self.configs_reused = {}
         self.timings = {}
@@ -188,13 +176,8 @@ class BasePipeline(ABC):
         files its run arguments came from under "inputs", its __init__ and run arguments under "configs" (those of a
         reused run's steps over this run's) and the steps that ran under "timings".
         """
-        path = self.run_folder / "config.json"
-        with open(path, "w") as f:
-            json.dump({"masknmf_version": __version__, "pipeline": type(self).__name__, "run": self.run_record,
-                       "inputs": self.inputs,
-                       "configs": {**self.config, **self.run_config, **self.configs_reused}, "timings": self.timings},
-                      f, indent=2, default=config_json_value)
-        return path
+        return write_run_config(self.run_folder, type(self).__name__, {**self.config, **self.run_config, **self.configs_reused},
+                                run=self.run_record, inputs=self.inputs, timings=self.timings, default=config_json_value)
 
     def log_to(self, folder: Path) -> Path:
         """
@@ -202,13 +185,8 @@ class BasePipeline(ABC):
         left there and closing the file of the run logged until now, start the run record (command, device, gpu and
         start time; finish ends it) and log this run's header line.
         """
-        for handler in [h for h in logging.getLogger("masknmf").handlers if isinstance(h, logging.FileHandler)]:
-            logging.getLogger("masknmf").removeHandler(handler)
-            handler.close()
-        path = folder / f"{folder.name}.log"
-        self.log_handler = logging.FileHandler(path, encoding="utf-8")
-        self.log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt=TIMESTAMP_FORMAT))
-        logging.getLogger("masknmf").addHandler(self.log_handler)
+        self.log_handler = log_to(folder)
+        path = Path(self.log_handler.baseFilename)
         device = str(self.torch_device)
         self.run_record = {"command": self.command, "device": device,
                            "gpu": torch.cuda.get_device_name() if device.startswith("cuda") else None,
@@ -293,7 +271,7 @@ class BasePipeline(ABC):
             raise FileNotFoundError(f"no results file to resume from at {path}")
         if reuse_compression and not has_group(path, CompressionArray.__name__):
             raise ValueError(f"{path} holds no compression to reuse")
-        if not reuse_compression and not any(has_group(path, c.__name__) for c in REGISTRATION_ARRAYS):
+        if not reuse_compression and not any(has_group(path, name) for name in REGISTRATION_ARRAYS):
             raise ValueError(f"{path} holds no registration to resume from")
         return path, base
 
@@ -310,7 +288,7 @@ class BasePipeline(ABC):
         Returns:
             type[BaseRegistrationArray] | None: The registration array class copied, or None when there was none
         """
-        stored = next((c for c in REGISTRATION_ARRAYS if has_group(resume_from, c.__name__)), None)
+        stored = next((c for c in REGISTRATION_ARRAYS.values() if has_group(resume_from, c.__name__)), None)
         names = [] if stored is None else [stored.__name__, stored._strategy_cls.__name__]
         if reuse_compression:
             names.append(CompressionArray.__name__)

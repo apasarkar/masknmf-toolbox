@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import *
 import numpy as np
 from masknmf import display
@@ -5,6 +6,7 @@ from masknmf.compression import CompressionArray, TrendArray
 from masknmf.demixing.demixing_arrays import SignalsArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulSignalsArray, StaticBackgroundArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode, MultiunitBackgroundArray
 import torch
 from masknmf.utils import Serializer, SparseCOOTensor
+from masknmf.utils._serialization import save_dict, load_dict
 from masknmf.arrays.array_interfaces import TensorFlyWeight
 from masknmf.utils import display
 from masknmf.demixing._base_results import BaseResults
@@ -303,6 +305,19 @@ class DemixingResults(Serializer, BaseResults):
         # Move all tracked tensors to desired location so everything is on one device
         self.to(self._device)
 
+    def export(self, path: str | Path, prefix: str = ""):
+        """
+        Write to path as the group "DemixingResults", or "<prefix>/DemixingResults" when one file holds several
+        demixings of one movie; the file's other groups are kept and this one is replaced.
+        """
+        group = f"{prefix}/{type(self).__name__}" if prefix else type(self).__name__
+        save_dict(self._to_dict(), filename=path, group=group, exists_ok=True)
+
+    @classmethod
+    def from_hdf5(cls, path, prefix: str = "", **kwargs):
+        """The results export wrote to path under prefix; kwargs go to the constructor."""
+        d = load_dict(path, f"{prefix}/{cls.__name__}" if prefix else cls.__name__)
+        return cls(**d, **kwargs)
 
     @property
     def flyweight(self) -> TensorFlyWeight:

@@ -238,7 +238,7 @@ class Serializer:
 
         return d
 
-    def export(self, path: str | Path, prefix: str = ""):
+    def export(self, path: str | Path):
         """
         Export to an HDF5 file, as the group named after this class.
         Requires ``h5py`` http://docs.h5py.org/
@@ -246,43 +246,13 @@ class Serializer:
         Args:
             path (str): Full file path. Created if missing; in an existing file the other groups are kept
                 and this class's group is replaced, so one file can hold every stage of a pipeline.
-            prefix (str): Parent group, e.g. "calcium" writes "calcium/<class name>"; empty writes at the root.
         """
 
         d = self._to_dict()
-        group = f"{prefix}/{self.__class__.__name__}" if prefix else self.__class__.__name__
-        save_dict(d, filename=path, group=group, exists_ok=True)
+        save_dict(d, filename=path, group=self.__class__.__name__, exists_ok=True)
 
     @classmethod
-    def from_hdf5(cls, path, prefix: str = "", **kwargs):
-        """Load result from an hdf5 file, from ``<prefix>/<class name>``. Any additional kwargs are passed to the constructor"""
-        d = load_dict(path, f"{prefix}/{cls.__name__}" if prefix else cls.__name__)
+    def from_hdf5(cls, path, **kwargs):
+        """Load result from an hdf5 file, from the group named after this class. Any additional kwargs are passed to the constructor"""
+        d = load_dict(path, cls.__name__)
         return cls(**d, **kwargs)
-
-
-def results_files(folder: str | Path) -> dict[str, Path]:
-    """The ``results.<name>.hdf5`` files of a run folder keyed by name, e.g. ``{"calcium": <folder>/results.calcium.hdf5}``."""
-    # the classification tool keeps its label sidecars beside the results as results.labels.hdf5
-    return {p.name.split(".")[1]: p for p in sorted(Path(folder).glob("results.*.hdf5"))
-            if p.name.count(".") == 2 and not p.name.endswith(".labels.hdf5")}
-
-
-def has_group(filename, group: str) -> bool:
-    """Whether ``filename`` is an hdf5 file that holds ``group``."""
-    if not os.path.isfile(filename):
-        return False
-    with h5py.File(filename, "r") as f:
-        return group in f
-
-
-def drop_group(filename, group: str):
-    """Remove ``group`` from an hdf5 file by rewriting it without the group, so the space comes back; a no-op when absent."""
-    if not has_group(filename, group):
-        return
-    packed = f"{filename}.repack"
-    with h5py.File(filename, "r") as src, h5py.File(packed, "w") as dst:
-        for name in src:
-            if name != group:
-                src.copy(name, dst)
-        dst.attrs.update(src.attrs)
-    os.replace(packed, filename)

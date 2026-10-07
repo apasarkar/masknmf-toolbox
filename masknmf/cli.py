@@ -55,7 +55,7 @@ from masknmf.io import (
     group_name_compression,
     group_name_demixing,
     group_names_registration,
-    open_results,
+    OpenedResults,
     stage_groups,
 )
 from masknmf.multisession import RoicatDataAdapter, RoicatTracker
@@ -753,9 +753,12 @@ def command_view(args: argparse.Namespace) -> None:
     raw = None if args.raw is None else load_movie(filepath_movie=args.raw, name_dataset=args.dataset)
     # the demixing results, else the compression, else the registration replayed on the raw movie
     try:
-        results, raw, registered = open_results(filepath_results, prefix=args.prefix, device=device, raw=raw)
+        opened = OpenedResults.open(filepath_results, raw=raw, prefix=args.prefix, device=device)
     except (OSError, ValueError) as e:
         fail(f"{e}; --raw names the movie")
+    for note in opened.skipped:
+        print(note)
+    results, raw, registered = opened.results, opened.raw, opened.registered
     if args.compression and isinstance(results, masknmf.BaseRegistrationArray):
         fail(f"{filepath_results} holds no compression")
     if args.compression and raw is None:

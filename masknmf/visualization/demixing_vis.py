@@ -9,12 +9,11 @@ from fastplotlib import ui
 from fastplotlib.graphics.selectors._polygon import point_in_polygon
 import pygfx
 from fastplotlib.widgets.nd_widget._async import run_sync
-import h5py
 import torch
 from collections.abc import Sequence
 from collections import OrderedDict
 import masknmf.arrays
-from masknmf.arrays import SwitchableArray, TiffArray
+from masknmf.arrays import SwitchableArray
 from masknmf.utils import display
 from functools import partial
 from masknmf.visualization.imgui import (
@@ -145,14 +144,14 @@ class SingleSessionDemixingVis:
     click or table pick that edits the selection by hand drops it and keeps the selection, so Delete (or the
     Curation tab's delete button) marks it like any other selection. Nothing is removed until the next Demix.
 
-    ``raw`` (a movie, or a .tif path) adds the raw movie, ``registered`` (the results' registration replayed
-    on it, for compression or demixing results) the registered one, and ``shifts`` (an array, or a motion
-    correction hdf5 path) adds the registration shifts as a panel above the traces (piecewise rigid: the
+    ``raw`` (a movie, or a movie path) adds the raw movie, ``registered`` (the results' registration replayed
+    on it, for compression or demixing results) the registered one, and ``shifts`` (an array, or a results
+    file holding a registration) adds the registration shifts as a panel above the traces (piecewise rigid: the
     largest block shift per frame); results that hold their own ``raw_array``, ``registered_array`` or
     ``shifts`` show those when none are given.
-    With ``results_path`` set, a lone .tif beside the results, and the
-    registration shifts from the results file itself or from a motion_correction.hdf5 beside it, are picked up
-    when their frames match the results; given ones must match. Up to three panels, one per movie the results
+    With ``results_path`` set, a lone .tif beside the results, and the registration in the results file (its
+    shifts, template and, with a raw movie, the registered movie), are picked up when their frames match the
+    results; given ones must match (:class:`masknmf.io.OpenedResults`). Up to three panels, one per movie the results
     hold, each switchable to any of them: the Panels button at the top of the Tools panel opens the array x
     panel matrix, and the top of a panel's right-click menu offers the same choice for that panel. The movies
     are raw, registered, compressed+denoised, the residual, the fitted background (when the demixer fit one)
@@ -296,7 +295,9 @@ class SingleSessionDemixingVis:
         self._region_outside = False
         self._filter_outside = True
 
-        self._load(demixing_results, self._results_path, raw, registered, shifts, frame_timings, ref_range, cell_stats, cell_order)
+        opened = masknmf.io.OpenedResults.resolve(demixing_results, results_path, raw=raw, registered=registered, shifts=shifts,
+                                                  device=device)
+        self._load(opened, frame_timings, ref_range, cell_stats, cell_order)
 
         for subplot in self._ndw_fov.figure:
             subplot.tooltip.enabled = False
@@ -316,24 +317,18 @@ class SingleSessionDemixingVis:
         follow, and the selection, drawn rois and marks are dropped. The raw movie stays when it lines up with
         the new results, else the one .tif beside the new file is picked up, as are the shifts in it.
         """
-        path = str(path)
-        results, raw, registered = masknmf.io.open_results(path, device=self.device, raw=self._raw)
-        self._load(results, path, raw, registered)
+        self._load(masknmf.io.OpenedResults.open(path, raw=self._raw, device=self.device))
 
     def _load(
         self,
-        results,
-        results_path,
-        raw=None,
-        registered=None,
-        shifts=None,
+        opened: masknmf.io.OpenedResults,
         frame_timings=None,
         ref_range=None,
         cell_stats=None,
         cell_order=None,
     ):
         """
-        Show ``results``, any stage of any movie: the first time, the panels, overlays and trace plot are built
+        Show ``opened``, results of any stage of any movie with their movies: the first time, the panels, overlays and trace plot are built
         around them; after that they are rebuilt in place, the selection, drawn rois and marks dropped first.
         """
         first = self._ndw_fov is None
@@ -353,7 +348,9 @@ class SingleSessionDemixingVis:
             self._pixels.clear()
             self._active_pixel = None
             self._undo.clear()
-        self._results_path = None if results_path is None else str(results_path)
+        self._opened = opened
+        results = opened.results
+        self._results_path = None if opened.path is None else str(opened.path)
         self._demixing_results = results
         self._is_masknmf_result = isinstance(results, masknmf.DemixingResults)
         self._has_ac = hasattr(results, "signals_array")
@@ -363,7 +360,6 @@ class SingleSessionDemixingVis:
             results.to(self.device)
         self._shape = results.shape
 
-        folder = None if self._results_path is None else Path(self._results_path).parent
         num_signals = results.spatial_demixed.shape[1] if self._has_ac else 0
         # the results' own stats, hidden; given stats join them, shown, replacing same-named columns
         self._cell_stats = CellStats.from_results(results) if self._is_masknmf_result else None
@@ -380,108 +376,27 @@ class SingleSessionDemixingVis:
         if self._cell_stats is not None:
             display(f"cell stats: {', '.join(self._cell_stats.names)}; right-click a Signals table header to show them")
 
-        # raw movie and shifts: data or a path, or found beside the results; a found mismatch is skipped, a given one raises
-        found_raw = found_shifts = False
-        if raw is None and self._is_registration:
-            raw = results.input_movie
-        if raw is None and isinstance(results, BaseResults):
-            raw = results.raw_array
-        if registered is None and isinstance(results, BaseResults):
-            registered = results.registered_array
-        if shifts is None and (self._is_registration or isinstance(results, BaseResults)):
-            shifts = results.shifts
-        if raw is None and folder is not None:
-            raw = masknmf.io.movie_beside(self._results_path)
-            found_raw = raw is not None
-        raw_src = raw if isinstance(raw, (str, os.PathLike)) else None
-        if raw_src is not None:
-            raw = TiffArray(str(raw_src))
-        if raw is not None and tuple(raw.shape) != tuple(self._shape):
-            if not found_raw:
-                raise ValueError(
-                    f"raw movie has shape {tuple(raw.shape)}, the results have {tuple(self._shape)}"
-                )
-            display(
-                f"skipping {raw_src}: shape {tuple(raw.shape)} does not match the results"
-            )
-            raw = None
-        if shifts is None and folder is not None:
-            # the results file itself when the pipeline wrote every stage to it, else the old separate file
-            for candidate in (Path(self._results_path), folder / "motion_correction.hdf5"):
-                if candidate.is_file():
-                    with h5py.File(candidate, "r") as f:
-                        found_shifts = "PiecewiseRigidRegistrationArray" in f or "RigidRegistrationArray" in f or "GradientRegistrationArray" in f
-                    if found_shifts:
-                        shifts = candidate
-                        break
-        shifts_src = shifts if isinstance(shifts, (str, os.PathLike)) else None
-        # the registration template, the still a registration stage leaves: beside the shifts in the file, or on the array
-        template = None
-        if shifts_src is not None:
-            with h5py.File(shifts_src, "r") as f:
-                groups = [
-                    g
-                    for g in (
-                        "PiecewiseRigidRegistrationArray",
-                        "RigidRegistrationArray",
-                        "GradientRegistrationArray",
-                    )
-                    if g in f
-                ]
-                if not groups:
-                    raise ValueError(f"{shifts_src} holds no registration array")
-                shifts = f[groups[0]]["shifts"][()]
-                strategy = getattr(masknmf, groups[0])._strategy_cls.__name__
-                if strategy in f and "template" in f[strategy]:
-                    template = f[strategy]["template"][()]
-        if shifts is not None:
-            if isinstance(shifts, torch.Tensor):
-                shifts = shifts.cpu().numpy()
-            shifts = np.asarray(shifts, np.float32)
-            if shifts.shape[0] != self._shape[0]:
-                if not found_shifts:
-                    raise ValueError(
-                        f"{shifts.shape[0]} shifts for {self._shape[0]} frames"
-                    )
-                display(
-                    f"skipping {shifts_src}: {shifts.shape[0]} shifts for {self._shape[0]} frames"
-                )
-                shifts = None
-                template = None
+        for note in opened.skipped:
+            display(note)
         # say what was picked up, and how to add what was not, so the panels are discoverable
-        if raw is not None:
-            display(f"raw panel: {raw_src if raw_src is not None else 'movie given'}")
+        if opened.raw is not None:
+            display(f"raw panel: {opened.raw_source if opened.raw_source is not None else 'movie given'}")
         else:
             display(
                 "no raw movie: raw= (a movie or a .tif path) adds a raw panel; a lone .tif beside the results is picked up"
             )
-        if shifts is not None:
-            display(
-                f"shift traces: {shifts_src if shifts_src is not None else 'shifts given'}"
-            )
+        if opened.shifts is not None:
+            display(f"shift traces: {opened.shifts_source if opened.shifts_source is not None else 'shifts given'}")
         else:
             display(
-                "no motion shifts: shifts= (an array or a motion correction hdf5) adds shift traces; "
-                "shifts in the results file or a motion_correction.hdf5 beside it are picked up"
+                "no motion shifts: shifts= (an array or a results file holding a registration) adds shift traces; "
+                "the registration in the results file is picked up"
             )
-        self._raw = raw
-        self._shifts = shifts
-        # the paths they came from, so a reload after a demix reads them again, the template with them
-        self._raw_src, self._shifts_src = raw_src, shifts_src
-        if registered is not None and self._is_registration:
-            raise ValueError("registered= goes with compression or demixing results; a registration array is the registered movie")
-        if registered is not None and tuple(registered.shape) != tuple(self._shape):
-            raise ValueError(f"registered movie has shape {tuple(registered.shape)}, the results have {tuple(self._shape)}")
-        self._registered = registered
-        if self._is_registration:
-            template = results.strategy.template
-        elif isinstance(registered, masknmf.BaseRegistrationArray):
-            template = registered.strategy.template
-        self._template = (
-            None
-            if template is None
-            else np.asarray(template.cpu() if isinstance(template, torch.Tensor) else template, np.float32)
-        )
+        self._raw = opened.raw
+        self._shifts = opened.shifts
+        self._registered = opened.registered
+        self._template = opened.template
+        shifts = opened.shifts
         self._shift_lines = None
         if shifts is not None:
             # piecewise rigid shifts are (frames, height blocks, width blocks, 2): show the largest block shift
@@ -851,14 +766,8 @@ class SingleSessionDemixingVis:
         before = self._ac_array.spatial_demixed.shape[1]
         parent = self._results_path
         try:
-            # the same movie: its raw movie and shifts stay, read again from their files when they came from one
-            self._load(
-                results,
-                path,
-                self._raw if self._raw_src is None else self._raw_src,
-                self._registered,
-                self._shifts if self._shifts_src is None else self._shifts_src,
-            )
+            # the same movie: its raw, registered movie, shifts and template stay
+            self._load(replace(self._opened, results=results, path=Path(path), skipped=[]))
         except Exception as e:
             self._status = f"reload after demix failed: {e}"
             return
