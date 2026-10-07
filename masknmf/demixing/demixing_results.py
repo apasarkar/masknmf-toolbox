@@ -7,6 +7,7 @@ import torch
 from masknmf.utils import Serializer, SparseCOOTensor
 from masknmf.arrays.array_interfaces import TensorFlyWeight
 from masknmf.utils import display
+from masknmf.demixing._base_results import BaseResults
 
 
 def test_slice_effect(my_slice: slice, spatial_dim: int) -> bool:
@@ -78,7 +79,7 @@ def test_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
                 return True
     return False
 
-class DemixingResults(Serializer):
+class DemixingResults(Serializer, BaseResults):
     _serialized = {
         "shape",
         "spatial_compressed",
