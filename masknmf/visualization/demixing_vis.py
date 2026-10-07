@@ -4,7 +4,7 @@ from pathlib import Path
 from dataclasses import replace
 import numpy as np
 import fastplotlib as fpl
-from imgui_bundle import imgui, imgui_toggle, icons_fontawesome_6 as fa
+from imgui_bundle import imgui, icons_fontawesome_6 as fa
 from fastplotlib import ui
 from fastplotlib.graphics.selectors._polygon import point_in_polygon
 import pygfx
@@ -35,6 +35,7 @@ from masknmf.visualization.imgui import (
     help_buttons_width,
     draw_range_filter,
     draw_roi_table,
+    draw_switch,
     em,
     popup,
     opaque_popups,
@@ -45,6 +46,7 @@ from masknmf.visualization.imgui import (
     help_mark,
     right_aligned_text,
     button_colors,
+    switch_width,
     tooltip,
 )
 from masknmf.visualization.imgui.curation_help import draw_curation_help
@@ -75,7 +77,7 @@ _UNDO_DEPTH = 50  # ctrl+z snapshots kept
 # what the panels open on, first come: raw | compressed+denoised | signals when a raw movie is there
 _DEFAULT_ORDER = ("raw", "compressed+denoised", "signals", "background", "registered", "residual")
 _CAPTIONS = (
-    "masks", "contours", "sel masks", "sel contours", "color by", "traces",
+    "masks", "contours", "sel masks", "sel contours", "weighting", "color by", "traces",
     "filter", "range", "applied", "run", "options",
 )
 # signals selected together, in order of mutual contrast on the dark plot; no red, a mask marked for
@@ -103,7 +105,10 @@ class SingleSessionDemixingVis:
     View and curate demixing results. Takes whatever stage a run got to: masknmf.DemixingResults, a bare
     CompressionArray before demixing has run, or a registration array (with its raw input movie) before
     compression. Draw and export ROIs for a custom SignalDemixer.initialize_signals(is_custom=True) pass.
-    Footprints show as feathered masks and/or contours over the summary image.
+    Footprints show as feathered masks and/or contours over the summary image: a mask pixel's opacity is its
+    weight times the signal's peak, against one maximum over the field, so a weak signal draws faint (the
+    weighting switch scales every mask to its own peak instead), and the halo under a tenth of a footprint's
+    own peak is left out, as the contours leave it out.
 
     With ``results_path`` set, "Demix" runs the drawn ROIs and the signals marked with "Delete" through the
     demixer's NMF pass (``nmf_config``, the pipeline defaults when None) and writes the outcome to a new
@@ -416,6 +421,7 @@ class SingleSessionDemixingVis:
         self._options_open = False
         self._show_masks = show_masks
         self._mask_opacity = mask_opacity
+        self._masks_by_peak = True
         self._show_selected_masks = True
         self._selected_mask_opacity = SELECTED_ALPHA
         self._footprints = None
@@ -522,6 +528,8 @@ class SingleSessionDemixingVis:
             self._ac_array.spatial_demixed, tuple(self._shape[1:3])
         )
         peaks = self.demixing_results.temporal_demixed.max(dim=0).values.cpu().numpy()
+        # the overlay scales each footprint by its trace's peak, so the masks read like the signals movie
+        self._footprints.peaks = peaks
         columns = {"area": self._footprints.areas, "peak": peaks}
         if self._cell_stats is not None:
             columns.update(zip(self._cell_stats.names, self._cell_stats.values.T))
@@ -550,6 +558,7 @@ class SingleSessionDemixingVis:
                 if self._show_selected_masks
                 else {},
                 self._selected_mask_opacity,
+                by_peak=self._masks_by_peak,
             )
             if visible
             else None
@@ -1857,7 +1866,7 @@ class SingleSessionDemixingVis:
         tooltip("Filter column: the range below spans it (del is 0 or 1); picking one puts the range back at its full span")
         imgui.same_line(0, g.gap)
         inner = imgui.get_style().item_inner_spacing.x
-        need = imgui.get_frame_height() + inner + imgui.calc_text_size("apply").x + g.gap + _side_switch_width()
+        need = imgui.get_frame_height() + inner + imgui.calc_text_size("apply").x + g.gap + switch_width("inside", "outside") + g.mark_w
         if imgui.get_content_region_avail().x < need:
             imgui.new_line()
             imgui.same_line(g.cell_x[0])
@@ -1875,13 +1884,8 @@ class SingleSessionDemixingVis:
             "the selection by hand switches this off"
         )
         imgui.same_line(0, g.gap)
-        flipped, self._filter_outside = _side_switch(
-            "filter",
-            self._filter_outside,
-            self._filter_select,
-            "The filter takes the signals inside or outside the range"
-            + ("" if self._filter_select else "; lit while it drives the selection"),
-        )
+        flipped, self._filter_outside = draw_switch("filter", self._filter_outside, "inside", "outside", self._filter_select)
+        help_mark("which side of the range the filter selects, lit while it drives the selection")
         imgui.same_line(0, g.gap)
         right_aligned_text(f"{len(order.order)} / {order.n_items}")
         g.row("range")
@@ -1930,6 +1934,15 @@ class SingleSessionDemixingVis:
             if changed and self._show_masks:
                 self._refresh_masks()
             help_mark("every footprint's mask at this opacity")
+            g.row("weighting")
+            flipped, self._masks_by_peak = draw_switch("weighting", self._masks_by_peak, "own peak", "signal peak", self._show_masks)
+            if flipped and self._show_masks:
+                self._refresh_masks()
+            help_mark(
+                "own peak: every mask solid, to see all that was picked up; signal peak: faint when the signal is weak, "
+                "as the signals movie shows it",
+                g.cell_x[0] + slider_w + em(0.3),
+            )
             changed, show = imgui.checkbox("sel masks", self._show_selected_masks)
             if changed:
                 self._show_selected_masks = show
@@ -1941,7 +1954,7 @@ class SingleSessionDemixingVis:
             )
             if changed and self._show_selected_masks:
                 self._refresh_masks()
-            help_mark("the selected and grouped masks, filled at this opacity with a white rim")
+            help_mark("the selected and grouped masks, feathered to this opacity at their peak, with a white rim")
             changed, show = imgui.checkbox("contours", self._show_contours)
             if changed:
                 self._set_contours(show)
@@ -2099,17 +2112,10 @@ class SingleSessionDemixingVis:
         tooltip(f"Export: the {len(self._rois)} drawn roi(s) to a .npz, a window with a typed path, browse for the native dialog")
         # the side switch under the row, centered: grey but flippable until the region drives the selection
         imgui.dummy(imgui.ImVec2(0, em(0.4)))
-        label_w = imgui.calc_text_size("poly").x + em(0.6)
-        row_w = label_w + _side_switch_width()
+        row_w = switch_width("inside", "outside") + em(0.3) + imgui.calc_text_size("(?)").x
         imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + max((imgui.get_content_region_avail().x - row_w) / 2, 0))
-        _, self._region_outside = _side_switch(
-            "poly",
-            self._region_outside,
-            selecting,
-            "The region takes the signals inside or outside it"
-            + ("" if selecting else "; lit while it drives the selection"),
-            label_w,
-        )
+        _, self._region_outside = draw_switch("region", self._region_outside, "inside", "outside", selecting)
+        help_mark("which side of the region is selected, lit while it drives the selection")
 
         w = imgui.get_frame_height() * 1.6
         section("DEMIX")
@@ -2252,45 +2258,6 @@ class SingleSessionDemixingVis:
     def close(self):
         self._summary.cleanup()
         self._ndw_fov.close()
-
-
-def _side_switch_width() -> float:
-    """What :func:`_side_switch` takes past its label."""
-    return (
-        imgui.calc_text_size("inside").x
-        + imgui.calc_text_size("outside").x
-        + imgui.get_frame_height() * imgui_toggle.ToggleConfig().width_ratio
-        + 2 * imgui.get_style().item_inner_spacing.x
-    )
-
-
-def _side_switch(key: str, outside: bool, live: bool, tip: str, label_w: float = 0.0) -> tuple[bool, bool]:
-    """An inside / outside toggle, after ``key`` when ``label_w``: accent with the side in use lit while ``live``, grey otherwise."""
-    inner = imgui.get_style().item_inner_spacing.x
-    dim, lit = imgui.get_style().color_(imgui.Col_.text_disabled), imgui.get_style().color_(imgui.Col_.text)
-    frame = THEME.accent if live else (0.28, 0.28, 0.31)
-    hover = (0.55, 0.78, 1.0) if live else (0.38, 0.38, 0.42)
-    imgui.align_text_to_frame_padding()
-    if label_w:
-        x = imgui.get_cursor_pos_x()
-        imgui.text_colored(lit if live else dim, key)
-        imgui.same_line(x + label_w)
-    imgui.text_colored(lit if live and not outside else dim, "inside")
-    imgui.same_line(0, inner)
-    for color, value in (
-        (imgui.Col_.frame_bg, frame),
-        (imgui.Col_.button, frame),
-        (imgui.Col_.frame_bg_hovered, hover),
-        (imgui.Col_.button_hovered, hover),
-        (imgui.Col_.text, lit if live else dim),
-    ):
-        imgui.push_style_color(color, to_vec4(value))
-    changed, outside = imgui_toggle.toggle(f"##side_{key}", outside, imgui_toggle.ToggleFlags_.animated)
-    imgui.pop_style_color(5)
-    tooltip(tip)
-    imgui.same_line(0, inner)
-    imgui.text_colored(lit if live and outside else dim, "outside")
-    return changed, outside
 
 
 def extract_per_trace_roi_averages(signals_array: masknmf.SignalsArray, rowslice: slice, colslice: slice):

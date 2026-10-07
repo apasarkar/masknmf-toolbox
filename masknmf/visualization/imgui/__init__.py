@@ -1,4 +1,4 @@
-from masknmf.visualization.imgui.widgets import CheckboxWindow, SourceRightClickMenu
+from masknmf.visualization.imgui.widgets import CheckboxWindow, SourceRightClickMenu, draw_switch, switch_width
 from masknmf.visualization.imgui.picking import (
     CLICK_SLOP,
     component_at_pixel,
@@ -44,6 +44,8 @@ from masknmf.visualization.imgui.theme import (
 __all__ = [
     "CheckboxWindow",
     "SourceRightClickMenu",
+    "draw_switch",
+    "switch_width",
     "HANDLE_THICKNESS",
     "TracePlot",
     "RoiOrder",
