@@ -267,7 +267,7 @@ class OnePhotonCulturePipeline(BasePipeline):
     def __init__(self,
                  motion_correct_config: GradientMotionCorrectionConfig | Literal["skip"] | None = None,
                  compress_config: CompressionConfigs | Literal["skip"] | None = None,
-                 demixing_config: MultipassDemixingConfigs | None = None,
+                 demixing_config: MultipassDemixingConfigs | Literal["skip"] | None = None,
                  output_folder: str | Path | None = None,
                  load_into_ram: bool = False,
                  frame_batch_size: int = 300,
@@ -343,7 +343,7 @@ class OnePhotonCulturePipeline(BasePipeline):
         reuse_compression = isinstance(self.compress_config, str)
         if reuse_compression and self.compress_config.lower() != "skip":
             raise ValueError(f"If compress_config is a string, it can only be `skip`")
-        if reuse_compression and stop_after != "demixing":
+        if reuse_compression and (stop_after != "demixing" or isinstance(self.demixing_config, str)):
             raise ValueError('compress_config "skip" reuses a compression for its demixing; stop_after leaves nothing to run')
         if isinstance(self.motion_correct_config, str) and self.motion_correct_config.lower() != "skip":
             raise ValueError("Invalid MotionCorrectionConfig input")
@@ -395,7 +395,8 @@ class OnePhotonCulturePipeline(BasePipeline):
                 compressed_results = compress_strategy.compress(moco_array)
                 compressed_results.export(results_path)
 
-        if stop_after == "compression":
+        # a demixing_config "skip" ends the run after compression too
+        if stop_after == "compression" or isinstance(self.demixing_config, str):
             return self.finish()
         device = self.torch_device
         display("Running demixing analysis")

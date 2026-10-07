@@ -8,8 +8,8 @@ from masknmf.utils import display
 from masknmf.compression.preprocessing import MaximinSplineDetrend
 
 from masknmf.pipelines._base import BasePipeline
-from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
-from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
+from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig, MotionCorrectionConfigs
+from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig, CompressionConfigs
 from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConfig, SuperpixelInitConfig, SpatialHighpassConfig, SinglepassDemixingConfig, MultipassDemixingConfig, MultipassDemixingConfigs
 from pathlib import Path
 from typing import *
@@ -43,9 +43,9 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
     def __init__(self,
                  output_folder: str | Path | None = None,
-                 motion_correct_config: RigidMotionCorrectionConfig | None = None,
-                 compress_config: CompressDenoiseConfig | None = None,
-                 demixing_config: MultipassDemixingConfigs | None = None,
+                 motion_correct_config: MotionCorrectionConfigs | Literal["skip"] | None = None,
+                 compress_config: CompressionConfigs | None = None,
+                 demixing_config: MultipassDemixingConfigs | Literal["skip"] | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto",
                  log_level: Literal["debug", "info", "warning"] = "info"):
@@ -92,8 +92,11 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             glutamate_channel (np.ndarray | ArrayLike | None):
             calcium_channel (np.ndarray | ArrayLike | None):
             stop_after: the last stage to run: "registration" ends once both channels' shifts are written,
-                "compression" once their compressions are, "demixing" runs everything
+                "compression" once their compressions are, "demixing" runs everything. A demixing_config "skip" ends
+                the run after compression too; a motion_correct_config "skip" compresses the channels as recorded
         """
+        if stop_after == "registration" and isinstance(self.motion_correct_config, str):
+            raise ValueError('stop_after "registration" with motion_correct_config "skip" has nothing to write')
         device = self.torch_device
         self.run_config = {"exclude_initial_frames": exclude_initial_frames, "stop_after": stop_after}
         run_folder = self.create_run_folder()
@@ -133,24 +136,36 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 with h5py.File(path, "w") as f:
                     f["retained_frames"] = retained_frames
 
-        pre_moco_strategy = masknmf.CompressStrategy(block_sizes=self.compress_config.block_sizes,
-                                               max_components=self.compress_config.max_components,
-                                               max_consecutive_failures=self.compress_config.max_consecutive_failures,
-                                               temporal_avg_factor=2,
-                                               spatial_avg_factor=4,
-                                               frame_batch_size=self.frame_batch_size,
-                                                device=device)
-        with self.step("reference compression"):
-            pmd_pre_moco_reference = pre_moco_strategy.compress(reference_input)
-            pmd_pre_moco_reference.to(device) #Move it to the accelerator
+        if isinstance(self.motion_correct_config, str):
+            # unregistered: the channels go to compression as recorded
+            glu_moco_array_dense = glu
+            calcium_moco_array_dense = calcium
+        else:
+            pre_moco_strategy = masknmf.CompressStrategy(block_sizes=self.compress_config.block_sizes,
+                                                   max_components=self.compress_config.max_components,
+                                                   max_consecutive_failures=self.compress_config.max_consecutive_failures,
+                                                   temporal_avg_factor=2,
+                                                   spatial_avg_factor=4,
+                                                   frame_batch_size=self.frame_batch_size,
+                                                    device=device)
+            with self.step("reference compression"):
+                pmd_pre_moco_reference = pre_moco_strategy.compress(reference_input)
+                pmd_pre_moco_reference.to(device) #Move it to the accelerator
 
-        corrector = RigidMotionCorrector(**asdict(self.motion_correct_config),
-                                         device=device,
-                                         batch_size=self.frame_batch_size)
+            if isinstance(self.motion_correct_config, PiecewiseRigidMotionCorrectionConfig):
+                corrector = PiecewiseRigidMotionCorrector(**asdict(self.motion_correct_config),
+                                                          device=device,
+                                                          batch_size=self.frame_batch_size)
+            else:
+                corrector = RigidMotionCorrector(**asdict(self.motion_correct_config),
+                                                 device=device,
+                                                 batch_size=self.frame_batch_size)
 
-        corrector.compute_template(pmd_pre_moco_reference)
+            corrector.compute_template(pmd_pre_moco_reference)
 
-        if glu is not None:
+        if isinstance(self.motion_correct_config, str):
+            pass
+        elif glu is not None:
             with self.step("glutamate motion correction"):
                 glu_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
                                                           target_movie=glu)
@@ -160,7 +175,9 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             glu_moco_array = None
             glu_moco_array_dense = None
 
-        if calcium is not None:
+        if isinstance(self.motion_correct_config, str):
+            pass
+        elif calcium is not None:
             with self.step("calcium motion correction"):
                 calcium_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
                                                               target_movie=calcium)
@@ -204,7 +221,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         else:
             pmd_ca = None
 
-        if stop_after == "compression":
+        if stop_after == "compression" or isinstance(self.demixing_config, str):
             return self.finish()
 
         ## If the demixer has spines in the glutamate channel

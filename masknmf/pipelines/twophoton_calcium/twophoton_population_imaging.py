@@ -19,7 +19,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                  compress_config: CompressionConfigs | Literal["skip"] | None = None,
                  spatial_highpass_config: SpatialHighpassConfigs | None = None,
                  filtered_demixing_config: MultipassDemixingConfigs | Literal["skip"] | None = None,
-                 unfiltered_demixing_config: MultipassDemixingConfigs | None = None,
+                 unfiltered_demixing_config: MultipassDemixingConfigs | Literal["skip"] | None = None,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto",
@@ -159,29 +159,33 @@ class TwoPhotonCalciumPipeline(BasePipeline):
 
         ## Use spline detrending to more effectively pick out signals. 1 knot point per 20 seconds of data
         filtered_demixing_config_used = self.with_detrender(self.filtered_demixing_config, detrender)
-        unfiltered_demixing_config_used = self.with_detrender(self.unfiltered_demixing_config, detrender)
 
         curr_demix_results = self.run_multipass(highpass_pmd_demixer, filtered_demixing_config_used, "filtered demixing")
 
-        ## Define the unfiltered demixer object
-        signals_array = curr_demix_results.signals_array
-        a_init = signals_array.export_spatial_demixed()
-        c_init = signals_array.export_temporal_demixed()
+        if isinstance(self.unfiltered_demixing_config, str):
+            # skipped: the filtered passes' results are the run's demixing
+            latest_demix_results = curr_demix_results
+        else:
+            unfiltered_demixing_config_used = self.with_detrender(self.unfiltered_demixing_config, detrender)
+            ## Define the unfiltered demixer object
+            signals_array = curr_demix_results.signals_array
+            a_init = signals_array.export_spatial_demixed()
+            c_init = signals_array.export_temporal_demixed()
 
-        ##Now overwrite the first pass of the UnfilteredDemixingConfig to be "custom" since we're using results from above
-        # unfiltered_demixing_config_used.DemixingConfigs[0].InitConfig = CustomInitConfig(a_init, c_init, c_nonneg=True)
-        custom_unfiltered_conf = SinglepassDemixingConfig(CustomInitConfig(a_init, c_init, c_nonneg=True),
-                                                          unfiltered_demixing_config_used.DemixingConfigs[0].NMFConfig)
+            ##Now overwrite the first pass of the UnfilteredDemixingConfig to be "custom" since we're using results from above
+            # unfiltered_demixing_config_used.DemixingConfigs[0].InitConfig = CustomInitConfig(a_init, c_init, c_nonneg=True)
+            custom_unfiltered_conf = SinglepassDemixingConfig(CustomInitConfig(a_init, c_init, c_nonneg=True),
+                                                              unfiltered_demixing_config_used.DemixingConfigs[0].NMFConfig)
 
-        unfiltered_pmd_demixer = masknmf.demixing.signal_demixer.SignalDemixer(
-            pmd_denoise,
-            device=device,
-            frame_batch_size=self.frame_batch_size)
+            unfiltered_pmd_demixer = masknmf.demixing.signal_demixer.SignalDemixer(
+                pmd_denoise,
+                device=device,
+                frame_batch_size=self.frame_batch_size)
 
-        latest_demix_results = self.run_multipass(
-            unfiltered_pmd_demixer,
-            MultipassDemixingConfig([custom_unfiltered_conf] + unfiltered_demixing_config_used.DemixingConfigs[1:]),
-            "unfiltered demixing")
+            latest_demix_results = self.run_multipass(
+                unfiltered_pmd_demixer,
+                MultipassDemixingConfig([custom_unfiltered_conf] + unfiltered_demixing_config_used.DemixingConfigs[1:]),
+                "unfiltered demixing")
 
         with self.step("raw traces"):
             latest_demix_results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(

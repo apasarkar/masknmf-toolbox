@@ -13,7 +13,7 @@ from pathlib import Path
 class WidefieldSinglechannelPipeline(BasePipeline):
     def __init__(self,
                  motion_correct_config: MotionCorrectionConfigs | Literal["skip"] | None = None,
-                 compress_config: CompressionConfigs | None = None,
+                 compress_config: CompressionConfigs | Literal["skip"] | None = None,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto",
@@ -25,7 +25,7 @@ class WidefieldSinglechannelPipeline(BasePipeline):
             motion_correct_config: Config object specifying parameters for motion correcting the data. If None,
                 uses the one from default_configs(). If "skip", skips motion correction entirely.
             compress_config: Config object specifying parameters for compressing the data. If None, uses the one from
-                default_configs()
+                default_configs(). If "skip", the run ends after motion correction
             output_folder: Every stage is written to ``<output_folder>/<timestamp>_widefield-singlechannel/results.hdf5``,
                 one hdf5 group per stage. None uses the working directory
             frame_batch_size (int): Number of frames to load into GPU at a time for processing
@@ -54,8 +54,9 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         run ends once the shifts and template are written; resume_from, an earlier results file, is copied into the new
         run folder and its registration replayed instead of estimating one.
         """
-        if stop_after == "registration" and isinstance(self.motion_correct_config, str) and resume_from is None:
-            raise ValueError('stop_after "registration" with motion_correct_config "skip" has nothing to write')
+        ends_at_registration = stop_after == "registration" or isinstance(self.compress_config, str)
+        if ends_at_registration and isinstance(self.motion_correct_config, str) and resume_from is None:
+            raise ValueError('a run ending after registration with motion_correct_config "skip" has nothing to write')
         resume_from, base = self.resume_source(resume_from, reuse_compression=False)
         self.run_config = {"exclude_border_radius": exclude_border_radius, "stop_after": stop_after,
                            "resume_from": None if resume_from is None else str(resume_from)}
@@ -65,7 +66,7 @@ class WidefieldSinglechannelPipeline(BasePipeline):
             data = self.read_into_ram(data)
         moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
                                                     exclude_border_radius, stored)
-        if stop_after == "registration":
+        if ends_at_registration:
             return self.finish()
 
         compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
