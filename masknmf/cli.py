@@ -111,30 +111,8 @@ def expand_results(entries: list[str]) -> list[str]:
                 fail(f"no such file: {entry}")
             files.append(str(Path(*parts)))
             continue
-        index = next(i for i, part in enumerate(parts) if any(c in part for c in "*?["))
-        candidates = [str(Path(*parts[:index])) if index > 0 else "."]
-        for depth, part in enumerate(parts[index:], start=index):
-            found = []
-            for base in candidates:
-                if part == "**":
-                    for folder, names_folder, _ in os.walk(base):
-                        stores += [os.path.join(folder, n) for n in names_folder if n.endswith(".zarr")]
-                        names_folder[:] = sorted(n for n in names_folder if not n.endswith(".zarr"))
-                        found.append(folder)
-                    continue
-                for path in sorted(glob.glob(os.path.join(glob.escape(base), part))):
-                    if depth < len(parts) - 1 and path.endswith(".zarr"):
-                        stores.append(path)
-                    elif depth < len(parts) - 1 and os.path.isdir(path):
-                        found.append(path)
-                    elif depth == len(parts) - 1 and os.path.isfile(path):
-                        found.append(path)
-            candidates = found
-        matches = [
-            os.path.normpath(path)
-            for path in candidates
-            if path.lower().endswith(SUFFIXES_HDF5) and not path.endswith(SIDECAR_SUFFIX)
-        ]
+        matches, stores_entry = match_results(entry=entry)
+        stores += stores_entry
         if len(matches) == 0:
             fail(f"no results file matches {entry}")
         kept = latest_results(matches)
@@ -144,6 +122,45 @@ def expand_results(entries: list[str]) -> list[str]:
     if len(stores) > 0:
         print(f"warning: skipped {len(stores)} .zarr store(s) without looking inside, e.g. {stores[0]}")
     return list(dict.fromkeys(files))
+
+
+def match_results(entry: str) -> tuple[list[str], list[str]]:
+    """
+    The .h5/.hdf5 files a glob matches, labels sidecars left out and in name order, and the .zarr stores passed
+    over without looking inside; empty when nothing matches.
+
+    Args:
+        entry (str): A glob, expanded one path level at a time; ** walks every folder below
+    Returns:
+        tuple[list[str], list[str]]: The matching files, and the stores skipped
+    """
+    parts = Path(entry).expanduser().parts
+    stores = []
+    index = next(i for i, part in enumerate(parts) if any(c in part for c in "*?["))
+    candidates = [str(Path(*parts[:index])) if index > 0 else "."]
+    for depth, part in enumerate(parts[index:], start=index):
+        found = []
+        for base in candidates:
+            if part == "**":
+                for folder, names_folder, _ in os.walk(base):
+                    stores += [os.path.join(folder, n) for n in names_folder if n.endswith(".zarr")]
+                    names_folder[:] = sorted(n for n in names_folder if not n.endswith(".zarr"))
+                    found.append(folder)
+                continue
+            for path in sorted(glob.glob(os.path.join(glob.escape(base), part))):
+                if depth < len(parts) - 1 and path.endswith(".zarr"):
+                    stores.append(path)
+                elif depth < len(parts) - 1 and os.path.isdir(path):
+                    found.append(path)
+                elif depth == len(parts) - 1 and os.path.isfile(path):
+                    found.append(path)
+        candidates = found
+    matches = [
+        os.path.normpath(path)
+        for path in candidates
+        if path.lower().endswith(SUFFIXES_HDF5) and not path.endswith(SIDECAR_SUFFIX)
+    ]
+    return matches, stores
 
 
 def find_tracking(entry: str) -> Optional[Path]:

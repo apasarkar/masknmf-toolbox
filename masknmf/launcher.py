@@ -14,6 +14,8 @@ import dataclasses
 import glob
 import json
 import sys
+import threading
+import time
 import typing
 from pathlib import Path
 
@@ -28,7 +30,8 @@ from wgpu.utils.imgui import ImguiRenderer
 
 import masknmf
 from masknmf import cli
-from masknmf.io import group_name_compression, group_name_demixing, group_names_registration
+from masknmf.demixing.curation import latest_results
+from masknmf.io import group_name_compression, group_name_demixing, group_names_registration, stage_groups
 from masknmf.pipelines import scraper
 from masknmf.visualization.imgui import guide
 from masknmf.visualization.imgui.theme import button_colors, tooltip
@@ -97,6 +100,14 @@ WIDTH_RAIL_EM = 13
 WIDTH_CAPTION_EM = 9
 
 NO_DEFAULT = object()
+
+# Track sessions: what a folder row is searched for, how many folders below it, and how long after the last edit
+PATTERN_RESULTS = "*results*.hdf5"
+DEPTH_SEARCH = 3
+DELAY_SEARCH = 0.4
+ROWS_FOUND = 12
+# the footer's command is cut after this many characters
+LENGTH_COMMAND = 300
 
 # the rail: a page key, its icon, its name, and the line under the name on its page
 PAGES = (
@@ -343,6 +354,58 @@ def is_hdf5(filepath: str) -> bool:
     return Path(filepath).suffix.lower() in cli.SUFFIXES_HDF5
 
 
+def find_sessions(rows: tuple[str, ...]) -> list[dict]:
+    """
+    The results files Track sessions' rows name, in row order: a folder stands for every PATTERN_RESULTS in it and
+    up to DEPTH_SEARCH folders below, in path order, and a glob for its matches, each results file replaced by its
+    newest curated file; a file stands for itself. A file two rows name is listed once.
+
+    Args:
+        rows (tuple[str, ...]): The rows filled in
+    Returns:
+        list[dict]: Per file its "path", the "row" naming it first, whether it holds demixing results ("demixing"),
+        the input "movie" its run's config.json names, and a "note" on what makes it doubtful as a session
+    """
+    found = {}
+    for row, entry in enumerate(rows):
+        path = Path(entry).expanduser()
+        if any(c in entry for c in "*?["):
+            matches = latest_results(cli.match_results(entry=entry)[0])
+        elif path.is_dir():
+            patterns = [str(path.joinpath(*["*"] * depth, PATTERN_RESULTS)) for depth in range(DEPTH_SEARCH + 1)]
+            matches = latest_results(sorted({m for p in patterns for m in cli.match_results(entry=p)[0]}))
+        elif path.is_file():
+            matches = [str(path)]
+        else:
+            matches = []
+        for match in matches:
+            found.setdefault(match, {"path": match, "row": row, "demixing": False, "movie": None, "note": ""})
+    sessions = list(found.values())
+    for session in sessions:
+        try:
+            session["demixing"] = group_name_demixing() in stage_groups(session["path"])
+        except (OSError, ValueError):
+            pass
+        try:
+            inputs = json.loads((Path(session["path"]).parent / "config.json").read_text()).get("inputs", {})
+        except (OSError, ValueError):
+            inputs = {}
+        session["movie"] = next(
+            (v["path"] for v in inputs.values() if isinstance(v, dict) and not str(v.get("path", "")).lower().endswith(".npy")),
+            None,
+        )
+    for session in sessions:
+        siblings = [s for s in sessions if Path(s["path"]).parent == Path(session["path"]).parent]
+        runs = [s for s in sessions if session["movie"] is not None and s["movie"] == session["movie"]]
+        if not session["demixing"]:
+            session["note"] = "holds no demixing results"
+        elif len(siblings) > 1:
+            session["note"] = f"one of {len(siblings)} results files in this run folder"
+        elif len(runs) > 1:
+            session["note"] = f"one of {len(runs)} runs on {Path(session['movie']).name}"
+    return sessions
+
+
 def title_of(section: scraper.Section) -> str:
     """A section's heading, e.g. "Motion correct" for motion-correct."""
     return section.name.replace("-", " ").capitalize()
@@ -466,6 +529,13 @@ class Launcher:
         # Track sessions: results rows results_0, results_1, ... and the out folder
         self.paths_tracking: dict[str, str] = {"out": "", "results_0": ""}
         self.um_per_pixel = 1.2
+        # the rows as last edited and when, the rows last searched with the sessions found, the search running, and
+        # the sessions checked or unchecked by hand
+        self.rows_edited: tuple[str, ...] = ()
+        self.time_edited = 0.0
+        self.found_tracking: tuple[tuple[str, ...], list[dict]] = ((), [])
+        self.searching: Optional[threading.Thread] = None
+        self.checked_tracking: dict[str, bool] = {}
         # Classify ROIs: results rows and the classifier file
         self.paths_classify: dict[str, str] = {"classifier": "", "results_0": ""}
         self.labels = ""
@@ -611,6 +681,33 @@ class Launcher:
     def results_given(self, target: dict) -> list[str]:
         """The results rows filled in, in session order."""
         return [p.strip() for k, p in target.items() if k.startswith("results_") and p.strip() != ""]
+
+    def update_sessions(self) -> None:
+        """Search Track sessions' rows again once they have stayed unchanged for DELAY_SEARCH and no search is running."""
+        rows = tuple(self.results_given(target=self.paths_tracking))
+        if rows != self.rows_edited:
+            self.rows_edited = rows
+            self.time_edited = time.monotonic()
+        if rows == self.found_tracking[0] or time.monotonic() - self.time_edited < DELAY_SEARCH:
+            return
+        if self.searching is None or not self.searching.is_alive():
+            self.searching = threading.Thread(target=self.search_sessions, args=(rows,), daemon=True)
+            self.searching.start()
+
+    def search_sessions(self, rows: tuple[str, ...]) -> None:
+        """Find the sessions rows name, off the drawing thread."""
+        self.found_tracking = (rows, find_sessions(rows=rows))
+
+    def is_checked(self, session: dict) -> bool:
+        """Whether a found session is tracked: as checked by hand, else whenever it holds demixing results."""
+        return session["demixing"] and self.checked_tracking.get(session["path"], True)
+
+    def sessions_tracked(self) -> Optional[list[str]]:
+        """The checked sessions' results files in session order; None while the rows are not searched yet."""
+        rows, sessions = self.found_tracking
+        if rows != tuple(self.results_given(target=self.paths_tracking)):
+            return None
+        return [s["path"] for s in sessions if self.is_checked(session=s)]
 
     def load_run(self, source: str) -> Optional[str]:
         """
@@ -783,13 +880,22 @@ class Launcher:
 
     def problems(self) -> list[str]:
         """Everything that has to be fixed before the page's action can go."""
-        if self.page in ("track", "classify"):
-            target = self.paths_tracking if self.page == "track" else self.paths_classify
-            rows = self.results_given(target=target)
+        if self.page == "track":
+            rows = self.results_given(target=self.paths_tracking)
+            problems = [] if len(rows) > 0 else ["choose the sessions' results files or a folder of runs"]
+            problems += [f"not found: {p}" for p in rows if not any(c in p for c in "*?[") and not Path(p).expanduser().exists()]
+            tracked = self.sessions_tracked()
+            if len(rows) > 0 and tracked is None:
+                problems.append("looking for the sessions' results files")
+            elif len(rows) > 0 and len(tracked) < 2:
+                problems.append(f"tracking needs at least two sessions checked, {len(tracked)} are")
+            if self.paths_tracking["out"].strip() == "":
+                problems.append("choose the folder the tracking is saved in")
+            return problems
+        if self.page == "classify":
+            rows = self.results_given(target=self.paths_classify)
             problems = [] if len(rows) > 0 else ["choose the sessions' results files"]
             problems += [f"not found: {p}" for p in rows if not any(c in p for c in "*?[") and not Path(p).expanduser().exists()]
-            if self.page == "track" and self.paths_tracking["out"].strip() == "":
-                problems.append("choose the folder the tracking is saved in")
             return problems
         if self.page == "open":
             if self.paths_open["source"].strip() == "":
@@ -897,9 +1003,8 @@ class Launcher:
         return argv
 
     def argv_track(self) -> list[str]:
-        """The `masknmf track` arguments Track sessions amounts to."""
-        rows = self.results_given(target=self.paths_tracking)
-        return ["track", *rows, "--out", self.paths_tracking["out"].strip(), "--um-per-pixel", f"{self.um_per_pixel:.6g}"]
+        """The `masknmf track` arguments Track sessions amounts to: the checked sessions' files, as the preview lists them."""
+        return ["track", *(self.sessions_tracked() or []), "--out", self.paths_tracking["out"].strip(), "--um-per-pixel", f"{self.um_per_pixel:.6g}"]
 
     def argv_classify(self) -> list[str]:
         """The `masknmf view --classify` arguments Classify ROIs amounts to."""
@@ -919,7 +1024,10 @@ class Launcher:
             name = next((name for k, _, name, _ in VIEWERS if k == key), "a viewer")
             return f"{fa.ICON_FA_EYE}  Open in {name}"
         if self.page in ("track", "classify"):
-            rows = self.results_given(target=self.paths_tracking if self.page == "track" else self.paths_classify)
+            if self.page == "track":
+                rows = self.sessions_tracked() or []
+            else:
+                rows = self.results_given(target=self.paths_classify)
             verb = "Track" if self.page == "track" else "Classify"
             icon = fa.ICON_FA_DIAGRAM_PROJECT if self.page == "track" else fa.ICON_FA_TAGS
             return f"{icon}  {verb} {len(rows)} session{'' if len(rows) == 1 else 's'}"
@@ -1125,13 +1233,14 @@ class Launcher:
             imgui.text_colored(color, caption)
         imgui.table_next_column()
 
-    def draw_results_rows(self, target: dict) -> None:
-        """One results file, path or glob, per form row; a new row opens as the last one fills."""
+    def draw_results_rows(self, target: dict, folders: bool) -> None:
+        """One results file, path or glob, or with folders a folder too, per form row; a new row opens as the last one fills."""
         keys = [k for k in target if k.startswith("results_")]
         for i, key in enumerate(keys):
-            self.row(caption="add" if i > 0 and i == len(keys) - 1 and target[key].strip() == "" else f"session {i + 1}")
-            self.draw_path(target=target, key=key, filetypes=FILETYPES_RESULTS, folders=False,
-                           hint="path or glob, e.g. sessions/*/results.hdf5")
+            name = "source" if folders else "session"
+            self.row(caption="add" if i > 0 and i == len(keys) - 1 and target[key].strip() == "" else f"{name} {i + 1}")
+            self.draw_path(target=target, key=key, filetypes=FILETYPES_RESULTS, folders=folders,
+                           hint="a folder of runs, a file, or a glob" if folders else "path or glob, e.g. sessions/*/results.hdf5")
         if target[keys[-1]].strip() != "":
             target[f"results_{len(keys)}"] = ""
 
@@ -1458,11 +1567,14 @@ class Launcher:
     def draw_track(self) -> None:
         """The sessions' results files, where the tracking goes, and the resolution."""
         em = imgui.get_font_size()
-        self.step(1, "Sessions", "one masknmf results .hdf5 per session: a path or a glob per row, e.g. sessions/*/results.hdf5. "
-                                 "Sessions are numbered in this order, a glob's matches in name order; a new row opens as the last one fills")
+        self.step(1, "Sessions", f"one masknmf results .hdf5 per session. Per row a folder, searched for {PATTERN_RESULTS} up to "
+                                 f"{DEPTH_SEARCH} folders down, a file, or a glob; a new row opens as the last one fills. The files "
+                                 "found are listed below in session order, row by row and in path order within a row; uncheck any not to track")
+        self.update_sessions()
         if self.begin_form(name="track"):
-            self.draw_results_rows(target=self.paths_tracking)
+            self.draw_results_rows(target=self.paths_tracking, folders=True)
             imgui.end_table()
+        self.draw_sessions_found()
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
         self.step(2, "Output", "where the tracking run and the ROICaT params are saved, and the imaging resolution, the same for every session")
         if self.begin_form(name="track_out"):
@@ -1473,12 +1585,75 @@ class Launcher:
             _, self.um_per_pixel = imgui.input_float("##um_per_pixel", self.um_per_pixel, 0.0, 0.0, "%.6g")
             imgui.end_table()
 
+    def draw_sessions_found(self) -> None:
+        """The files Track sessions' rows found: a check, the session number, the file, its folder under their common folder, a note."""
+        if len(self.results_given(target=self.paths_tracking)) == 0:
+            return
+        searching = self.sessions_tracked() is None
+        sessions = self.found_tracking[1]
+        if searching:
+            draw_wrapped(text="looking for results files ...", color=COLOR_DIM)
+        elif len(sessions) == 0:
+            draw_wrapped(text="no results files found", color=COLOR_WARN)
+        if len(sessions) == 0:
+            return
+        parents = [Path(s["path"]).parent for s in sessions]
+        root = parents[0]
+        while root != root.parent and not all(p == root or root in p.parents for p in parents):
+            root = root.parent
+        tracked = sum(self.is_checked(session=s) for s in sessions)
+        draw_wrapped(text=f"{tracked} of {len(sessions)} found are tracked, under {root}", color=COLOR_DIM)
+        flags = (imgui.TableFlags_.row_bg | imgui.TableFlags_.borders_inner_h | imgui.TableFlags_.sizing_stretch_prop
+                 | imgui.TableFlags_.scroll_y)
+        # at most ROWS_FOUND rows show, the rest scroll, so the output form stays in view
+        height_row = imgui.get_frame_height() + 2 * imgui.get_style().cell_padding.y
+        height = (min(len(sessions), ROWS_FOUND) + 1) * height_row
+        if not imgui.begin_table("##sessions_found", 5, flags, imgui.ImVec2(0, height)):
+            return
+        imgui.table_setup_scroll_freeze(0, 1)
+        imgui.table_setup_column("##check", imgui.TableColumnFlags_.width_fixed)
+        imgui.table_setup_column("session", imgui.TableColumnFlags_.width_fixed)
+        imgui.table_setup_column("file", imgui.TableColumnFlags_.width_stretch, 2)
+        imgui.table_setup_column("folder", imgui.TableColumnFlags_.width_stretch, 3)
+        imgui.table_setup_column("note", imgui.TableColumnFlags_.width_stretch, 2)
+        imgui.table_headers_row()
+        number = 0
+        for i, session in enumerate(sessions):
+            path = Path(session["path"])
+            checked = self.is_checked(session=session)
+            imgui.table_next_row()
+            imgui.table_next_column()
+            imgui.begin_disabled(searching or not session["demixing"])
+            edited, value = imgui.checkbox(f"##tracked_{i}", checked)
+            imgui.end_disabled()
+            if edited:
+                self.checked_tracking[session["path"]] = value
+            imgui.table_next_column()
+            if checked:
+                number += 1
+                imgui.text(str(number))
+                imgui.table_next_column()
+                imgui.text(path.name)
+            else:
+                imgui.text_disabled("-")
+                imgui.table_next_column()
+                imgui.text_disabled(path.name)
+            if imgui.is_item_hovered():
+                idl.wrapped_tooltip(str(path) if session["movie"] is None else f"{path}\nmovie: {session['movie']}")
+            imgui.table_next_column()
+            folder = path.parent.relative_to(root) if root in path.parents else path.parent
+            imgui.text_disabled(str(folder))
+            imgui.table_next_column()
+            if session["note"] != "":
+                imgui.text_colored(COLOR_WARN if session["demixing"] else COLOR_ERROR, session["note"])
+        imgui.end_table()
+
     def draw_classify(self) -> None:
         """The sessions' results files, the class names, and the classifier file."""
         em = imgui.get_font_size()
         self.step(1, "Sessions", "one masknmf results .hdf5 per session, a path or a glob per row; labels are saved beside each")
         if self.begin_form(name="classify"):
-            self.draw_results_rows(target=self.paths_classify)
+            self.draw_results_rows(target=self.paths_classify, folders=False)
             imgui.end_table()
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
         self.step(2, "Classifier", "the class names, and the .roicat_classifier file: train saves there, an existing one is selected for classify")
@@ -1933,7 +2108,12 @@ class Launcher:
             for problem in problems[:3]:
                 idl.text_wrapped_colored(COLOR_WARN, f"{fa.ICON_FA_CIRCLE_INFO}  {problem}")
         elif argv is not None:
-            idl.text_wrapped_colored(COLOR_DIM, f"{fa.ICON_FA_TERMINAL}  masknmf {cli.format_command(argv=argv)}")
+            # a long command, e.g. tracking dozens of sessions, is cut short; the whole of it shows on hover
+            command = f"masknmf {cli.format_command(argv=argv)}"
+            shown = command if len(command) <= LENGTH_COMMAND else f"{command[:LENGTH_COMMAND]} ..."
+            idl.text_wrapped_colored(COLOR_DIM, f"{fa.ICON_FA_TERMINAL}  {shown}")
+            if shown != command and imgui.is_item_hovered():
+                idl.wrapped_tooltip(command)
         else:
             idl.text_wrapped_colored(COLOR_DIM, "pick a function on the left; the command it amounts to shows here before it runs")
         imgui.table_next_column()
