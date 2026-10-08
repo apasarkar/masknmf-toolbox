@@ -1,5 +1,6 @@
 import math
 from collections.abc import Callable
+import h5py
 import numpy as np
 
 import torch
@@ -48,26 +49,42 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
         including empty selections.
         """
 
-    def export(self, path: str | Path, prefix: str = ""):
-        d_array = self._to_dict()
-        d_strategy = self.strategy._to_dict()
-        prefix = f"{prefix}/" if prefix else ""
-        save_dict(d_array, filename=path, exists_ok=True, group=prefix + self.__class__.__name__)
-        save_dict(d_strategy, filename=path, exists_ok=True, group=prefix + self._strategy_cls.__name__)
+    def export(self, path: str | Path):
+        """
+        Write the registration to path, replacing any registration the file already holds, of any kind. Raises when
+        the file holds a compression or demixing, which were computed from the registration it holds.
+        """
+        if Path(path).is_file():
+            with h5py.File(path, "a") as f:
+                later = [name for name in ("CompressionArray", "DemixingResults") if name in f]
+                later += [f"{name}/DemixingResults" for name in f
+                          if isinstance(f[name], h5py.Group) and "DemixingResults" in f[name]]
+                if len(later) > 0:
+                    raise ValueError(f"{path} holds {', '.join(later)}, computed from its registration; "
+                                     f"write the new registration to another file")
+                for cls in BaseRegistrationArray.__subclasses__():
+                    for name in (cls.__name__, cls._strategy_cls.__name__):
+                        if name in f:
+                            del f[name]
+        save_dict(self._to_dict(), filename=path, exists_ok=True, group=self.__class__.__name__)
+        save_dict(self.strategy._to_dict(), filename=path, exists_ok=True, group=self._strategy_cls.__name__)
 
     @classmethod
     def from_hdf5(cls,
                   path,
                   input_movie: ArrayLike,
-                  prefix: str = "",
+                  device: str | torch.device | None = None,
                   **kwargs):
+        """Load a stored registration and apply it to input_movie; device is where the shifts are applied."""
         if cls._strategy_cls is None:
             raise NotImplementedError(
                 f"{cls.__name__} must set `_strategy_cls` to enable from_hdf5"
             )
-        prefix = f"{prefix}/" if prefix else ""
-        strat = cls._strategy_cls(**load_dict(path, prefix + cls._strategy_cls.__name__))
-        reg_arr_dict = load_dict(path, prefix + cls.__name__)
+        kwargs_strategy = load_dict(path, cls._strategy_cls.__name__)
+        if device is not None:
+            kwargs_strategy["device"] = device
+        strat = cls._strategy_cls(**kwargs_strategy)
+        reg_arr_dict = load_dict(path, cls.__name__)
         return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict, **kwargs)
 
 

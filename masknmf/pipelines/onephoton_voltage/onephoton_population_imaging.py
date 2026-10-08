@@ -267,7 +267,7 @@ class OnePhotonCulturePipeline(BasePipeline):
     def __init__(self,
                  motion_correct_config: GradientMotionCorrectionConfig | Literal["skip"] | None = None,
                  compress_config: CompressionConfigs | Literal["skip"] | None = None,
-                 demixing_config: MultipassDemixingConfigs | None = None,
+                 demixing_config: MultipassDemixingConfigs | Literal["skip"] | None = None,
                  output_folder: str | Path | None = None,
                  load_into_ram: bool = False,
                  frame_batch_size: int = 300,
@@ -308,7 +308,9 @@ class OnePhotonCulturePipeline(BasePipeline):
             frame_rate: float,
             indicator_sign: Literal["negative", "positive"],
             active_frames: np.ndarray,
-            remove_intermediates: bool = True) -> Path:
+            remove_intermediates: bool = False,
+            stop_after: Literal["registration", "compression", "demixing"] = "demixing",
+            resume_from: str | Path | None = None) -> Path:
         """
                 Uses the API to run rigid motion correction, compression (with denoising), and demixing.
 
@@ -322,52 +324,63 @@ class OnePhotonCulturePipeline(BasePipeline):
                         If None is specified, the joint compression + denoising code is run
                     DemixConfig: Config object specifying parameters for demixing the data
                     output_folder: Every stage is written to ``<output_folder>/<timestamp>_one-photon-culture/results.hdf5``,
-                        one hdf5 group per stage. With compress_config "skip", output_folder is instead an existing run
-                        folder whose results.hdf5 holds the compression; demixing is written into that same file
+                        one hdf5 group per stage. With compress_config "skip" and no resume_from, output_folder is
+                        instead an earlier run folder whose compression is reused, and the new run folder goes beside it
                     load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
                     remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
                         results carry the pmd)
+                    stop_after: the last stage to run: "registration" writes the shifts and template and ends,
+                        "compression" ends once the compression is written, "demixing" runs everything
+                    resume_from: an earlier results file copied into the new run folder: its registration is applied to
+                        data instead of estimating one, and with compress_config "skip" its compression is reused too.
+                        The earlier file is left as it is
 
                 The raw-scale footprints and the denoised and raw-regressed traces over all frames are written to the
                 RawScaleEstimates group as a, c_denoised and c_raw.
                 """
 
         device = self.torch_device
+        reuse_compression = isinstance(self.compress_config, str)
+        if reuse_compression and self.compress_config.lower() != "skip":
+            raise ValueError(f"If compress_config is a string, it can only be `skip`")
+        if reuse_compression and (stop_after != "demixing" or isinstance(self.demixing_config, str)):
+            raise ValueError('compress_config "skip" reuses a compression for its demixing; stop_after leaves nothing to run')
+        if isinstance(self.motion_correct_config, str) and self.motion_correct_config.lower() != "skip":
+            raise ValueError("Invalid MotionCorrectionConfig input")
+        if stop_after == "registration" and isinstance(self.motion_correct_config, str) and resume_from is None:
+            raise ValueError('stop_after "registration" with motion_correct_config "skip" has nothing to write')
+        resume_from, base = self.resume_source(resume_from, reuse_compression)
+        self.run_config = {"frame_rate": frame_rate, "indicator_sign": indicator_sign,
+                           "remove_intermediates": remove_intermediates, "stop_after": stop_after,
+                           "resume_from": None if resume_from is None else str(resume_from)}
+        results_path = self.results_path(base)
+        stored = None if resume_from is None else self.resume(resume_from, results_path, reuse_compression)
 
         ## Decide whether to motion correct data or not. You must have access to raw data
         negative_indicator = True if indicator_sign == "negative" else False
         if self.load_into_ram:
             data = self.read_into_ram(data)
-        if isinstance(self.motion_correct_config, str):
-            if self.motion_correct_config.lower() == "skip":
-                moco_array = OphysArray(data,
-                                        negative_indicator=negative_indicator,
-                                        include_mean=True,
-                                        device=device)
-            else:
-                raise ValueError("Invalid MotionCorrectionConfig input")
+        mov = OphysArray(data,
+                         negative_indicator=negative_indicator,
+                         include_mean=True,
+                         device=device)
+        if stored is not None:
+            display(f"Replaying the stored {stored.__name__}")
+            moco_array = stored.from_hdf5(results_path, input_movie=mov, device=device)
+            moco_array.output_device = device
+        elif isinstance(self.motion_correct_config, str):
+            moco_array = mov
         else:
-            mov = OphysArray(data,
-                             negative_indicator=negative_indicator,
-                             include_mean=True,
-                             device=device)
-
             with self.step("motion correction"):
                 mean_img = torch.mean(mov[:self.motion_correct_config.num_frames_template], dim=0)
                 corrector = GradientMotionCorrector(template=mean_img)
                 moco_array = corrector.motion_correct(mov)
                 moco_array.output_device=device
+                moco_array.export(results_path)
+        if stop_after == "registration":
+            return self.finish()
 
-        self.run_config = {"frame_rate": frame_rate, "indicator_sign": indicator_sign,
-                           "remove_intermediates": remove_intermediates}
-        if isinstance(self.compress_config, str):
-            if self.compress_config.lower() == "skip":
-                results_path = self.results_path(resume=True)
-            else:
-                raise ValueError(f"If compress_config is a string, it can only be `skip`")
-        else:
-            results_path = self.results_path()
-
+        if not reuse_compression:
             ## Add the run-specific frame weighting to a copy of the config, so the pipeline's own is untouched
             if self.compress_config.frame_weighting is not None:
                 frame_weighting = self.compress_config.frame_weighting * active_frames.astype(self.compress_config.frame_weighting.dtype)
@@ -382,6 +395,9 @@ class OnePhotonCulturePipeline(BasePipeline):
                 compressed_results = compress_strategy.compress(moco_array)
                 compressed_results.export(results_path)
 
+        # a demixing_config "skip" ends the run after compression too
+        if stop_after == "compression" or isinstance(self.demixing_config, str):
+            return self.finish()
         device = self.torch_device
         display("Running demixing analysis")
 

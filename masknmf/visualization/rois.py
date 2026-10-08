@@ -8,11 +8,13 @@ import matplotlib
 import numpy as np
 import torch
 
-__all__ = ["FootprintSet", "SELECTED_ALPHA", "feathered_rgba", "roi_color"]
+__all__ = ["FootprintSet", "MASK_CUTOFF", "SELECTED_ALPHA", "feathered_rgba", "roi_color"]
 
 # opacity a selected mask is filled at, whatever the overlay opacity
 SELECTED_ALPHA = 0.9
 MARKED_COLOR = (1.0, 0.15, 0.15)  # footprints marked for deletion
+# fraction of a footprint's own peak weight below which the overlay drops its pixels: the halo the contours drop too
+MASK_CUTOFF = 0.1
 
 
 def _make_roi_colors() -> np.ndarray:
@@ -48,41 +50,42 @@ def feathered_rgba(shape: Tuple[int, int], comps, selected=(), selected_alpha: f
 
     Args:
         shape (tuple): (ny, nx) of the FOV
-        comps: iterable of (ypix, xpix, lam, rgb, fill); each pixel takes lam / lam.max() * fill
+        comps: iterable of (ypix, xpix, weight, rgb, fill), weights in 0..1; each pixel takes weight * fill
             as its alpha, and where footprints overlap the higher alpha wins color and coverage
-        selected: iterable of (ypix, xpix, rgb), each filled at ``selected_alpha`` with a white rim and
-            drawn over everything else, in order
-        selected_alpha (float): opacity the selected footprints are filled at
+        selected: iterable of (ypix, xpix, weight, rgb), each pixel filled at weight * ``selected_alpha`` with
+            a white rim at ``selected_alpha``, drawn over everything else, in order
+        selected_alpha (float): opacity the selected footprints peak at
     """
     ny, nx = shape
     rgba = np.zeros((ny, nx, 4), np.uint8)
     best = np.zeros((ny, nx), np.float32)
-    for ypix, xpix, lam, rgb, fill in comps:
+    for ypix, xpix, weight, rgb, fill in comps:
         color = np.rint(np.asarray(rgb, np.float32) * 255).astype(np.uint8)
-        lam = np.asarray(lam, np.float32)
-        peak = float(lam.max()) if lam.size else 0.0
-        alpha = lam / peak * fill if peak > 0 else np.full(lam.shape, fill, np.float32)
+        alpha = np.asarray(weight, np.float32) * fill
         win = alpha > best[ypix, xpix]
         yy, xx = ypix[win], xpix[win]
         best[yy, xx] = alpha[win]
         rgba[yy, xx, :3] = color
         rgba[yy, xx, 3] = np.rint(alpha[win] * 255).astype(np.uint8)
-    for ypix, xpix, rgb in selected:
+    for ypix, xpix, weight, rgb in selected:
         mask = np.zeros((ny, nx), bool)
         mask[ypix, xpix] = True
-        fill = np.uint8(round(selected_alpha * 255))
-        rgba[mask, :3] = np.rint(np.asarray(rgb, np.float32) * 255).astype(np.uint8)
-        rgba[mask, 3] = fill
-        rgba[_rim(mask)] = (255, 255, 255, fill)
+        rgba[ypix, xpix, :3] = np.rint(np.asarray(rgb, np.float32) * 255).astype(np.uint8)
+        rgba[ypix, xpix, 3] = np.rint(np.asarray(weight, np.float32) * selected_alpha * 255).astype(np.uint8)
+        rgba[_rim(mask)] = (255, 255, 255, round(selected_alpha * 255))
     return rgba
 
 
 @dataclass
 class FootprintSet:
-    """Footprints an algorithm produced, as (ypix, xpix, lam) per component; ``colors`` overrides the id palette."""
+    """
+    Footprints an algorithm produced, as (ypix, xpix, lam) per component; ``colors`` overrides the id palette and
+    ``peaks`` (one per footprint, its trace's maximum) scales the overlay so a weak signal draws faint.
+    """
 
     footprints: list
     colors: Optional[np.ndarray] = None
+    peaks: Optional[np.ndarray] = None
 
     @classmethod
     def from_sparse(cls, a: torch.Tensor, shape: Tuple[int, int]) -> "FootprintSet":
@@ -140,22 +143,32 @@ class FootprintSet:
         marked: Iterable[int] = (),
         grouped: Optional[Mapping[int, Tuple[float, float, float]]] = None,
         selected_opacity: float = SELECTED_ALPHA,
+        by_peak: bool = True,
     ) -> np.ndarray:
         """
-        (ny, nx, 4) uint8 overlay; ``grouped`` (index -> rgb) and then ``selected`` are filled at
-        ``selected_opacity`` with a white rim, and ``marked`` footprints are drawn in MARKED_COLOR.
+        (ny, nx, 4) uint8 overlay. A pixel's alpha is its weight times the footprint's peak against the field's
+        maximum (``by_peak``), or against its own peak; pixels under MASK_CUTOFF of the footprint's peak are
+        dropped, as in the contours. ``grouped`` (index -> rgb) and then ``selected`` are feathered to
+        ``selected_opacity`` at their own peak with a white rim; ``marked`` footprints draw in MARKED_COLOR.
         """
         marked = set(marked)
         grouped = dict(grouped or {})
-        comps = [
-            (ypix, xpix, lam, MARKED_COLOR if k in marked else self.color(k), opacity)
-            for k, (ypix, xpix, lam) in enumerate(self.footprints)
-        ]
+        peaks = np.ones(len(self.footprints), np.float32) if self.peaks is None else np.asarray(self.peaks, np.float32)
+        top = max((float(lam.max()) * peaks[k] for k, (_y, _x, lam) in enumerate(self.footprints) if lam.size), default=0.0) or 1.0
+        comps, highlighted = [], []
+        for k, (ypix, xpix, lam) in enumerate(self.footprints):
+            if not lam.size:
+                continue
+            keep = lam >= MASK_CUTOFF * lam.max()
+            scale = peaks[k] / top if by_peak else 1.0 / float(lam.max())
+            comps.append((ypix[keep], xpix[keep], lam[keep] * scale, MARKED_COLOR if k in marked else self.color(k), opacity))
         picks = [k for k in grouped if k != selected]
         if selected is not None:
             picks.append(selected)
-        highlighted = [
-            (*self.footprints[k][:2], MARKED_COLOR if k in marked else grouped.get(k, self.color(k)))
-            for k in picks
-        ]
+        for k in picks:
+            ypix, xpix, lam = self.footprints[k]
+            if not lam.size:
+                continue
+            keep = lam >= MASK_CUTOFF * lam.max()
+            highlighted.append((ypix[keep], xpix[keep], lam[keep] / lam.max(), MARKED_COLOR if k in marked else grouped.get(k, self.color(k))))
         return feathered_rgba(shape, comps, highlighted, selected_opacity)

@@ -1,4 +1,4 @@
-"""A tracking's session files must hold the ROIs it clustered: a file curated after tracking is refused."""
+"""Tracking sessions are the results files a manifest lists; a tracking folder without a manifest takes files in the order given."""
 
 from pathlib import Path
 
@@ -8,58 +8,69 @@ import pytest
 import scipy.sparse
 
 pytest.importorskip("roicat")
+import masknmf
 from masknmf.multisession import RoicatTrackingResults
 
 
-def test_a_session_file_with_other_rois_than_the_tracking_is_refused(tmp_path):
-    num_rois = [3, 2]
+@pytest.fixture
+def tracked(tmp_path):
+    """Two sessions, both with 2 rois, tracked into tmp_path/tracking; the session files are returned in order."""
     files = []
-    for session, count in enumerate(num_rois):
-        path = tmp_path / f"day{session}.hdf5"
-        with h5py.File(path, "w") as f:
-            f.create_dataset("DemixingResults/temporal_demixed", data=np.zeros((10, count), np.float32))
-        files.append(str(path))
-    results = {
-        "clusters": {"labels_bySession": [np.arange(n) for n in num_rois]},
-        "ROIs": {"ROIs_raw": [scipy.sparse.csr_matrix((n, 16)) for n in num_rois], "frame_height": 4, "frame_width": 4},
-    }
-    tracking = RoicatTrackingResults(results=results, run_data={}, session_files=tuple(files))
-
-    curated = tmp_path / "day1.curated.hdf5"
-    with h5py.File(curated, "w") as f:
-        f.create_dataset("DemixingResults/temporal_demixed", data=np.zeros((10, 1), np.float32))
-    with pytest.raises(ValueError, match="holds 1 ROIs, the tracking 2"):
-        tracking.session_files = (files[0], str(curated))
-    # files not on disk are the caller's to report
-    tracking.session_files = (files[0], str(tmp_path / "moved.hdf5"))
-
-
-def test_view_places_files_given_out_of_order_by_roi_count_and_refuses_a_curated_one(tmp_path, capsys):
-    from masknmf import cli
-
-    num_rois = [3, 2]
-    files = []
-    for session, count in enumerate(num_rois):
-        # named so a glob sorts them against session order
-        path = tmp_path / "sessions" / f"day{1 - session}" / "results.hdf5"
+    for session in range(2):
+        path = tmp_path / "sessions" / f"day{session}" / "results.hdf5"
         path.parent.mkdir(parents=True)
         with h5py.File(path, "w") as f:
-            f.create_dataset("DemixingResults/temporal_demixed", data=np.zeros((10, count), np.float32))
+            f.create_dataset("DemixingResults/temporal_demixed", data=np.zeros((10, 2), np.float32))
         files.append(str(path))
     results = {
-        "clusters": {"labels_bySession": [np.arange(n) for n in num_rois]},
-        "ROIs": {"ROIs_raw": [scipy.sparse.csr_matrix((n, 16)) for n in num_rois], "frame_height": 4, "frame_width": 4},
+        "clusters": {"labels_bySession": [np.arange(2), np.arange(2)]},
+        "ROIs": {"ROIs_raw": [scipy.sparse.csr_matrix((2, 16))] * 2, "frame_height": 4, "frame_width": 4},
     }
-    folder = str(tmp_path / "tracking")
-    RoicatTrackingResults(results=results, run_data={}, session_files=tuple(files)).to_roicat_dir(folder)
+    run = RoicatTrackingResults(results=results, run_data={}, session_files=tuple(files)).to_roicat_dir(tmp_path / "tracking")
+    return run, files
 
-    cli.main(["view", folder, str(tmp_path / "sessions" / "*" / "results.hdf5"), "--list"])
-    rows = [line.split()[-1] for line in capsys.readouterr().out.splitlines() if line.strip().endswith("results.hdf5")]
-    assert rows == [str(Path("day1", "results.hdf5")), str(Path("day0", "results.hdf5"))]
 
-    curated = tmp_path / "sessions" / "day0" / "results.20261001T120000.curated.hdf5"
-    with h5py.File(curated, "w") as f:
-        f.create_dataset("DemixingResults/temporal_demixed", data=np.zeros((10, 1), np.float32))
+def test_a_manifest_opens_exactly_the_files_it_names_and_refuses_others(tracked, tmp_path, capsys):
+    from masknmf import cli
+
+    run, files = tracked
+    cli.main(["view", str(run.parent), "--list"])
+    folders = [Path(line.strip()).name for line in capsys.readouterr().out.splitlines() if line.strip().endswith(("day0", "day1"))]
+    assert folders == ["day0", "day1"]
+    # files after a manifest are refused, even when the sessions have equal roi counts
     with pytest.raises(SystemExit):
-        cli.main(["view", folder, str(tmp_path / "sessions" / "*" / "*.hdf5"), "--list"])
-    assert "session 1: " in (err := capsys.readouterr().err) and "holds 1 ROIs, the tracking 2" in err
+        cli.main(["view", str(run.parent), files[1], files[0], "--list"])
+    assert "lists the sessions' results files" in capsys.readouterr().err
+
+
+def test_an_old_folder_takes_its_files_in_the_order_given(tracked, tmp_path, capsys):
+    from masknmf import cli
+
+    run, files = tracked
+    run.with_name(f"{run.name}-manifest.json").unlink()
+    cli.main(["view", str(run), files[1], files[0], "--list"])
+    folders = [Path(line.strip()).name for line in capsys.readouterr().out.splitlines() if line.strip().endswith(("day0", "day1"))]
+    assert folders == ["day1", "day0"]
+
+    compression_only = tmp_path / "compression.hdf5"
+    with h5py.File(compression_only, "w") as f:
+        f.create_group("CompressionArray")
+    with pytest.raises(SystemExit):
+        cli.main(["view", str(run), files[0], str(compression_only), "--list"])
+    assert "holds no DemixingResults" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        cli.main(["view", str(run), files[0], str(tmp_path / "missing.hdf5"), "--list"])
+    assert "no such file" in capsys.readouterr().err
+
+
+def test_demixing_results_are_not_replaced_in_place(tmp_path):
+    path = tmp_path / "results.hdf5"
+    with h5py.File(path, "w") as f:
+        f.create_group("DemixingResults")
+        f.create_group("global/DemixingResults")
+    # export raises before it reads the instance, so an empty one is enough
+    results = masknmf.DemixingResults.__new__(masknmf.DemixingResults)
+    with pytest.raises(FileExistsError, match="already holds DemixingResults"):
+        results.export(path)
+    with pytest.raises(FileExistsError, match="already holds global/DemixingResults"):
+        results.export(path, prefix="global")

@@ -15,18 +15,12 @@ from imgui_bundle import icons_fontawesome_6 as fa
 from imgui_bundle import imgui
 from wgpu.utils.imgui import ImguiRenderer
 
+from masknmf.visualization.imgui.guide import ACCENT, CARD, DIM, EDGE, KEY, PLOT, TEXT, arrow, box, heading, u32
 from masknmf.visualization.imgui.keybinds import CLASSIFICATION
 from masknmf.visualization.imgui.panels import draw_keybinds_button, draw_keybinds_popup
 from masknmf.visualization.imgui.theme import popup
 
-ACCENT = imgui.ImVec4(0.40, 0.68, 1.00, 1.0)
-KEY = imgui.ImVec4(1.00, 0.80, 0.20, 1.0)
-DIM = imgui.ImVec4(0.62, 0.62, 0.65, 1.0)
-TEXT = imgui.ImVec4(0.92, 0.92, 0.94, 1.0)
 WARN = imgui.ImVec4(0.95, 0.68, 0.25, 1.0)
-CARD = imgui.ImVec4(0.17, 0.18, 0.21, 1.0)
-EDGE = imgui.ImVec4(0.35, 0.35, 0.37, 1.0)
-PLOT = imgui.ImVec4(0.06, 0.06, 0.08, 1.0)
 # the viewer's first class colors, given to classes in the order they are added, and its unlabeled gray
 CLASSES = (
     ("soma", imgui.ImVec4(0.12, 0.47, 0.71, 1.0)),
@@ -131,7 +125,7 @@ BACKGROUNDS = (
     ("demixed movie", "the demixed movie around the ROI, from its peak frame; the player plays it"),
 )
 LABELS = (
-    ("action", "does"),
+    ("action", "description"),
     ("click a row, or its key", "labels the current ROI and moves to the next"),
     ("0, unlabel", "clears its label"),
     ("add", "a new class, colored in order; its key is its position"),
@@ -141,7 +135,7 @@ LABELS = (
     ("next unlabeled (u)", "the next ROI in view without a label"),
 )
 CLASSIFY = (
-    ("button", "does"),
+    ("button", "description"),
     (
         "train",
         "fits a ROICaT classifier on the labels, every ROI labeled and at least 2 per class, and saves it to "
@@ -156,27 +150,6 @@ CLASSIFY = (
     ),
     ("classify on load", "runs the selected classifier on each session as it arrives"),
 )
-
-
-def u32(color: imgui.ImVec4, alpha: float = 1.0) -> int:
-    return imgui.color_convert_float4_to_u32(imgui.ImVec4(color.x, color.y, color.z, alpha))
-
-
-def box(dl, x: float, y: float, w: float, h: float, label: str, color: imgui.ImVec4, fill_alpha: float = 0.0):
-    """A rounded box with its label centered; fill_alpha tints it with the label color over the card."""
-    a, b = imgui.ImVec2(x, y), imgui.ImVec2(x + w, y + h)
-    dl.add_rect_filled(a, b, u32(CARD), 4.0)
-    if fill_alpha:
-        dl.add_rect_filled(a, b, u32(color, fill_alpha), 4.0)
-    dl.add_rect(a, b, u32(color, 0.6), 4.0)
-    size = imgui.calc_text_size(label)
-    dl.add_text(imgui.ImVec2(x + (w - size.x) / 2, y + (h - size.y) / 2), u32(color), label)
-
-
-def arrow(dl, x0: float, x1: float, y: float) -> None:
-    col = u32(DIM)
-    dl.add_line(imgui.ImVec2(x0, y), imgui.ImVec2(x1 - 5, y), col, 1.5)
-    dl.add_triangle_filled(imgui.ImVec2(x1, y), imgui.ImVec2(x1 - 7, y - 4), imgui.ImVec2(x1 - 7, y + 4), col)
 
 
 def hash01(a: float, b: float) -> float:
@@ -198,13 +171,6 @@ def card(dl, x: float, y: float, w: float, h: float, title: str) -> float:
     size = imgui.calc_text_size(title)
     dl.add_text(imgui.ImVec2(x + (w - size.x) / 2, y + (1.2 * em - size.y) / 2), u32(TEXT), title)
     return y + 1.2 * em
-
-
-def heading(icon: str, text: str) -> None:
-    em = imgui.get_font_size()
-    imgui.dummy(imgui.ImVec2(0, 0.7 * em))
-    imgui.text_colored(ACCENT, f"{icon}  {text}")
-    imgui.dummy(imgui.ImVec2(0, 0.1 * em))
 
 
 def table(name: str, rows: tuple) -> None:

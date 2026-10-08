@@ -36,7 +36,7 @@ class FolderPipeline(BasePipeline):
         logging.getLogger("masknmf").debug("a debug line")
         logging.getLogger("masknmf").info("an info line")
         logging.getLogger("masknmf").warning("a warning line")
-        # a five frame movie stands for one a run breaks on
+        # the stub pipeline fails on a five frame movie
         if fail or (data is not None and data.shape[0] == 5):
             raise RuntimeError("the run broke")
         return self.finish()
@@ -142,6 +142,19 @@ def test_a_config_reruns_with_its_frame_rate_unless_one_is_given_and_writes_besi
     cli.main(["run", "--config", str(first / "config.json"), str(tmp_path / "third" / "movie.tif"), "--fs", "30"])
     third, = (p for p in (tmp_path / "third").iterdir() if p.is_dir())
     assert json.loads((third / "config.json").read_text())["configs"]["frame_rate"] == 30
+
+
+def test_a_config_reruns_on_the_movie_it_recorded_when_none_is_given(folder_pipeline, tmp_path, capsys):
+    movie = tmp_path / "movie.tif"
+    tifffile.imwrite(movie, np.zeros((2, 8, 8), dtype=np.uint16))
+    cli.main(["run", "--pipeline", "folder", str(movie), "--output-folder", str(tmp_path / "out")])
+    first, = (tmp_path / "out").iterdir()
+    assert f"open it with: masknmf {cli.format_command(['view', str(first), '--raw', str(movie)])}" in capsys.readouterr().out
+
+    cli.main(["run", "--config", str(first / "config.json")])
+    second, = (p for p in tmp_path.iterdir() if p.is_dir() and p.name != "out")
+    inputs = json.loads((second / "config.json").read_text())["inputs"]
+    assert inputs["data"]["path"] == str(movie.resolve()) and inputs["data"]["shape"] == [2, 8, 8]
 
 
 def test_results_globs_expand_without_sidecars_or_zarr_stores(tmp_path, capsys):

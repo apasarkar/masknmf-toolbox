@@ -31,7 +31,6 @@ class Param:
     """One settable value, either a config dataclass field or a plain argument."""
 
     name: str
-    section: Optional[str]
     field: str
     annotation: Any
     default: Any
@@ -39,6 +38,23 @@ class Param:
     settable: bool
     required: bool
     kind: str
+
+    @property
+    def flag(self) -> str:
+        """The long flag a run or constructor argument is given under."""
+        return f"--{self.field.replace('_', '-')}"
+
+    @property
+    def description(self) -> str:
+        """One line of command line help: the choices, then required or the default."""
+        pieces = []
+        if self.choices is not None:
+            pieces.append("one of " + ", ".join(str(c) for c in self.choices))
+        if self.required:
+            pieces.append("required")
+        else:
+            pieces.append(f"default {self.default!r}")
+        return "; ".join(pieces)
 
 
 @dataclasses.dataclass
@@ -64,6 +80,18 @@ class Section:
     def default_kind(self) -> str:
         """The kind of the config the pipeline uses when the argument is not given."""
         return kind_of(value=self.default)
+
+    @property
+    def kinds_buildable(self) -> tuple[str, ...]:
+        """The kinds that can be built without Python, which leaves out configs requiring arrays."""
+        kinds = []
+        for kind in self.kinds:
+            try:
+                self.value_for(kind=kind)
+            except ValueError:
+                continue
+            kinds.append(kind)
+        return tuple(kinds)
 
     def value_for(self, kind: str) -> Any:
         """
@@ -238,7 +266,6 @@ def scrape_dataclass(cls_config: type, name_section: str) -> list[Param]:
         params.append(
             Param(
                 name=f"{name_section}.{field.name}",
-                section=name_section,
                 field=field.name,
                 annotation=annotation,
                 default=default,
@@ -394,8 +421,8 @@ def config_from_json(value: Any, annotation: Any, base: Any = None) -> Any:
     """
     Read a value written with config_json_value back into the type an annotation names.
 
-    Fields a dict leaves out keep base's values, as does "*", which stands for what json could not
-    write. A list's items build on base's items at the same position, or on its last item past its end.
+    Fields a dict leaves out keep base's values, as does "*", which config_json_value writes for values json
+    cannot serialize. A list's items build on base's items at the same position, or on its last item past its end.
 
     Args:
         value (Any): The decoded json
@@ -492,7 +519,6 @@ def scrape(cls_pipeline: type) -> PipelineSpec:
         scalars.append(
             Param(
                 name=name.replace("_", "-"),
-                section=None,
                 field=name,
                 annotation=annotation,
                 default=parameter.default if has_default else None,
@@ -513,7 +539,6 @@ def scrape(cls_pipeline: type) -> PipelineSpec:
         run_params.append(
             Param(
                 name=name.replace("_", "-"),
-                section=None,
                 field=name,
                 annotation=annotation,
                 default=parameter.default if has_default else None,

@@ -148,9 +148,12 @@ def grid(captions) -> Grid:
     return Grid((x0 + caption_w, x0 + caption_w + cell_w + gap), cell_w, gap, imgui.calc_text_size("(?)").x + em(0.3))
 
 
-def help_mark(text: str):
-    """A dim (?) after the last item, on its line, with ``text`` as its tooltip."""
-    imgui.same_line(0, em(0.3))
+def help_mark(text: str, x: float | None = None):
+    """A dim (?) after the last item, on its line, with ``text`` as its tooltip; at ``x`` when given and the item ends before it."""
+    if x is None:
+        imgui.same_line(0, em(0.3))
+    else:
+        imgui.same_line(max(x, imgui.get_item_rect_max().x - imgui.get_window_pos().x + imgui.get_scroll_x() + em(0.3)))
     imgui.text_disabled("(?)")
     if imgui.is_item_hovered():
         imgui.set_tooltip(text)

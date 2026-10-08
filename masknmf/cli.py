@@ -21,7 +21,7 @@ here enumerates a parameter by hand:
     masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
     masknmf view tracking_folder
     masknmf view tracking_folder/20261001T180415_roicat-tracking-manifest.json
-    masknmf view tracking_folder day1/results.hdf5 day2/results.hdf5
+    masknmf view old_tracking_folder day1/results.hdf5 day2/results.hdf5
     masknmf train-classifier "sessions/*/results.hdf5" --out cells
     masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classifier
     masknmf track "sessions/*/results.hdf5" --out tracking
@@ -42,19 +42,26 @@ import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import h5py
 import numpy as np
 
 import masknmf
 from masknmf.classification import RoicatClassifier
 from masknmf.demixing.curation import latest_results
 from masknmf.demixing.labels import SIDECAR_SUFFIX, read_labels
+from masknmf.io import (
+    SUFFIXES_HDF5,
+    SUFFIXES_TIFF,
+    group_name_compression,
+    group_name_demixing,
+    group_names_registration,
+    OpenedResults,
+    has_group,
+    stage_groups,
+)
 from masknmf.multisession import RoicatDataAdapter, RoicatTracker
 from masknmf.pipelines import scraper
 
 
-SUFFIXES_TIFF = (".tif", ".tiff")
-SUFFIXES_HDF5 = (".h5", ".hdf5")
 GLOB_TRACKING_MANIFEST = "*_roicat-tracking-manifest.json"
 
 NAMES_ALIAS = {"frame_rate": "--fs"}
@@ -64,105 +71,31 @@ CHARACTERS_NEEDING_QUOTES = set(" \t\\'&|;<>()$`!*?[]{}~#")
 logger = logging.getLogger("masknmf")
 
 
-def group_names_registration() -> tuple[str, ...]:
-    """The hdf5 group names a registration stage can be stored under."""
-    return (
-        masknmf.RigidRegistrationArray.__name__,
-        masknmf.PiecewiseRigidRegistrationArray.__name__,
-        masknmf.GradientRegistrationArray.__name__,
-    )
-
-
-def group_name_compression() -> str:
-    """The hdf5 group name the compression stage is stored under."""
-    return masknmf.CompressionArray.__name__
-
-
-def group_name_demixing() -> str:
-    """The hdf5 group name the demixing stage is stored under."""
-    return masknmf.DemixingResults.__name__
-
-
 def load_movie(filepath_movie: str, name_dataset: Optional[str] = None):
-    """
-    Open a raw movie with the loader matching its path.
-
-    Args:
-        filepath_movie (str): A tiff file, a directory of tiff files, or an hdf5 file
-        name_dataset (str | None): For hdf5 input, the dataset holding the movie
-    Returns:
-        LazyFrameLoader: A (frames, height, width) lazy array
-    Raises:
-        SystemExit: If the path is not one masknmf can read, a tiff directory is empty,
-            or an hdf5 dataset was not named
-    """
-    path_movie = Path(filepath_movie).expanduser()
-    if not path_movie.exists():
-        fail(f"no such file or directory: {path_movie}")
-
-    if path_movie.is_dir():
-        filepaths_tiffs = sorted(
-            str(p) for p in path_movie.iterdir() if p.suffix.lower() in SUFFIXES_TIFF
-        )
-        if len(filepaths_tiffs) == 0:
-            fail(f"no tiff files in {path_movie}")
-        if len(filepaths_tiffs) == 1:
-            return masknmf.TiffArray(filepaths_tiffs[0])
-        return masknmf.TiffSeriesLoader(filepaths_tiffs)
-
-    suffix = path_movie.suffix.lower()
-    if suffix in SUFFIXES_TIFF:
-        return masknmf.TiffArray(str(path_movie))
-    if suffix in SUFFIXES_HDF5:
-        if name_dataset is None:
-            fail(f"{path_movie.name} is hdf5; name the movie dataset with --dataset")
-        return masknmf.Hdf5Array(str(path_movie), name_dataset)
-
-    fail(
-        f"masknmf cannot read {path_movie.name}; expected a .tif/.tiff file, a directory "
-        "of them, or a .h5/.hdf5 file"
-    )
+    """masknmf.io.load_movie, a path it cannot read ending the command."""
+    try:
+        return masknmf.io.load_movie(filepath_movie, name_dataset)
+    except (OSError, ValueError) as e:
+        fail(f"{e}; an hdf5 movie's dataset is named with --dataset")
 
 
 def has_stage(filepath_results: str, name_group: str) -> bool:
-    """
-    Whether a results file holds a stage group.
-
-    masknmf.utils.has_group opens any path it is handed and raises a bare OSError
-    on a non-hdf5 file, so the suffix is checked here first.
-    """
-    path_results = Path(filepath_results)
-    if path_results.suffix.lower() not in SUFFIXES_HDF5:
-        fail(f"{path_results.name} is not a .h5/.hdf5 results file")
-    return masknmf.utils.has_group(str(path_results), name_group)
+    """Whether a results file holds a stage group; a path that is not a results file ends the command."""
+    return name_group in groups_present(filepath_results)
 
 
 def groups_present(filepath_results: str) -> list[str]:
-    """The masknmf stage groups a results file holds, in pipeline order, then demixing results under a prefix."""
-    names_known = (
-        *group_names_registration(),
-        group_name_compression(),
-        group_name_demixing(),
-    )
-    names = [
-        name
-        for name in names_known
-        if has_stage(filepath_results=filepath_results, name_group=name)
-    ]
-    if len(names) > 0:
-        with h5py.File(filepath_results, "r") as f:
-            names += [
-                f"{key}/{group_name_demixing()}"
-                for key in f
-                if isinstance(f[key], h5py.Group) and group_name_demixing() in f[key]
-            ]
-    return names
+    """masknmf.io.stage_groups, a path that is not a results file ending the command."""
+    try:
+        return stage_groups(filepath_results)
+    except (OSError, ValueError) as e:
+        fail(str(e))
 
 
 def expand_results(entries: list[str]) -> list[str]:
     """
     The .h5/.hdf5 results files a list of paths and globs names, labels sidecars left out. A named file is used as
-    given; of what a glob matches, each results file stands in for itself only when no curated file of it matched,
+    given; of what a glob matches, a results file is used only when no curated file of it matched,
     else the newest curated file does (``masknmf.demixing.latest_results``).
 
     Powershell and cmd hand globs over unexpanded, so they are expanded here, one path
@@ -282,16 +215,27 @@ def spec_for(slug: str) -> scraper.PipelineSpec:
     return scraper.scrape(cls_pipeline=registry[slug])
 
 
-def kinds_buildable(section: scraper.Section) -> list[str]:
-    """The kinds of a section that can be built without Python, which leaves out configs requiring arrays."""
-    kinds = []
-    for kind in section.kinds:
-        try:
-            section.value_for(kind=kind)
-        except ValueError:
-            continue
-        kinds.append(kind)
-    return kinds
+KEYS_RECORD = ("masknmf_version", "pipeline", "run", "inputs", "timings")
+
+
+def config_record(loaded: Any) -> Optional[dict]:
+    """
+    A config file's object with the argument values under "configs". Run folders from before they were nested
+    there hold them at the top level, beside "pipeline".
+
+    Args:
+        loaded (Any): The parsed json
+    Returns:
+        dict | None: The object, or None when it holds no argument values
+    """
+    if not isinstance(loaded, dict):
+        return None
+    if isinstance(loaded.get("configs"), dict):
+        return loaded
+    if "pipeline" not in loaded:
+        return None
+    return {**{k: loaded[k] for k in KEYS_RECORD if k in loaded},
+            "configs": {k: v for k, v in loaded.items() if k not in KEYS_RECORD}}
 
 
 def read_config_file(filepath: str) -> dict:
@@ -313,17 +257,10 @@ def read_config_file(filepath: str) -> dict:
         loaded = json.loads(path.read_text())
     except json.JSONDecodeError as error:
         fail(f"{path.name} is not valid json: {error}")
-    if not isinstance(loaded, dict) or not isinstance(loaded.get("configs"), dict):
+    record = config_record(loaded=loaded)
+    if record is None:
         fail(f"{path.name} should hold a json object with argument names to values under \"configs\"")
-    return loaded
-
-
-def slug_of(name_class: str) -> str:
-    """The --pipeline value of the pipeline class a config file names."""
-    for slug, cls in scraper.pipeline_registry().items():
-        if cls.__name__ == name_class:
-            return slug
-    fail(f"the config file names {name_class!r}, which is not a masknmf pipeline")
+    return record
 
 
 def section_value(section: scraper.Section, kind: Optional[str], value_file: Any) -> tuple[bool, Any]:
@@ -359,16 +296,6 @@ def section_value(section: scraper.Section, kind: Optional[str], value_file: Any
         fail(f"{section.argument} in the config file: {error}")
 
 
-def flag_for(param: scraper.Param) -> str:
-    """The long flag a run argument is exposed under."""
-    return f"--{param.field.replace('_', '-')}"
-
-
-def option_name(flag: str) -> str:
-    """The argparse destination a long flag lands in."""
-    return flag.lstrip("-").replace("-", "_")
-
-
 def build_bootstrap_parser() -> argparse.ArgumentParser:
     """A parser that reads only --pipeline and --config, so the real parser can be built from them."""
     parser = argparse.ArgumentParser(add_help=False)
@@ -387,48 +314,47 @@ def add_pipeline_options(parser: argparse.ArgumentParser, spec: scraper.Pipeline
     """
     for param in spec.movie_params:
         if len(spec.movie_params) > 1:
-            parser.add_argument(flag_for(param), help=f"imaging movie for {param.field}", default=None)
+            parser.add_argument(param.flag, help=f"imaging movie for {param.field}", default=None)
             continue
-        _, allows_none = scraper.annotation_members(annotation=param.annotation)
         parser.add_argument(
             param.field,
-            nargs="*" if allows_none else "+",
+            nargs="*",
             help=f"imaging movie(s) for {param.field}; several movies or a glob run one after another, each in its "
-                 f"own run folder",
+                 f"own run folder; left out, the movie a --config run folder recorded is used",
             default=None,
         )
 
     for param in spec.array_params:
         parser.add_argument(
-            flag_for(param),
+            param.flag,
             default=None,
             metavar="NPY",
             help=f".npy file holding {param.field}",
         )
 
     for param in spec.run_scalars:
-        flags = [flag_for(param)]
+        flags = [param.flag]
         if param.field in NAMES_ALIAS:
             flags.append(NAMES_ALIAS[param.field])
         parser.add_argument(
             *flags,
             default=None,
             metavar="VALUE",
-            help=describe(param=param),
+            help=param.description,
         )
 
     for param in spec.scalars:
         parser.add_argument(
-            f"--{param.name}",
+            param.flag,
             default=None,
             metavar="VALUE",
-            help=describe(param=param),
+            help=param.description,
         )
 
     for section in spec.sections:
         parser.add_argument(
             f"--{section.name}-kind",
-            choices=kinds_buildable(section=section),
+            choices=section.kinds_buildable,
             default=None,
             help=f"which config {section.argument} receives, at its defaults; default {section.default_kind}",
         )
@@ -439,18 +365,6 @@ def add_pipeline_options(parser: argparse.ArgumentParser, spec: scraper.Pipeline
         metavar="JSON",
         help="config values to run with: `masknmf params --json` output, or a run folder's config.json",
     )
-
-
-def describe(param: scraper.Param) -> str:
-    """A one line description of a parameter for argparse help."""
-    pieces = []
-    if param.choices is not None:
-        pieces.append("one of " + ", ".join(str(c) for c in param.choices))
-    if param.required:
-        pieces.append("required")
-    else:
-        pieces.append(f"default {param.default!r}")
-    return "; ".join(pieces)
 
 
 def command_pipelines(args: argparse.Namespace) -> None:
@@ -503,14 +417,14 @@ def command_params(args: argparse.Namespace) -> None:
     print("run arguments")
     for param in spec.run_params:
         note = {"movie": "imaging movie", "array": ".npy file"}.get(param.kind, "")
-        print(f"  {param.field:28} {describe(param=param)}{'  [' + note + ']' if note else ''}")
+        print(f"  {param.field:28} {param.description}{'  [' + note + ']' if note else ''}")
 
     print("\nconstructor arguments")
     for param in spec.scalars:
-        print(f"  {param.field:28} {describe(param=param)}")
+        print(f"  {param.field:28} {param.description}")
 
     for section in spec.sections:
-        print(f"\n[{section.name}] --{section.name}-kind {' | '.join(kinds_buildable(section=section))}")
+        print(f"\n[{section.name}] --{section.name}-kind {' | '.join(section.kinds_buildable)}")
         for kind in section.kinds:
             if kind == "skip":
                 continue
@@ -537,11 +451,29 @@ def command_run(args: argparse.Namespace) -> None:
     if len(unknown) > 0:
         fail(f"the config file sets {', '.join(sorted(unknown))}, which {spec.slug} does not take")
 
+    # a run folder's config.json records the files its run read; a movie or array not given comes from there
+    inputs_file = loaded.get("inputs", {})
+    for param in (*spec.movie_params, *spec.array_params):
+        positional = param.kind == "movie" and len(spec.movie_params) == 1
+        if getattr(args, param.field, None) or param.field not in inputs_file:
+            continue
+        recorded = inputs_file[param.field]
+        path = Path(recorded["path"]).expanduser()
+        if path.is_file() and path.stat().st_size != recorded.get("bytes", path.stat().st_size):
+            print(f"{path.name} is not the size the config's run recorded; it may have changed", file=sys.stderr)
+        setattr(args, param.field, [str(path)] if positional else str(path))
+        if args.dataset is None and "dataset" in recorded:
+            args.dataset = recorded["dataset"]
+    if len(spec.movie_params) == 1 and not getattr(args, spec.movie_params[0].field):
+        _, allows_none = scraper.annotation_members(annotation=spec.movie_params[0].annotation)
+        if not allows_none:
+            fail(f"{spec.slug} needs a movie: pass one, or a --config from a run that recorded it")
+
     kwargs_init = {}
     for param in spec.scalars:
         if param.field in values_file:
             kwargs_init[param.field] = values_file[param.field]
-        text = getattr(args, option_name(param.name), None)
+        text = getattr(args, param.field, None)
         if text is not None:
             try:
                 kwargs_init[param.field] = scraper.coerce(param=param, text=text)
@@ -549,7 +481,7 @@ def command_run(args: argparse.Namespace) -> None:
                 fail(str(error))
 
     for section in spec.sections:
-        kind = getattr(args, option_name(f"{section.name}-kind"), None)
+        kind = getattr(args, f"{section.name}-kind".replace("-", "_"), None)
         passes, value = section_value(section=section, kind=kind, value_file=values_file.get(section.argument))
         if passes:
             kwargs_init[section.argument] = value
@@ -579,8 +511,7 @@ def command_run(args: argparse.Namespace) -> None:
         kwargs_run = {}
         filepaths_input = {}
         for param in spec.movie_params:
-            name = param.field if len(spec.movie_params) == 1 else option_name(flag_for(param))
-            filepath = getattr(args, name, None)
+            filepath = getattr(args, param.field, None)
             if filepath is None:
                 kwargs_run[param.field] = None
             else:
@@ -590,10 +521,10 @@ def command_run(args: argparse.Namespace) -> None:
                 filepaths_input[param.field] = filepath
 
         for param in spec.array_params:
-            filepath = getattr(args, option_name(flag_for(param)), None)
+            filepath = getattr(args, param.field, None)
             if filepath is None:
                 if param.required:
-                    fail(f"--{param.field.replace('_', '-')} is required for {spec.slug}")
+                    fail(f"{param.flag} is required for {spec.slug}")
             else:
                 kwargs_run[param.field] = np.load(filepath)
                 filepaths_input[param.field] = filepath
@@ -614,10 +545,10 @@ def command_run(args: argparse.Namespace) -> None:
         for param in spec.run_scalars:
             if param.field in values_file:
                 kwargs_run[param.field] = values_file[param.field]
-            text = getattr(args, option_name(flag_for(param)), None)
+            text = getattr(args, param.field, None)
             if text is None:
                 if param.required and param.field not in values_file:
-                    fail(f"--{param.field.replace('_', '-')} is required for {spec.slug}")
+                    fail(f"{param.flag} is required for {spec.slug}")
                 continue
             try:
                 kwargs_run[param.field] = scraper.coerce(param=param, text=text)
@@ -625,7 +556,7 @@ def command_run(args: argparse.Namespace) -> None:
                 fail(str(error))
 
         filepaths_movie = [
-            getattr(args, p.field if len(spec.movie_params) == 1 else option_name(flag_for(p)), None)
+            getattr(args, p.field, None)
             for p in spec.movie_params
         ]
         filepaths_movie = [Path(f).expanduser().resolve() for f in filepaths_movie if f is not None]
@@ -646,15 +577,15 @@ def command_run(args: argparse.Namespace) -> None:
         try:
             run_folder = pipeline.run(**kwargs_run)
         except BaseException as error:
-            logger.exception("run failed" if movie is None else f"run failed on {movie}")
-            if pipeline.run_folder is not None:
-                pipeline.finish("failed")
-            # a failed run keeps its folder only when one of its results files holds a finished compression; its log
-            # file, closed first so windows lets the folder go, moves up to where the folder was
+            # the pipeline logged the error and recorded the failure in config.json
+            logger.error("run failed" if movie is None else f"run failed on {movie}")
+            # a failed run keeps its folder only when one of its results files holds a finished stage; its log file,
+            # closed first so windows lets the folder go, moves up to where the folder was
             folder = pipeline.run_folder
             if folder is not None and not any(
-                has_stage(filepath_results=str(filepath), name_group=group_name_compression())
+                has_stage(filepath_results=str(filepath), name_group=name)
                 for filepath in folder.glob("*.hdf5")
+                for name in (*group_names_registration(), group_name_compression())
             ):
                 logger.removeHandler(pipeline.log_handler)
                 pipeline.log_handler.close()
@@ -667,6 +598,12 @@ def command_run(args: argparse.Namespace) -> None:
             finished.append((movie, None))
             continue
         logger.info(f"done in {timedelta(seconds=round(time.monotonic() - start))}: {run_folder}")
+        argv_view = ["view", str(run_folder)]
+        if len(spec.movie_params) == 1 and spec.movie_params[0].field in filepaths_input:
+            argv_view += ["--raw", filepaths_input[spec.movie_params[0].field]]
+            if args.dataset is not None:
+                argv_view += ["--dataset", args.dataset]
+        print(f"open it with: masknmf {format_command(argv=argv_view)}")
         finished.append((movie, run_folder))
 
     if len(movies) > 1:
@@ -688,26 +625,37 @@ def print_tracking(tracking: "masknmf.multisession.RoicatTrackingResults", folde
           f"{int((spans == tracking.num_sessions).sum())} found in every session")
     print(f"  clustered  {clustered / max(tracking.num_roi_total, 1):.0%} of the rois ({clustered}) belong to a cluster; "
           f"the other {tracking.num_roi_total - clustered} matched no roi of another session")
-    missing = [filepath for filepath in tracking.session_files if not os.path.isfile(filepath)]
-    root = os.path.commonpath([os.path.dirname(filepath) for filepath in tracking.session_files])
-    print(f"  results files under {root}:")
+    missing = [filepath for filepath in tracking.session_files if not Path(filepath).is_file()]
+    print("  results files, by folder:")
     print("    session  rois  clustered  file")
+    folder = None
     for session, filepath in enumerate(tracking.session_files):
+        # one heading per folder: sessions can be on different drives, so there is no common root
+        if Path(filepath).parent != folder:
+            folder = Path(filepath).parent
+            print(f"  {folder}")
         labels = tracking.labels_by_session[session]
-        print(f"    {session:>7}  {len(labels):>4}  {int((labels >= 0).sum()):>9}  {os.path.relpath(filepath, root)}"
+        print(f"    {session:>7}  {len(labels):>4}  {int((labels >= 0).sum()):>9}  {Path(filepath).name}"
               + ("  (missing)" if filepath in missing else ""))
     return missing
 
 
 def view_tracking(args: argparse.Namespace, source: Path) -> None:
     """
-    Open the multisession viewer on a tracking run, its manifest or a folder from before manifests; results files
-    after it replace the sessions it recorded.
+    Open the multisession viewer on a tracking run. A manifest lists each session's results file; a tracking folder
+    without a manifest takes the results files after it, in session order.
     """
     if args.classify or args.raw is not None or args.compression or args.prefix or args.fs is not None:
         fail("a tracking folder opens only the multisession viewer; drop --classify, --raw, --compression, --prefix and --fs")
-    folder, entries_sessions = args.results[0], args.results[1:]
-    files = expand_results(entries=entries_sessions) if len(entries_sessions) > 0 else None
+    folder, files = args.results[0], args.results[1:]
+    # a manifest lists each session's results file; other files are not accepted in their place
+    if source.is_file() and len(files) > 0:
+        fail(f"{source.name} lists the sessions' results files; remove the files after {folder}")
+    for filepath in files:
+        if not Path(filepath).is_file():
+            fail(f"no such file: {filepath}")
+        if not has_group(filepath, group_name_demixing()):
+            fail(f"{filepath} holds no {group_name_demixing()}")
     # richfile and roicat warn about their own metadata on every load, nothing the user can act on
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -718,31 +666,15 @@ def view_tracking(args: argparse.Namespace, source: Path) -> None:
                 tracking = masknmf.multisession.RoicatTrackingResults.from_roicat_dir(source)
         except ValueError as error:
             fail(str(error))
-    if files is not None:
+    if len(files) > 0:
         if len(files) != tracking.num_sessions:
             fail(f"the tracking has {tracking.num_sessions} sessions, got {len(files)} results files")
-        counts = {}
-        for filepath in files:
-            with h5py.File(filepath, "r") as f:
-                counts[filepath] = f[f"{group_name_demixing()}/temporal_demixed"].shape[1]
-        if list(counts.values()) != list(tracking.num_roi_per_session):
-            # globs sort by name, so put each file at the session with its roi count
-            ordered = []
-            for session, count in enumerate(tracking.num_roi_per_session):
-                matches = [filepath for filepath, n in counts.items() if n == count]
-                if len(matches) > 1:
-                    fail(f"session {session} has {count} rois and {len(matches)} results files do; pass the files in session order")
-                ordered.append(matches[0] if len(matches) == 1 else None)
-            # a file that fits no session takes an open one, so the check below names it
-            unplaced = iter([filepath for filepath in files if filepath not in ordered])
-            files = [next(unplaced) if filepath is None else filepath for filepath in ordered]
-        try:
-            tracking.session_files = files
-        except ValueError as error:
-            fail(str(error))
+        tracking.session_files = files
     missing = print_tracking(tracking=tracking, folder=str(source))
     if args.list:
         return
+    if len(missing) > 0 and source.is_file():
+        fail(f"results files listed in {source.name} not found; restore them or run tracking again")
     if len(missing) > 0:
         fail(f"results files not found; pass them in session order after the folder: masknmf view {folder} day1.hdf5 day2.hdf5 ...")
 
@@ -764,7 +696,7 @@ def command_view(args: argparse.Namespace) -> None:
     if tracking is not None:
         view_tracking(args=args, source=tracking)
         return
-    # a folder without a manifest stands for the results files in it, each one's newest curated file in its place
+    # a folder without a manifest means the results files in it, each replaced by its newest curated file
     entries = [
         # glob characters in the folder's own name are escaped, so only the file pattern matches
         str(Path(glob.escape(entry)) / "*results*.hdf5") if Path(entry).expanduser().is_dir() else entry
@@ -814,44 +746,25 @@ def command_view(args: argparse.Namespace) -> None:
         str(masknmf.utils.torch_select_device()) if args.device == "auto" else args.device
     )
     raw = None if args.raw is None else load_movie(filepath_movie=args.raw, name_dataset=args.dataset)
-
-    # the file's registration replayed on the raw movie: what the compression saw, and all a registration-only
-    # run has to show
-    name_registration = next((n for n in group_names_registration() if n in names_present), None)
-    registered = None
-    if name_registration is not None and raw is not None:
-        with h5py.File(filepath_results, "r") as f:
-            num_frames = f[name_registration]["shifts"].shape[0]
-        if num_frames != raw.shape[0]:
-            print(
-                f"{args.raw} has {raw.shape[0]} frames, the {name_registration} in {filepath_results} "
-                f"{num_frames}: not the movie the run registered; shifts not applied"
-            )
-        else:
-            registered = getattr(masknmf, name_registration).from_hdf5(filepath_results, input_movie=raw)
-    if name_demixing in names_present:
-        results = masknmf.DemixingResults.from_hdf5(filepath_results, prefix=args.prefix, device=device)
-    elif group_name_compression() in names_present:
-        results = masknmf.CompressionArray.from_hdf5(filepath_results)
-    elif registered is not None:
-        results = registered
-    else:
-        fail(f"{filepath_results} holds only {name_registration}; showing it needs --raw, the movie the run registered")
-    # a raw movie the pipeline trimmed (the glutamate pipeline drops its first frames) no longer lines up
-    raw_fits = raw is not None and tuple(raw.shape) == tuple(results.shape)
-    if raw is not None and not raw_fits:
-        print(f"raw movie is {tuple(raw.shape)}, the results {tuple(results.shape)}; no raw panel")
+    # the demixing results, else the compression, else the registration applied to the raw movie
+    try:
+        opened = OpenedResults.open(filepath_results, raw=raw, prefix=args.prefix, device=device)
+    except (OSError, ValueError) as e:
+        fail(f"{e}; --raw names the movie")
+    for note in opened.skipped:
+        print(note)
+    results, raw, registered = opened.results, opened.raw, opened.registered
     if args.compression and isinstance(results, masknmf.BaseRegistrationArray):
         fail(f"{filepath_results} holds no compression")
-    if args.compression and not raw_fits:
+    if args.compression and raw is None:
         fail("--compression needs --raw, the movie the compression saw, with the results' frame count")
     viewer = masknmf.SingleSessionDemixingVis(
         demixing_results=results,
         frame_timings=timings(results.shape[0], args.fs),
         device=device,
         results_path=filepath_results,
-        raw=raw if raw_fits else None,
-        registered=registered if raw_fits and registered is not results else None,
+        raw=raw,
+        registered=registered,
     )
     if args.compression:
         viewer.compute_lag1_acf()
@@ -962,8 +875,8 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_view = subparsers.add_parser("view", help="open the viewers for a results file")
     parser_view.add_argument(
         "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several need --classify. "
-        "Or a tracking folder (its newest run) or one run's *-manifest.json, optionally followed by its results files in session order. "
-        "Any other folder stands for the *results*.hdf5 files in it, the newest curated one of each",
+        "Or a tracking folder (its newest run) or one run's *-manifest.json; a tracking folder without a manifest is followed by its results files in session order. "
+        "Any other folder means the *results*.hdf5 files in it, each replaced by its newest curated file",
     )
     parser_view.add_argument("--raw", default=None, help="the raw movie the results came from")
     parser_view.add_argument("--dataset", default=None)
@@ -1045,7 +958,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         name_class = read_config_file(filepath=bootstrap.config).get("pipeline")
         if name_class is None:
             fail("the config file names no pipeline; pass --pipeline")
-        bootstrap.pipeline = slug_of(name_class=name_class)
+        bootstrap.pipeline = scraper.slugify(name_class=name_class)
+        if bootstrap.pipeline not in scraper.pipeline_registry():
+            fail(f"the config file names {name_class!r}, which is not a masknmf pipeline")
         argv = ["run", "--pipeline", bootstrap.pipeline, *argv[1:]]
 
     spec = None

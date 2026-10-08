@@ -1,7 +1,7 @@
 """
 The Curation tab's guide (h): the steps, the panels and what fills them, the motion shifts, what a click, a
-group and the selection tools do, and what Demix does, as diagrams and tables, with the viewer's keybinds
-behind a button. From the repo root,
+group and the selection tools do, the overlay and what Demix does, as diagrams and tables, with the viewer's
+keybinds behind a button. From the repo root,
 ``python -m masknmf.visualization.imgui.curation_help`` opens it in a window of its own.
 """
 
@@ -15,18 +15,13 @@ from imgui_bundle import icons_fontawesome_6 as fa
 from imgui_bundle import imgui
 from wgpu.utils.imgui import ImguiRenderer
 
+from masknmf.visualization.imgui.guide import ACCENT, CARD, DIM, EDGE, KEY, PLOT, TEXT, arrow, box, u32
 from masknmf.visualization.imgui.keybinds import DEMIXING
 from masknmf.visualization.imgui.panels import draw_keybinds_button, draw_keybinds_popup
 from masknmf.visualization.imgui.theme import popup
+from masknmf.visualization.imgui.widgets import draw_switch
 
-ACCENT = imgui.ImVec4(0.40, 0.68, 1.00, 1.0)
-KEY = imgui.ImVec4(1.00, 0.80, 0.20, 1.0)
-DIM = imgui.ImVec4(0.62, 0.62, 0.65, 1.0)
-TEXT = imgui.ImVec4(0.92, 0.92, 0.94, 1.0)
 DROP = imgui.ImVec4(1.00, 0.40, 0.40, 1.0)
-CARD = imgui.ImVec4(0.17, 0.18, 0.21, 1.0)
-EDGE = imgui.ImVec4(0.35, 0.35, 0.37, 1.0)
-PLOT = imgui.ImVec4(0.06, 0.06, 0.08, 1.0)
 # the trace plot's compressed / signal / background / residual line colors, then its first group colors
 COMPRESSED = imgui.ImVec4(0.85, 0.85, 0.85, 1.0)
 SIGNAL = imgui.ImVec4(0.30, 0.85, 0.40, 1.0)
@@ -48,7 +43,7 @@ FONT_SIZE = 14
 TITLE = "Curation"
 TOOLTIP = (
     "the steps, the panels and what fills them, the motion shifts, what a click, a group and the selection "
-    "tools do, what Demix does, the keybinds"
+    "tools do, the overlay, what Demix does, the keybinds"
 )
 STEPS = (
     (fa.ICON_FA_ARROW_POINTER, "Click", "a signal: its parts"),
@@ -86,7 +81,7 @@ STILLS = (
 PANELS = (
     ("movie", "shows"),
     ("raw", "the movie as recorded, when given or found beside the results"),
-    ("registered", "the raw movie with the file's registration replayed, when both are there"),
+    ("registered", "the raw movie with the file's registration applied (needs both)"),
     (
         "compressed+denoised",
         "the raw movie compressed and denoised by PMD: the noise left out, what the demixer fits",
@@ -133,7 +128,7 @@ SOURCES = (
     "needs demixed signals and traces shown; both presses on one spot",
 )
 MOUSE = (
-    ("mouse", "does"),
+    ("mouse", "description"),
     ("click", "select a signal or roi; an empty pixel adds its 5x5 average (pixel traces on)"),
     ("ctrl + click", "toggle it in the group"),
     ("shift + click", "add it; in the table, every row up to it"),
@@ -141,17 +136,50 @@ MOUSE = (
     ("drag", "pan; the selection stays"),
     ("right-click", "pick the panel's movie, over the usual menu"),
 )
+# the OVERLAY row's trace buttons as (icon, name, color): show traces lit
+OVERLAY_BUTTONS = (
+    (fa.ICON_FA_ARROWS_LEFT_RIGHT_TO_LINE, "center (t)", TEXT),
+    (fa.ICON_FA_EYE_DROPPER, "pixel traces (p)", TEXT),
+    (fa.ICON_FA_CHART_LINE, "show traces", KEY),
+)
 # the SELECTION row's buttons as (icon, name, color): draw lit, the rest as they sit
 TOOL_BUTTONS = (
     (fa.ICON_FA_DRAW_POLYGON, "draw (a)", KEY),
     (fa.ICON_FA_SIGNATURE, "freehand", DIM),
     (fa.ICON_FA_PLUS, "add roi (r)", TEXT),
-    (fa.ICON_FA_TRASH, "delete", DROP),
+    (fa.ICON_FA_TRASH, "delete (d)", DROP),
     (fa.ICON_FA_OBJECT_GROUP, "merge", DIM),
     (fa.ICON_FA_LOCATION_CROSSHAIRS, "center (f)", ACCENT),
 )
+# the overlay sketch: the four cells and a speck of junk, each signal's strength against the strongest, in mask colors
+JUNK = (0.30, 0.14, 0.3)
+STRENGTHS = (1.0, 0.4, 0.15, 0.65, 0.06)
+MASK_COLORS = (*GROUP, ACCENT, DIM)
+WEIGHTINGS = (
+    (
+        "own peak",
+        "opacity = w / max(w)",
+        "every mask solid at its own peak: dim masks, junk included, are as visible as bright ones; best for axons and thin processes",
+    ),
+    (
+        "signal peak",
+        "opacity = w x max(c) / field max",
+        "faint where the signal is weak, as the signals movie shows it: cells stand out",
+    ),
+)
+CENTER_LINES = (("bumps", 0, SIGNAL), ("slow", 0, BACKGROUND))
+PIXEL_LINE = (("slow", 5, GROUP[2]),)
+OVERLAY = (
+    ("control", "description"),
+    ("masks (m)", "every footprint feathered by its weights; sel masks: the selection at its own peak, white rim"),
+    ("contours (c)", "every footprint's outline; sel contours: the selection's, in its mask color"),
+    ("color by", "masks and table ids by a column's rank instead of signal id"),
+    ("center (t)", "keep the current frame centered in the traces"),
+    ("pixel traces (p)", "an empty pixel's 5x5 compressed average on click"),
+    ("show traces", "plot the selection; off, selecting only highlights"),
+)
 TOOLS = (
-    ("tool", "does"),
+    ("tool", "description"),
     (
         "draw (a)",
         "one region at a time, a polygon on any panel: every signal in view whose center is on the switch's "
@@ -165,7 +193,7 @@ TOOLS = (
         "nmf pass with it; r with nothing drawn starts drawing; Export writes the drawn rois to a .npz",
     ),
     (
-        "delete",
+        "delete (d)",
         "mark the selected signals for the next demix, again unmarks; a selected roi or pixel average is "
         "dropped right away",
     ),
@@ -186,33 +214,7 @@ TOOLS = (
         "a Delete made from the filter is listed under it and named in the curated file's description; "
         "ctrl+z undoes it",
     ),
-    (
-        "overlay",
-        "masks (m), the selected masks, contours (c), the selected contours, each with an opacity; color by "
-        "ranks a column; traces: center (t) keeps the current frame mid-plot, quick pixel trace (p), show selected traces",
-    ),
 )
-
-
-def u32(color: imgui.ImVec4, alpha: float = 1.0) -> int:
-    return imgui.color_convert_float4_to_u32(imgui.ImVec4(color.x, color.y, color.z, alpha))
-
-
-def box(dl, x: float, y: float, w: float, h: float, label: str, color: imgui.ImVec4, fill_alpha: float = 0.0):
-    """A rounded box with its label centered; fill_alpha tints it with the label color over the card."""
-    a, b = imgui.ImVec2(x, y), imgui.ImVec2(x + w, y + h)
-    dl.add_rect_filled(a, b, u32(CARD), 4.0)
-    if fill_alpha:
-        dl.add_rect_filled(a, b, u32(color, fill_alpha), 4.0)
-    dl.add_rect(a, b, u32(color, 0.6), 4.0)
-    size = imgui.calc_text_size(label)
-    dl.add_text(imgui.ImVec2(x + (w - size.x) / 2, y + (h - size.y) / 2), u32(color), label)
-
-
-def arrow(dl, x0: float, x1: float, y: float) -> None:
-    col = u32(DIM)
-    dl.add_line(imgui.ImVec2(x0, y), imgui.ImVec2(x1 - 5, y), col, 1.5)
-    dl.add_triangle_filled(imgui.ImVec2(x1, y), imgui.ImVec2(x1 - 7, y - 4), imgui.ImVec2(x1 - 7, y + 4), col)
 
 
 def hash01(a: float, b: float) -> float:
@@ -234,15 +236,15 @@ def trace(kind: str, cell: int, t: float) -> float:
     return 0.55 * trace("bumps", cell, t) + 0.3 * trace("slow", cell, t) + 0.15 * trace("noise", cell, t)
 
 
-def lines(dl, x: float, y: float, w: float, h: float, specs: tuple, frame: float) -> None:
-    """One trace per (kind, cell, color) spec, stacked over 60 frames, and the cursor at the frame."""
+def lines(dl, x: float, y: float, w: float, h: float, specs: tuple, frame: float, t0: float = 0.0) -> None:
+    """One trace per (kind, cell, color) spec, stacked over 60 frames from t0, and the cursor at the frame."""
     em = imgui.get_font_size()
     x0, x1 = x + 0.5 * em, x + w - 0.5 * em
     slot = (h - 0.6 * em) / len(specs)
     for i, (kind, cell, color) in enumerate(specs):
         base = y + 0.3 * em + slot * (i + 1)
         points = [
-            imgui.ImVec2(x0 + t * (x1 - x0) / 60, base - 0.9 * slot * trace(kind, cell, t)) for t in range(61)
+            imgui.ImVec2(x0 + t * (x1 - x0) / 60, base - 0.9 * slot * trace(kind, cell, t + t0)) for t in range(61)
         ]
         dl.add_polyline(points, u32(color), 1.5, 0)
     cx = x0 + frame * (x1 - x0) / 60
@@ -262,17 +264,17 @@ def card(dl, x: float, y: float, w: float, h: float, title: str, tint: imgui.ImV
     return y + 1.2 * em
 
 
-def plot(dl, w: float, title: str, specs: tuple, h: float, frame: float, tint: imgui.ImVec4 = PLOT) -> None:
-    """A full-width plot card at the cursor, its lines under the title; the cursor moves past it."""
+def plot(dl, w: float, title: str, specs: tuple, h: float, frame: float, tint: imgui.ImVec4 = PLOT, t0: float = 0.0) -> None:
+    """A w-wide plot card at the cursor, its lines under the title; the cursor moves past it."""
     em = imgui.get_font_size()
     p = imgui.get_cursor_screen_pos()
-    lines(dl, p.x, card(dl, p.x, p.y, w, 1.2 * em + h, title, tint), w, h, specs, frame)
+    lines(dl, p.x, card(dl, p.x, p.y, w, 1.2 * em + h, title, tint), w, h, specs, frame, t0)
     imgui.dummy(imgui.ImVec2(w, 1.2 * em + h))
 
 
 def heading(icon: str, text: str) -> None:
     em = imgui.get_font_size()
-    imgui.dummy(imgui.ImVec2(0, 0.7 * em))
+    imgui.dummy(imgui.ImVec2(0, 2.4 * em))
     imgui.text_colored(ACCENT, f"{icon}  {text}")
     imgui.dummy(imgui.ImVec2(0, 0.1 * em))
 
@@ -366,7 +368,7 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     imgui.pop_style_color(2)
 
     # the Panels heading with the compressed movie's parts centered beside it, over the six panels
-    imgui.dummy(imgui.ImVec2(0, 0.7 * em))
+    imgui.dummy(imgui.ImVec2(0, 2.4 * em))
     p = imgui.get_cursor_screen_pos()
     bh = 1.9 * em
     title = f"{fa.ICON_FA_TABLE_CELLS_LARGE}  Panels"
@@ -449,6 +451,9 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     )
     table("shifts", SHIFTS)
 
+    heading(fa.ICON_FA_COMPUTER_MOUSE, "Mouse")
+    table("mouse", MOUSE)
+
     heading(fa.ICON_FA_ARROW_POINTER, "One signal: click")
     plot(dl, w, "Traces (mode: selection)", TRACE_LINES, 4.4 * em, frame, SELECTED)
     imgui.text_colored(
@@ -476,16 +481,102 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     )
     table("members", MEMBERS)
 
+    heading(fa.ICON_FA_LAYER_GROUP, "Overlay")
+    # the OVERLAY row's trace buttons, centered
+    imgui.dummy(imgui.ImVec2(0, 0.6 * em))
+    p = imgui.get_cursor_screen_pos()
+    bw, bh, bgap = 6.5 * em, 2.2 * em, 0.6 * em
+    x = p.x + (w - len(OVERLAY_BUTTONS) * (bw + bgap) + bgap) / 2
+    for icon, name, color in OVERLAY_BUTTONS:
+        box(dl, x, p.y, bw, bh, icon, color, 0.18 if color is KEY else 0.0)
+        size = imgui.calc_text_size(name)
+        dl.add_text(imgui.ImVec2(x + (bw - size.x) / 2, p.y + bh + 0.3 * em), u32(DIM), name)
+        x += bw + bgap
+    imgui.dummy(imgui.ImVec2(w, bh + 1.6 * em))
+    imgui.dummy(imgui.ImVec2(0, 0.6 * em))
+    # the switch's state is kept with the window
+    storage = imgui.get_state_storage()
+    by_peak = storage.get_bool(imgui.get_id("weighting"), True)
+    p = imgui.get_cursor_screen_pos()
+    fw, fh = 14 * em, 6.4 * em
+    top = card(dl, p.x, p.y, fw, 1.2 * em + fh, "masks")
+    for (u, v, r), strength, color in zip((*CELLS, JUNK), STRENGTHS, MASK_COLORS):
+        alpha = 0.9 * (strength if by_peak else 1.0)
+        center = imgui.ImVec2(p.x + u * fw, top + v * fh)
+        for ring in (1.0, 0.8, 0.6, 0.4):
+            dl.add_circle_filled(center, ring * r * em, u32(color, 0.3 * alpha))
+    imgui.dummy(imgui.ImVec2(fw, 1.2 * em + fh))
+    imgui.same_line(0, 1.5 * em)
+    imgui.begin_group()
+    flipped, by_peak = draw_switch("help_weighting", by_peak, "own peak", "signal peak")
+    if flipped:
+        storage.set_bool(imgui.get_id("weighting"), by_peak)
+    for i, (side, formula, meaning) in enumerate(WEIGHTINGS):
+        on = by_peak == bool(i)
+        imgui.dummy(imgui.ImVec2(0, 0.3 * em))
+        imgui.text_colored(KEY if on else DIM, side)
+        imgui.same_line(0, em)
+        imgui.text_colored(TEXT if on else DIM, formula)
+        imgui.text_colored(TEXT if on else DIM, meaning)
+    imgui.end_group()
+    imgui.text_colored(
+        DIM,
+        "w: the footprint's weights, c: its trace; selected masks always use their own peak",
+    )
+
+    imgui.dummy(imgui.ImVec2(0, 0.5 * em))
+    cw = 0.38 * w
+    imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + (w - 2 * cw - 1.4 * em) / 2)
+    plot(dl, cw, "center off", CENTER_LINES, 3 * em, frame)
+    imgui.same_line(0, 1.4 * em)
+    plot(dl, cw, "center on (t)", CENTER_LINES, 3 * em, 30, PLOT, frame - 30)
+    imgui.text_colored(
+        DIM,
+        "Toggle center traces (t) to keep the current frame centered in the moving traces window; the zoom is "
+        "kept and the view stops at either end of the recording",
+    )
+
+    imgui.dummy(imgui.ImVec2(0, 0.5 * em))
+    p = imgui.get_cursor_screen_pos()
+    ph = 4.4 * em
+    top = card(dl, p.x, p.y, fw, 1.2 * em + ph, "compressed+denoised")
+    for k, (u, v, r) in enumerate(CELLS):
+        lit = 0.15 + 0.85 * trace("bumps", k, frame)
+        center = imgui.ImVec2(p.x + u * fw, top + v * ph)
+        for ring in (1.0, 0.7, 0.4):
+            dl.add_circle_filled(center, ring * r * em, u32(TEXT, 0.2 * lit))
+    # the clicked empty pixel and its 5x5 square, in the pixel average's group color
+    sq = imgui.ImVec2(p.x + 0.56 * fw, top + 0.6 * ph)
+    dl.add_rect(imgui.ImVec2(sq.x - 0.5 * em, sq.y - 0.5 * em), imgui.ImVec2(sq.x + 0.5 * em, sq.y + 0.5 * em), u32(GROUP[2]), 0.0, 1.5)
+    dl.add_text(imgui.ImVec2(sq.x + 0.2 * em, sq.y + 0.2 * em), u32(TEXT), fa.ICON_FA_ARROW_POINTER)
+    imgui.dummy(imgui.ImVec2(fw, 1.2 * em + ph))
+    imgui.same_line(0, 1.4 * em)
+    px = imgui.get_cursor_screen_pos()
+    plot(dl, w - fw - 1.4 * em, "Traces (mode: selection)", PIXEL_LINE, ph, frame, SELECTED)
+    label = "pixel avg (40, 61)"
+    dl.add_text(imgui.ImVec2(px.x + w - fw - 2 * em - imgui.calc_text_size(label).x, px.y + 1.5 * em), u32(GROUP[2]), label)
+    imgui.text_colored(
+        DIM,
+        "Toggle pixel traces (p) and click an empty pixel: its 5x5 compressed average joins the plot as "
+        "pixel avg (r, c), grouped like a signal and marked in the table. Check for activity the demixer missed "
+        "before drawing a roi there; ctrl+click or Delete drops it, p off clears them all",
+    )
+    table("overlay", OVERLAY)
+
     heading(fa.ICON_FA_SLIDERS, "Selection tools")
+    imgui.dummy(imgui.ImVec2(0, 0.6 * em))
     p = imgui.get_cursor_screen_pos()
     bw, bh, bgap = 4.6 * em, 2.2 * em, 0.6 * em
-    for i, (icon, name, color) in enumerate(TOOL_BUTTONS):
-        x = p.x + i * (bw + bgap)
+    # the row centered: the buttons, then the side switch, outside picked and lit as while the region or the
+    # filter drives the selection
+    switch_w = imgui.calc_text_size("inside").x + 3.4 * em + imgui.calc_text_size("outside").x
+    x = p.x + (w - len(TOOL_BUTTONS) * (bw + bgap) - em - switch_w) / 2
+    for icon, name, color in TOOL_BUTTONS:
         box(dl, x, p.y, bw, bh, icon, color, 0.18 if color in (KEY, ACCENT) else 0.0)
         size = imgui.calc_text_size(name)
         dl.add_text(imgui.ImVec2(x + (bw - size.x) / 2, p.y + bh + 0.3 * em), u32(DIM), name)
-    # the side switch, outside picked and lit as while the region or the filter drives the selection
-    x = p.x + len(TOOL_BUTTONS) * (bw + bgap) + em
+        x += bw + bgap
+    x += em
     dl.add_text(imgui.ImVec2(x, p.y + 0.55 * em), u32(DIM), "inside")
     x += imgui.calc_text_size("inside").x + 0.5 * em
     pill = imgui.ImVec2(x, p.y + 0.45 * em), imgui.ImVec2(x + 2.4 * em, p.y + 1.65 * em)
@@ -494,15 +585,13 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     dl.add_circle_filled(imgui.ImVec2(x + 1.8 * em, p.y + 1.05 * em), 0.45 * em, u32(TEXT))
     dl.add_text(imgui.ImVec2(x + 2.9 * em, p.y + 0.55 * em), u32(TEXT), "outside")
     imgui.dummy(imgui.ImVec2(w, bh + 1.6 * em))
+    imgui.dummy(imgui.ImVec2(0, 0.6 * em))
     imgui.text_colored(
         DIM,
         "the Curation tab's SELECTION row and its side switch; a mode that is on is lit, a tool with nothing "
         "to act on is greyed; the filter's column and range sit under the switch",
     )
     table("tools", TOOLS)
-
-    heading(fa.ICON_FA_COMPUTER_MOUSE, "Mouse")
-    table("mouse", MOUSE)
 
     heading(fa.ICON_FA_WAND_MAGIC_SPARKLES, "Demix")
     p = imgui.get_cursor_screen_pos()

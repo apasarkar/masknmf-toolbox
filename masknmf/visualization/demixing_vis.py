@@ -4,17 +4,16 @@ from pathlib import Path
 from dataclasses import replace
 import numpy as np
 import fastplotlib as fpl
-from imgui_bundle import imgui, imgui_toggle, icons_fontawesome_6 as fa
+from imgui_bundle import imgui, icons_fontawesome_6 as fa
 from fastplotlib import ui
 from fastplotlib.graphics.selectors._polygon import point_in_polygon
 import pygfx
 from fastplotlib.widgets.nd_widget._async import run_sync
-import h5py
 import torch
 from collections.abc import Sequence
 from collections import OrderedDict
 import masknmf.arrays
-from masknmf.arrays import SwitchableArray, TiffArray
+from masknmf.arrays import SwitchableArray
 from masknmf.utils import display
 from functools import partial
 from masknmf.visualization.imgui import (
@@ -35,6 +34,7 @@ from masknmf.visualization.imgui import (
     help_buttons_width,
     draw_range_filter,
     draw_roi_table,
+    draw_switch,
     em,
     popup,
     opaque_popups,
@@ -45,6 +45,7 @@ from masknmf.visualization.imgui import (
     help_mark,
     right_aligned_text,
     button_colors,
+    switch_width,
     tooltip,
 )
 from masknmf.visualization.imgui.curation_help import draw_curation_help
@@ -75,7 +76,7 @@ _UNDO_DEPTH = 50  # ctrl+z snapshots kept
 # what the panels open on, first come: raw | compressed+denoised | signals when a raw movie is there
 _DEFAULT_ORDER = ("raw", "compressed+denoised", "signals", "background", "registered", "residual")
 _CAPTIONS = (
-    "masks", "contours", "sel masks", "sel contours", "color by", "traces",
+    "masks", "contours", "sel masks", "sel contours", "weighting", "color by", "traces",
     "filter", "range", "applied", "run", "options",
 )
 # signals selected together, in order of mutual contrast on the dark plot; no red, a mask marked for
@@ -103,7 +104,9 @@ class SingleSessionDemixingVis:
     View and curate demixing results. Takes whatever stage a run got to: masknmf.DemixingResults, a bare
     CompressionArray before demixing has run, or a registration array (with its raw input movie) before
     compression. Draw and export ROIs for a custom SignalDemixer.initialize_signals(is_custom=True) pass.
-    Footprints show as feathered masks and/or contours over the summary image.
+    Footprints show as feathered masks and/or contours over the summary image: a mask pixel's opacity is its
+    weight times its signal's peak against the field's maximum, or against its own peak with the weighting
+    switch; pixels under a tenth of a footprint's peak are left out, as in the contours.
 
     With ``results_path`` set, "Demix" runs the drawn ROIs and the signals marked with "Delete" through the
     demixer's NMF pass (``nmf_config``, the pipeline defaults when None) and writes the outcome to a new
@@ -141,14 +144,14 @@ class SingleSessionDemixingVis:
     click or table pick that edits the selection by hand drops it and keeps the selection, so Delete (or the
     Curation tab's delete button) marks it like any other selection. Nothing is removed until the next Demix.
 
-    ``raw`` (a movie, or a .tif path) adds the raw movie, ``registered`` (the results' registration replayed
-    on it, for compression or demixing results) the registered one, and ``shifts`` (an array, or a motion
-    correction hdf5 path) adds the registration shifts as a panel above the traces (piecewise rigid: the
+    ``raw`` (a movie, or a movie path) adds the raw movie, ``registered`` (the results' registration applied
+    to it, for compression or demixing results) the registered one, and ``shifts`` (an array, or a results
+    file holding a registration) adds the registration shifts as a panel above the traces (piecewise rigid: the
     largest block shift per frame); results that hold their own ``raw_array``, ``registered_array`` or
     ``shifts`` show those when none are given.
-    With ``results_path`` set, a lone .tif beside the results, and the
-    registration shifts from the results file itself or from a motion_correction.hdf5 beside it, are picked up
-    when their frames match the results; given ones must match. Up to three panels, one per movie the results
+    With ``results_path`` set, the only .tif in its folder is used as the raw movie, and the registration in the
+    file provides the shifts, the template and, with a raw movie, the registered movie, when their frame counts
+    match the results; given ones must match (:class:`masknmf.io.OpenedResults`). Up to three panels, one per movie the results
     hold, each switchable to any of them: the Panels button at the top of the Tools panel opens the array x
     panel matrix, and the top of a panel's right-click menu offers the same choice for that panel. The movies
     are raw, registered, compressed+denoised, the residual, the fitted background (when the demixer fit one)
@@ -168,8 +171,9 @@ class SingleSessionDemixingVis:
     (signal ids in a custom order, or a
     .npy / text file of them) adds an "order" column of ranks and opens the table in that order; signals it
     leaves out sort last. :meth:`load_cell_order` and :meth:`add_cell_stats` (or File > load cell stats: a
-    .txt of ids is an order, anything else stats) do the same with the results open; File > load results.hdf5
-    swaps in another results file of the same movie. Every path the viewer asks for ("Export" too) is a
+    .txt of ids is an order, anything else stats) do the same with the results open; File > load results.hdf5,
+    in the menu bar on top, opens another results file of any stage in place, finding its raw movie and shifts as
+    at the start (:meth:`load_results`). Every path the viewer asks for ("Export" too) is a
     window with a typed field, so it works on a remote kernel; "browse" there is the native dialog for a
     local one. Marked signals always come first. A Demix pass recomputes the results'
     stats for the new signals and drops given ones.
@@ -220,189 +224,15 @@ class SingleSessionDemixingVis:
             display(
                 "Using CPU; it will be much slower. Use CUDA for much faster rendering"
             )
-        self._demixing_results = demixing_results
         self._device = device
-
-        self._is_masknmf_result = isinstance(demixing_results, masknmf.DemixingResults)
-        self._has_ac = hasattr(demixing_results, "signals_array")
-        self._is_registration = isinstance(demixing_results, masknmf.BaseRegistrationArray)
-        # a registration array computes on its strategy's device and hands frames over from output_device
-        if not self._is_registration:
-            self._demixing_results.to(self.device)
-        self._shape = self.demixing_results.shape
-
-        folder = None if self._results_path is None else Path(self._results_path).parent
-        num_signals = demixing_results.spatial_demixed.shape[1] if self._has_ac else 0
-        # the results' own stats, hidden; given stats join them, shown, replacing same-named columns
-        self._cell_stats = CellStats.from_results(demixing_results) if self._is_masknmf_result else None
-        self._hidden_stats = set() if self._cell_stats is None else set(self._cell_stats.names)
-        if isinstance(cell_stats, (str, os.PathLike)):
-            cell_stats = CellStats.read(cell_stats)
-        if cell_stats is not None:
-            if cell_stats.values.shape[0] != num_signals:
-                raise ValueError(f"{cell_stats.values.shape[0]} cell stat rows for {num_signals} signals")
-            if set(cell_stats.names) & {"id", "area", "peak", "del"}:
-                raise ValueError(f"cell stat names clash with the table's own columns: {cell_stats.names}")
-            self._cell_stats = cell_stats if self._cell_stats is None else self._cell_stats.join(cell_stats)
-            self._hidden_stats -= set(cell_stats.names)
-        if self._cell_stats is not None:
-            display(f"cell stats: {', '.join(self._cell_stats.names)}; right-click a Signals table header to show them")
-
-        # raw movie and shifts: data or a path, or found beside the results; a found mismatch is skipped, a given one raises
-        found_raw = found_shifts = False
-        if raw is None and self._is_registration:
-            raw = demixing_results.input_movie
-        if raw is None and isinstance(demixing_results, BaseResults):
-            raw = demixing_results.raw_array
-        if registered is None and isinstance(demixing_results, BaseResults):
-            registered = demixing_results.registered_array
-        if shifts is None and (self._is_registration or isinstance(demixing_results, BaseResults)):
-            shifts = demixing_results.shifts
-        if raw is None and folder is not None:
-            tifs = sorted(p for ext in ("*.tif", "*.tiff") for p in folder.glob(ext))
-            if len(tifs) == 1:
-                raw, found_raw = tifs[0], True
-        raw_src = raw if isinstance(raw, (str, os.PathLike)) else None
-        if raw_src is not None:
-            raw = TiffArray(str(raw_src))
-        if raw is not None and tuple(raw.shape) != tuple(self._shape):
-            if not found_raw:
-                raise ValueError(
-                    f"raw movie has shape {tuple(raw.shape)}, the results have {tuple(self._shape)}"
-                )
-            display(
-                f"skipping {raw_src}: shape {tuple(raw.shape)} does not match the results"
-            )
-            raw = None
-        if shifts is None and folder is not None:
-            # the results file itself when the pipeline wrote every stage to it, else the old separate file
-            for candidate in (Path(self._results_path), folder / "motion_correction.hdf5"):
-                if candidate.is_file():
-                    with h5py.File(candidate, "r") as f:
-                        found_shifts = "PiecewiseRigidRegistrationArray" in f or "RigidRegistrationArray" in f or "GradientRegistrationArray" in f
-                    if found_shifts:
-                        shifts = candidate
-                        break
-        shifts_src = shifts if isinstance(shifts, (str, os.PathLike)) else None
-        # the registration template, the still a registration stage leaves: beside the shifts in the file, or on the array
-        template = None
-        if shifts_src is not None:
-            with h5py.File(shifts_src, "r") as f:
-                groups = [
-                    g
-                    for g in (
-                        "PiecewiseRigidRegistrationArray",
-                        "RigidRegistrationArray",
-                        "GradientRegistrationArray",
-                    )
-                    if g in f
-                ]
-                if not groups:
-                    raise ValueError(f"{shifts_src} holds no registration array")
-                shifts = f[groups[0]]["shifts"][()]
-                strategy = getattr(masknmf, groups[0])._strategy_cls.__name__
-                if strategy in f and "template" in f[strategy]:
-                    template = f[strategy]["template"][()]
-        if shifts is not None:
-            if isinstance(shifts, torch.Tensor):
-                shifts = shifts.cpu().numpy()
-            shifts = np.asarray(shifts, np.float32)
-            if shifts.shape[0] != self._shape[0]:
-                if not found_shifts:
-                    raise ValueError(
-                        f"{shifts.shape[0]} shifts for {self._shape[0]} frames"
-                    )
-                display(
-                    f"skipping {shifts_src}: {shifts.shape[0]} shifts for {self._shape[0]} frames"
-                )
-                shifts = None
-                template = None
-        # say what was picked up, and how to add what was not, so the panels are discoverable
-        if raw is not None:
-            display(f"raw panel: {raw_src if raw_src is not None else 'movie given'}")
-        else:
-            display(
-                "no raw movie: raw= (a movie or a .tif path) adds a raw panel; a lone .tif beside the results is picked up"
-            )
-        if shifts is not None:
-            display(
-                f"shift traces: {shifts_src if shifts_src is not None else 'shifts given'}"
-            )
-        else:
-            display(
-                "no motion shifts: shifts= (an array or a motion correction hdf5) adds shift traces; "
-                "shifts in the results file or a motion_correction.hdf5 beside it are picked up"
-            )
-        self._raw = raw
-        self._shifts = shifts
-        if registered is not None and self._is_registration:
-            raise ValueError("registered= goes with compression or demixing results; a registration array is the registered movie")
-        if registered is not None and tuple(registered.shape) != tuple(self._shape):
-            raise ValueError(f"registered movie has shape {tuple(registered.shape)}, the results have {tuple(self._shape)}")
-        self._registered = registered
-        if self._is_registration:
-            template = demixing_results.strategy.template
-        elif isinstance(registered, masknmf.BaseRegistrationArray):
-            template = registered.strategy.template
-        self._template = (
-            None
-            if template is None
-            else np.asarray(template.cpu() if isinstance(template, torch.Tensor) else template, np.float32)
-        )
-        self._shift_lines = None
-        if shifts is not None:
-            # piecewise rigid shifts are (frames, height blocks, width blocks, 2): show the largest block shift
-            summary = np.abs(shifts).max(axis=(1, 2)) if shifts.ndim == 4 else shifts
-            prefix = "max block shift" if shifts.ndim == 4 else "shift"
-            self._shift_lines = [
-                (f"{prefix} height", summary[:, 0], (1.0, 0.6, 0.2)),
-                (f"{prefix} width", summary[:, 1], (0.4, 0.7, 1.0)),
-            ]
-
-        ref_range, frame_timings = resolve_time_reference(
-            self._shape[0], frame_timings, ref_range
-        )
-
-        self._bind_arrays()
+        self._demixing_results = None
+        self._ndw_fov = None
+        self._panel_names = {} if panel_names is None else panel_names
         self._summary_img = summary_img
         self._summary_name = "summary image" if summary_img_name is None else summary_img_name
         self._lag1 = {}
-        self._stills = self._static_images()
-        # one panel per movie, up to three, each switchable to any of them; they open in _DEFAULT_ORDER
-        self._panel_names = {} if panel_names is None else panel_names
-        movies = self._movies()
-        self._panels = OrderedDict()
-        order = [self._panel_names.get(name, name) for name in _DEFAULT_ORDER]
-        for i, name in enumerate([name for name in order if name in movies][:3], start=1):
-            self._panels[str(i)] = SwitchableArray(movies, self._shape)
-            self._panels[str(i)].current = name
-        n = len(self._panels)
-        self._video_extents = {name: (i / n, (i + 1) / n, 0.0, 1.0) for i, name in enumerate(self._panels)}
-
-        self._ndw_fov = fpl.NDWidget(
-            ref_range,
-            extents=self._video_extents,
-            names=[*self._panels],
-            controller_ids=[
-                tuple(self._panels),
-            ],
-            size=(1200, 800),
-        )
-
-        self._reference_index = self._ndw_fov.indices
-        self._panel_graphics = OrderedDict()
-        for name, array in self._panels.items():
-            self._panel_graphics[name] = self._ndw_fov[name].add_nd_image(
-                array, ["time", "m", "n"], ["m", "n"], slider_maps={"time": frame_timings}, name=name
-            )
-            self._ndw_fov.figure[name].title = array.current
-        self._fov_subplot = self._ndw_fov.figure[next(iter(self._panels))]
-        self._ndw_fov.figure.set_imgui_right_click(SourceRightClickMenu(self._panel_choices, self._set_source))
-
         self._active_component = None
-        self._marked = (
-            set()
-        )  # signal indices "Delete" has marked; removed on the next "Demix"
+        self._marked = set()  # signal indices "Delete" has marked; removed on the next "Demix"
         self._show_traces = True  # plot the selection's traces; off, selecting only highlights
         self._show_raw_trace = True  # with a single signal, its trace re-estimated from the raw movie, when the results hold one
         self._roi_radius = 1  # a double-click splits the square this far around the pixel into its sources
@@ -416,63 +246,27 @@ class SingleSessionDemixingVis:
         self._options_open = False
         self._show_masks = show_masks
         self._mask_opacity = mask_opacity
+        self._masks_by_peak = True
         self._show_selected_masks = True
         self._selected_mask_opacity = SELECTED_ALPHA
         self._footprints = None
         self._mask_overlays = {}
-        if self._has_ac:
-            blank = np.zeros((*self._shape[1:3], 4), np.uint8)
-            for name in self._panels:
-                overlay = self._ndw_fov.figure[name].add_image(
-                    blank, name="masks", alpha_mode="blend", offset=(0, 0, 0.5)
-                )
-                # literal RGBA bytes: auto-ranging the all-zero start saturates to white
-                overlay.vmin, overlay.vmax = 0, 255
-                for tile in overlay.world_object.children:
-                    tile.material.pick_write = False
-                self._mask_overlays[name] = overlay
-            self._make_footprints()
-        if cell_order is not None:
-            self.load_cell_order(cell_order)
-
-        self._set_gray_cmaps()
-
-        # no autofit: the zoom set on one signal's traces is kept while selecting others
-
-        self._traces = TracePlot(
-            (*(("shift (px)",) if self._shift_lines else ()), *(("traces",) if self._pmd_array is not None or self._has_ac else ())),
-            self._shape[0],
-            frame_timings,
-            autofit=False,
-        )
-        self._traces.dock(self._ndw_fov.figure, size=440 if self._shift_lines else 320)
-        self._set_trace_mode("normal")
-        if self._shift_lines:
-            self._traces.set("shift (px)", self._shift_lines)
-        self._traces.link(self.reference_index)
         self._base_lines = ("compressed", "signal", "background", "residual")
-        self._selected_signals = (
-            None  # the signal behind each plotted line, when lines are signals
-        )
+        self._selected_signals = None  # the signal behind each plotted line, when lines are signals
         # diagnostic only: (row, col) -> (compressed 5x5 average, pixel count), newest first; they join the group
         self._pixel_traces = False
         self._pixels = OrderedDict()
         self._active_pixel = None
-
         self._image_selector = None
         self._show_contours = show_contours
         self._contour_opacity = 0.9
         self._show_selected_contours = True
         self._selected_contour_opacity = 0.7
-        if self._ac_array is not None:
-            self._make_selectors()
-
         # PolygonSelector -> color, subplot, compressed average over it (None until closed), pixel count, dirty
         self._rois = OrderedDict()
         self._active_roi = None
         self._status = ""
         self._panels_open = False
-        self._summary = SummaryImageViewer(self._ndw_fov.figure, title="Static images")
         # typed-path windows, so they work on a remote kernel; browse there is the native dialog
         self._export_prompt = PathPrompt(
             "Export ROIs", os.path.join(os.getcwd(), "rois.npz"), "export", "a .npz of the drawn rois", "save", _NPZ_FILTERS
@@ -481,7 +275,7 @@ class SingleSessionDemixingVis:
             "Load cell stats", "", "load", ".npy / .npz / .csv / .tsv of stats, or a .txt of signal ids in order", "open", _STATS_FILTERS
         )
         self._results_prompt = PathPrompt(
-            "Load results", self._results_path or "", "load", "a results.hdf5 of the same movie", "open", _HDF5_FILTERS
+            "Load results", self._results_path or "", "load", "a masknmf results.hdf5, any stage of any movie", "open", _HDF5_FILTERS
         )
         # the Signals tab's filter: select keeps the group on the filter switch's side of the range, and a Delete
         # of that selection records the filter in _filters for the curated file
@@ -501,7 +295,9 @@ class SingleSessionDemixingVis:
         self._region_outside = False
         self._filter_outside = True
 
-        self._bind_click_handlers()
+        opened = masknmf.io.OpenedResults.resolve(demixing_results, results_path, raw=raw, registered=registered, shifts=shifts,
+                                                  device=device)
+        self._load(opened, frame_timings, ref_range, cell_stats, cell_order)
 
         for subplot in self._ndw_fov.figure:
             subplot.tooltip.enabled = False
@@ -514,6 +310,210 @@ class SingleSessionDemixingVis:
             size=round(31.5 * self._ndw_fov.figure.default_imgui_font.legacy_size),
             title="Tools",
         )
+
+    def load_results(self, path: str | os.PathLike):
+        """
+        Open another results file of any stage in place. The selection, drawn rois and marks are dropped. The
+        current raw movie is kept when its shape matches the new results, else the only .tif in the new file's
+        folder is used; shifts are read from the new file.
+        """
+        self._load(masknmf.io.OpenedResults.open(path, raw=self._raw, device=self.device))
+
+    def _load(
+        self,
+        opened: masknmf.io.OpenedResults,
+        frame_timings=None,
+        ref_range=None,
+        cell_stats=None,
+        cell_order=None,
+    ):
+        """
+        Show ``opened``. The first call builds the panels, overlays and trace plot; later calls drop the selection,
+        drawn rois and marks and rebuild them in place.
+        """
+        first = self._ndw_fov is None
+        if not first:
+            # cleared before the new results are set: the overlays and selectors belong to the current ones
+            self._clear_rois()
+            self._armed = False
+            self._drop_region()
+            self._marked.clear()
+            self._filter_select = False
+            self._filter_side = set()
+            self._filters.clear()
+            self._group.clear()
+            self._clear_component()
+            self._selected_signals = None
+            self._clear_traces()
+            self._pixels.clear()
+            self._active_pixel = None
+            self._undo.clear()
+        self._opened = opened
+        results = opened.results
+        self._results_path = None if opened.path is None else str(opened.path)
+        self._demixing_results = results
+        self._is_masknmf_result = isinstance(results, masknmf.DemixingResults)
+        self._has_ac = hasattr(results, "signals_array")
+        self._is_registration = isinstance(results, masknmf.BaseRegistrationArray)
+        # a registration array computes on its strategy's device and hands frames over from output_device
+        if not self._is_registration:
+            results.to(self.device)
+        self._shape = results.shape
+
+        num_signals = results.spatial_demixed.shape[1] if self._has_ac else 0
+        # the results' own stats, hidden; given stats join them, shown, replacing same-named columns
+        self._cell_stats = CellStats.from_results(results) if self._is_masknmf_result else None
+        self._hidden_stats = set() if self._cell_stats is None else set(self._cell_stats.names)
+        if isinstance(cell_stats, (str, os.PathLike)):
+            cell_stats = CellStats.read(cell_stats)
+        if cell_stats is not None:
+            if cell_stats.values.shape[0] != num_signals:
+                raise ValueError(f"{cell_stats.values.shape[0]} cell stat rows for {num_signals} signals")
+            if set(cell_stats.names) & {"id", "area", "peak", "del"}:
+                raise ValueError(f"cell stat names clash with the table's own columns: {cell_stats.names}")
+            self._cell_stats = cell_stats if self._cell_stats is None else self._cell_stats.join(cell_stats)
+            self._hidden_stats -= set(cell_stats.names)
+        if self._cell_stats is not None:
+            display(f"cell stats: {', '.join(self._cell_stats.names)}; right-click a Signals table header to show them")
+
+        for note in opened.skipped:
+            display(note)
+        # report which movies and shifts were found, and how to pass the missing ones
+        if opened.raw is not None:
+            display(f"raw panel: {opened.raw_source if opened.raw_source is not None else 'movie given'}")
+        else:
+            display(
+                "no raw movie: raw= (a movie or a .tif path) adds a raw panel; the only .tif in the results folder is used automatically"
+            )
+        if opened.shifts is not None:
+            display(f"shift traces: {opened.shifts_source if opened.shifts_source is not None else 'shifts given'}")
+        else:
+            display(
+                "no motion shifts: shifts= (an array or a results file holding a registration) adds shift traces; "
+                "a registration in the results file is used automatically"
+            )
+        self._raw = opened.raw
+        self._shifts = opened.shifts
+        self._registered = opened.registered
+        self._template = opened.template
+        shifts = opened.shifts
+        self._shift_lines = None
+        if shifts is not None:
+            # piecewise rigid shifts are (frames, height blocks, width blocks, 2): show the largest block shift
+            summary = np.abs(shifts).max(axis=(1, 2)) if shifts.ndim == 4 else shifts
+            prefix = "max block shift" if shifts.ndim == 4 else "shift"
+            self._shift_lines = [
+                (f"{prefix} height", summary[:, 0], (1.0, 0.6, 0.2)),
+                (f"{prefix} width", summary[:, 1], (0.4, 0.7, 1.0)),
+            ]
+
+        frames_changed = not first and len(self._frame_timings) != self._shape[0]
+        if first:
+            self._ref_range, self._frame_timings = resolve_time_reference(self._shape[0], frame_timings, ref_range)
+        elif frames_changed:
+            # a recording of another length keeps the frame rate: the timings' step, when they have one
+            steps = np.diff(self._frame_timings)
+            even = steps.size > 0 and np.allclose(steps, steps[0])
+            self._ref_range, self._frame_timings = resolve_time_reference(
+                self._shape[0], np.arange(self._shape[0]) * steps[0] if even else None
+            )
+        frame_timings = self._frame_timings
+
+        self._bind_arrays()
+        self._lag1 = {}
+        if self._summary_img is not None and tuple(self._summary_img.shape[-2:]) != tuple(self._shape[1:3]):
+            self._summary_img = None
+        movies = self._movies()
+        order = [self._panel_names.get(name, name) for name in _DEFAULT_ORDER]
+        order = [name for name in order if name in movies]
+        if first:
+            # one panel per movie, up to three, each switchable to any of them; they open in _DEFAULT_ORDER
+            self._panels = OrderedDict()
+            for i, name in enumerate(order[:3], start=1):
+                self._panels[str(i)] = SwitchableArray(movies, self._shape)
+                self._panels[str(i)].current = name
+            n = len(self._panels)
+            self._video_extents = {name: (i / n, (i + 1) / n, 0.0, 1.0) for i, name in enumerate(self._panels)}
+            self._ndw_fov = fpl.NDWidget(
+                self._ref_range,
+                extents=self._video_extents,
+                names=[*self._panels],
+                controller_ids=[
+                    tuple(self._panels),
+                ],
+                size=(1200, 800),
+            )
+            self._reference_index = self._ndw_fov.indices
+            self._panel_graphics = OrderedDict()
+            for name, array in self._panels.items():
+                self._panel_graphics[name] = self._ndw_fov[name].add_nd_image(
+                    array, ["time", "m", "n"], ["m", "n"], slider_maps={"time": frame_timings}, name=name
+                )
+                self._ndw_fov.figure[name].title = array.current
+            self._fov_subplot = self._ndw_fov.figure[next(iter(self._panels))]
+            self._ndw_fov.figure.set_imgui_right_click(SourceRightClickMenu(self._panel_choices, self._set_source))
+            self._summary = SummaryImageViewer(self._ndw_fov.figure, title="Static images")
+        else:
+            if frames_changed:
+                # the slider's range for the new length, its index back at the start before the panels change
+                self._reference_index.push_dims(self._ref_range)
+            # fresh wrappers, so every panel gets a new graphic instance: keeps the re-bound click handlers from
+            # doubling up; the panels keep their movies when the new results have the same movies, else reset to the default order
+            same = set(movies) == self._movie_names
+            for i, (name, panel) in enumerate(self._panels.items()):
+                keep = panel.current
+                self._panels[name] = SwitchableArray(movies, self._shape)
+                self._panels[name].current = keep if same else order[min(i, len(order) - 1)]
+                self._panel_graphics[name].data = self._panels[name]
+                if frames_changed:
+                    self._panel_graphics[name].slider_maps = {"time": frame_timings}
+                self._ndw_fov.figure[name].title = self._panels[name].current
+        self._movie_names = set(movies)
+        self._stills = self._static_images()
+        if not first and self._summary.is_open:
+            self._summary.set_images(self._stills)
+
+        # the mask overlays, one per panel over demixed signals, made anew for the results' field of view
+        for name, overlay in self._mask_overlays.items():
+            self._ndw_fov.figure[name].delete_graphic(overlay)
+        self._mask_overlays = {}
+        self._footprints = None
+        self._order = None
+        if self._has_ac:
+            blank = np.zeros((*self._shape[1:3], 4), np.uint8)
+            for name in self._panels:
+                overlay = self._ndw_fov.figure[name].add_image(
+                    blank, name="masks", alpha_mode="blend", offset=(0, 0, 0.5)
+                )
+                # literal RGBA bytes: auto-ranging the all-zero start saturates to white
+                overlay.vmin, overlay.vmax = 0, 255
+                for tile in overlay.world_object.children:
+                    tile.material.pick_write = False
+                self._mask_overlays[name] = overlay
+            self._make_footprints()
+        if cell_order is not None:
+            self.load_cell_order(cell_order)
+
+        self._set_gray_cmaps()
+
+        # no autofit: the zoom set on one signal's traces is kept while selecting others
+        panels = (*(("shift (px)",) if self._shift_lines else ()), *(("traces",) if self._pmd_array is not None or self._has_ac else ()))
+        if first:
+            self._traces = TracePlot(panels, self._shape[0], frame_timings, autofit=False)
+            self._traces.dock(self._ndw_fov.figure, size=440 if self._shift_lines else 320, menu=self._draw_file_menu)
+        else:
+            self._traces.reset(panels, self._shape[0], frame_timings)
+        self._set_trace_mode("normal")
+        if self._shift_lines:
+            self._traces.set("shift (px)", self._shift_lines)
+        if first:
+            self._traces.link(self.reference_index)
+
+        self._image_selector = None
+        if self._ac_array is not None:
+            self._make_selectors()
+
+        self._bind_click_handlers()
         if self._has_ac and len(self._footprints):
             self._select_component(0)
 
@@ -522,6 +522,8 @@ class SingleSessionDemixingVis:
             self._ac_array.spatial_demixed, tuple(self._shape[1:3])
         )
         peaks = self.demixing_results.temporal_demixed.max(dim=0).values.cpu().numpy()
+        # the overlay scales each footprint by its trace's peak, so the masks read like the signals movie
+        self._footprints.peaks = peaks
         columns = {"area": self._footprints.areas, "peak": peaks}
         if self._cell_stats is not None:
             columns.update(zip(self._cell_stats.names, self._cell_stats.values.T))
@@ -550,6 +552,7 @@ class SingleSessionDemixingVis:
                 if self._show_selected_masks
                 else {},
                 self._selected_mask_opacity,
+                by_peak=self._masks_by_peak,
             )
             if visible
             else None
@@ -711,43 +714,6 @@ class SingleSessionDemixingVis:
         )
         self._set_contours(show)
 
-    def _load_results(self, results: masknmf.DemixingResults):
-        """Swap in re-demixed results: every movie panel, the selectors and the summary image follow."""
-        results.to(self.device)
-        self._demixing_results = results
-        self._cell_stats = CellStats.from_results(results)
-        self._hidden_stats = set(self._cell_stats.names)
-        self._bind_arrays()
-        self._clear_rois()
-        self._armed = False
-        self._drop_region()
-        self._marked.clear()
-        self._filter_select = False
-        self._filter_side = set()
-        self._filters.clear()
-        self._group.clear()
-        self._clear_component()
-        self._selected_signals = None
-        self._clear_traces()
-        self._pixels.clear()
-        # fresh wrappers, so every panel gets a new graphic instance: keeps the re-bound click handlers from doubling up
-        movies = self._movies()
-        for name, panel in list(self._panels.items()):
-            keep = panel.current
-            self._panels[name] = SwitchableArray(movies, self._shape)
-            if keep in movies:
-                self._panels[name].current = keep
-            self._panel_graphics[name].data = self._panels[name]
-            self._ndw_fov.figure[name].title = self._panels[name].current
-        self._bind_click_handlers()
-        self._stills = self._static_images()
-        if self._summary.is_open:
-            self._summary.set_images(self._stills)
-        self._set_gray_cmaps()
-        self._make_selectors()
-        self._make_footprints()
-        self._undo.clear()
-
     def demix(self):
         """
         Run the drawn ROIs (appended) and the marked signals (removed) through the demixer's NMF pass and
@@ -798,12 +764,13 @@ class SingleSessionDemixingVis:
             return
         results, path = pending
         before = self._ac_array.spatial_demixed.shape[1]
+        parent = self._results_path
         try:
-            self._load_results(results)
+            # same recording: keep the raw movie, registered movie, shifts and template
+            self._load(replace(self._opened, results=results, path=Path(path), skipped=[]))
         except Exception as e:
             self._status = f"reload after demix failed: {e}"
             return
-        parent, self._results_path = self._results_path, path
         self._status = (
             f"{results.spatial_demixed.shape[1]} signals (was {before}) written to {os.path.basename(path)}; "
             f"{os.path.basename(parent)} kept"
@@ -1633,47 +1600,37 @@ class SingleSessionDemixingVis:
             return f"roi {list(self._rois).index(self._active_roi)} selected"
         return "click a mask or roi to see its trace; double-click any pixel to split it into its sources"
 
+    def _draw_file_menu(self):
+        """The File menu, in the menu bar across the top of the trace window."""
+        if not imgui.begin_menu("File"):
+            return
+        if imgui.menu_item_simple(f"{fa.ICON_FA_FILE_IMPORT}  load results.hdf5"):
+            self._results_prompt.start(self._results_path or "")
+        tooltip("open another results file in place, any stage of any movie: the panels, signals, traces and stats follow")
+        if imgui.menu_item_simple(f"{fa.ICON_FA_CHART_SIMPLE}  load cell stats", enabled=self._order is not None):
+            self._stats_prompt.start()
+        tooltip(
+            "one row per signal, in signal id order, as sortable table columns:\n"
+            "- .npy: a (signals,) or (signals, stats) array, or a structured array of stats\n"
+            "- .npz: one (signals,) array per stat, named by key\n"
+            "- .csv / .tsv: a header row of names, then one row per signal\n"
+            "- .txt: signal ids in a custom order, becomes the 'order' column"
+        )
+        imgui.separator()
+        if imgui.menu_item_simple(OPTIONS_LABEL):
+            self._options_open = True
+        imgui.end_menu()
+
     def _draw_side_panel(self):
         """
-        Docked at "right" (the NDWidget owns "bottom"): a File menu, the Panels and Static images buttons, then the
-        roi tools and the signal table as tabs.
+        Docked at "right" (the NDWidget owns "bottom"): the Panels and Static images buttons, then the roi tools
+        and the signal table as tabs. The File menu is the menu bar of the trace window on top.
         """
         opaque_popups()
         self._poll_worker()
         self._poll_rois()
         self._poll_region()
         self._handle_keys()
-        # a child carries the menu bar, so the docked window itself needs no flag
-        imgui.begin_child(
-            "##menu",
-            imgui.ImVec2(0, 0),
-            imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_auto_resize,
-            imgui.WindowFlags_.menu_bar,
-        )
-        if imgui.begin_menu_bar():
-            if imgui.begin_menu("File"):
-                if imgui.menu_item_simple(f"{fa.ICON_FA_FILE_IMPORT}  load results.hdf5", enabled=self._has_ac):
-                    self._results_prompt.start(self._results_path or "")
-                tooltip(
-                    "swap in another results.hdf5 of the same movie: every panel, the signals and their stats follow"
-                    if self._has_ac
-                    else "needs a viewer opened on demixing results"
-                )
-                if imgui.menu_item_simple(f"{fa.ICON_FA_CHART_SIMPLE}  load cell stats", enabled=self._order is not None):
-                    self._stats_prompt.start()
-                tooltip(
-                    "one row per signal, in signal id order, as sortable table columns:\n"
-                    "- .npy: a (signals,) or (signals, stats) array, or a structured array of stats\n"
-                    "- .npz: one (signals,) array per stat, named by key\n"
-                    "- .csv / .tsv: a header row of names, then one row per signal\n"
-                    "- .txt: signal ids in a custom order, becomes the 'order' column"
-                )
-                imgui.separator()
-                if imgui.menu_item_simple(OPTIONS_LABEL):
-                    self._options_open = True
-                imgui.end_menu()
-            imgui.end_menu_bar()
-        imgui.end_child()
         if imgui.button(PANELS_LABEL):
             self._panels_open = True
         if imgui.is_item_hovered():
@@ -1736,14 +1693,11 @@ class SingleSessionDemixingVis:
         path = draw_path_prompt(self._results_prompt)
         if path is not None:
             try:
-                results = masknmf.DemixingResults.from_hdf5(path, device=self.device)
-                if tuple(results.shape) != tuple(self._shape):
-                    raise ValueError(f"results of shape {tuple(results.shape)} for a {tuple(self._shape)} movie")
-                self._load_results(results)
-                self._results_path = path
+                self.load_results(path)
                 self._status = f"loaded {os.path.basename(path)}"
                 self._results_prompt.open = False
-            except (OSError, KeyError, ValueError, TypeError) as e:
+            except Exception as e:
+                # whatever went wrong stays in the window, the viewer keeps what it shows
                 self._results_prompt.status = f"load failed: {e}"
         self._panels_open = draw_panels_popup(self._panels, self._panels_open, self._set_source)
         self._summary.draw()
@@ -1857,7 +1811,7 @@ class SingleSessionDemixingVis:
         tooltip("Filter column: the range below spans it (del is 0 or 1); picking one puts the range back at its full span")
         imgui.same_line(0, g.gap)
         inner = imgui.get_style().item_inner_spacing.x
-        need = imgui.get_frame_height() + inner + imgui.calc_text_size("apply").x + g.gap + _side_switch_width()
+        need = imgui.get_frame_height() + inner + imgui.calc_text_size("apply").x + g.gap + switch_width("inside", "outside") + g.mark_w
         if imgui.get_content_region_avail().x < need:
             imgui.new_line()
             imgui.same_line(g.cell_x[0])
@@ -1875,13 +1829,8 @@ class SingleSessionDemixingVis:
             "the selection by hand switches this off"
         )
         imgui.same_line(0, g.gap)
-        flipped, self._filter_outside = _side_switch(
-            "filter",
-            self._filter_outside,
-            self._filter_select,
-            "The filter takes the signals inside or outside the range"
-            + ("" if self._filter_select else "; lit while it drives the selection"),
-        )
+        flipped, self._filter_outside = draw_switch("filter", self._filter_outside, "inside", "outside", self._filter_select)
+        help_mark("which side of the range the filter selects, lit while it drives the selection")
         imgui.same_line(0, g.gap)
         right_aligned_text(f"{len(order.order)} / {order.n_items}")
         g.row("range")
@@ -1930,6 +1879,14 @@ class SingleSessionDemixingVis:
             if changed and self._show_masks:
                 self._refresh_masks()
             help_mark("every footprint's mask at this opacity")
+            g.row("weighting")
+            flipped, self._masks_by_peak = draw_switch("weighting", self._masks_by_peak, "own peak", "signal peak", self._show_masks)
+            if flipped and self._show_masks:
+                self._refresh_masks()
+            help_mark(
+                "own peak: every mask solid; signal peak: faint where the signal is weak, as the signals movie shows it",
+                g.cell_x[0] + slider_w + em(0.3),
+            )
             changed, show = imgui.checkbox("sel masks", self._show_selected_masks)
             if changed:
                 self._show_selected_masks = show
@@ -1941,7 +1898,7 @@ class SingleSessionDemixingVis:
             )
             if changed and self._show_selected_masks:
                 self._refresh_masks()
-            help_mark("the selected and grouped masks, filled at this opacity with a white rim")
+            help_mark("the selected and grouped masks at this opacity, with a white rim")
             changed, show = imgui.checkbox("contours", self._show_contours)
             if changed:
                 self._set_contours(show)
@@ -2099,17 +2056,10 @@ class SingleSessionDemixingVis:
         tooltip(f"Export: the {len(self._rois)} drawn roi(s) to a .npz, a window with a typed path, browse for the native dialog")
         # the side switch under the row, centered: grey but flippable until the region drives the selection
         imgui.dummy(imgui.ImVec2(0, em(0.4)))
-        label_w = imgui.calc_text_size("poly").x + em(0.6)
-        row_w = label_w + _side_switch_width()
+        row_w = switch_width("inside", "outside") + em(0.3) + imgui.calc_text_size("(?)").x
         imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + max((imgui.get_content_region_avail().x - row_w) / 2, 0))
-        _, self._region_outside = _side_switch(
-            "poly",
-            self._region_outside,
-            selecting,
-            "The region takes the signals inside or outside it"
-            + ("" if selecting else "; lit while it drives the selection"),
-            label_w,
-        )
+        _, self._region_outside = draw_switch("region", self._region_outside, "inside", "outside", selecting)
+        help_mark("which side of the region is selected, lit while it drives the selection")
 
         w = imgui.get_frame_height() * 1.6
         section("DEMIX")
@@ -2252,45 +2202,6 @@ class SingleSessionDemixingVis:
     def close(self):
         self._summary.cleanup()
         self._ndw_fov.close()
-
-
-def _side_switch_width() -> float:
-    """What :func:`_side_switch` takes past its label."""
-    return (
-        imgui.calc_text_size("inside").x
-        + imgui.calc_text_size("outside").x
-        + imgui.get_frame_height() * imgui_toggle.ToggleConfig().width_ratio
-        + 2 * imgui.get_style().item_inner_spacing.x
-    )
-
-
-def _side_switch(key: str, outside: bool, live: bool, tip: str, label_w: float = 0.0) -> tuple[bool, bool]:
-    """An inside / outside toggle, after ``key`` when ``label_w``: accent with the side in use lit while ``live``, grey otherwise."""
-    inner = imgui.get_style().item_inner_spacing.x
-    dim, lit = imgui.get_style().color_(imgui.Col_.text_disabled), imgui.get_style().color_(imgui.Col_.text)
-    frame = THEME.accent if live else (0.28, 0.28, 0.31)
-    hover = (0.55, 0.78, 1.0) if live else (0.38, 0.38, 0.42)
-    imgui.align_text_to_frame_padding()
-    if label_w:
-        x = imgui.get_cursor_pos_x()
-        imgui.text_colored(lit if live else dim, key)
-        imgui.same_line(x + label_w)
-    imgui.text_colored(lit if live and not outside else dim, "inside")
-    imgui.same_line(0, inner)
-    for color, value in (
-        (imgui.Col_.frame_bg, frame),
-        (imgui.Col_.button, frame),
-        (imgui.Col_.frame_bg_hovered, hover),
-        (imgui.Col_.button_hovered, hover),
-        (imgui.Col_.text, lit if live else dim),
-    ):
-        imgui.push_style_color(color, to_vec4(value))
-    changed, outside = imgui_toggle.toggle(f"##side_{key}", outside, imgui_toggle.ToggleFlags_.animated)
-    imgui.pop_style_color(5)
-    tooltip(tip)
-    imgui.same_line(0, inner)
-    imgui.text_colored(lit if live and outside else dim, "outside")
-    return changed, outside
 
 
 def extract_per_trace_roi_averages(signals_array: masknmf.SignalsArray, rowslice: slice, colslice: slice):
