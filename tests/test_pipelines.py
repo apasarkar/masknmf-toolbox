@@ -200,7 +200,7 @@ def test_a_step_records_its_peak_cuda_memory_only_on_a_cuda_device(tmp_path):
         pipeline.log_handler.close()
 
 
-def test_stop_after_registration_writes_the_shifts_and_resume_from_replays_them(tmp_path):
+def test_stop_after_registration_writes_the_shifts_and_resume_from_applies_them(tmp_path):
     movie = shifted_blob()
     pipeline = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path), device="cpu")
     folder = pipeline.run(movie, frame_rate=30, stop_after="registration")
@@ -211,15 +211,15 @@ def test_stop_after_registration_writes_the_shifts_and_resume_from_replays_them(
     assert config["configs"]["stop_after"] == "registration" and config["run"]["status"] == "done"
     assert list(config["timings"]) == ["motion correction"]
 
-    replayed = pipeline.run(movie, frame_rate=30, stop_after="registration", resume_from=folder / "results.hdf5")
-    assert replayed != folder
-    with h5py.File(replayed / "results.hdf5") as file:
+    resumed = pipeline.run(movie, frame_rate=30, stop_after="registration", resume_from=folder / "results.hdf5")
+    assert resumed != folder
+    with h5py.File(resumed / "results.hdf5") as file:
         assert np.array_equal(file["RigidRegistrationArray/shifts"][()], shifts)
-    assert json.loads((replayed / "config.json").read_text())["configs"]["resume_from"] == str(folder / "results.hdf5")
+    assert json.loads((resumed / "config.json").read_text())["configs"]["resume_from"] == str(folder / "results.hdf5")
     close_log(pipeline)
 
 
-def test_one_photon_saves_its_gradient_registration_and_replays_it(tmp_path):
+def test_one_photon_saves_its_gradient_registration_and_applies_it_on_resume(tmp_path):
     # its template is the mean of the first 300 frames
     movie = shifted_blob(num_frames=320)
     active = np.ones(movie.shape[0], dtype=bool)
@@ -228,9 +228,9 @@ def test_one_photon_saves_its_gradient_registration_and_replays_it(tmp_path):
     with h5py.File(folder / "results.hdf5") as file:
         assert set(file) == {"GradientMotionCorrector", "GradientRegistrationArray"}
         steps = file["GradientRegistrationArray/gradient_steps"][()]
-    replayed = pipeline.run(movie, frame_rate=30, indicator_sign="positive", active_frames=active,
+    resumed = pipeline.run(movie, frame_rate=30, indicator_sign="positive", active_frames=active,
                             stop_after="registration", resume_from=folder / "results.hdf5")
-    with h5py.File(replayed / "results.hdf5") as file:
+    with h5py.File(resumed / "results.hdf5") as file:
         assert np.array_equal(file["GradientRegistrationArray/gradient_steps"][()], steps)
     close_log(pipeline)
 

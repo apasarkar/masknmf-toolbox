@@ -144,14 +144,14 @@ class SingleSessionDemixingVis:
     click or table pick that edits the selection by hand drops it and keeps the selection, so Delete (or the
     Curation tab's delete button) marks it like any other selection. Nothing is removed until the next Demix.
 
-    ``raw`` (a movie, or a movie path) adds the raw movie, ``registered`` (the results' registration replayed
-    on it, for compression or demixing results) the registered one, and ``shifts`` (an array, or a results
+    ``raw`` (a movie, or a movie path) adds the raw movie, ``registered`` (the results' registration applied
+    to it, for compression or demixing results) the registered one, and ``shifts`` (an array, or a results
     file holding a registration) adds the registration shifts as a panel above the traces (piecewise rigid: the
     largest block shift per frame); results that hold their own ``raw_array``, ``registered_array`` or
     ``shifts`` show those when none are given.
-    With ``results_path`` set, a lone .tif beside the results, and the registration in the results file (its
-    shifts, template and, with a raw movie, the registered movie), are picked up when their frames match the
-    results; given ones must match (:class:`masknmf.io.OpenedResults`). Up to three panels, one per movie the results
+    With ``results_path`` set, the only .tif in its folder is used as the raw movie, and the registration in the
+    file provides the shifts, the template and, with a raw movie, the registered movie, when their frame counts
+    match the results; given ones must match (:class:`masknmf.io.OpenedResults`). Up to three panels, one per movie the results
     hold, each switchable to any of them: the Panels button at the top of the Tools panel opens the array x
     panel matrix, and the top of a panel's right-click menu offers the same choice for that panel. The movies
     are raw, registered, compressed+denoised, the residual, the fitted background (when the demixer fit one)
@@ -172,8 +172,8 @@ class SingleSessionDemixingVis:
     .npy / text file of them) adds an "order" column of ranks and opens the table in that order; signals it
     leaves out sort last. :meth:`load_cell_order` and :meth:`add_cell_stats` (or File > load cell stats: a
     .txt of ids is an order, anything else stats) do the same with the results open; File > load results.hdf5,
-    in the menu bar on top, opens another results file in place, any stage of any movie, the raw movie and shifts
-    beside it picked up as at the start (:meth:`load_results`). Every path the viewer asks for ("Export" too) is a
+    in the menu bar on top, opens another results file of any stage in place, finding its raw movie and shifts as
+    at the start (:meth:`load_results`). Every path the viewer asks for ("Export" too) is a
     window with a typed field, so it works on a remote kernel; "browse" there is the native dialog for a
     local one. Marked signals always come first. A Demix pass recomputes the results'
     stats for the new signals and drops given ones.
@@ -313,9 +313,9 @@ class SingleSessionDemixingVis:
 
     def load_results(self, path: str | os.PathLike):
         """
-        Open another results file in place, any stage of any movie: the panels, overlays, traces and tables
-        follow, and the selection, drawn rois and marks are dropped. The raw movie stays when it lines up with
-        the new results, else the one .tif beside the new file is picked up, as are the shifts in it.
+        Open another results file of any stage in place. The selection, drawn rois and marks are dropped. The
+        current raw movie is kept when its shape matches the new results, else the only .tif in the new file's
+        folder is used; shifts are read from the new file.
         """
         self._load(masknmf.io.OpenedResults.open(path, raw=self._raw, device=self.device))
 
@@ -328,12 +328,12 @@ class SingleSessionDemixingVis:
         cell_order=None,
     ):
         """
-        Show ``opened``, results of any stage of any movie with their movies: the first time, the panels, overlays and trace plot are built
-        around them; after that they are rebuilt in place, the selection, drawn rois and marks dropped first.
+        Show ``opened``. The first call builds the panels, overlays and trace plot; later calls drop the selection,
+        drawn rois and marks and rebuild them in place.
         """
         first = self._ndw_fov is None
         if not first:
-            # torn down against the results still shown: the overlays and selectors are theirs
+            # cleared before the new results are set: the overlays and selectors belong to the current ones
             self._clear_rois()
             self._armed = False
             self._drop_region()
@@ -378,19 +378,19 @@ class SingleSessionDemixingVis:
 
         for note in opened.skipped:
             display(note)
-        # say what was picked up, and how to add what was not, so the panels are discoverable
+        # report which movies and shifts were found, and how to pass the missing ones
         if opened.raw is not None:
             display(f"raw panel: {opened.raw_source if opened.raw_source is not None else 'movie given'}")
         else:
             display(
-                "no raw movie: raw= (a movie or a .tif path) adds a raw panel; a lone .tif beside the results is picked up"
+                "no raw movie: raw= (a movie or a .tif path) adds a raw panel; the only .tif in the results folder is used automatically"
             )
         if opened.shifts is not None:
             display(f"shift traces: {opened.shifts_source if opened.shifts_source is not None else 'shifts given'}")
         else:
             display(
                 "no motion shifts: shifts= (an array or a results file holding a registration) adds shift traces; "
-                "the registration in the results file is picked up"
+                "a registration in the results file is used automatically"
             )
         self._raw = opened.raw
         self._shifts = opened.shifts
@@ -458,7 +458,7 @@ class SingleSessionDemixingVis:
                 # the slider's range for the new length, its index back at the start before the panels change
                 self._reference_index.push_dims(self._ref_range)
             # fresh wrappers, so every panel gets a new graphic instance: keeps the re-bound click handlers from
-            # doubling up; the panels keep their movies through results with the same movies, else reopen as at the start
+            # doubling up; the panels keep their movies when the new results have the same movies, else reset to the default order
             same = set(movies) == self._movie_names
             for i, (name, panel) in enumerate(self._panels.items()):
                 keep = panel.current
@@ -766,7 +766,7 @@ class SingleSessionDemixingVis:
         before = self._ac_array.spatial_demixed.shape[1]
         parent = self._results_path
         try:
-            # the same movie: its raw, registered movie, shifts and template stay
+            # same recording: keep the raw movie, registered movie, shifts and template
             self._load(replace(self._opened, results=results, path=Path(path), skipped=[]))
         except Exception as e:
             self._status = f"reload after demix failed: {e}"

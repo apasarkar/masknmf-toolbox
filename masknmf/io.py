@@ -143,7 +143,7 @@ def stage_groups(path: str | Path) -> list[str]:
 @dataclass
 class OpenedResults:
     """
-    Results together with the movies that go with them.
+    A results object with its raw movie, registered movie, registration shifts and template.
 
     Build one with :meth:`open` (from a file) or :meth:`resolve` (from results in memory).
 
@@ -156,7 +156,7 @@ class OpenedResults:
     raw : ArrayLike | None
         The raw movie.
     registered : ArrayLike | None
-        The registration replayed on ``raw``; None when ``results`` is itself the registration.
+        ``raw`` with the stored registration applied; None when ``results`` is the registration.
     shifts : np.ndarray | None
         Registration shifts, float32, (frames, 2) or (frames, height blocks, width blocks, 2) for piecewise rigid.
     template : np.ndarray | None
@@ -164,7 +164,7 @@ class OpenedResults:
     raw_source, shifts_source : Path | None
         The files ``raw`` and ``shifts`` were read from; None when given as data or taken from ``results``.
     skipped : list[str]
-        What was found but left out because it did not line up with the results.
+        Messages for movies and shifts read from disk but not used because their shape does not match ``results``.
     """
 
     results: DemixingResults | CompressionArray | BaseRegistrationArray | BaseResults
@@ -186,9 +186,9 @@ class OpenedResults:
         """
         Open a results file of any stage.
 
-        The results are the file's DemixingResults, else its CompressionArray, else its registration replayed on the
-        raw movie. A ``raw`` that does not line up with them is skipped, not an error, so a viewer can keep its movie
-        when moving on to another recording's results. Everything else is found as in :meth:`resolve`.
+        The results are the file's DemixingResults, else its CompressionArray, else its registration applied to the
+        raw movie. A ``raw`` whose shape does not match the results is not used and is reported in ``skipped``; it
+        does not raise. Everything else is found as in :meth:`resolve`.
 
         Parameters
         ----------
@@ -199,7 +199,7 @@ class OpenedResults:
         prefix : str
             Read the DemixingResults under ``<prefix>/``, e.g. "global".
         device : str
-            Device for the DemixingResults and for replaying the registration.
+            Device for the DemixingResults and for applying the registration.
 
         Returns
         -------
@@ -208,8 +208,8 @@ class OpenedResults:
         Raises
         ------
         ValueError
-            If the file holds no masknmf results, none under ``prefix``, or only a registration and no raw movie that
-            lines up with it.
+            If the file holds no masknmf results, none under ``prefix``, or only a registration and no raw movie with
+            the registration's number of frames is available.
         """
         path = Path(path)
         groups = stage_groups(path)
@@ -231,7 +231,7 @@ class OpenedResults:
             shape = tuple(int(n) for n in results.shape)
             if raw is not None and tuple(raw.shape) != shape:
                 # e.g. the glutamate pipeline drops a movie's first frames
-                skipped.append(f"raw movie is {tuple(raw.shape)}, the results {shape}; not shown")
+                skipped.append(f"raw movie shape {tuple(raw.shape)} does not match results shape {shape}; not used")
                 raw = raw_source = None
             opened = cls.resolve(results, path, raw=raw, device=device)
         else:
@@ -239,16 +239,16 @@ class OpenedResults:
             with h5py.File(path, "r") as f:
                 frames = f[stored]["shifts"].shape[0]
             if raw is not None and raw.shape[0] != frames:
-                skipped.append(f"raw movie has {raw.shape[0]} frames, the {stored} {frames}; not shown")
+                skipped.append(f"raw movie has {raw.shape[0]} frames, {stored} has {frames}; not used")
                 raw = raw_source = None
             if raw is None and (beside := movie_beside(path)) is not None:
                 movie = TiffArray(str(beside))
                 if movie.shape[0] == frames:
                     raw, raw_source = movie, beside
                 else:
-                    skipped.append(f"skipping {beside}: {movie.shape[0]} frames, the {stored} {frames}")
+                    skipped.append(f"{beside} has {movie.shape[0]} frames, {stored} has {frames}; not used")
             if raw is None:
-                raise ValueError(f"{path} holds only {stored}; showing it needs the raw movie the run registered")
+                raise ValueError(f"{path} holds only {stored}; pass the raw movie it was computed from")
             opened = cls.resolve(REGISTRATION_ARRAYS[stored].from_hdf5(path, input_movie=raw, device=device), path)
         return replace(opened, raw_source=raw_source or opened.raw_source, skipped=skipped + opened.skipped)
 
@@ -261,19 +261,19 @@ class OpenedResults:
                 shifts: np.ndarray | torch.Tensor | str | Path | None = None,
                 device: str | None = None) -> "OpenedResults":
         """
-        Gather the movies that go with results already in memory.
+        Find the raw movie, registered movie, shifts and template for results already in memory.
 
-        Each of ``raw``, ``registered`` and ``shifts`` is the one given, else the one ``results`` carries, else one
-        found from ``path``: the only tiff in its folder for the raw movie, and the registration in the file for the
-        shifts, the template and (replayed on the raw movie) the registered movie. Given ones must line up with
-        ``results``; found ones that do not are skipped.
+        Each of ``raw``, ``registered`` and ``shifts`` is the argument when given, else the attribute of ``results``,
+        else read from disk: the raw movie is the only tiff in the folder of ``path``, and the shifts, template and
+        registered movie come from the registration stored in ``path``. An argument whose shape does not match
+        ``results`` raises; a value read from disk that does not match is not used and is reported in ``skipped``.
 
         Parameters
         ----------
         results : DemixingResults | CompressionArray | BaseRegistrationArray | BaseResults
             The results.
         path : str | Path | None
-            The file ``results`` were read from; nothing is looked for without it.
+            The file ``results`` were read from. When None, nothing is read from disk.
         raw : ArrayLike | np.ndarray | str | Path | None
             The raw movie, or a path :func:`load_movie` reads.
         registered : ArrayLike | None
@@ -281,7 +281,7 @@ class OpenedResults:
         shifts : np.ndarray | torch.Tensor | str | Path | None
             Registration shifts, or a results file holding a registration.
         device : str | None
-            Device for replaying the registration in ``path``; its stored device when None.
+            Device for applying the registration stored in ``path``; the stored device when None.
 
         Returns
         -------
@@ -298,7 +298,7 @@ class OpenedResults:
         is_registration = isinstance(results, BaseRegistrationArray)
         skipped = []
         if registered is not None and is_registration:
-            raise ValueError("registered= goes with compression or demixing results; a registration array is the registered movie")
+            raise ValueError("registered= applies only to compression or demixing results; a registration array is already the registered movie")
         if registered is not None and tuple(registered.shape) != shape:
             raise ValueError(f"registered movie has shape {tuple(registered.shape)}, the results have {shape}")
 
@@ -316,7 +316,7 @@ class OpenedResults:
             if tuple(movie.shape) == shape:
                 raw, raw_source = movie, beside
             else:
-                skipped.append(f"skipping {beside}: shape {tuple(movie.shape)} does not match the results")
+                skipped.append(f"{beside} shape {tuple(movie.shape)} does not match results shape {shape}; not used")
 
         stored = None
         if path is not None and not is_registration:
@@ -329,7 +329,7 @@ class OpenedResults:
             if frames == shape[0]:
                 registered = REGISTRATION_ARRAYS[stored].from_hdf5(path, input_movie=raw, device=device)
             else:
-                skipped.append(f"the {stored} in {path} has {frames} frames, the movie {shape[0]}; shifts not applied")
+                skipped.append(f"{stored} in {path} has {frames} frames, the results have {shape[0]}; registered movie not computed")
 
         shifts_source = Path(shifts) if isinstance(shifts, (str, Path)) else None
         found_shifts = False
@@ -357,7 +357,7 @@ class OpenedResults:
             if shifts.shape[0] != shape[0]:
                 if not found_shifts:
                     raise ValueError(f"{shifts.shape[0]} shifts for {shape[0]} frames")
-                skipped.append(f"skipping {shifts_source}: {shifts.shape[0]} shifts for {shape[0]} frames")
+                skipped.append(f"{shifts_source} has {shifts.shape[0]} shifts for {shape[0]} frames; not used")
                 shifts = shifts_source = template = None
         if template is not None:
             template = np.asarray(template.cpu() if isinstance(template, torch.Tensor) else template, np.float32)
@@ -430,7 +430,7 @@ def log_to(folder: str | Path) -> logging.FileHandler:
     """
     Send the masknmf log to ``<folder>/<folder name>.log``.
 
-    Appends when the file exists. The log file written until now, if any, is closed.
+    Appends when the file exists. Any other file handler on the masknmf logger is removed and closed.
 
     Parameters
     ----------
@@ -468,8 +468,8 @@ def write_run_config(folder: str | Path,
     folder : str | Path
         The run folder.
     pipeline : str
-        What made the run: a pipeline class name, or any name for a run put together by hand. ``masknmf run
-        --config`` and the launcher only reload runs named after a pipeline.
+        The pipeline class name, or any name for a run not made by a pipeline. Only runs named after a pipeline can be
+        reloaded by ``masknmf run --config`` and the launcher.
     configs : dict
         The arguments the run used, by name.
     run : dict | None
@@ -479,8 +479,8 @@ def write_run_config(folder: str | Path,
     timings : dict | None
         Each step's record (seconds, start, status), by step name.
     default : callable
-        Turns what json cannot write into something it can; ``masknmf.pipelines.scraper.config_json_value`` keeps
-        config dataclasses readable by ``--config``.
+        Passed to ``json.dumps`` for objects it cannot serialize. Use ``masknmf.pipelines.scraper.config_json_value``
+        so config dataclasses can be read back by ``--config``.
 
     Returns
     -------

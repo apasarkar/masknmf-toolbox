@@ -36,7 +36,7 @@ class FolderPipeline(BasePipeline):
         logging.getLogger("masknmf").debug("a debug line")
         logging.getLogger("masknmf").info("an info line")
         logging.getLogger("masknmf").warning("a warning line")
-        # a five frame movie stands for one a run breaks on
+        # the stub pipeline fails on a five frame movie
         if fail or (data is not None and data.shape[0] == 5):
             raise RuntimeError("the run broke")
         return self.finish()

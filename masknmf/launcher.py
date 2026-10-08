@@ -1314,8 +1314,8 @@ class Launcher:
                     imgui.same_line(0, hello_imgui.em_size(1.2))
                 imgui.new_line()
                 if imgui.is_item_hovered():
-                    idl.wrapped_tooltip("Start from: run every stage on the movie, or copy the loaded run's registration (replayed on "
-                                        "the movie) or its compression into the new run folder and carry on from there")
+                    idl.wrapped_tooltip("Start from: run every stage on the movie, or copy the loaded run's registration (applied to "
+                                        "the movie) or its compression into the new run folder and continue from there")
             imgui.end_table()
         if self.message_load != "":
             draw_wrapped(text=f"{fa.ICON_FA_CIRCLE_INFO}  {self.message_load}", color=COLOR_WARN)
@@ -1382,8 +1382,8 @@ class Launcher:
     def draw_open(self) -> None:
         """A path, what it holds, and the viewer that opens it."""
         em = imgui.get_font_size()
-        self.step(1, "Source", "a results .hdf5, a run folder, a tracking folder or its manifest; a folder stands for the results "
-                               "files in it, the newest curated one of each")
+        self.step(1, "Source", "a results .hdf5, a run folder, a tracking folder or its manifest; a folder means the results "
+                               "files in it, each replaced by its newest curated file")
         if self.begin_form(name="open"):
             self.row(caption="path")
             self.draw_path(target=self.paths_open, key="source", filetypes=FILETYPES_RESULTS, folders=True,

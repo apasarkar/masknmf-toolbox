@@ -67,7 +67,7 @@ def results_stem(path) -> str:
 def latest_results(paths: Sequence) -> list[str]:
     """
     One file per results file among ``paths``: its newest curated file when one is among them, else the results
-    file itself, in the order each first appears. Only files in the same folder stand for each other.
+    file itself, in the order each first appears. A curated file only replaces a results file in the same folder.
     """
     latest = {}
     for path in map(str, paths):

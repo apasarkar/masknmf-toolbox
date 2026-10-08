@@ -81,7 +81,7 @@ STILLS = (
 PANELS = (
     ("movie", "shows"),
     ("raw", "the movie as recorded, when given or found beside the results"),
-    ("registered", "the raw movie with the file's registration replayed, when both are there"),
+    ("registered", "the raw movie with the file's registration applied (needs both)"),
     (
         "compressed+denoised",
         "the raw movie compressed and denoised by PMD: the noise left out, what the demixer fits",
@@ -159,7 +159,7 @@ WEIGHTINGS = (
     (
         "own peak",
         "opacity = w / max(w)",
-        "every mask solid at its own peak: everything picked up, junk included; best for axons and thin processes",
+        "every mask solid at its own peak: dim masks, junk included, are as visible as bright ones; best for axons and thin processes",
     ),
     (
         "signal peak",

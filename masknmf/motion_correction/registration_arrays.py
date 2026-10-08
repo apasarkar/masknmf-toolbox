@@ -75,7 +75,7 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
                   input_movie: ArrayLike,
                   device: str | torch.device | None = None,
                   **kwargs):
-        """The stored registration replayed on input_movie; device is where the strategy applies the shifts."""
+        """Load a stored registration and apply it to input_movie; device is where the shifts are applied."""
         if cls._strategy_cls is None:
             raise NotImplementedError(
                 f"{cls.__name__} must set `_strategy_cls` to enable from_hdf5"

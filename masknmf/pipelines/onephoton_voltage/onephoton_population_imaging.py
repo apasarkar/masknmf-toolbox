@@ -331,7 +331,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                         results carry the pmd)
                     stop_after: the last stage to run: "registration" writes the shifts and template and ends,
                         "compression" ends once the compression is written, "demixing" runs everything
-                    resume_from: an earlier results file copied into the new run folder: its registration is replayed on
+                    resume_from: an earlier results file copied into the new run folder: its registration is applied to
                         data instead of estimating one, and with compress_config "skip" its compression is reused too.
                         The earlier file is left as it is
 

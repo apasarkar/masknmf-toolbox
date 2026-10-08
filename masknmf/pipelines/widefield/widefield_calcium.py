@@ -52,7 +52,7 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         """
         Uses the API to run rigid motion correction, compression (with denoising). With stop_after "registration" the
         run ends once the shifts and template are written; resume_from, an earlier results file, is copied into the new
-        run folder and its registration replayed instead of estimating one.
+        run folder and its registration applied instead of estimating one.
         """
         ends_at_registration = stop_after == "registration" or isinstance(self.compress_config, str)
         if ends_at_registration and isinstance(self.motion_correct_config, str) and resume_from is None:

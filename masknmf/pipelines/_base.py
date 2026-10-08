@@ -334,11 +334,11 @@ class BasePipeline(ABC):
         """
         Register data with a rigid (the default when config is None) or piecewise rigid corrector and export it to
         results_path, or pass it through for "skip". With stored, the registration array class resume copied into
-        results_path, that registration is replayed on data instead. Also returns a pixel weighting that is 0 where
+        results_path, that registration is applied to data instead. Also returns a pixel weighting that is 0 where
         the shifts moved pixels in from outside the fov and on the outer exclude_border_radius pixels.
         """
         if stored is not None:
-            logger.info(f"replaying the stored {stored.__name__}")
+            logger.info(f"applying the stored {stored.__name__}")
             moco_data = stored.from_hdf5(results_path, input_movie=data, device=self.device)
             moco_data.output_device = moco_data.strategy.device
         elif isinstance(config, str):

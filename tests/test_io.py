@@ -24,7 +24,7 @@ def movie():
 
 @pytest.fixture(scope="module")
 def run(movie, tmp_path_factory):
-    """A run folder made by hand: registration and compression in one results.hdf5, the movie beside it."""
+    """A run folder written without a pipeline: registration and compression in one results.hdf5, the movie in the same folder."""
     folder = tmp_path_factory.mktemp("run")
     corrector = masknmf.RigidMotionCorrector(max_shifts=(2, 2), device="cpu")
     corrector.compute_template(movie)
@@ -72,8 +72,8 @@ def test_a_registration_only_file_needs_its_movie(movie, tmp_path):
     assert opened.shifts.shape == (movie.shape[0], 2)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a second device to move the replay to")
-def test_the_registration_replays_on_the_device_asked_for(run):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a cuda device")
+def test_the_registration_is_applied_on_the_device_asked_for(run):
     assert str(OpenedResults.open(run / "results.hdf5", device="cuda").registered.strategy.device).startswith("cuda")
 
 
