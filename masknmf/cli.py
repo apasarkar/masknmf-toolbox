@@ -543,12 +543,13 @@ def command_run(args: argparse.Namespace) -> None:
                 inputs[field]["dataset"] = args.dataset
 
         for param in spec.run_scalars:
-            # where to start is chosen anew, as in the launcher
+            # where to start is chosen anew
             if param.field in values_file and param.field != "resume_from":
                 kwargs_run[param.field] = values_file[param.field]
             text = getattr(args, param.field, None)
             if param.field == "stop_after" and text is None and values_file.get(param.field, "demixing") != "demixing":
-                print(f"stopping after {values_file[param.field]}, as the config's run did; --stop-after demixing runs every stage")
+                print(f"stopping after {values_file[param.field]}, as the config's run did; "
+                      f"--stop-after demixing runs every stage")
             if text is None:
                 if param.required and param.field not in values_file:
                     fail(f"{param.flag} is required for {spec.slug}")
