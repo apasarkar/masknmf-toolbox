@@ -103,6 +103,7 @@ A run folder's `config.json`:
 - `timings`: each step's start time, seconds, whether it finished, and peak cuda memory (GB) on cuda; updated as the run goes
 - a step still running after 10 minutes is logged, and again every 10 minutes
 - a resumed run (`--resume-from`, or `--compress-kind skip --output-folder <run folder>`) is a new run folder: the registration, and the compression it reuses, are copied in, the earlier folder is left as it is, and config.json keeps the earlier moco and compression configs, inputs and timings
+- with `--resume-from`, every setting not given, all but `--stop-after`, is the earlier run's, from the config.json beside its results file, and the movie it recorded is read unless one is given; anything given replaces it
 - a run that fails keeps its folder, marked failed in config.json with the error in its log, whenever it saved a registration or a compression; from Python too
 - `inputs`: the movie and arrays the run read, with their size and modification time; `masknmf run --config <run folder>/config.json` reruns on them unless a movie is given
 - a finished run prints the `masknmf view` line that opens it, with the movie as `--raw`
@@ -112,7 +113,7 @@ A run folder's `config.json`:
 ## two-photon-calcium (`TwoPhotonCalciumPipeline`)
 
 Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise | skip), `spatial-highpass` (spatial-highpass), `filtered-demixing` (multipass: 2 passes by default | skip: the run ends after compression), `unfiltered-demixing` (multipass: 3 passes by default | skip: the filtered passes' results are the run's demixing).
-Run args: `MOVIE` (optional), `--fs` (required), `--exclude-border-radius`, `--remove-intermediates`, `--stop-after {registration,compression,demixing}`, `--resume-from RESULTS`.
+Run args: `MOVIE` (optional), `--fs` (required unless resumed), `--exclude-border-radius`, `--remove-intermediates`, `--stop-after {registration,compression,demixing}`, `--resume-from RESULTS`.
 Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device {auto,cuda,cpu}`, `--log-level {debug,info,warning}`.
 
 - `--load-into-ram true` reads the raw movie into RAM before moco; needs about the movie's size in free RAM
@@ -140,9 +141,13 @@ masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --motion-correct-kin
 masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --stop-after registration
 masknmf view ./20260923T120000_two-photon-calcium --raw movie.tif
 
-# the same registration, compression re-run with other settings
-masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --stop-after compression \
+# the same registration, movie and settings, compression re-run with another config
+masknmf run --pipeline two-photon-calcium --stop-after compression \
     --resume-from ./20260923T120000_two-photon-calcium/results.hdf5 --compress-kind compress
+
+# the same registration and compression, demixing with the configs in demixing.json
+masknmf run --pipeline two-photon-calcium --compress-kind skip --config demixing.json \
+    --resume-from ./20260923T120000_two-photon-calcium/results.hdf5
 
 # the run again, exactly as recorded
 masknmf run --config ./20260923T120000_two-photon-calcium/config.json
@@ -155,8 +160,8 @@ masknmf run --pipeline two-photon-calcium registered.tif --fs 30 \
 masknmf run --pipeline two-photon-calcium --fs 30 --compress-kind skip \
     --output-folder ./20260923T120000_two-photon-calcium
 
-# the same with the movie, so demixing gets raw traces
-masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --compress-kind skip \
+# the same with the movie the run recorded, so demixing gets raw traces
+masknmf run --pipeline two-photon-calcium --compress-kind skip \
     --resume-from ./20260923T120000_two-photon-calcium/results.hdf5
 
 # force CPU, smaller batches
@@ -166,7 +171,7 @@ masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --device cpu --frame
 ## one-photon-culture (`OnePhotonCulturePipeline`)
 
 Sections: `motion-correct` (gradient | skip), `compress` (compress | compress-denoise | skip), `demixing` (multipass: 2 passes by default, no detrending | skip: the run ends after compression).
-Run args: `MOVIE`, `--fs` (required), `--indicator-sign {negative,positive}` (required), `--active-frames FILE.npy` (required), `--remove-intermediates`, `--stop-after {registration,compression,demixing}`, `--resume-from RESULTS`.
+Run args: `MOVIE`, `--fs` (required unless resumed), `--indicator-sign {negative,positive}` (required unless resumed), `--active-frames FILE.npy` (required), `--remove-intermediates`, `--stop-after {registration,compression,demixing}`, `--resume-from RESULTS`.
 Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device`, `--log-level`.
 
 - `--active-frames`: 1-D `.npy`, one 0/1 per frame, used as the compression frame weighting

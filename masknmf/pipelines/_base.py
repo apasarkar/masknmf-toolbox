@@ -42,7 +42,8 @@ class RecordsFailure:
     """
     A pipeline's run that, when it raises after making its run folder, logs the error and records in config.json
     that the run failed, then lets the error through. BasePipeline wraps every subclass's run in one, so a run
-    started from Python leaves the same record as one started from the command line.
+    started from Python leaves the same record as one started from the command line. A run given resume_from takes
+    the settings it was not given from the earlier run's config.json first.
     """
 
     def __init__(self, run):
@@ -56,7 +57,7 @@ class RecordsFailure:
         # a folder left from an earlier run of the same pipeline is not this run's
         pipeline.run_folder = None
         try:
-            return self.run(pipeline, *args, **kwargs)
+            return self.run(pipeline, **pipeline.arguments_resumed(run=self.run, args=args, kwargs=kwargs))
         except BaseException:
             if pipeline.run_folder is not None:
                 logger.exception(f"{type(pipeline).__name__} failed")
@@ -117,6 +118,8 @@ class BasePipeline(ABC):
             raise TypeError(f"{type(self).__name__}.default_configs() has no entry for {', '.join(sorted(unknown))}")
         for name, default in defaults.items():
             setattr(self, name, default if configs.get(name) is None else configs[name])
+        # the config arguments given, which a resumed run keeps over the earlier run's
+        self.configs_given = {name for name in defaults if configs.get(name) is not None}
 
     @classmethod
     @abstractmethod
@@ -143,6 +146,45 @@ class BasePipeline(ABC):
         values = {name: config_from_json(value=value, annotation=parameters[name].annotation, base=defaults.get(name))
                   for name, value in loaded["configs"].items() if name in parameters}
         return cls(**{**values, **overrides})
+
+    def arguments_resumed(self, run: Callable, args: tuple, kwargs: dict) -> dict:
+        """
+        The arguments of run by name. With a resume_from that has a config.json beside it, the run arguments not
+        given and the config arguments of __init__ not given take that run's values; stop_after is this run's own.
+
+        Args:
+            run (Callable): The pipeline's run function, taking the pipeline first
+            args (tuple): The positional arguments run was called with, after the pipeline
+            kwargs (dict): The keyword arguments run was called with
+        Returns:
+            dict: Every argument run was given, and those taken from the earlier run, by name
+        Raises:
+            ValueError: If the config.json is another pipeline's
+        """
+        parameters_run = inspect.signature(run).parameters
+        arguments = inspect.signature(run).bind_partial(self, *args, **kwargs).arguments
+        del arguments[next(iter(parameters_run))]
+        if arguments.get("resume_from") is None:
+            return arguments
+        filepath_config = Path(arguments["resume_from"]).expanduser().resolve().parent / "config.json"
+        if not filepath_config.is_file():
+            logger.info(f"no config.json beside {arguments['resume_from']}; the settings not given are the defaults")
+            return arguments
+        earlier = json.loads(filepath_config.read_text())
+        if earlier.get("pipeline", type(self).__name__) != type(self).__name__:
+            raise ValueError(f"{filepath_config} is for {earlier['pipeline']}, not {type(self).__name__}")
+        values = earlier.get("configs", {})
+        defaults = self.default_configs()
+        parameters_init = inspect.signature(type(self).__init__).parameters
+        for name in defaults:
+            if name in values and name not in self.configs_given:
+                setattr(self, name, config_from_json(value=values[name], annotation=parameters_init[name].annotation,
+                                                     base=defaults[name]))
+        for name in parameters_run:
+            if name in values and name not in arguments and name != "stop_after":
+                arguments[name] = values[name]
+        logger.info(f"the settings not given are those of {filepath_config}")
+        return arguments
 
     @property
     def config(self) -> dict:
@@ -298,7 +340,7 @@ class BasePipeline(ABC):
         logger.info(f"reusing {', '.join(names)} from {resume_from}")
         filepath_config = resume_from.parent / "config.json"
         earlier = json.loads(filepath_config.read_text()) if filepath_config.is_file() else {}
-        reused = ["motion_correct_config", "exclude_border_radius"] + (["compress_config"] if reuse_compression else [])
+        reused = ["motion_correct_config"] + (["compress_config"] if reuse_compression else [])
         steps = ["motion correction"] + (["compression"] if reuse_compression else [])
         self.inputs = {**earlier.get("inputs", {}), **self.inputs}
         self.configs_reused = {name: value for name, value in earlier.get("configs", {}).items() if name in reused}

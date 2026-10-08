@@ -93,6 +93,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                         "compression" ends once the compression is written, "demixing" runs everything
                     resume_from: an earlier results file copied into the new run folder: its registration is applied to
                         data instead of estimating one, and with compress_config "skip" its compression is reused too.
+                        The settings not given, all but stop_after, are that run's, from the config.json beside it.
                         The earlier file is left as it is
                 """
 
