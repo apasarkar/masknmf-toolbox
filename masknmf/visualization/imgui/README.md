@@ -5,7 +5,7 @@ Reusable GUI-layer building blocks shared by the interactive viewers
 
 ## Modules
 
-- `widgets.py` — imgui `EdgeWindow` panels. `CheckboxWindow` (was `ROIManager` in `interactive_guis.py`).
+- `widgets.py` — imgui `EdgeWindow` panels. `CheckboxWindow` (was `ROIManager` in `interactive_guis.py`); `draw_switch` / `switch_width`: a two-way labelled toggle on `imgui_toggle`, the side in use lit while live, a click on either word picks it; behind the filter's and the region's inside / outside and the masks' weighting.
 - `picking.py` — data-space picking. `component_at_pixel` (was duplicated as `CurationVis._neuron_at` and `MultiSessionDemixingVis.neuron_selection`), `contours_to_bbox` / `zoom_to_bbox` (from `multisession_vis.py`).
 - `layout.py` — figure-level helpers. `resolve_time_reference` (frame_timings/ref_range block that was triplicated across curation/demixing/motion), `is_notebook_canvas` (canvas-class check in `show()` dispatch) and `draw_edge_handle` (resize/collapse handle for top/left edge windows, which fastplotlib only has for bottom/right).
 - `table.py` — `RoiOrder` (filter / sort / cursor over per-item columns) and `draw_roi_table` (clipped sortable table with ctrl / shift multi-select callbacks), `draw_range_slider` (two grabs on one frame) and `draw_range_filter` (it over `RoiOrder.range_column`).
