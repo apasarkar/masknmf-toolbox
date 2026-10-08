@@ -543,9 +543,12 @@ def command_run(args: argparse.Namespace) -> None:
                 inputs[field]["dataset"] = args.dataset
 
         for param in spec.run_scalars:
-            if param.field in values_file:
+            # where to start is chosen anew, as in the launcher
+            if param.field in values_file and param.field != "resume_from":
                 kwargs_run[param.field] = values_file[param.field]
             text = getattr(args, param.field, None)
+            if param.field == "stop_after" and text is None and values_file.get(param.field, "demixing") != "demixing":
+                print(f"stopping after {values_file[param.field]}, as the config's run did; --stop-after demixing runs every stage")
             if text is None:
                 if param.required and param.field not in values_file:
                     fail(f"{param.flag} is required for {spec.slug}")
@@ -578,7 +581,8 @@ def command_run(args: argparse.Namespace) -> None:
             run_folder = pipeline.run(**kwargs_run)
         except BaseException as error:
             # the pipeline logged the error and recorded the failure in config.json
-            logger.error("run failed" if movie is None else f"run failed on {movie}")
+            reason = "" if pipeline.run_folder is not None else f": {type(error).__name__}: {error}"
+            logger.error(("run failed" if movie is None else f"run failed on {movie}") + reason)
             # a failed run keeps its folder only when one of its results files holds a finished stage; its log file,
             # closed first so windows lets the folder go, moves up to where the folder was
             folder = pipeline.run_folder
