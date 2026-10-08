@@ -21,7 +21,7 @@ here enumerates a parameter by hand:
     masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
     masknmf view tracking_folder
     masknmf view tracking_folder/20261001T180415_roicat-tracking-manifest.json
-    masknmf view tracking_folder day1/results.hdf5 day2/results.hdf5
+    masknmf view old_tracking_folder day1/results.hdf5 day2/results.hdf5
     masknmf train-classifier "sessions/*/results.hdf5" --out cells
     masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classifier
     masknmf track "sessions/*/results.hdf5" --out tracking
@@ -42,7 +42,6 @@ import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import h5py
 import numpy as np
 
 import masknmf
@@ -56,6 +55,7 @@ from masknmf.io import (
     group_name_demixing,
     group_names_registration,
     OpenedResults,
+    has_group,
     stage_groups,
 )
 from masknmf.multisession import RoicatDataAdapter, RoicatTracker
@@ -95,7 +95,7 @@ def groups_present(filepath_results: str) -> list[str]:
 def expand_results(entries: list[str]) -> list[str]:
     """
     The .h5/.hdf5 results files a list of paths and globs names, labels sidecars left out. A named file is used as
-    given; of what a glob matches, each results file stands in for itself only when no curated file of it matched,
+    given; of what a glob matches, a results file is used only when no curated file of it matched,
     else the newest curated file does (``masknmf.demixing.latest_results``).
 
     Powershell and cmd hand globs over unexpanded, so they are expanded here, one path
@@ -625,26 +625,37 @@ def print_tracking(tracking: "masknmf.multisession.RoicatTrackingResults", folde
           f"{int((spans == tracking.num_sessions).sum())} found in every session")
     print(f"  clustered  {clustered / max(tracking.num_roi_total, 1):.0%} of the rois ({clustered}) belong to a cluster; "
           f"the other {tracking.num_roi_total - clustered} matched no roi of another session")
-    missing = [filepath for filepath in tracking.session_files if not os.path.isfile(filepath)]
-    root = os.path.commonpath([os.path.dirname(filepath) for filepath in tracking.session_files])
-    print(f"  results files under {root}:")
+    missing = [filepath for filepath in tracking.session_files if not Path(filepath).is_file()]
+    print("  results files, by folder:")
     print("    session  rois  clustered  file")
+    folder = None
     for session, filepath in enumerate(tracking.session_files):
+        # one heading per folder: sessions can be on different drives, so there is no common root
+        if Path(filepath).parent != folder:
+            folder = Path(filepath).parent
+            print(f"  {folder}")
         labels = tracking.labels_by_session[session]
-        print(f"    {session:>7}  {len(labels):>4}  {int((labels >= 0).sum()):>9}  {os.path.relpath(filepath, root)}"
+        print(f"    {session:>7}  {len(labels):>4}  {int((labels >= 0).sum()):>9}  {Path(filepath).name}"
               + ("  (missing)" if filepath in missing else ""))
     return missing
 
 
 def view_tracking(args: argparse.Namespace, source: Path) -> None:
     """
-    Open the multisession viewer on a tracking run, its manifest or a folder from before manifests; results files
-    after it replace the sessions it recorded.
+    Open the multisession viewer on a tracking run. A manifest lists each session's results file; a tracking folder
+    without a manifest takes the results files after it, in session order.
     """
     if args.classify or args.raw is not None or args.compression or args.prefix or args.fs is not None:
         fail("a tracking folder opens only the multisession viewer; drop --classify, --raw, --compression, --prefix and --fs")
-    folder, entries_sessions = args.results[0], args.results[1:]
-    files = expand_results(entries=entries_sessions) if len(entries_sessions) > 0 else None
+    folder, files = args.results[0], args.results[1:]
+    # a manifest lists each session's results file; other files are not accepted in their place
+    if source.is_file() and len(files) > 0:
+        fail(f"{source.name} lists the sessions' results files; remove the files after {folder}")
+    for filepath in files:
+        if not Path(filepath).is_file():
+            fail(f"no such file: {filepath}")
+        if not has_group(filepath, group_name_demixing()):
+            fail(f"{filepath} holds no {group_name_demixing()}")
     # richfile and roicat warn about their own metadata on every load, nothing the user can act on
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -655,31 +666,15 @@ def view_tracking(args: argparse.Namespace, source: Path) -> None:
                 tracking = masknmf.multisession.RoicatTrackingResults.from_roicat_dir(source)
         except ValueError as error:
             fail(str(error))
-    if files is not None:
+    if len(files) > 0:
         if len(files) != tracking.num_sessions:
             fail(f"the tracking has {tracking.num_sessions} sessions, got {len(files)} results files")
-        counts = {}
-        for filepath in files:
-            with h5py.File(filepath, "r") as f:
-                counts[filepath] = f[f"{group_name_demixing()}/temporal_demixed"].shape[1]
-        if list(counts.values()) != list(tracking.num_roi_per_session):
-            # globs sort by name, so put each file at the session with its roi count
-            ordered = []
-            for session, count in enumerate(tracking.num_roi_per_session):
-                matches = [filepath for filepath, n in counts.items() if n == count]
-                if len(matches) > 1:
-                    fail(f"session {session} has {count} rois and {len(matches)} results files do; pass the files in session order")
-                ordered.append(matches[0] if len(matches) == 1 else None)
-            # a file that fits no session takes an open one, so the check below names it
-            unplaced = iter([filepath for filepath in files if filepath not in ordered])
-            files = [next(unplaced) if filepath is None else filepath for filepath in ordered]
-        try:
-            tracking.session_files = files
-        except ValueError as error:
-            fail(str(error))
+        tracking.session_files = files
     missing = print_tracking(tracking=tracking, folder=str(source))
     if args.list:
         return
+    if len(missing) > 0 and source.is_file():
+        fail(f"results files listed in {source.name} not found; restore them or run tracking again")
     if len(missing) > 0:
         fail(f"results files not found; pass them in session order after the folder: masknmf view {folder} day1.hdf5 day2.hdf5 ...")
 
@@ -701,7 +696,7 @@ def command_view(args: argparse.Namespace) -> None:
     if tracking is not None:
         view_tracking(args=args, source=tracking)
         return
-    # a folder without a manifest stands for the results files in it, each one's newest curated file in its place
+    # a folder without a manifest means the results files in it, each replaced by its newest curated file
     entries = [
         # glob characters in the folder's own name are escaped, so only the file pattern matches
         str(Path(glob.escape(entry)) / "*results*.hdf5") if Path(entry).expanduser().is_dir() else entry
@@ -751,7 +746,7 @@ def command_view(args: argparse.Namespace) -> None:
         str(masknmf.utils.torch_select_device()) if args.device == "auto" else args.device
     )
     raw = None if args.raw is None else load_movie(filepath_movie=args.raw, name_dataset=args.dataset)
-    # the demixing results, else the compression, else the registration replayed on the raw movie
+    # the demixing results, else the compression, else the registration applied to the raw movie
     try:
         opened = OpenedResults.open(filepath_results, raw=raw, prefix=args.prefix, device=device)
     except (OSError, ValueError) as e:
@@ -880,8 +875,8 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_view = subparsers.add_parser("view", help="open the viewers for a results file")
     parser_view.add_argument(
         "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several need --classify. "
-        "Or a tracking folder (its newest run) or one run's *-manifest.json, optionally followed by its results files in session order. "
-        "Any other folder stands for the *results*.hdf5 files in it, the newest curated one of each",
+        "Or a tracking folder (its newest run) or one run's *-manifest.json; a tracking folder without a manifest is followed by its results files in session order. "
+        "Any other folder means the *results*.hdf5 files in it, each replaced by its newest curated file",
     )
     parser_view.add_argument("--raw", default=None, help="the raw movie the results came from")
     parser_view.add_argument("--dataset", default=None)

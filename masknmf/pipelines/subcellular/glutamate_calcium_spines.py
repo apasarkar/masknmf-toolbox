@@ -250,7 +250,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 for results in (glu_pmd_demixer_results, glu_global_results):
                     results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
                         results, glu_video, device=device, nonneg=True, frame_batch_size=self.frame_batch_size)
-            glu_pmd_demixer_results.export(glu_path)
+            glu_pmd_demixer_results.export(glu_path, overwrite=True)
             glu_global_results.export(glu_path, prefix="global")
 
             if pmd_ca is not None:
@@ -314,7 +314,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 for results in (ca_pmd_demixer_results, ca_global_results):
                     results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
                         results, calcium_video, device=device, nonneg=True, frame_batch_size=self.frame_batch_size)
-            ca_pmd_demixer_results.export(ca_path)
+            ca_pmd_demixer_results.export(ca_path, overwrite=True)
             ca_global_results.export(ca_path, prefix="global")
 
         return self.finish()

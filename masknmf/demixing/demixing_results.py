@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import *
+import h5py
 import numpy as np
 from masknmf import display
 from masknmf.compression import CompressionArray, TrendArray
@@ -305,17 +306,24 @@ class DemixingResults(Serializer, BaseResults):
         # Move all tracked tensors to desired location so everything is on one device
         self.to(self._device)
 
-    def export(self, path: str | Path, prefix: str = ""):
+    def export(self, path: str | Path, prefix: str = "", overwrite: bool = False):
         """
-        Write to path as the group "DemixingResults", or "<prefix>/DemixingResults" when one file holds several
-        demixings of one movie; the file's other groups are kept and this one is replaced.
+        Write to ``path`` as the group "DemixingResults", or "<prefix>/DemixingResults"; the file's other groups are
+        kept.
+
+        Raises FileExistsError when the group already exists, unless ``overwrite``. Tracking manifests and label files
+        refer to results by file path, so edited results are written to a new file (see ``write_curated``).
         """
         group = f"{prefix}/{type(self).__name__}" if prefix else type(self).__name__
+        if not overwrite and Path(path).is_file():
+            with h5py.File(path, "r") as f:
+                if group in f:
+                    raise FileExistsError(f"{path} already holds {group}; write the new results to another file")
         save_dict(self._to_dict(), filename=path, group=group, exists_ok=True)
 
     @classmethod
     def from_hdf5(cls, path, prefix: str = "", **kwargs):
-        """The results export wrote to path under prefix; kwargs go to the constructor."""
+        """Load results written by :meth:`export`; kwargs are passed to the constructor."""
         d = load_dict(path, f"{prefix}/{cls.__name__}" if prefix else cls.__name__)
         return cls(**d, **kwargs)
 
