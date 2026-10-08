@@ -1,8 +1,8 @@
 import scipy.sparse
 import torch
-from typing import *
 from tqdm import tqdm
 import math
+from masknmf.utils import SparseCOOTensor
 from masknmf.demixing.demixing_utils import construct_graph_from_sparse_tensor, color_and_get_tensors
 
 
@@ -31,14 +31,14 @@ def baseline_update(uv_mean, a, c, to_torch=False):
 
 
 def spatial_update_hals(
-        u_sparse: torch.tensor,
-        v: torch.tensor,
-        a_sparse: torch.sparse_coo_tensor,
-        c: torch.tensor,
-        b: torch.tensor,
-        q: Optional[Tuple[torch.tensor, torch.tensor]] = None,
-        blocks: Optional[Union[torch.tensor, list]] = None,
-        mask_ab: Optional[torch.sparse_coo_tensor] = None,
+        u_sparse: torch.Tensor,
+        v: torch.Tensor,
+        a_sparse: SparseCOOTensor,
+        c: torch.Tensor,
+        b: torch.Tensor,
+        q: tuple[torch.Tensor, torch.Tensor] | None = None,
+        blocks: torch.Tensor | list | None = None,
+        mask_ab: SparseCOOTensor = None,
         frame_batch_size: int = 500,
 ):
     """
@@ -53,7 +53,7 @@ def spatial_update_hals(
         c (torch.Tensor): Dimensions T x k
         b (torch.Tensor): Dimensions d x 1. Represents static background
         q (torch.tensor): This is the factorized ring model term; u@r@q@v gives you the full ring model movie
-        blocks Optional[Union[torch.tensor, list]]: Describes which components can be updated in parallel. Typically a list of 1D tensors, each describing indices
+        blocks (torch.tenso |  list | None): Describes which components can be updated in parallel. Typically a list of 1D tensors, each describing indices
         mask_ab (torch.sparse_coo_tensor): Dimensions (d x k). For each neuron, indicates the allowed support of neuron
         frame_batch_size (int): Roughly the number of dense frames of data that are expanded out in GPU memory
 
@@ -71,8 +71,7 @@ def spatial_update_hals(
     We will now compute the following expression: 
     This is part of the 'residual video' that we regress onto the spatial components below
     """
-    baseline_projection = b @ (torch.sum(c, dim=0, keepdim=True))
-    baseline_projection /= c_sq_norm
+    normalized_c_sum = (torch.sum(c, dim=0, keepdim=True) / c_sq_norm).squeeze(0)
 
     # rows, cols = a_sparse.indices()
     if blocks is None:
@@ -104,7 +103,7 @@ def spatial_update_hals(
             term2 = torch.sparse.mm(a_sparse, ctc[:, subset_tensor])
 
             updated_values = term1[row_indices, remapped_col_indices] - term2[row_indices, remapped_col_indices] - \
-                             baseline_projection[row_indices, col_indices]
+                             b[row_indices, :].squeeze() * normalized_c_sum[col_indices] #baseline_projection[row_indices, col_indices]
             curr_values += updated_values
             curr_values.relu_()
             a_sparse.values().masked_scatter_(col_mask, curr_values)
@@ -115,14 +114,14 @@ def spatial_update_hals(
     return a_sparse
 
 def temporal_update_hals(
-    u_sparse: torch.sparse_coo_tensor,
-    v: torch.tensor,
-    a_sparse: torch.sparse_coo_tensor,
-    c: torch.tensor,
-    b: torch.tensor,
-    q: Optional[Tuple[torch.tensor, torch.tensor]] = None,
+    u_sparse: SparseCOOTensor,
+    v: torch.Tensor,
+    a_sparse: SparseCOOTensor,
+    c: torch.Tensor,
+    b: torch.Tensor,
+    q: tuple[torch.Tensor, torch.Tensor] | None = None,
     c_nonneg: bool = True,
-    blocks: Optional[Union[torch.tensor, list]] = None,
+    blocks: torch.Tensor | list | None = None,
 ):
     """
     Inputs:
@@ -133,9 +132,9 @@ def temporal_update_hals(
         a: (d1*d2, k)-shaped torch.sparse_coo_tensor
         c: (T, k)-shaped torch.Tensor
         b: (d1*d2, 1)-shaped torch.Tensor
-        q Optional[torch.tensor]: This is the factorized ring model term; u@r@q@v gives you the full ring model movie
+        q (torch.Tensor | None): This is the factorized ring model term; u@r@q@v gives you the full ring model movie
         c_nonneg (bool): Indicates whether "c" should be nonnegative or fully unconstrained. For voltage data, it should be unconstrained; for calcium it should be constrained.
-        blocks Optional[Union[torch.tensor, list]]: Describes which components can be updated in parallel. Typically a list of 1D tensors, each describing indices
+        blocks torch.Tensor | list: Describes which components can be updated in parallel. Typically a list of 1D tensors, each describing indices
 
     Returns:
         c: (T, k)-shaped np.ndarray. Updated temporal components
@@ -188,7 +187,7 @@ def temporal_update_hals(
 
     return c
 
-def _fast_a_squared_norm(a: torch.sparse_coo_tensor):
+def _fast_a_squared_norm(a: SparseCOOTensor):
     """
     Returns the l2 norm of each column of a
     Assumes "a" is coalesced
@@ -211,18 +210,18 @@ def _fast_a_squared_norm(a: torch.sparse_coo_tensor):
     return col_sums
 
 
-def _affine_fit_scaling_update(v: torch.tensor,
-                               a: torch.tensor,
-                               c: torch.tensor,
-                               b: torch.tensor,
-                               m: torch.tensor,
-                               ctauv: torch.tensor,
-                               ata: torch.tensor,
-                               ata_diag: torch.tensor,
-                               c_sq: torch.tensor,
+def _affine_fit_scaling_update(v: torch.Tensor,
+                               a: torch.Tensor,
+                               c: torch.Tensor,
+                               b: torch.Tensor,
+                               m: torch.Tensor,
+                               ctauv: torch.Tensor,
+                               ata: torch.Tensor,
+                               ata_diag: torch.Tensor,
+                               c_sq: torch.Tensor,
                                device: str = "cpu",
-                               scale_nonneg: Optional[bool] = True,
-                               blocks: Optional[Union[torch.tensor, list]] = None):
+                               scale_nonneg: bool = True,
+                               blocks: torch.Tensor | list | None = None):
     """
     u is no longer needed since all quantities involving u are precomputed
     Args:
@@ -245,18 +244,18 @@ def _affine_fit_scaling_update(v: torch.tensor,
     return m
 
 
-def _affine_fit_baseline_update(uv_mean: torch.tensor,
-                                a: torch.sparse_coo_tensor,
-                                c_mean: torch.tensor,
-                                m: torch.tensor):
+def _affine_fit_baseline_update(uv_mean: torch.Tensor,
+                                a: SparseCOOTensor,
+                                c_mean: torch.Tensor,
+                                m: torch.Tensor):
     ac_mean = torch.sparse.mm(a, (m * c_mean))
     return uv_mean - ac_mean
 
 
-def alternating_least_squares_affine_fit(u: torch.sparse_coo_tensor,
-                                         v: torch.tensor,
-                                         a: torch.sparse_coo_tensor,
-                                         c: torch.tensor,
+def alternating_least_squares_affine_fit(u: SparseCOOTensor,
+                                         v: torch.Tensor,
+                                         a: SparseCOOTensor,
+                                         c: torch.Tensor,
                                          num_iters: int =25,
                                          scale_nonneg: bool=True):
     adjacency_mat = torch.sparse.mm(a.t(), a)
