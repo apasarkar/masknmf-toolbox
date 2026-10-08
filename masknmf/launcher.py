@@ -406,6 +406,15 @@ def find_sessions(rows: tuple[str, ...]) -> list[dict]:
     return sessions
 
 
+def common_folder(paths: list[str]) -> Path:
+    """The deepest folder holding every path; the first path's drive when they are on different drives."""
+    parents = [Path(p).parent for p in paths]
+    root = parents[0]
+    while root != root.parent and not all(p == root or root in p.parents for p in parents):
+        root = root.parent
+    return root
+
+
 def title_of(section: scraper.Section) -> str:
     """A section's heading, e.g. "Motion correct" for motion-correct."""
     return section.name.replace("-", " ").capitalize()
@@ -536,6 +545,8 @@ class Launcher:
         self.found_tracking: tuple[tuple[str, ...], list[dict]] = ((), [])
         self.searching: Optional[threading.Thread] = None
         self.checked_tracking: dict[str, bool] = {}
+        # the output folder as last filled in from the sessions, replaced while the user leaves it
+        self.out_filled = ""
         # Classify ROIs: results rows and the classifier file
         self.paths_classify: dict[str, str] = {"classifier": "", "results_0": ""}
         self.labels = ""
@@ -708,6 +719,24 @@ class Launcher:
         if rows != tuple(self.results_given(target=self.paths_tracking)):
             return None
         return [s["path"] for s in sessions if self.is_checked(session=s)]
+
+    def outside_out(self) -> list[str]:
+        """
+        The checked sessions not inside the output folder. The manifest saved there names each session by its path
+        from there, so with every session inside, the folder moves to another place or machine as a whole.
+        """
+        out = self.paths_tracking["out"].strip()
+        if out == "":
+            return []
+        folder = Path(out).expanduser().absolute()
+        return [p for p in self.sessions_tracked() or [] if not Path(p).absolute().is_relative_to(folder)]
+
+    def fill_out(self) -> None:
+        """Make the output folder the checked sessions' common folder while it is empty or still the one filled in."""
+        tracked = self.sessions_tracked()
+        if tracked and self.paths_tracking["out"].strip() in ("", self.out_filled):
+            self.out_filled = str(common_folder(paths=tracked))
+            self.paths_tracking["out"] = self.out_filled
 
     def load_run(self, source: str) -> Optional[str]:
         """
@@ -891,6 +920,9 @@ class Launcher:
                 problems.append(f"tracking needs at least two sessions checked, {len(tracked)} are")
             if self.paths_tracking["out"].strip() == "":
                 problems.append("choose the folder the tracking is saved in")
+            elif len(self.outside_out()) > 0:
+                problems.append(f"{len(self.outside_out())} checked sessions are outside the output folder; it has to hold "
+                                f"them all, e.g. {common_folder(paths=self.sessions_tracked())}")
             return problems
         if self.page == "classify":
             rows = self.results_given(target=self.paths_classify)
@@ -1571,12 +1603,14 @@ class Launcher:
                                  f"{DEPTH_SEARCH} folders down, a file, or a glob; a new row opens as the last one fills. The files "
                                  "found are listed below in session order, row by row and in path order within a row; uncheck any not to track")
         self.update_sessions()
+        self.fill_out()
         if self.begin_form(name="track"):
             self.draw_results_rows(target=self.paths_tracking, folders=True)
             imgui.end_table()
         self.draw_sessions_found()
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
-        self.step(2, "Output", "where the tracking run and the ROICaT params are saved, and the imaging resolution, the same for every session")
+        self.step(2, "Output", "where the tracking run and its manifest are saved, a folder holding every session so it moves as a "
+                               "whole; it starts as the sessions' common folder. Then the imaging resolution, the same for every session")
         if self.begin_form(name="track_out"):
             self.row(caption="folder")
             self.draw_path(target=self.paths_tracking, key="out", filetypes=None, folders=True, hint="required")
@@ -1597,10 +1631,8 @@ class Launcher:
             draw_wrapped(text="no results files found", color=COLOR_WARN)
         if len(sessions) == 0:
             return
-        parents = [Path(s["path"]).parent for s in sessions]
-        root = parents[0]
-        while root != root.parent and not all(p == root or root in p.parents for p in parents):
-            root = root.parent
+        root = common_folder(paths=[s["path"] for s in sessions])
+        outside = self.outside_out()
         tracked = sum(self.is_checked(session=s) for s in sessions)
         draw_wrapped(text=f"{tracked} of {len(sessions)} found are tracked, under {root}", color=COLOR_DIM)
         flags = (imgui.TableFlags_.row_bg | imgui.TableFlags_.borders_inner_h | imgui.TableFlags_.sizing_stretch_prop
@@ -1644,7 +1676,9 @@ class Launcher:
             folder = path.parent.relative_to(root) if root in path.parents else path.parent
             imgui.text_disabled(str(folder))
             imgui.table_next_column()
-            if session["note"] != "":
+            if checked and session["path"] in outside:
+                imgui.text_colored(COLOR_ERROR, "outside the output folder")
+            elif session["note"] != "":
                 imgui.text_colored(COLOR_WARN if session["demixing"] else COLOR_ERROR, session["note"])
         imgui.end_table()
 
