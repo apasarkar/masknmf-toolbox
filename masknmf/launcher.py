@@ -1840,7 +1840,8 @@ class Launcher:
         _, text = imgui.input_text_multiline(
             f"##path_{key}", target[key], imgui.ImVec2(width, height), imgui.InputTextFlags_.word_wrap
         )
-        target[key] = text.replace("\n", "").replace("\r", "")
+        # windows' copy as path wraps the path in quotes
+        target[key] = text.replace("\n", "").replace("\r", "").replace('"', "")
         if target[key] == "":
             corner = imgui.get_item_rect_min()
             imgui.get_window_draw_list().add_text(
@@ -1955,12 +1956,13 @@ class Launcher:
 
 def run_launcher() -> Optional[list[str]]:
     """
-    Open the launcher in a fastplotlib canvas and block until the user acts or quits.
+    Open the launcher in a glfw canvas and block until the user acts or quits.
 
     Returns:
         list[str] | None: The `masknmf` arguments to run, or None when the user quit
     """
-    from fastplotlib.utils.gui import RenderCanvas, loop
+    # qt hands ctrl+letter over as a control character, so imgui text fields never see ctrl+v, ctrl+c or ctrl+a
+    from rendercanvas.glfw import RenderCanvas, loop
 
     DIR_CONFIG.mkdir(parents=True, exist_ok=True)
     window = Launcher()
