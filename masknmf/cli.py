@@ -282,18 +282,6 @@ def spec_for(slug: str) -> scraper.PipelineSpec:
     return scraper.scrape(cls_pipeline=registry[slug])
 
 
-def kinds_buildable(section: scraper.Section) -> list[str]:
-    """The kinds of a section that can be built without Python, which leaves out configs requiring arrays."""
-    kinds = []
-    for kind in section.kinds:
-        try:
-            section.value_for(kind=kind)
-        except ValueError:
-            continue
-        kinds.append(kind)
-    return kinds
-
-
 def read_config_file(filepath: str) -> dict:
     """
     Read a --config file: the json `masknmf params --json` prints, or a run folder's config.json, an object
@@ -316,14 +304,6 @@ def read_config_file(filepath: str) -> dict:
     if not isinstance(loaded, dict) or not isinstance(loaded.get("configs"), dict):
         fail(f"{path.name} should hold a json object with argument names to values under \"configs\"")
     return loaded
-
-
-def slug_of(name_class: str) -> str:
-    """The --pipeline value of the pipeline class a config file names."""
-    for slug, cls in scraper.pipeline_registry().items():
-        if cls.__name__ == name_class:
-            return slug
-    fail(f"the config file names {name_class!r}, which is not a masknmf pipeline")
 
 
 def section_value(section: scraper.Section, kind: Optional[str], value_file: Any) -> tuple[bool, Any]:
@@ -359,16 +339,6 @@ def section_value(section: scraper.Section, kind: Optional[str], value_file: Any
         fail(f"{section.argument} in the config file: {error}")
 
 
-def flag_for(param: scraper.Param) -> str:
-    """The long flag a run argument is exposed under."""
-    return f"--{param.field.replace('_', '-')}"
-
-
-def option_name(flag: str) -> str:
-    """The argparse destination a long flag lands in."""
-    return flag.lstrip("-").replace("-", "_")
-
-
 def build_bootstrap_parser() -> argparse.ArgumentParser:
     """A parser that reads only --pipeline and --config, so the real parser can be built from them."""
     parser = argparse.ArgumentParser(add_help=False)
@@ -387,7 +357,7 @@ def add_pipeline_options(parser: argparse.ArgumentParser, spec: scraper.Pipeline
     """
     for param in spec.movie_params:
         if len(spec.movie_params) > 1:
-            parser.add_argument(flag_for(param), help=f"imaging movie for {param.field}", default=None)
+            parser.add_argument(param.flag, help=f"imaging movie for {param.field}", default=None)
             continue
         _, allows_none = scraper.annotation_members(annotation=param.annotation)
         parser.add_argument(
@@ -400,35 +370,35 @@ def add_pipeline_options(parser: argparse.ArgumentParser, spec: scraper.Pipeline
 
     for param in spec.array_params:
         parser.add_argument(
-            flag_for(param),
+            param.flag,
             default=None,
             metavar="NPY",
             help=f".npy file holding {param.field}",
         )
 
     for param in spec.run_scalars:
-        flags = [flag_for(param)]
+        flags = [param.flag]
         if param.field in NAMES_ALIAS:
             flags.append(NAMES_ALIAS[param.field])
         parser.add_argument(
             *flags,
             default=None,
             metavar="VALUE",
-            help=describe(param=param),
+            help=param.description,
         )
 
     for param in spec.scalars:
         parser.add_argument(
-            f"--{param.name}",
+            param.flag,
             default=None,
             metavar="VALUE",
-            help=describe(param=param),
+            help=param.description,
         )
 
     for section in spec.sections:
         parser.add_argument(
             f"--{section.name}-kind",
-            choices=kinds_buildable(section=section),
+            choices=section.kinds_buildable,
             default=None,
             help=f"which config {section.argument} receives, at its defaults; default {section.default_kind}",
         )
@@ -439,18 +409,6 @@ def add_pipeline_options(parser: argparse.ArgumentParser, spec: scraper.Pipeline
         metavar="JSON",
         help="config values to run with: `masknmf params --json` output, or a run folder's config.json",
     )
-
-
-def describe(param: scraper.Param) -> str:
-    """A one line description of a parameter for argparse help."""
-    pieces = []
-    if param.choices is not None:
-        pieces.append("one of " + ", ".join(str(c) for c in param.choices))
-    if param.required:
-        pieces.append("required")
-    else:
-        pieces.append(f"default {param.default!r}")
-    return "; ".join(pieces)
 
 
 def command_pipelines(args: argparse.Namespace) -> None:
@@ -503,14 +461,14 @@ def command_params(args: argparse.Namespace) -> None:
     print("run arguments")
     for param in spec.run_params:
         note = {"movie": "imaging movie", "array": ".npy file"}.get(param.kind, "")
-        print(f"  {param.field:28} {describe(param=param)}{'  [' + note + ']' if note else ''}")
+        print(f"  {param.field:28} {param.description}{'  [' + note + ']' if note else ''}")
 
     print("\nconstructor arguments")
     for param in spec.scalars:
-        print(f"  {param.field:28} {describe(param=param)}")
+        print(f"  {param.field:28} {param.description}")
 
     for section in spec.sections:
-        print(f"\n[{section.name}] --{section.name}-kind {' | '.join(kinds_buildable(section=section))}")
+        print(f"\n[{section.name}] --{section.name}-kind {' | '.join(section.kinds_buildable)}")
         for kind in section.kinds:
             if kind == "skip":
                 continue
@@ -541,7 +499,7 @@ def command_run(args: argparse.Namespace) -> None:
     for param in spec.scalars:
         if param.field in values_file:
             kwargs_init[param.field] = values_file[param.field]
-        text = getattr(args, option_name(param.name), None)
+        text = getattr(args, param.field, None)
         if text is not None:
             try:
                 kwargs_init[param.field] = scraper.coerce(param=param, text=text)
@@ -549,7 +507,7 @@ def command_run(args: argparse.Namespace) -> None:
                 fail(str(error))
 
     for section in spec.sections:
-        kind = getattr(args, option_name(f"{section.name}-kind"), None)
+        kind = getattr(args, f"{section.name}-kind".replace("-", "_"), None)
         passes, value = section_value(section=section, kind=kind, value_file=values_file.get(section.argument))
         if passes:
             kwargs_init[section.argument] = value
@@ -579,8 +537,7 @@ def command_run(args: argparse.Namespace) -> None:
         kwargs_run = {}
         filepaths_input = {}
         for param in spec.movie_params:
-            name = param.field if len(spec.movie_params) == 1 else option_name(flag_for(param))
-            filepath = getattr(args, name, None)
+            filepath = getattr(args, param.field, None)
             if filepath is None:
                 kwargs_run[param.field] = None
             else:
@@ -590,10 +547,10 @@ def command_run(args: argparse.Namespace) -> None:
                 filepaths_input[param.field] = filepath
 
         for param in spec.array_params:
-            filepath = getattr(args, option_name(flag_for(param)), None)
+            filepath = getattr(args, param.field, None)
             if filepath is None:
                 if param.required:
-                    fail(f"--{param.field.replace('_', '-')} is required for {spec.slug}")
+                    fail(f"{param.flag} is required for {spec.slug}")
             else:
                 kwargs_run[param.field] = np.load(filepath)
                 filepaths_input[param.field] = filepath
@@ -614,10 +571,10 @@ def command_run(args: argparse.Namespace) -> None:
         for param in spec.run_scalars:
             if param.field in values_file:
                 kwargs_run[param.field] = values_file[param.field]
-            text = getattr(args, option_name(flag_for(param)), None)
+            text = getattr(args, param.field, None)
             if text is None:
                 if param.required and param.field not in values_file:
-                    fail(f"--{param.field.replace('_', '-')} is required for {spec.slug}")
+                    fail(f"{param.flag} is required for {spec.slug}")
                 continue
             try:
                 kwargs_run[param.field] = scraper.coerce(param=param, text=text)
@@ -625,7 +582,7 @@ def command_run(args: argparse.Namespace) -> None:
                 fail(str(error))
 
         filepaths_movie = [
-            getattr(args, p.field if len(spec.movie_params) == 1 else option_name(flag_for(p)), None)
+            getattr(args, p.field, None)
             for p in spec.movie_params
         ]
         filepaths_movie = [Path(f).expanduser().resolve() for f in filepaths_movie if f is not None]
@@ -1045,7 +1002,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         name_class = read_config_file(filepath=bootstrap.config).get("pipeline")
         if name_class is None:
             fail("the config file names no pipeline; pass --pipeline")
-        bootstrap.pipeline = slug_of(name_class=name_class)
+        bootstrap.pipeline = scraper.slugify(name_class=name_class)
+        if bootstrap.pipeline not in scraper.pipeline_registry():
+            fail(f"the config file names {name_class!r}, which is not a masknmf pipeline")
         argv = ["run", "--pipeline", bootstrap.pipeline, *argv[1:]]
 
     spec = None

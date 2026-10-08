@@ -505,19 +505,19 @@ class Launcher:
             path = self.paths[param.field].strip()
             if path == "":
                 continue
-            argv += [path] if len(spec.movie_params) == 1 else [cli.flag_for(param), path]
+            argv += [path] if len(spec.movie_params) == 1 else [param.flag, path]
         if any(is_hdf5(filepath=p) for p in self.movies_given()):
             argv += ["--dataset", self.dataset.strip()]
         for param in spec.array_params:
             path = self.paths[param.field].strip()
             if path != "":
-                argv += [cli.flag_for(param), path]
+                argv += [param.flag, path]
         for param in spec.run_scalars:
             if param.required or self.is_changed(param=param):
-                argv += [cli.flag_for(param), self.texts[param.name]]
+                argv += [param.flag, self.texts[param.name]]
         for param in spec.scalars:
             if self.is_changed(param=param):
-                argv += [f"--{param.name}", self.texts[param.name]]
+                argv += [param.flag, self.texts[param.name]]
         sections = self.sections_changed()
         if len(sections) > 0:
             configs = {section.argument: self.values[section.argument] for section in sections}
@@ -750,7 +750,7 @@ class Launcher:
                     self.reset_section(section=section)
                 if imgui.is_item_hovered():
                     idl.wrapped_tooltip(f"Back to {label_of(kind=section.default_kind, section=section)} with the pipeline's values")
-            kinds = cli.kinds_buildable(section=section)
+            kinds = section.kinds_buildable
             value = self.values[section.argument]
             kind = scraper.kind_of(value=value)
             labels = [label_of(kind=k, section=section) for k in kinds]
@@ -1140,7 +1140,7 @@ class Launcher:
         else:
             draw_wrapped(text=param.field)
         if imgui.is_item_hovered():
-            idl.wrapped_tooltip(error or cli.describe(param=param))
+            idl.wrapped_tooltip(error or param.description)
         if self.is_modified(param=param) and self.draw_reset(path=key, text_default=text_default(param=param) or "none"):
             self.texts[key] = text_default(param=param)
 
