@@ -12,7 +12,7 @@ import torch
 
 from masknmf.arrays import ArrayLike, Hdf5Array, TiffArray, TiffSeriesLoader
 from masknmf.compression import CompressionArray
-from masknmf.demixing import DemixingResults
+from masknmf.demixing import DemixingResults, results_stem
 from masknmf.demixing._base_results import BaseResults
 from masknmf.motion_correction import BaseRegistrationArray, GradientRegistrationArray, PiecewiseRigidRegistrationArray, RigidRegistrationArray
 from masknmf._version import __version__
@@ -27,6 +27,7 @@ __all__ = [
     "group_name_demixing",
     "load_movie",
     "movie_beside",
+    "find_raw_movie",
     "stage_groups",
     "OpenedResults",
     "has_group",
@@ -103,6 +104,25 @@ def movie_beside(path: str | Path) -> Path | None:
     """The only tiff in the folder of ``path``, or None when there are none or several."""
     tiffs = [p for p in Path(path).parent.iterdir() if p.suffix.lower() in SUFFIXES_TIFF]
     return tiffs[0] if len(tiffs) == 1 else None
+
+
+def find_raw_movie(path: str | Path) -> tuple[ArrayLike, Path] | None:
+    """
+    The raw movie of the run a results file belongs to, and where it is: the movie the config.json beside ``path``
+    records among the run's inputs, else the only tiff in the folder of ``path``; None when neither is found.
+    A run that read several movies (``results.calcium.hdf5``) uses the input named after the results file.
+    """
+    filepath_config = Path(path).parent / "config.json"
+    inputs = json.loads(filepath_config.read_text()).get("inputs", {}) if filepath_config.is_file() else {}
+    movies = {name: entry for name, entry in inputs.items()
+              if isinstance(entry, dict) and "path" in entry and Path(entry["path"]).suffix.lower() != ".npy"}
+    channel = results_stem(path).partition(".")[2]
+    name = next((n for n in movies if len(movies) == 1 or (channel and n.startswith(channel))), None)
+    if name is not None and Path(movies[name]["path"]).exists():
+        source = Path(movies[name]["path"])
+        return load_movie(source, movies[name].get("dataset")), source
+    beside = movie_beside(path)
+    return None if beside is None else (TiffArray(str(beside)), beside)
 
 
 def stage_groups(path: str | Path) -> list[str]:
@@ -241,12 +261,12 @@ class OpenedResults:
             if raw is not None and raw.shape[0] != frames:
                 skipped.append(f"raw movie has {raw.shape[0]} frames, {stored} has {frames}; not used")
                 raw = raw_source = None
-            if raw is None and (beside := movie_beside(path)) is not None:
-                movie = TiffArray(str(beside))
+            if raw is None and (found := find_raw_movie(path)) is not None:
+                movie, source = found
                 if movie.shape[0] == frames:
-                    raw, raw_source = movie, beside
+                    raw, raw_source = movie, source
                 else:
-                    skipped.append(f"{beside} has {movie.shape[0]} frames, {stored} has {frames}; not used")
+                    skipped.append(f"{source} has {movie.shape[0]} frames, {stored} has {frames}; not used")
             if raw is None:
                 raise ValueError(f"{path} holds only {stored}; pass the raw movie it was computed from")
             opened = cls.resolve(REGISTRATION_ARRAYS[stored].from_hdf5(path, input_movie=raw, device=device), path)
@@ -264,7 +284,7 @@ class OpenedResults:
         Find the raw movie, registered movie, shifts and template for results already in memory.
 
         Each of ``raw``, ``registered`` and ``shifts`` is the argument when given, else the attribute of ``results``,
-        else read from disk: the raw movie is the only tiff in the folder of ``path``, and the shifts, template and
+        else read from disk: the raw movie is :func:`find_raw_movie`'s, and the shifts, template and
         registered movie come from the registration stored in ``path``. An argument whose shape does not match
         ``results`` raises; a value read from disk that does not match is not used and is reported in ``skipped``.
 
@@ -311,12 +331,12 @@ class OpenedResults:
             raw = results.raw_array
         if raw is not None and tuple(raw.shape) != shape:
             raise ValueError(f"raw movie has shape {tuple(raw.shape)}, the results have {shape}")
-        if raw is None and path is not None and (beside := movie_beside(path)) is not None:
-            movie = TiffArray(str(beside))
+        if raw is None and path is not None and (found := find_raw_movie(path)) is not None:
+            movie, source = found
             if tuple(movie.shape) == shape:
-                raw, raw_source = movie, beside
+                raw, raw_source = movie, source
             else:
-                skipped.append(f"{beside} shape {tuple(movie.shape)} does not match results shape {shape}; not used")
+                skipped.append(f"{source} shape {tuple(movie.shape)} does not match results shape {shape}; not used")
 
         stored = None
         if path is not None and not is_registration:
