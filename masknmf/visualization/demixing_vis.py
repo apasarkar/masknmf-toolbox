@@ -53,7 +53,7 @@ from masknmf.visualization.imgui.keybinds import DEMIXING, pressed
 from masknmf.visualization.imgui.options import OPTIONS_LABEL, draw_options_popup
 from masknmf.visualization.rois import MARKED_COLOR, SELECTED_ALPHA, FootprintSet
 from masknmf.visualization.summary_widget import SummaryImageViewer
-from masknmf.demixing import CellStats, update_signals, write_curated
+from masknmf.demixing import CellStats, estimate_temporal_demixed_raw, update_signals, write_curated
 from masknmf.diagnostics import pmd_autocovariance_diagnostics
 from masknmf.pipelines.configs.demixing_configs import NMFConfig
 from masknmf.demixing._base_results import BaseResults
@@ -748,6 +748,13 @@ class SingleSessionDemixingVis:
                 self._nmf_config,
                 device=self.device,
                 frame_batch_size=self.frame_batch_size
+            )
+            # the movie the demixing came from: the registered one, or the raw one when there was no registration
+            movie = self._opened.registered
+            if movie is None and self._opened.shifts is None:
+                movie = self._opened.raw
+            results.temporal_demixed_raw = estimate_temporal_demixed_raw(
+                results, movie, device=self.device, nonneg=True, frame_batch_size=self.frame_batch_size
             )
             path = write_curated(self._results_path, results, drop, masks.shape[-1], filters)
             self._pending = (results, path)
