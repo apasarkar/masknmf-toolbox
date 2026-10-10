@@ -106,11 +106,12 @@ def movie_beside(path: str | Path) -> Path | None:
     return tiffs[0] if len(tiffs) == 1 else None
 
 
-def find_raw_movie(path: str | Path) -> tuple[ArrayLike, Path] | None:
+def find_raw_movie(path: str | Path) -> tuple[ArrayLike | None, Path] | None:
     """
     The raw movie of the run a results file belongs to, and where it is: the movie the config.json beside ``path``
     records among the run's inputs, else the only tiff in the folder of ``path``; None when neither is found.
     A run that read several movies (``results.calcium.hdf5``) uses the input named after the results file.
+    The movie is None when the recorded file is not one :func:`load_movie` reads.
     """
     filepath_config = Path(path).parent / "config.json"
     inputs = json.loads(filepath_config.read_text()).get("inputs", {}) if filepath_config.is_file() else {}
@@ -120,7 +121,10 @@ def find_raw_movie(path: str | Path) -> tuple[ArrayLike, Path] | None:
     name = next((n for n in movies if len(movies) == 1 or (channel and n.startswith(channel))), None)
     if name is not None and Path(movies[name]["path"]).exists():
         source = Path(movies[name]["path"])
-        return load_movie(source, movies[name].get("dataset")), source
+        try:
+            return load_movie(source, movies[name].get("dataset")), source
+        except Exception:
+            return None, source
     beside = movie_beside(path)
     return None if beside is None else (TiffArray(str(beside)), beside)
 
@@ -263,7 +267,9 @@ class OpenedResults:
                 raw = raw_source = None
             if raw is None and (found := find_raw_movie(path)) is not None:
                 movie, source = found
-                if movie.shape[0] == frames:
+                if movie is None:
+                    skipped.append(f'Raw movie "{source}" could not be displayed with data loaders')
+                elif movie.shape[0] == frames:
                     raw, raw_source = movie, source
                 else:
                     skipped.append(f"{source} has {movie.shape[0]} frames, {stored} has {frames}; not used")
@@ -333,7 +339,9 @@ class OpenedResults:
             raise ValueError(f"raw movie has shape {tuple(raw.shape)}, the results have {shape}")
         if raw is None and path is not None and (found := find_raw_movie(path)) is not None:
             movie, source = found
-            if tuple(movie.shape) == shape:
+            if movie is None:
+                skipped.append(f'Raw movie "{source}" could not be displayed with data loaders')
+            elif tuple(movie.shape) == shape:
                 raw, raw_source = movie, source
             else:
                 skipped.append(f"{source} shape {tuple(movie.shape)} does not match results shape {shape}; not used")
