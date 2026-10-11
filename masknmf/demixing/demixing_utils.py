@@ -12,6 +12,24 @@ from masknmf.utils import SparseCOOTensor
 logger = logging.getLogger(__name__)
 
 
+def decompress_csr_rows(crow: torch.Tensor, num_nonzero: int):
+    indices = torch.arange(crow.numel() - 1, device=crow.device, dtype=crow.dtype)
+    return torch.repeat_interleave(indices, crow.diff(), output_size=num_nonzero)
+
+def csr_index_select_rows(U, idx):
+    crow, col, val = U.crow_indices(), U.col_indices(), U.values()
+    idx = idx.to(crow.device, crow.dtype)
+    starts = crow[idx]
+    counts = crow[idx + 1] - starts
+    new_crow = torch.zeros(idx.numel() + 1, dtype=crow.dtype, device=crow.device)
+    torch.cumsum(counts, 0, out=new_crow[1:])
+    nnz = int(new_crow[-1])
+    row_ids = torch.repeat_interleave(torch.arange(idx.numel(), device=crow.device), counts, output_size=nnz)
+    pos = torch.arange(nnz, device=crow.device, dtype=crow.dtype)
+    src = starts[row_ids] + (pos - new_crow[:-1][row_ids])
+    return torch.sparse_csr_tensor(new_crow, col[src], val[src], size=(idx.numel(), U.shape[1]))
+
+
 def _max_ac_routine(a: SparseCOOTensor,
                     c: torch.Tensor):
     """
@@ -37,35 +55,23 @@ def brightness_order(a: SparseCOOTensor,
     idx_sort = torch.argsort(brightnesses, descending=True)
     return idx_sort, brightnesses
 
-def construct_graph_from_sparse_tensor(adj_tensor: SparseCOOTensor) -> nx.Graph:
+def construct_graph_from_sparse_tensor(adj_tensor: SparseCSRTensor) -> nx.Graph:
     """
     Constructs a NetworkX graph from a sparse COO tensor representing an adjacency matrix.
 
     Args:
-        adj_tensor (torch.sparse_coo_tensor): A sparse COO tensor representing the adjacency matrix of the graph.
+        adj_tensor (torch.sparse_csr_tensor): A sparse CSR tensor representing the adjacency matrix of the graph.
 
     Returns:
         nx.Graph: A NetworkX graph constructed from the sparse tensor, including all nodes.
     """
-    # Move tensor to CPU if it's on CUDA
+    crow = adj_tensor.crow_indices().cpu()
+    rows = torch.repeat_interleave(torch.arange(adj_tensor.shape[0]), crow.diff()).numpy()
+    cols = adj_tensor.col_indices().cpu().numpy()
 
-    curr_indices = adj_tensor.indices().cpu()
-    # Convert indices to NumPy arrays
-    rows = curr_indices[0].numpy()
-    cols = curr_indices[1].numpy()
-
-    # Determine the number of nodes
-    num_nodes = adj_tensor.shape[0]
-
-    # Create the NetworkX graph
     graph = nx.Graph()
-
-    # Add all nodes to the graph
-    graph.add_nodes_from(range(num_nodes))
-
-    # Add edges to the graph
+    graph.add_nodes_from(range(adj_tensor.shape[0]))
     graph.add_edges_from(zip(rows, cols))
-
     return graph
 
 
