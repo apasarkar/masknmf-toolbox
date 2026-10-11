@@ -162,10 +162,12 @@ def _compute_residual_correlation_image(
     """
     Insert docs here
     """
-    if noise_std is None:
-        noise_std = torch.zeros(fov_dims[0], fov_dims[1], device=device, dtype=spatial_compressed.dtype).flatten()
     num_frames = temporal_compressed.shape[1]
     num_signals = spatial_demixed.shape[1]
+
+    if noise_std is None:
+        noise_std = torch.zeros(fov_dims[0], fov_dims[1], device=device, dtype=dtype).flatten()
+    noise_term = num_frames * noise_std.flatten().to(dev) ** 2  # (num_pixels,)
 
     if (factorized_ring_term is None or factorized_ring_term[0] is None or factorized_ring_term[1] is None):
         ring_left = torch.zeros((temporal_compressed.shape[0], 1), device=temporal_compressed.device, dtype=temporal_compressed.dtype)
@@ -269,10 +271,10 @@ def _compute_residual_correlation_image(
     idx = torch.argsort(block_mapping) ##So now idx[2:3] gives the signal indices that in block 2
 
 
-    corr_rows = torch.zeros_like(a_row)
-    corr_cols = torch.zeros_like(a_col)
+    corr_rows = a_row
+    corr_cols = a_col
     corr_vals = torch.zeros_like(a_values)
-    corr_normalizer_vals = torch.zeros_like(a_values)
+    corr_normalizer_diffs = torch.zeros_like(a_values)
     ## These are the un-normalized resid correlation row/col/values, one for each nonzero elt of "A"
     ##These are the "differences" between the global residual correlation normalizers vs. the i-th residual correlation image
     ## also one for each nonzero elt of "A"
@@ -339,7 +341,7 @@ def _compute_residual_correlation_image(
         corr_outputs.index_add_(0, a_row_block_local, corr_mean * -1)
 
         ##Write these outputs to corr_values
-        corr_values.index_add_(0, idx, corr_outputs)
+        corr_val.index_add_(0, idx, corr_outputs)
 
         ##Add the relevant terms to the global correlation normalizer estimate
         global_corr_adjustment = torch.zeros_like(row_local_indices)
@@ -352,127 +354,53 @@ def _compute_residual_correlation_image(
 
         residual_movie_norms.index_add_(0, a_row_block, global_corr_adjustment)
 
-        ## Last step:
+        ##Add the relevant terms to adjust the local correlation normalizers for each neural signal in block
+        local_corr_adjustment = torch.zeros_like(row_local_indices)
+
+        #Correct d(ACC^TA^T)
+        local_corr_adjustment.index_add_(0, a_full_row_local, -2 * acc_local_select)
+        local_corr_adjustment.index_add_(0, a_row_block_local, ablock_cblock_gram)
+
+        #Correct -2d(UVC^TA^T)
+        local_corr_adjustment.index_add_(0, u_row_local, 2*uvc_select)
+
+        #Correct -2d(UF1F2^TC^TA^T)
+        local_corr_adjustment.index_add_(0, 2*uf1f2c_select)
+
+        #Correct -2d(R^m1^TC^TA^T)
+        local_corr_adjustment.index_add_(0, 2*corr_mean)
+        local_corr_adjustment *= a_block_val
+
+        corr_normalizer_diffs.index_add_(0, curr_idx, local_corr_adjustment)
 
 
+    #Now that this loop is done, appropriately combine terms to get final results
+    local_corr_normalizer = torch.index_select(residual_movie_norms, 0, corr_rows) + corr_normalizer_diffs + noise_term.index_select(0, corr_rows)
+    local_corr_normalizer = torch.sqrt(local_corr_normalizer)
 
+    final_local_corr = corr_val / local_corr_normalizer
+    final_local_corr= torch.nan_to_num(final_local_corr, nan = 0.0, posinf = 0.0, neginf=0.0)
+    local_c_normalizer = torch.sqrt(c_meanzero_sq_norms.squeeze().index_select(0, corr_cols))
+    robust_residual_movie_norms = torch.sqrt(residual_movie_norms + noise_term)
 
-
-
-
-
-
-
-
-    """
-    For each signal A_i, C_i, it's residual correlation is defined in two separate cases: 
-    (1) For pixels that do NOT belong to support of A_i, the correlation image is identical to the global correlation image formed between
-    c_i and UV - UF1F2 - AC
-    (2) For pixels that do belong to the support of A_i, the correlation needs slightly modify terms from (1)
-    
-    The set of pixels in (2) follows the exact sparsity structure of "A"
-    
-    Let "C" be the centered time series (each series is mean subtracted)
-    Refer to A_{-i} as the "A" matrix where signal A_i (column i of A) is removed or zero'd out. Similar idea for C.
-    
-    We want to compute the residual correlation image for signal "i", which is the correlation image 
-    between time series C_i and each pixel of 
-    UV - UF1F2 - A_{-i}C_{-i}^T - R_m1^T (note this is "adding back" A_iC_i).
-    To compute a correlation between the time series, we need the mean of each time series and the centered L2 norm. 
-    
-    For pixels where A_i overlaps with other cells
-    UV - UF1F2 -AC + A_iC_i - R_m1^T is NOT equal to UV - UF1F2 - R_m1^T
-    for those pixels we need to update the centered L2 norm carefully. The mean never changes in C is centered.
-    
-    
-    
-    
-    We need a routine 
-    
-    We can parallelize this task over neural signals a_i that do not overlap with each other. For this set of 
-    signals, the pixels where we
-    """
-
-
-    # Now construct the resid corr image
-    final_rows = []
-    final_cols = []
-    final_values = []
-
-    if blocks is None:
-        blocks = torch.arange(c.shape[1], device=device).unsqueeze(1)
-    for index_select_tensor_net in blocks:
-        a_curr = torch.index_select(
-            spatial_demixed, 1, index_select_tensor_net
-        ).coalesce()
-
-        curr_rows, curr_cols = [a_curr.indices()[i] for i in [0, 1]]
-        curr_values = a_curr.values()
-
-        noise_terms = noise_std[curr_rows][:, None]
-        # Need to compute the appropriate pixelwise norms for these sources. Can reuse many previous computations
-        # Step 1: Compute pixewise norm of (UV - ac - mean_resid). This is easy - already computed above.
-        curr_resid_norms = torch.square(residual_movie_norms[curr_rows, :])
-
-        # Step 2: Compute pixelwise norm of (a_zc_z^T - mean_z)
-        curr_c_meansub_norms = c_meanzero_norms[:, index_select_tensor_net][
-                               :, curr_cols
-                               ].T
-        curr_resid_norms += (curr_values ** 2)[:, None] * curr_c_meansub_norms ** 2
-
-        # Step 3: Compute diag (UV - ac - mean_resid)(a_zc_z^T - mean_z)^T. Exploit spatial disjointedness of a_z/c_z signals
-        curr_c = (
-                c[:, index_select_tensor_net] * c_meanzero_norms[:, index_select_tensor_net]
-        )
-        resid_image_cumulator = torch.sparse.mm(spatial_compressed, _v_new_mm(curr_c, temporal_compressed, ring_left, ring_right))
-        resid_image_cumulator -= torch.sparse.mm(
-            spatial_demixed, temporal_demixed.T @ curr_c
-        )
-        resid_image_cumulator -= residual_mean @ torch.sum(curr_c, dim=0, keepdim=True)
-        # This is used below
-
-        curr_resid_norms += (
-                2 * (resid_image_cumulator[curr_rows, curr_cols] * curr_values)[:, None]
-        )
-        curr_resid_norms = torch.sqrt(curr_resid_norms + num_frames * (noise_terms ** 2))
-
-        corr_term = (
-                            resid_image_cumulator / c_meanzero_norms[:, index_select_tensor_net]
-                    )[curr_rows, curr_cols][:, None]
-        corr_term = torch.nan_to_num(corr_term, nan=0.0)
-        cc_term = curr_c.T @ c[:, index_select_tensor_net]
-        acc_term = torch.sparse.mm(a_curr, cc_term)
-        corr_term += acc_term[curr_rows, curr_cols][:, None]
-
-        corr_term /= curr_resid_norms
-        corr_term = torch.nan_to_num(corr_term, nan=0.0)
-
-        final_values.append(corr_term.squeeze(1))
-        final_rows.append(curr_rows)
-        final_cols.append(index_select_tensor_net[curr_cols])
-
-    final_rows = torch.cat(final_rows, 0)
-    final_cols = torch.cat(final_cols, 0)
-    final_values = torch.cat(final_values, 0)
-    resid_corr_indices = torch.stack([final_rows, final_cols])
-    resid_corr_on_support = torch.sparse_coo_tensor(
-        resid_corr_indices, final_values, spatial_demixed.size()
-    ).coalesce()
+    resid_corr_on_support =  torch.sparse_csr_tensor(a_crow, a_cols, final_local_corr, size=spatial_demixed.shape).to_sparse_coo()
 
     residual_array = ResidualCorrelationImages.from_tensors(
-        spatial_compressed,
-        temporal_compressed,
+        u.to_sparse_coo(),
+        v,
         ring_left,
         ring_right,
-        spatial_demixed,
+        spatial_demixed.to_sparse_coo(),
         temporal_demixed,
         resid_corr_on_support,
-        residual_mean.squeeze(),
-        robust_residual_movie_norms.squeeze(),
+        residual_movie_mean,
+        robust_residual_movie_norms,
         fov_dims,
         mode=ResidCorrMode.DEFAULT,
     )
+
     return residual_array, compressed_array_norms
+
 
 def _compute_standard_correlation_image(
         spatial_compressed: SparseCOOTensor,
