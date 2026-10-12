@@ -1,0 +1,3 @@
+from masknmf.pipelines.onephoton_calcium.onephoton_calcium_population_imaging import OnePhotonCalciumPipeline
+
+__all__ = ["OnePhotonCalciumPipeline"]
