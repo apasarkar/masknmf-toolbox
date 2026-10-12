@@ -16,6 +16,23 @@ def decompress_csr_rows(crow: torch.Tensor, num_nonzero: int):
     indices = torch.arange(crow.numel() - 1, device=crow.device, dtype=crow.dtype)
     return torch.repeat_interleave(indices, crow.diff(), output_size=num_nonzero)
 
+def csr_index_select_cols(a: torch.Tensor, cols: torch.Tensor) -> torch.Tensor:
+    """
+    torch.index_select(a, 1, cols) for a sparse CSR tensor, without going through COO.
+    cols must not contain duplicates. If cols is increasing (e.g. an arange or a sorted keep-list),
+    the result keeps sorted column indices within each row; otherwise sort them afterwards.
+    """
+    crow, col, val = a.crow_indices(), a.col_indices(), a.values()
+    lut = torch.full((a.shape[1],), -1, dtype=col.dtype, device=col.device)
+    lut[cols] = torch.arange(cols.numel(), dtype=col.dtype, device=col.device)   # old column -> new column
+    new_col = lut.index_select(0, col)
+    keep = new_col >= 0
+    rows = torch.repeat_interleave(torch.arange(a.shape[0], device=crow.device), crow.diff(), output_size=val.numel())
+    counts = torch.bincount(rows[keep], minlength=a.shape[0])
+    new_crow = torch.zeros(a.shape[0] + 1, dtype=crow.dtype, device=crow.device)
+    torch.cumsum(counts, 0, out=new_crow[1:])
+    return torch.sparse_csr_tensor(new_crow, new_col[keep], val[keep], size=(a.shape[0], cols.numel()))
+
 def csr_index_select_rows(U, idx):
     crow, col, val = U.crow_indices(), U.col_indices(), U.values()
     idx = idx.to(crow.device, crow.dtype)
@@ -40,16 +57,16 @@ def _max_ac_routine(a: SparseCOOTensor,
     Returns:
         - torch.Tensor. shape (num_neurons)
     """
-    a = a.coalesce()
+    # a = a.coalesce()
     accumulator = torch.zeros(a.shape[1], device=a.device)
-    _, cols = a.indices()
+    cols = a.col_indices()
     vals = torch.abs(a.values())
     accumulator.scatter_reduce_(0, cols, vals, "amax", include_self=False)
     accumulator *= torch.amax(torch.abs(c), dim=0)
     return accumulator
 
 
-def brightness_order(a: SparseCOOTensor,
+def brightness_order(a: SparseCSRTensor,
                      c: torch.Tensor):
     brightnesses = _max_ac_routine(a, c)
     idx_sort = torch.argsort(brightnesses, descending=True)

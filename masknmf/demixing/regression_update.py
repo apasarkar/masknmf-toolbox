@@ -3,7 +3,10 @@ import torch
 from tqdm import tqdm
 import math
 from masknmf.utils import SparseCOOTensor, SparseCSRTensor
-from masknmf.demixing.demixing_utils import construct_graph_from_sparse_tensor, color_and_get_tensors, csr_index_select_rows
+from masknmf.demixing.demixing_utils import (construct_graph_from_sparse_tensor,
+                                             color_and_get_tensors,
+                                             csr_index_select_rows,
+                                             decompress_csr_rows)
 
 
 def baseline_update(uv_mean, a, c, to_torch=False):
@@ -33,7 +36,7 @@ def baseline_update(uv_mean, a, c, to_torch=False):
 def spatial_update_hals(
         u_sparse: torch.Tensor,
         v: torch.Tensor,
-        a_sparse: SparseCOOTensor,
+        a_sparse: SparseCSRTensor,
         c: torch.Tensor,
         b: torch.Tensor,
         q: tuple[torch.Tensor, torch.Tensor] | None = None,
@@ -47,7 +50,7 @@ def spatial_update_hals(
         u_sparse (torch.sparse_csr_tensor): Sparse matrix, with dimensions (d x R)
         v (torch.Tensor): Dimensions R x T. Dimensions R x T, where T is the number of frames, where all rows are orthonormal.
             Note:  V must contain the 1 x T vector of all 1's in its rowspan.
-        a_sparse (torch.sparse_coo_tensor): dimensions d x k, where k represents the number of neural signals.
+        a_sparse (torch.sparse_csr_tensor): dimensions d x k, where k represents the number of neural signals.
         c (torch.Tensor): Dimensions T x k
         b (torch.Tensor): Dimensions d x 1. Represents static background
         q (torch.tensor): This is the factorized ring model term; u@r@q@v gives you the full ring model movie
@@ -74,12 +77,13 @@ def spatial_update_hals(
     if blocks is None:
         blocks = torch.arange(c.shape[1], device=device).unsqueeze(1)
 
-    column_lut = torch.zeros(a_sparse.shape[1], device=device, dtype=a_sparse.indices().dtype)
-    row_lut = torch.zeros(a_sparse.shape[0], device=device, dtype=a_sparse.indices().dtype)
+    index_dtype = a_sparse.col_indices().dtype
+    column_lut = torch.zeros(a_sparse.shape[1], device=device, dtype=index_dtype)
+    row_lut = torch.zeros(a_sparse.shape[0], device=device, dtype=index_dtype)
     membership_lut = torch.zeros(a_sparse.shape[1], device=device, dtype=torch.bool)
-    a_rows, a_cols = a_sparse.indices()
+    a_rows = decompress_csr_rows(a_sparse.crow_indices(), a_sparse.values().numel())
+    a_cols = a_sparse.col_indices()
     a_values = a_sparse.values()
-    a_sparse = a_sparse.to_sparse_csr() ##For fast matmul
     diff = v @ c
     if q is not None:
         diff -= q[0] @ (q[1] @ c)
@@ -220,7 +224,7 @@ def _affine_fit_scaling_update(v: torch.Tensor,
         c: shape (num_frames, num_neurons)
         b: shape (d, 1)
     """
-    catb_one = torch.sum(c * (torch.sparse.mm(a.T, b) @ torch.ones(1, v.shape[1], device=device, dtype=v.dtype)).T,
+    catb_one = torch.sum(c * (torch.sparse.mm(a.t(), b) @ torch.ones(1, v.shape[1], device=device, dtype=v.dtype)).T,
                          dim=0)  # Shape (num_neurons,)
 
     relu_obj = torch.nn.ReLU() if scale_nonneg else lambda x:x
@@ -255,7 +259,7 @@ def alternating_least_squares_affine_fit(u: SparseCSRTensor,
     graph = construct_graph_from_sparse_tensor(adjacency_mat)
     blocks = color_and_get_tensors(graph, v.device)
 
-    ctauv = torch.sum(c * (torch.sparse.mm(torch.sparse.mm(a_t, u)), v).T, dim=0)  # Shape (num_neurons,)
+    ctauv = torch.sum(c * (torch.sparse.mm(torch.sparse.mm(a_t, u), v).T), dim=0) # Shape (num_neurons,)
     ata_diag = _fast_a_squared_norm(a)
     c_sq = torch.sum(c * c, dim=0)
 

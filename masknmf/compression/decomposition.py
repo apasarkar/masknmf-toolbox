@@ -10,11 +10,15 @@ from typing import Literal
 from tqdm import tqdm
 
 from masknmf import display
-from masknmf.utils import torch_select_device, SparseCOOTensor
+from masknmf.utils import torch_select_device, SparseCOOTensor, SparseCSRTensor
 from masknmf.compression.preprocessing import SplineDetrend, SplineDetrenderBase
 
 logger = logging.getLogger(__name__)
 
+
+def decompress_csr_rows(crow: torch.Tensor, num_nonzero: int):
+    indices = torch.arange(crow.numel() - 1, device=crow.device, dtype=crow.dtype)
+    return torch.repeat_interleave(indices, crow.diff(), output_size=num_nonzero)
 
 def truncated_random_svd(
         input_matrix: torch.Tensor,
@@ -655,7 +659,7 @@ def temporal_downsample(tensor: torch.Tensor,
     return downsampled.squeeze().reshape(height, width, -1)
 
 
-def downsample_sparse(sparse_tensor: SparseCOOTensor,
+def downsample_sparse(sparse_tensor: SparseCSRTensor,
                       fov_dims: tuple[int, int],
                       downsample_factor: int):
     """
@@ -666,12 +670,12 @@ def downsample_sparse(sparse_tensor: SparseCOOTensor,
     Returns:
         torch.sparse_coo_tensor: Shape ((height//factor) * (width//factor), columns)
     """
-    if not sparse_tensor.is_coalesced():
-        sparse_tensor = sparse_tensor.coalesce()
+    # if not sparse_tensor.is_coalesced():
+    #     sparse_tensor = sparse_tensor.coalesce()
 
     divisor = downsample_factor ** 2
     height, width = fov_dims[0], fov_dims[1]
-    rows, cols = sparse_tensor.indices()
+    rows, cols = decompress_csr_rows(sparse_tensor.crow_indices(), sparse_tensor.values().numel()), sparse_tensor.col_indices()
     sparse_values = sparse_tensor.values()
     h_vals = torch.floor(rows / width)
     w_vals = rows - h_vals * width
@@ -692,7 +696,7 @@ def downsample_sparse(sparse_tensor: SparseCOOTensor,
         final_indices,
         (sparse_values * good_indices) / divisor,
         (new_height * new_width, sparse_tensor.shape[1]),
-    ).coalesce()
+    ).coalesce().to_sparse_csr()
 
     return downsampled_sparse_tensor
 

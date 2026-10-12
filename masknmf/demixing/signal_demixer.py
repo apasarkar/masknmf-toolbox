@@ -32,6 +32,7 @@ from .demixing_utils import (
     scipy_sparse_to_torch,
     torch_dense_to_sparse_coo,
     csr_index_select_rows,
+    csr_index_select_cols,
     decompress_csr_rows
 )
 from masknmf.demixing import regression_update
@@ -466,7 +467,7 @@ def _compute_standard_correlation_image(
         idx = torch.arange(start, end, device=device, dtype=torch.long)
         u_subset = csr_index_select_rows(spatial_compressed, idx)
         uv_subset = torch.sparse.mm(u_subset, temporal_compressed)
-        uv_meanzero_norm += torch.linalg.norm(uv_subset, dim = 1, keepdim=True)**2
+        uv_meanzero_norm[start:end] += torch.linalg.norm(uv_subset, dim = 1, keepdim=True)**2
 
     if noise_std is not None:
         uv_meanzero_norm += num_frames * (noise_std.flatten() ** 2)[:, None]
@@ -556,7 +557,7 @@ def process_custom_signals(
 
     # Only keep the good indices, based on nonzero_dim1
     c_torch = torch.index_select(c, 1, nonzero_dim1)
-    a_torch = torch.index_select(a, 1, nonzero_dim1)
+    a_torch = torch.index_select(a, 1, nonzero_dim1).to_sparse_csr()
     a_mask = a_torch.bool()
 
     display(f"started with {initial_num_signals} signals, ended initialization with {a_torch.shape[1]} signals")
@@ -698,7 +699,7 @@ def get_total_edges(d1, d2):
 
 def sparse_dilation_routine(fov_height: int,
                             fov_width: int,
-                            a: SparseCOOTensor,
+                            a: SparseCSRTensor,
                             expansion_radius:int = 5):
     """
     Greedily performs a "n"-pixel dilation of each spatial footprint
@@ -715,7 +716,9 @@ def sparse_dilation_routine(fov_height: int,
         Together these define a (height, width, num_frames) sparse tensor
     """
     device = a.device
-    rows, frame_indices = a.indices()
+    rows = decompress_csr_rows(a.crow_indices(), a.values().numel())
+    frame_indices = a.col_indices()
+    # rows, frame_indices = a.indices()
     height_indices = rows // fov_width
     width_indices = rows % fov_width
 
@@ -1080,7 +1083,7 @@ def spatial_temporal_ini_uv(
 
     if pre_existing:
         c_final = torch.cat([c, torch.zeros(t, num_init_comps, device=device)], dim=1)
-        a_orig_row, a_orig_col = a.indices()
+        a_orig_row, a_orig_col = decompress_csr_rows(a.crow_indices(), a.values().numel()), a.col_indices()
         a_orig_values = a.values()
         final_rows = torch.cat([a_orig_row, a_row_init], dim=0)
         final_cols = torch.cat([a_orig_col, a_col_init + c.shape[1]], dim=0)
@@ -1100,7 +1103,7 @@ def spatial_temporal_ini_uv(
         )
         .coalesce()
         .to(device)
-    )
+    ).to_sparse_csr() ##TODO: Do this more efficiently. Data should be automatically just fed into CSR
     uv_mean = get_mean_data(u_sparse, v)
     mean_ac = torch.sparse.mm(a_sparse, torch.mean(c_final.t(), dim=1, keepdim=True))
     uv_mean -= mean_ac
@@ -1124,7 +1127,7 @@ def spatial_temporal_ini_uv(
 
     # Now return only the newly initialized components
     col_index_tensor = torch.arange(start=k, end=k + num_init_comps, step=1, device=device)
-    a_sparse = torch.index_select(a_sparse, 1, col_index_tensor)
+    a_sparse = csr_index_select_cols(a_sparse, col_index_tensor)
     c_final = torch.index_select(c_final, 1, col_index_tensor)
 
     return (
@@ -1187,8 +1190,8 @@ def delete_comp(
     standard_correlation_image.temporal_demixed = torch.index_select(
         standard_correlation_image.temporal_demixed, 1, neg
     )
-    spatial_masks = torch.index_select(spatial_masks, 1, neg).coalesce()
-    spatial_components = torch.index_select(spatial_components, 1, neg).coalesce()
+    spatial_masks = csr_index_select_cols(spatial_masks, neg)
+    spatial_components = csr_index_select_cols(spatial_components, neg)
     temporal_components = torch.index_select(temporal_components, 1, neg)
     return (
         spatial_components,
@@ -1617,7 +1620,8 @@ def local_mad_correlation_mat(
 
 
 def prepare_iteration_uv(
-        pure_pix: np.ndarray, a_mat: SparseCOOTensor, c_mat: torch.Tensor
+        pure_pix: np.ndarray,
+        a_mat: SparseCSRTensor, c_mat: torch.Tensor
 ) -> tuple[SparseCOOTensor, torch.Tensor]:
     """
     Extract pure superpixels and order the components by brightness
@@ -1635,7 +1639,7 @@ def prepare_iteration_uv(
 
     # Extract the pure superpixels
     pure_pix_indices = pure_pix - 1
-    a_mat = torch.index_select(a_mat, 1, pure_pix_indices).coalesce()
+    a_mat = csr_index_select_cols(a_mat, pure_pix_indices)
     c_mat = torch.index_select(c_mat, 1, pure_pix_indices)
     return a_mat, c_mat
 
@@ -1809,15 +1813,15 @@ def superpixel_init(
 
         ## Boilerplate for concatenating two sparse tensors along dim 1:
         a_dims = (a.shape[0], a.shape[1] + a_newpass.shape[1])
-        a_row, a_col = a.indices()
+        a_row, a_col = decompress_csr_rows(a.crow_indices(), a.values().numel()), a.col_indices()
         a_vals = a.values()
-        a_new_row, a_new_col = a_newpass.indices()
+        a_new_row, a_new_col = decompress_csr_rows(a_newpass.crow_indices(), a_newpass.values().numel()), a_newpass.col_indices()
         a_new_vals = a_newpass.values()
 
         new_rows = torch.concatenate([a_row, a_new_row])
         new_col = torch.concatenate([a_col, a_new_col + a.shape[1]])
         new_vals = torch.concatenate([a_vals, a_new_vals])
-        a = torch.sparse_coo_tensor(torch.stack([new_rows, new_col]), new_vals, a_dims)
+        a = torch.sparse_coo_tensor(torch.stack([new_rows, new_col]), new_vals, a_dims).to_sparse_csr()
         c = torch.concatenate([c, c_newpass], dim=1)
         uv_mean = get_mean_data(u_sparse, v)
         b = regression_update.baseline_update(uv_mean, a, c)
@@ -1980,13 +1984,13 @@ def merge_components(
 
         indices_arange = torch.arange(a.shape[1], device=device)[all_indices]
 
-        a_preserved = torch.index_select(a, 1, indices_arange).coalesce()
+        a_preserved = csr_index_select_cols(a, indices_arange)
         c_preserved = torch.index_select(c, 1, indices_arange)
 
         c_append_list = [c_preserved]
 
-        row_indices = [a_preserved.indices()[0, :]]
-        col_indices = [a_preserved.indices()[1, :]]
+        row_indices = [decompress_csr_rows(a_preserved.crow_indices(), a_preserved.values().numel())]
+        col_indices = [a_preserved.col_indices()]
         values_indices = [a_preserved.values()]
         num_preserved_comps = a_preserved.shape[1]
         added_counter = 0
@@ -1995,7 +1999,7 @@ def merge_components(
             comp = list(comp)
             good_comps = torch.Tensor(comp).to(device).long()
 
-            a_merge = torch.index_select(a, 1, good_comps).coalesce()
+            a_merge = csr_index_select_cols(a, good_comps)
             c_merge = torch.index_select(c, 1, good_comps)
 
             a_rank1, c_rank1 = rank_1_NMF_fit(a_merge, c_merge)
@@ -2028,7 +2032,7 @@ def merge_components(
             torch.stack([row_indices_net, col_indices_net]),
             value_indices_net,
             (a.shape[0], c.shape[1]),
-        ).coalesce()
+        ).coalesce().to_sparse_csr()
 
         standard_correlation_image.temporal_demixed = c
     return a, c, a.bool(), standard_correlation_image
@@ -2210,7 +2214,7 @@ def construct_laplacian_matrix(height: int,
 
     laplacian_mat = torch.sparse_coo_tensor(torch.stack([rows, cols]),
                                             vals,
-                                            final_shape).coalesce()
+                                            final_shape).coalesce().to_sparse_csr()
     return laplacian_mat
 
 
@@ -2435,7 +2439,7 @@ class InitializingState(SignalProcessingState):
         self._init_results = None
 
         if a is not None:
-            self.a = a.to(self.device).coalesce()
+            self.a = a.to(self.device)
         else:
             self.a = None
 
@@ -2773,8 +2777,8 @@ class DemixingState(SignalProcessingState):
         self.spatial_compressed_local_projector = compression_array.spatial_compressed_local_projector.t().to_sparse_csr().to(device)
         self.temporal_compressed = compression_array.temporal_compressed.to(device)
 
-        self._mask_a_init = init_results.spatial_demixed_masks.to(device).coalesce()
-        self._a_init = init_results.spatial_demixed.to(device).coalesce()
+        self._mask_a_init = init_results.spatial_demixed_masks.to(device)
+        self._a_init = init_results.spatial_demixed.to(device)
         self._b_init = init_results.b.to(device)
         self._c_init = init_results.temporal_demixed.to(device)
         self.a = None
@@ -2897,18 +2901,18 @@ class DemixingState(SignalProcessingState):
         Move relevant data to the GPU
         """
 
-        a_indices = self._a_init.indices().clone()
-        a_values = self._a_init.values().clone()
         self.a = (
-            torch.sparse_coo_tensor(a_indices, a_values, self._a_init.size())
+            torch.sparse_csr_tensor(self._a_init.crow_indices().clone(),
+                                    self._a_init.col_indices().clone(),
+                                    self._a_init.values().clone(),
+                                    self._a_init.size())
             .to(self.device)
-            .coalesce()
         )
         self.b = self._b_init.clone()
         self.c = self._c_init.clone()
-        self.mask_ab = self._mask_a_init.clone().coalesce()
+        self.mask_ab = self._mask_a_init.clone()
         if self.mask_ab is None:
-            self.mask_ab = self.a.bool().coalesce()
+            self.mask_ab = self.a.bool()
 
         self.factorized_ring_term = (
         self._factorized_ring_term_init[0].clone(), self._factorized_ring_term_init[1].clone())
@@ -3193,7 +3197,7 @@ class DemixingState(SignalProcessingState):
             self.update_hals_scheduler()
 
     def reassign_background_to_signal(self,
-                                      graph_laplacian: SparseCOOTensor,
+                                      graph_laplacian: SparseCSRTensor,
                                       c_nonneg: bool = True):
         """
         TODO: Add documentation explaining what this is doing
@@ -3303,9 +3307,9 @@ class DemixingState(SignalProcessingState):
         be included. This is desirable (this is how the spatial HALS code starts working with the expanded (or contracted) "a" footprints
         """
         height_indices, width_indices, frame_indices = sparse_dilation_routine(fov_height,
-                                                                                    fov_width,
-                                                                                    a_subset,
-                                                                                    expansion_radius=expansion_radius)
+                                                                               fov_width,
+                                                                               a_subset,
+                                                                               expansion_radius=expansion_radius)
 
         corr_bool_mask = thresholded_correlation_image_frames[frame_indices, height_indices, width_indices] > 0
 
@@ -3367,7 +3371,8 @@ class DemixingState(SignalProcessingState):
             curr_thresholded_residual_images = (
                     curr_thresholds[:, None, None] < curr_residual_images
             ).float()
-            curr_masks = torch.index_select(mask, 1, neuron_indices).coalesce()
+            curr_masks = csr_index_select_cols(mask, neuron_indices)
+            # curr_masks = torch.index_select(mask, 1, neuron_indices).coalesce()
 
 
             final_rows, local_cols = self.greedy_connected_comps(self.shape[0],
@@ -3384,8 +3389,9 @@ class DemixingState(SignalProcessingState):
             final_mask_rows.append(final_rows)
             final_mask_cols.append(final_cols)
 
-
-        original_a_rows, original_a_cols = spatial_comps.indices()
+        original_a_rows = decompress_csr_rows(spatial_comps.crow_indices(), spatial_comps.values().numel())
+        original_a_cols = spatial_comps.col_indices()
+        # original_a_rows, original_a_cols = spatial_comps.indices()
         original_a_values = spatial_comps.values()
 
         final_spatial_rows.append(original_a_rows)
@@ -3417,7 +3423,7 @@ class DemixingState(SignalProcessingState):
             final_spatial_values,
             spatial_comps.shape,
         ).coalesce()
-        return final_mask, final_spatial
+        return final_mask.to_sparse_csr(), final_spatial.to_sparse_csr()
 
     def support_update_routine(
             self,
@@ -3438,7 +3444,7 @@ class DemixingState(SignalProcessingState):
             self.compute_residual_correlation_image()
 
         # Currently using rigid mask
-        self.mask_ab = self.a.bool().coalesce()
+        self.mask_ab = self.a.bool()#.coalesce()
         self.mask_ab, self.a = self._mask_expansion_routine(
             relative_correlation_fraction,
             self.mask_ab,
@@ -3637,7 +3643,7 @@ class DemixingState(SignalProcessingState):
             (self.num_frames, self.fov_height, self.fov_width),
             self.compression_array.spatial_compressed,
             self.compression_array.temporal_compressed,
-            self.a,
+            self.a.to_sparse_coo(),
             self.c,
             mean_image=self.compression_array.mean_image,
             noise_variance_image=self.compression_array.noise_variance_image,
