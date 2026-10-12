@@ -112,7 +112,7 @@ def compute_compression_pixel_norms(spatial_compressed: SparseCSRTensor,
         idx = torch.arange(start, end, device=spatial_compressed.device, dtype=torch.long)
         u_subset = csr_index_select_rows(spatial_compressed, idx)
         final_norms[start:end] = torch.sparse.mm(u_subset, temporal_compressed).square().sum(dim=1)
-    return final_norms
+    return torch.sqrt(final_norms.clamp_min(0))
 
 def _access_u_rows(u: SparseCSRTensor, rows: torch.Tensor):
     """
@@ -154,12 +154,12 @@ def _compute_residual_correlation_image(
         spatial_demixed: SparseCOOTensor,
         temporal_demixed: torch.Tensor,
         fov_dims: tuple[int, int],
-        compressed_array_norms: torch.Tensor | None = None,
+        compression_pixelwise_norms: torch.Tensor | None = None,
         blocks: torch.Tensor | list | None = None,
         noise_std: torch.Tensor | None = None,
         frame_batch_size: int = 1000,
         device: torch.device | str = "cpu",
-) -> tuple[ResidualCorrelationImages, torch.Tensor]:
+) -> ResidualCorrelationImages:
     """
     Insert docs here
     """
@@ -215,16 +215,16 @@ def _compute_residual_correlation_image(
     
     and we patch this norm up with corrections as needed when computing resid correlation images for specific neurons 
     """
-    if compressed_array_norms is None:
+    if compression_pixelwise_norms is None:
         pixel_batch_size = math.ceil((spatial_compressed.shape[0] * frame_batch_size) / temporal_compressed.shape[1])
-        compressed_array_norms = compute_compression_pixel_norms(spatial_compressed,
+        compression_pixelwise_norms = compute_compression_pixel_norms(spatial_compressed,
                                         temporal_compressed,
-                                        pixel_batch_size)
-        # v_ring_right_t = temporal_compressed @ ring_right.T  # (pmd_rank, k)
-        # ring_right_gram = ring_right @ ring_right.T  # (k, k)
+                                        pixel_batch_size).square()
+    else:
+        compression_pixelwise_norms = compression_pixelwise_norms.square()
 
     ## Add d[UVVtUt]
-    residual_movie_norms += compressed_array_norms.squeeze()
+    residual_movie_norms += compression_pixelwise_norms.squeeze()
 
     ## Add num_frames*R_m^2
     residual_movie_norms += num_frames * residual_mean.square().squeeze()
@@ -410,7 +410,7 @@ def _compute_residual_correlation_image(
         mode=ResidCorrMode.DEFAULT,
     )
 
-    return residual_array, compressed_array_norms
+    return residual_array
 
 
 def _compute_standard_correlation_image(
@@ -419,6 +419,7 @@ def _compute_standard_correlation_image(
         temporal_demixed: torch.Tensor,
         fov_dims: tuple[int, int],
         noise_std: torch.Tensor | None = None,
+        compression_pixelwise_norms: torch.Tensor | None = None,
         pixel_batch_size: int = 1000,
         device: torch.device | str = "cpu",
 ) -> StandardCorrelationImages:
@@ -439,46 +440,49 @@ def _compute_standard_correlation_image(
     """
     num_frames = temporal_compressed.shape[1]
     # Step 1: Standardize c
-    c = temporal_demixed - torch.mean(temporal_demixed, dim=0, keepdim=True)
-    c_norm = torch.sqrt(torch.sum(c * c, dim=0, keepdim=True))
-    c /= c_norm
+    # c = temporal_demixed - torch.mean(temporal_demixed, dim=0, keepdim=True)
+    # c_norm = torch.sqrt(torch.sum(c * c, dim=0, keepdim=True))
+    # c /= c_norm
 
     ##Step 2: Compute the mean of the UV video
     v_mean = torch.mean(temporal_compressed, dim=1, keepdim=True)
     uv_mean = torch.sparse.mm(spatial_compressed, v_mean)  # Dims: d x 1
 
-    """
-    Step 3: Compute the pixelwise norm of the mean-subtracted PMD data. Exploit low-rank of PMD here.
-    We want to find diag([UV - m1^T][temporal_compressed^TU^T - 1m^T]) here.
-    """
-    uv_meanzero_norm = torch.zeros(
-        (spatial_compressed.shape[0], 1), device=device, dtype=spatial_compressed.dtype
-    )
-    v_sum = torch.sum(temporal_compressed, dim=1, keepdim=True)
-    uv_sum = torch.sparse.mm(spatial_compressed, v_sum)
-    uv_meanzero_norm += (-2) * uv_sum * uv_mean
-    uv_meanzero_norm += uv_mean * uv_mean * num_frames
+    if compression_pixelwise_norms is None:
+        """
+        Step 3: Compute the pixelwise norm of the mean-subtracted PMD data. Exploit low-rank of PMD here.
+        We want to find diag([UV - m1^T][temporal_compressed^TU^T - 1m^T]) here.
+        """
+        uv_meanzero_norm = torch.zeros(
+            (spatial_compressed.shape[0], 1), device=device, dtype=spatial_compressed.dtype
+        )
+        v_sum = torch.sum(temporal_compressed, dim=1, keepdim=True)
+        uv_sum = torch.sparse.mm(spatial_compressed, v_sum)
+        uv_meanzero_norm += (-2) * uv_sum * uv_mean
+        uv_meanzero_norm += uv_mean * uv_mean * num_frames
 
-    # To finish norm computation, need to compute diag(UVV^TU). This is rowsum(UVV^T (hadamard) spatial_compressed).
-    batch_iters = math.ceil(spatial_compressed.shape[0] / pixel_batch_size)
-    for k in range(batch_iters):
-        start = pixel_batch_size * k
-        end = min(start + pixel_batch_size, spatial_compressed.shape[0])
-        idx = torch.arange(start, end, device=device, dtype=torch.long)
-        u_subset = csr_index_select_rows(spatial_compressed, idx)
-        uv_subset = torch.sparse.mm(u_subset, temporal_compressed)
-        uv_meanzero_norm[start:end] += torch.linalg.norm(uv_subset, dim = 1, keepdim=True)**2
+        # To finish norm computation, need to compute diag(UVV^TU). This is rowsum(UVV^T (hadamard) spatial_compressed).
+        batch_iters = math.ceil(spatial_compressed.shape[0] / pixel_batch_size)
+        for k in range(batch_iters):
+            start = pixel_batch_size * k
+            end = min(start + pixel_batch_size, spatial_compressed.shape[0])
+            idx = torch.arange(start, end, device=device, dtype=torch.long)
+            u_subset = csr_index_select_rows(spatial_compressed, idx)
+            uv_subset = torch.sparse.mm(u_subset, temporal_compressed)
+            uv_meanzero_norm[start:end] += torch.linalg.norm(uv_subset, dim = 1, keepdim=True)**2
+        compression_pixelwise_norms = torch.sqrt(uv_meanzero_norm)
 
     if noise_std is not None:
-        uv_meanzero_norm += num_frames * (noise_std.flatten() ** 2)[:, None]
+        compression_pixelwise_norms = compression_pixelwise_norms.square()
+        compression_pixelwise_norms += num_frames * (noise_std.flatten() ** 2)
+        compression_pixelwise_norms = torch.sqrt(compression_pixelwise_norms)
 
-    uv_meanzero_norm = torch.sqrt(uv_meanzero_norm)
     corr_array = StandardCorrelationImages.from_tensors(
         spatial_compressed.to_sparse_coo(),
         temporal_compressed,
-        c,
+        temporal_demixed,
         uv_mean.squeeze(),
-        uv_meanzero_norm.squeeze(),
+        compression_pixelwise_norms.squeeze(),
         fov_dims,
     )
 
@@ -1757,7 +1761,7 @@ def superpixel_init(
     else:
         raise ValueError("Invalid configuration of c and a values were provided")
 
-    peaks, total_peaks = find_local_peaks_2d(torch.from_numpy(corr_image).to('cuda'),
+    peaks, total_peaks = find_local_peaks_2d(torch.from_numpy(corr_image).to(device),
                                              kernel_radius=min_peak_distance,
                                              correlation_cutoff=cut_off_point,
                                              exclude_border=True)
@@ -2803,7 +2807,8 @@ class DemixingState(SignalProcessingState):
         self.factorized_ring_term = None
 
         #Run after factorized ring term has been initialized
-        self.robust_noise_term = self._sketch_robust_variance_term()
+        self.robust_noise_term, self.compression_pixelwise_norms = self._sketch_robust_variance_term()
+        self.compression_pixelwise_norms = self.compression_pixelwise_norms.reshape(-1)
 
 
         self.W = None
@@ -2835,6 +2840,7 @@ class DemixingState(SignalProcessingState):
         num_iters = math.ceil(self.spatial_compressed.shape[0] / self.pixel_batch_size)
         sq_cumulator = torch.zeros(self.spatial_compressed.shape[0], device=self.device)
         mean_cumulator = torch.zeros(self.spatial_compressed.shape[0], device=self.device)
+        compression_pixelwise_norms = torch.zeros_like(sq_cumulator)
 
         for k in range(num_iters):
             start = k * self.pixel_batch_size
@@ -2842,6 +2848,7 @@ class DemixingState(SignalProcessingState):
             idx = torch.arange(start, end, device=self.device, dtype=torch.long)
             u_subset = csr_index_select_rows(self.spatial_compressed, idx)
             curr_subset = torch.sparse.mm(u_subset, self.temporal_compressed)
+            compression_pixelwise_norms[start:end] = torch.linalg.norm(curr_subset, dim=1)
             if self.factorized_ring_term is not None:
                 curr_subset -= (torch.sparse.mm(u_subset, self.factorized_ring_term[0]) @ self.factorized_ring_term[1])
             sq_cumulator[start:end] += torch.sum(curr_subset ** 2, dim=1) / self.num_frames
@@ -2854,7 +2861,7 @@ class DemixingState(SignalProcessingState):
         display(f"baseline is {baseline}")
 
         output = torch.ones_like(variance_cumulator) * baseline
-        return output.reshape(self.compression_array.shape[1], self.compression_array.shape[2])
+        return output.reshape(self.fov_height, self.fov_width), compression_pixelwise_norms.reshape(self.fov_height, self.fov_width)
 
     @property
     def state_description(self):
@@ -2900,7 +2907,10 @@ class DemixingState(SignalProcessingState):
         """
         Move relevant data to the GPU
         """
-
+        if self.compression_pixelwise_norms is None:
+            self.compression_pixelwise_norms = compute_compression_pixel_norms(self.spatial_compressed,
+                                                                               self.temporal_compressed,
+                                                                               self.pixel_batch_size)
         self.a = (
             torch.sparse_csr_tensor(self._a_init.crow_indices().clone(),
                                     self._a_init.col_indices().clone(),
@@ -2940,18 +2950,19 @@ class DemixingState(SignalProcessingState):
             (self.shape[0], self.shape[1]),
             noise_std=self.robust_noise_term,
             pixel_batch_size=self.pixel_batch_size,
+            compression_pixelwise_norms=self.compression_pixelwise_norms,
             device=self.device,
         )
 
     def compute_residual_correlation_image(self):
-        self.residual_correlation_image, self._uv_norms = _compute_residual_correlation_image(
+        self.residual_correlation_image = _compute_residual_correlation_image(
             self.spatial_compressed,
             self.temporal_compressed,
             self.factorized_ring_term,
             self.a,
             self.c,
             (self.shape[0], self.shape[1]),
-            compressed_array_norms= self._uv_norms,
+            compression_pixelwise_norms= self.compression_pixelwise_norms,
             blocks=self.blocks,
             noise_std=self.robust_noise_term.flatten(),
             frame_batch_size=self.frame_batch_size,
@@ -3521,6 +3532,7 @@ class DemixingState(SignalProcessingState):
         """
         # Key: precompute_quantities is a setup function which must be run first in this routine
         # self.background_rank = None #Always estimate the background rank each time
+        print("RESET LETS GO")
         self.detrender = detrender
         if self.detrender is not None:
             self.detrender.to(self.device)
