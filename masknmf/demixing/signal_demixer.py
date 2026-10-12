@@ -2421,6 +2421,8 @@ class InitializingState(SignalProcessingState):
 
         self.spatial_compressed = self.pmd_obj.spatial_compressed.coalesce().to_sparse_csr() ## It's not purely sparse CSR
         self.v = self.pmd_obj.temporal_compressed
+        self.temporal_compressed = self.v
+        self.compression_array = self.pmd_obj
 
         self.factorized_ring_term = factorized_ring_term
 
@@ -2461,11 +2463,11 @@ class InitializingState(SignalProcessingState):
             end = min(start + self.pixel_batch_size, self.spatial_compressed.shape[0])
             idx = torch.arange(start, end, device=self.device, dtype=torch.long)
             u_subset = csr_index_select_rows(self.spatial_compressed, idx)
-            curr_subset = torch.sparse.mm(u_subset, v_used)
+            curr_subset = torch.sparse.mm(u_subset, self.temporal_compressed)
             if self.factorized_ring_term is not None:
                 curr_subset -= (torch.sparse.mm(u_subset, self.factorized_ring_term[0]) @ self.factorized_ring_term[1])
-            sq_cumulator += torch.sum(curr_subset ** 2, dim=1) / self.num_frames
-            mean_cumulator = torch.sum(curr_subset, dim=1) / self.num_frames
+            sq_cumulator[start:end] += torch.sum(curr_subset ** 2, dim=1) / self.num_frames
+            mean_cumulator[start:end] = torch.sum(curr_subset, dim=1) / self.num_frames
 
         relu_fn = torch.nn.ReLU()
         variance_cumulator = relu_fn(sq_cumulator - mean_cumulator ** 2)
@@ -2474,7 +2476,7 @@ class InitializingState(SignalProcessingState):
         display(f"baseline is {baseline}")
 
         output = torch.ones_like(variance_cumulator) * baseline
-        return output.reshape(self.compression_array.shape[1], self.compression_array.shape[2])
+        return output.reshape(self.fov_height, self.fov_width)
 
     @property
     def fov_height(self) -> int:
@@ -2835,11 +2837,11 @@ class DemixingState(SignalProcessingState):
             end = min(start + self.pixel_batch_size, self.spatial_compressed.shape[0])
             idx = torch.arange(start, end, device=self.device, dtype=torch.long)
             u_subset = csr_index_select_rows(self.spatial_compressed, idx)
-            curr_subset = torch.sparse.mm(u_subset, v_used)
+            curr_subset = torch.sparse.mm(u_subset, self.temporal_compressed)
             if self.factorized_ring_term is not None:
                 curr_subset -= (torch.sparse.mm(u_subset, self.factorized_ring_term[0]) @ self.factorized_ring_term[1])
-            sq_cumulator += torch.sum(curr_subset ** 2, dim=1) / self.num_frames
-            mean_cumulator = torch.sum(curr_subset, dim=1) / self.num_frames
+            sq_cumulator[start:end] += torch.sum(curr_subset ** 2, dim=1) / self.num_frames
+            mean_cumulator[start:end] = torch.sum(curr_subset, dim=1) / self.num_frames
 
         relu_fn = torch.nn.ReLU()
         variance_cumulator = relu_fn(sq_cumulator - mean_cumulator**2)

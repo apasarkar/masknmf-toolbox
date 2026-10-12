@@ -7,7 +7,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import torch
 import networkx as nx
 from collections import defaultdict
-from masknmf.utils import SparseCOOTensor
+from masknmf.utils import SparseCOOTensor, SparseCSRTensor
 
 logger = logging.getLogger(__name__)
 
