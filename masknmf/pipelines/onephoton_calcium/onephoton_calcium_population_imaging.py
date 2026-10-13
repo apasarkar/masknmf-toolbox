@@ -60,9 +60,13 @@ class OnePhotonCalciumPipeline(BasePipeline):
                  unfiltered_demixing_config: MultipassDemixingConfigs | None = None,
                  output_folder: str | Path | None = None,
                  frame_batch_size: int = 300,
-                 device: Literal["auto", "cuda", "cpu"] = "auto"
+                 device: Literal["auto", "cuda", "cpu"] = "auto",
+                 log_level: Literal["debug", "info", "warning"] = "info",
+                 load_into_ram: bool = False
                  ):
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+                         log_level=log_level,
+                         load_into_ram=load_into_ram,
                          motion_correct_config=motion_correct_config, compress_config=compress_config,
                          filter_config=filter_config,
                          filtered_demixing_config=filtered_demixing_config,
@@ -131,6 +135,7 @@ class OnePhotonCalciumPipeline(BasePipeline):
         """
         self.run_config =  {"frame_rate": frame_rate, "exclude_border_radius": exclude_border_radius,
                            "crop_frames": crop_frames, "remove_intermediates": remove_intermediates}
+        moco_data = None
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
                 results_path = self.results_path(resume=True)
@@ -152,13 +157,14 @@ class OnePhotonCalciumPipeline(BasePipeline):
             compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
             compress_strategy.detrender = self.spline_detrender(data.shape[0], frame_rate, window_seconds=40,
                                                                 knot_seconds=25, sigma_seconds=0.3)
-            compressed_results = compress_strategy.compress(moco_data)
-            compressed_results.export(results_path)
+            with self.step("compression"):
+                compressed_results = compress_strategy.compress(moco_data)
+                compressed_results.export(results_path)
 
         if isinstance(self.filtered_demixing_config, str):
             if self.filtered_demixing_config.lower() != "skip":
                 raise ValueError(f"If filtered_demixing_config is a string, it can only be `skip`")
-            return Path(results_path).parent
+            return self.finish()
 
         device = self.torch_device
         display("Running demixing analysis")
@@ -192,9 +198,13 @@ class OnePhotonCalciumPipeline(BasePipeline):
         final_results = self.run_multipass(
             unfiltered_demixer,
             MultipassDemixingConfig([custom_first_pass] + unfiltered_config_used.DemixingConfigs[1:]))
-
+        if moco_data is not None:
+            with self.step("raw traces"):
+                final_results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
+                    final_results, moco_data, device=self.torch_device,
+                    nonneg=True, frame_batch_size=self.frame_batch_size)
         final_results.export(results_path)
         if remove_intermediates:
             self.drop_compression(results_path)
-        return Path(results_path).parent
+        return self.finish()
 

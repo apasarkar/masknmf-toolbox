@@ -8,6 +8,7 @@ import os
 import numpy as np
 import torch
 from typing import *
+from functools import partial
 
 from masknmf._version import __version__
 from masknmf.pipelines.scraper import slugify, config_json_value
@@ -156,15 +157,14 @@ class BasePipeline(ABC):
             shift_mask[-1 * exclude_border_radius:, :] = 0
             shift_mask[:, -1 * exclude_border_radius:] = 0
         return moco_data, shift_mask
-
+    def _highpass_relu(frames: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
+        """Highpass frames with kernel, then clip at zero."""
+        return torch.relu(image_filter(frames.to(kernel.device), kernel))
     def _highpassed_reference(self, data: ArrayLike, sigma: float) -> FilteredArray:
         """A lazy view of data, highpassed with sigma pixels and clipped at zero, used to estimate shifts."""
         kernel = compute_highpass_filter_kernel([sigma, sigma]).to(self.torch_device)
-
-        def highpass(frames: torch.Tensor) -> torch.Tensor:
-            return torch.relu(image_filter(frames.to(kernel.device), kernel))
-
-        return FilteredArray(data, highpass, batching=self.frame_batch_size, device=self.torch_device)
+        return FilteredArray(data, partial(_highpass_relu, kernel=kernel),
+                             batching=self.frame_batch_size, device=self.torch_device)
     
     def compress_strategy(self,
                           config: CompressConfig | CompressDenoiseConfig | None,
