@@ -40,8 +40,19 @@ from masknmf.demixing.background_estimation import RingModel
 from masknmf.compression import CompressionArray
 from masknmf.compression.preprocessing import SplineDetrend
 from masknmf import display
+import contextlib, torch
 
 logger = logging.getLogger(__name__)
+
+@contextlib.contextmanager
+def gpu_mem(label):
+    torch.cuda.reset_peak_memory_stats()
+    start = torch.cuda.memory_allocated()
+    yield
+    peak, end = torch.cuda.max_memory_allocated(), torch.cuda.memory_allocated()
+    gib = 2 ** 30
+    print(f"{label:30s} start {start/gib:6.2f}  peak {peak/gib:6.2f} (+{(peak-start)/gib:5.2f})  end {end/gib:6.2f} GiB")
+
 
 
 class DemixingError(Exception):
@@ -746,6 +757,112 @@ def sparse_dilation_routine(fov_height: int,
     frame_indices = frame_indices[keep_comps]
 
     return height_indices, width_indices, frame_indices
+
+
+def _dilated_overlap_pairs(a: SparseCSRTensor,
+                           fov_height: int,
+                           fov_width: int,
+                           expansion_radius=5,
+                           neuron_chunk=500):
+    """(i, j) pairs with i < j whose dilated supports share at least one pixel."""
+    K = a.shape[1]
+    num_pixels = fov_height * fov_width
+    device = a.device
+    rows, cols = [], []
+    for start in range(0, K, neuron_chunk):
+        idx = torch.arange(start, min(start + neuron_chunk, K), device=device)
+        sub = csr_index_select_cols(a, idx)  # local column indices
+        h, w, local_col = sparse_dilation_routine(fov_height, fov_width, sub, expansion_radius)
+        # Dedupe within the chunk; int64 so col * num_pixels can't overflow
+        key = torch.unique((local_col.long() + start) * num_pixels + h.long() * fov_width + w.long())
+        del h, w, local_col
+        cols.append(key // num_pixels)
+        rows.append(key % num_pixels)
+    rows, cols = torch.cat(rows), torch.cat(cols)
+    a_dilated = torch.sparse_coo_tensor(
+        torch.stack([rows, cols]), torch.ones(rows.numel(), device=device), (num_pixels, K)
+    ).coalesce()
+    overlap = torch.sparse.mm(a_dilated.t(), a_dilated).coalesce()
+    i, j = overlap.indices()
+    keep = i < j
+    return i[keep], j[keep]
+
+def _thresholded_corr_support(corr_img, threshold, neuron_batch_size):
+    """(sig, pix) for every (signal, pixel) with corr > threshold, sorted by signal then pixel."""
+    K, H, W = corr_img.shape
+    sig, pix = [], []
+    for start in range(0, K, neuron_batch_size):
+        end = min(start + neuron_batch_size, K)
+        imgs = corr_img.getitem_tensor(slice(start, end))
+        # nonzero returns indices in row-major order, so this is sorted by (signal, pixel)
+        b, p = torch.nonzero(imgs.reshape(end - start, -1) > threshold, as_tuple=True)
+        del imgs
+        sig.append(b + start)
+        pix.append(p)
+    return torch.cat(sig), torch.cat(pix)
+
+
+def _pair_intersection_counts(sig, pix, rows, cols, num_neural_signals, num_pixels, max_queries=20_000_000):
+    """Fast routine for finding the degree of overlap between pairs of neural signals.
+    Args:
+        sig (torch.Tensor): (sig[i], pix[i]) gives a neural signal id and a pixel (row) index where the neural signal's
+            thresholded correlation image is above the threshold. This list is ordered by sig[i] (and for a given signal,
+            pix[i] is ordered in increasing order)
+        pix (torch.Tensor): see sig
+        rows (torch.Tensor): (rows[i], col[i]) gives a pair of neural signals that overlap (based on criteria that is 
+            not relevant to this function)
+        cols (torch.Tensor): see rows
+        num_neural_signals (int): The total number of neural signals
+        num_pixels (int): The total number of pixels in the field of view, used for vectorizing 2D coordinates etc.
+        max_queries (int): Internal parameter used to sort/gather index data
+        
+    """
+    device = sig.device
+    keys = sig * num_pixels + pix                  # sorted, since (sig, pix) is sorted
+    sizes = torch.bincount(sig, minlength=num_neural_signals)
+    starts = torch.cumsum(sizes, 0) - sizes        # where each signal's block begins in keys
+
+    # Scan the smaller set of each pair; look its pixels up in the larger one
+    swap = sizes[rows] > sizes[cols]
+    small = torch.where(swap, cols, rows)
+    big = torch.where(swap, rows, cols)
+    q = sizes[small]
+
+    counts = torch.zeros(rows.numel(), device=device, dtype=torch.float32)
+    q_cum = torch.cumsum(q, 0).cpu()               # one sync, used only for chunking
+    n_pairs, p0 = rows.numel(), 0
+    while p0 < n_pairs:
+        base = int(q_cum[p0 - 1]) if p0 > 0 else 0
+        p1 = int(torch.searchsorted(q_cum, base + max_queries, right=True))
+        p1 = max(p1, p0 + 1)                       # always progress, even for one huge pair
+        n = int(q_cum[p1 - 1]) - base
+        if n > 0:
+            qc = q[p0:p1]
+            local = torch.repeat_interleave(torch.arange(p1 - p0, device=device), qc, output_size=n)
+            seg = torch.cumsum(qc, 0) - qc
+            src = starts[small[p0:p1]][local] + torch.arange(n, device=device) - seg[local]
+            query = big[p0:p1][local] * num_pixels + pix[src]
+            pos = torch.searchsorted(keys, query).clamp_max(keys.numel() - 1)
+            counts[p0:p1].index_add_(0, local, (keys[pos] == query).float())
+        p0 = p1
+    return counts, sizes
+
+
+def _compute_indices_to_merge(a, standard_correlation_image, merge_correlation_threshold,
+                              merge_overlap_threshold, frame_batch_size=200):
+    fov_height, fov_width = standard_correlation_image.shape[1:]
+    rows, cols = _dilated_overlap_pairs(a, fov_height, fov_width)
+    if rows.numel() == 0:
+        return rows, cols
+
+    sig, pix = _thresholded_corr_support(standard_correlation_image,
+                                         merge_correlation_threshold, frame_batch_size)
+    overlap, sizes = _pair_intersection_counts(sig, pix, rows, cols,
+                                               a.shape[1], fov_height * fov_width)
+    totals = sizes.clamp_min(1).float()            # same as the original "0 -> 1" fix
+    good = (overlap / totals[rows] > merge_overlap_threshold) & \
+           (overlap / totals[cols] > merge_overlap_threshold)
+    return rows[good], cols[good]
 
 def get_local_correlation_structure(
         u_sparse: SparseCSRTensor,
@@ -1860,71 +1977,72 @@ def superpixel_init(
                                      nmf_seed_map=connectivity_mat,
                                      pure_nmf_seed_map = pure_superpixel_img_1d.cpu().numpy().reshape((dims[0], dims[1])))
     return init_res
-
-def _compute_indices_to_merge(a: SparseCOOTensor,
-                              standard_correlation_image: StandardCorrelationImages,
-                              merge_correlation_threshold: float,
-                              merge_overlap_threshold: float,
-                              frame_batch_size: int = 200):
-    """
-    Two signals A and B can be merged all conditions are met:
-    (1) They overlap spatially by even 1 pixel
-    (2) Their overlapped correlation image is a large fraction of the thresholded correlation image for A
-    (3) Their overlapped correlation image is a large fraction of the thresholded correlation image for B
-    """
-
-    fov_height, fov_width = standard_correlation_image.shape[1:]
-    ## Create an overlap matrix
-    dil_h, dil_w, dil_col = sparse_dilation_routine(fov_height,
-                                                    fov_width,
-                                                    a)
-    dil_row = dil_h * fov_width + dil_w
-    a_dilated = torch.sparse_coo_tensor(
-        torch.stack([dil_row, dil_col]),
-        torch.ones_like(dil_row).to(torch.float32),
-        a.shape,
-    ).coalesce()
-
-
-
-    overlap_mat = torch.sparse.mm(a_dilated.t(), a_dilated).coalesce() #Shape (num_neurons, num_neurons)
-    rows, cols = overlap_mat.indices()
-    values = overlap_mat.values()
-
-    ##Select row/col pairs where value is nonzero (these are components that spatially overlap) and row < col (avoid duplicates)
-    selector = torch.logical_and(values > 0, rows < cols)
-    rows = rows[selector]
-    cols = cols[selector]
-    values = values[selector]
-
-    if values.numel() == 0:
-        return rows, cols
-
-    dtype = torch.float32
-    num_iters = math.ceil(cols.shape[0] / frame_batch_size)
-    good_comps = []
-    for k in range(num_iters):
-        start = k * frame_batch_size
-        end = min(cols.shape[0], start + frame_batch_size)
-        curr_rows = rows[start:end]
-        curr_cols = cols[start:end]
-        images_1 = standard_correlation_image.getitem_tensor(curr_rows.cpu().numpy()) #num_frames, height, width
-        images_2 = standard_correlation_image.getitem_tensor(curr_cols.cpu().numpy()) #num_frames, height, width
-
-        images_1 = (images_1 > merge_correlation_threshold).to(dtype)
-        total_image_1 = torch.sum(images_1, dim = [1, 2])
-        total_image_1[total_image_1 == 0] = 1.0
-        images_2 = (images_2 > merge_correlation_threshold).to(dtype)
-        total_image_2 = torch.sum(images_2, dim=[1, 2])
-        total_image_2[total_image_2 == 0] = 1.0
-
-        overlap_areas = torch.sum(images_1 * images_2, dim = [1, 2])
-        fractional_overlap_1 = overlap_areas / total_image_1
-        fractional_overlap_2 = overlap_areas / total_image_2
-        good_comps.append(torch.logical_and(fractional_overlap_1 > merge_overlap_threshold,
-                                            fractional_overlap_2 > merge_overlap_threshold))
-    good_comps = torch.concatenate(good_comps)
-    return rows[good_comps], cols[good_comps]
+#
+# def _compute_indices_to_merge(a: SparseCOOTensor,
+#                               standard_correlation_image: StandardCorrelationImages,
+#                               merge_correlation_threshold: float,
+#                               merge_overlap_threshold: float,
+#                               frame_batch_size: int = 200):
+#     """
+#     Two signals A and B can be merged all conditions are met:
+#     (1) They overlap spatially by even 1 pixel
+#     (2) Their overlapped correlation image is a large fraction of the thresholded correlation image for A
+#     (3) Their overlapped correlation image is a large fraction of the thresholded correlation image for B
+#     """
+#
+#     fov_height, fov_width = standard_correlation_image.shape[1:]
+#     ## Create an overlap matrix
+#     dil_h, dil_w, dil_col = sparse_dilation_routine(fov_height,
+#                                                     fov_width,
+#                                                     a)
+#     dil_row = dil_h * fov_width + dil_w
+#     a_dilated = torch.sparse_coo_tensor(
+#         torch.stack([dil_row, dil_col]),
+#         torch.ones_like(dil_row).to(torch.float32),
+#         a.shape,
+#     ).coalesce()
+#
+#
+#
+#     overlap_mat = torch.sparse.mm(a_dilated.t(), a_dilated).coalesce() #Shape (num_neurons, num_neurons)
+#     rows, cols = overlap_mat.indices()
+#     values = overlap_mat.values()
+#
+#     ##Select row/col pairs where value is nonzero (these are components that spatially overlap) and row < col (avoid duplicates)
+#     selector = torch.logical_and(values > 0, rows < cols)
+#     rows = rows[selector]
+#     cols = cols[selector]
+#     values = values[selector]
+#
+#     if values.numel() == 0:
+#         return rows, cols
+#
+#     dtype = torch.float32
+#     num_iters = math.ceil(cols.shape[0] / frame_batch_size)
+#     good_comps = []
+#     threshold_func = torch.nn.Threshold(merge_correlation_threshold, 0.0, inplace=True)
+#     for k in range(num_iters):
+#         start = k * frame_batch_size
+#         end = min(cols.shape[0], start + frame_batch_size)
+#         curr_rows = rows[start:end]
+#         curr_cols = cols[start:end]
+#         images_1 = threshold_func(standard_correlation_image.getitem_tensor(curr_rows.cpu().numpy())) #num_frames, height, width
+#         images_2 = threshold_func(standard_correlation_image.getitem_tensor(curr_cols.cpu().numpy())) #num_frames, height, width
+#
+#         # images_1 = (images_1 > merge_correlation_threshold).to(dtype)
+#         total_image_1 = torch.count_nonzero(images_1, dim = [1, 2])
+#         total_image_1[total_image_1 == 0] = 1.0
+#         # images_2 = (images_2 > merge_correlation_threshold).to(dtype)
+#         total_image_2 = torch.count_nonzero(images_2, dim=[1, 2])
+#         total_image_2[total_image_2 == 0] = 1.0
+#
+#         overlap_areas = torch.sum(images_1 * images_2, dim = [1, 2])
+#         fractional_overlap_1 = overlap_areas / total_image_1
+#         fractional_overlap_2 = overlap_areas / total_image_2
+#         good_comps.append(torch.logical_and(fractional_overlap_1 > merge_overlap_threshold,
+#                                             fractional_overlap_2 > merge_overlap_threshold))
+#     good_comps = torch.concatenate(good_comps)
+#     return rows[good_comps], cols[good_comps]
 
 
 def merge_components(
@@ -2982,61 +3100,6 @@ class DemixingState(SignalProcessingState):
         indicator = (torch.sparse.mm(self.a, ones_vec).squeeze() == 0).to(torch.float32)
         self.W.support = indicator
 
-    def extract_multiunit_factorization(self,
-                                        test_rank: int = 200,
-                                        num_oversamples:int=5):
-        left_svd, sing, right_sing = self._multiunit_factorization_routine(background_rank=test_rank,
-                                                                           num_oversamples=num_oversamples)
-        explained_variance_term = torch.cumsum(sing ** 2, dim=0) / torch.sum(sing ** 2)
-        min_rank = int(torch.argmax((explained_variance_term >= 0.99).float()).item())
-        effective_rank = min_rank + 1  ## This is the new estimate
-
-        left_svd = left_svd[:, :effective_rank]
-        left_svd = self.compression_array.project_frames(left_svd, standardize=False)
-        sing_svd = sing[:effective_rank]
-        right_svd = right_sing[:effective_rank, :]
-
-        return left_svd, sing_svd[:, None] * right_svd
-
-    def _multiunit_factorization_routine(self,
-                                        background_rank: int = 200,
-                                        num_oversamples:int = 5) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Strategy here is to return the factorization
-        """
-
-
-        device = self.device
-        num_frames = self.temporal_compressed.shape[1]
-        random_data = torch.randn(num_frames, background_rank + num_oversamples, device=device)
-        resid_projection = (torch.sparse.mm(self.spatial_compressed, self.temporal_compressed @ random_data) -
-                            torch.sparse.mm(self.a, self.c.T @ random_data) -
-                            self.b @ torch.sum(random_data, dim=0, keepdim=True))
-        if self.factorized_ring_term is not None:
-            resid_projection -= torch.sparse.mm(self.spatial_compressed, self.factorized_ring_term[0] @ (self.factorized_ring_term[1] @ random_data))
-
-        resid_projection -= torch.mean(resid_projection, dim=1, keepdims=True)
-        orth_qr, tri_qr = torch.linalg.qr(resid_projection, mode="reduced")
-        proj_u = torch.sparse.mm(self.spatial_compressed.t(), orth_qr)
-        right_term = proj_u.T @ self.temporal_compressed
-        if self.factorized_ring_term is not None:
-            right_term -= (proj_u.T @ self.factorized_ring_term[0]) @ self.factorized_ring_term[1]
-        right_term -= torch.sparse.mm(self.a.t(), orth_qr).T @ self.c.T
-        right_term -= orth_qr.T @ self.b
-
-        left_svd, sing_svd, right_svd = torch.linalg.svd(right_term, full_matrices=False)
-
-        left_term = orth_qr @ left_svd
-
-        return left_term[:, :background_rank], sing_svd[:background_rank], right_svd[:background_rank, :]
-
-
-
-
-
-
-
-
 
     def lowrank_background_svd(self,
                                downsampling_factor: int,
@@ -3532,19 +3595,26 @@ class DemixingState(SignalProcessingState):
         """
         # Key: precompute_quantities is a setup function which must be run first in this routine
         # self.background_rank = None #Always estimate the background rank each time
-        print("RESET LETS GO")
-        self.detrender = detrender
-        if self.detrender is not None:
-            self.detrender.to(self.device)
+        with gpu_mem("detrender"):
+            self.detrender = detrender
+            if self.detrender is not None:
+                self.detrender.to(self.device)
 
-        self.precompute_quantities()
-        self.W = RingModel(
-            self.shape[0], self.shape[1], ring_radius, self.device
-        )
-        self.update_hals_scheduler()
-        graph_laplacian = None
-        self.initialize_standard_correlation_image()
-        self.compute_residual_correlation_image()
+        with gpu_mem("precompute"):
+            self.precompute_quantities()
+            self.W = RingModel(
+                self.shape[0], self.shape[1], ring_radius, self.device
+            )
+
+        with gpu_mem("hals schedule"):
+            self.update_hals_scheduler()
+            graph_laplacian = None
+
+        with gpu_mem("standard corr img"):
+            self.initialize_standard_correlation_image()
+
+        with gpu_mem("compute resid corr img"):
+            self.compute_residual_correlation_image()
 
         if isinstance(support_threshold, list) or isinstance(support_threshold, tuple):
             if len(support_threshold) == 2:
@@ -3578,46 +3648,56 @@ class DemixingState(SignalProcessingState):
         background_enabled: bool = False
         background_reassigned: bool = False
         for iters in tqdm(range(maxiter)):
-            self.static_baseline_update()
+            with gpu_mem("b update"):
+                self.static_baseline_update()
 
             if ring_model_start_pt is not None and iters >= ring_model_start_pt:
-                background_enabled = True
-                graph_laplacian = construct_laplacian_matrix(self.shape[0],
-                                                             self.shape[1],
-                                                             offset=max(1, ring_radius // 2),
-                                                             device=self.device)
+                with gpu_mem("laplacian"):
+                    background_enabled = True
+                    graph_laplacian = construct_laplacian_matrix(self.shape[0],
+                                                                 self.shape[1],
+                                                                 offset=max(1, ring_radius // 2),
+                                                                 device=self.device)
 
             if background_enabled:
                 if self.factorized_ring_term is not None and reassign_background and iters == maxiter - 1:
-                    self.reassign_background_to_signal(graph_laplacian, c_nonneg=c_nonneg)
-                    background_reassigned = True
-                self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
+                    with gpu_mem("reassign bkgd"):
+                        self.reassign_background_to_signal(graph_laplacian, c_nonneg=c_nonneg)
+                        background_reassigned = True
+                with gpu_mem("fluctuating baseline update"):
+                    self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
 
-            self.spatial_update(plot_en=plot_en)
-            self.static_baseline_update()
+            with gpu_mem("spatial update"):
+                self.spatial_update(plot_en=plot_en)
 
-            denoise_flag = denoise[iters]
-            self.temporal_update(
-                denoise=denoise_flag, plot_en=plot_en, c_nonneg=c_nonneg
-            )
+            with gpu_mem("baseline update"):
+                self.static_baseline_update()
+
+            with gpu_mem("temporal update"):
+                denoise_flag = denoise[iters]
+                self.temporal_update(
+                    denoise=denoise_flag, plot_en=plot_en, c_nonneg=c_nonneg
+                )
 
             if update_frequency and ((iters + 1) % update_frequency == 0):
                 ##First: Compute correlation images
-                self.standard_correlation_image.temporal_demixed = self.c
+                with gpu_mem("std corr img setter"):
+                    self.standard_correlation_image.temporal_demixed = self.c
 
                 # Merge signals as needed and update the scheduler
-                if not background_reassigned:
-                    original_shape = self.a.shape[1]
-                    self.merge_signals(merge_threshold, merge_overlap_threshold, plot_en)
+                with gpu_mem("merge signals"):
+                    if not background_reassigned:
+                        original_shape = self.a.shape[1]
+                        self.merge_signals(merge_threshold, merge_overlap_threshold, plot_en)
 
-                    if self.a.shape[1] < original_shape:
-                        self.update_hals_scheduler()
-
-                self.support_update_routine(
-                    support_threshold[iters],
-                    deletion_threshold,
-                    min_brightness=min_brightness_list[iters]
-                )
+                        if self.a.shape[1] < original_shape:
+                            self.update_hals_scheduler()
+                with gpu_mem("support update"):
+                    self.support_update_routine(
+                        support_threshold[iters],
+                        deletion_threshold,
+                        min_brightness=min_brightness_list[iters]
+                    )
 
 
                 self.update_hals_scheduler()
@@ -3649,8 +3729,6 @@ class DemixingState(SignalProcessingState):
             sign=sign
         )
 
-        multiunit_basis_term1, multiunit_basis_term2 = self.extract_multiunit_factorization()
-
         self._results = DemixingResults(
             (self.num_frames, self.fov_height, self.fov_width),
             self.compression_array.spatial_compressed,
@@ -3673,8 +3751,6 @@ class DemixingState(SignalProcessingState):
             background_correlation_image_mean=background_to_signal_correlation_image.standard_correlation_image_mean,
             background_correlation_image_normalizer=background_to_signal_correlation_image.standard_correlation_image_normalizer,
             global_residual_correlation_image=torch.from_numpy(self._curr_corr_image),
-            multiunit_basis_term1=multiunit_basis_term1,
-            multiunit_basis_term2=multiunit_basis_term2,
             device="cpu",
         )
 

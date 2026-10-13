@@ -360,4 +360,90 @@ def get_box(img: np.ndarray) -> tuple[int, int, int, int]:
         return int(np.amin(x)), int(np.amax(x)), int(np.amin(y)), int(np.amax(y))
 
 
+def extract_multiunit_factorization(
+        compression_array,
+        spatial_compressed: torch.Tensor,
+        temporal_compressed: torch.Tensor,
+        a: torch.Tensor,
+        c: torch.Tensor,
+        b: torch.Tensor,
+        factorized_ring_term: tuple[torch.Tensor, torch.Tensor] | None = None,
+        test_rank: int = 200,
+        num_oversamples: int = 5,
+        explained_variance_cutoff: float = 0.99,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Low-rank factorization of the residual UV - AC - b1^T - UF1F2, truncated to the
+    rank that explains `explained_variance_cutoff` of its variance.
+
+    Args:
+        compression_array: provides project_frames(), used to map the spatial basis
+            back into the compression basis
+        spatial_compressed: (num_pixels, compression_rank) sparse
+        temporal_compressed: (compression_rank, num_frames)
+        a: (num_pixels, num_signals) sparse spatial footprints
+        c: (num_frames, num_signals) temporal traces
+        b: static baseline, (num_pixels,) or (num_pixels, 1)
+        factorized_ring_term: (F1, F2) with shapes (compression_rank, r), (r, num_frames), or None
+
+    Returns:
+        (spatial term projected via compression_array.project_frames, (rank, num_frames) temporal term)
+    """
+    left_svd, sing, right_svd = _multiunit_factorization_routine(
+        spatial_compressed, temporal_compressed, a, c, b,
+        factorized_ring_term=factorized_ring_term,
+        background_rank=test_rank,
+        num_oversamples=num_oversamples,
+    )
+    explained_variance = torch.cumsum(sing ** 2, dim=0) / torch.sum(sing ** 2)
+    effective_rank = int(torch.argmax((explained_variance >= explained_variance_cutoff).float()).item()) + 1
+
+    left_svd = compression_array.project_frames(left_svd[:, :effective_rank], standardize=False)
+    return left_svd, sing[:effective_rank, None] * right_svd[:effective_rank, :]
+
+
+def _multiunit_factorization_routine(
+        spatial_compressed: torch.Tensor,
+        temporal_compressed: torch.Tensor,
+        a: torch.Tensor,
+        c: torch.Tensor,
+        b: torch.Tensor,
+        factorized_ring_term: tuple[torch.Tensor, torch.Tensor] | None = None,
+        background_rank: int = 200,
+        num_oversamples: int = 5,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Randomized SVD of the residual UV - AC - b1^T - UF1F2 (row-mean subtracted in the sketch).
+
+    Returns:
+        left (num_pixels, k), singular values (k,), right (k, num_frames), with k = background_rank
+    """
+    device = temporal_compressed.device
+    b = b.reshape(-1, 1)  # DemixingResults stores the baseline squeezed to 1D
+    num_frames = temporal_compressed.shape[1]
+    random_data = torch.randn(num_frames, background_rank + num_oversamples,
+                              device=device, dtype=temporal_compressed.dtype)
+
+    resid_projection = (torch.sparse.mm(spatial_compressed, temporal_compressed @ random_data)
+                        - torch.sparse.mm(a, c.T @ random_data)
+                        - b @ torch.sum(random_data, dim=0, keepdim=True))
+    if factorized_ring_term is not None:
+        f1, f2 = factorized_ring_term
+        resid_projection -= torch.sparse.mm(spatial_compressed, f1 @ (f2 @ random_data))
+
+    resid_projection -= torch.mean(resid_projection, dim=1, keepdim=True)
+    orth_qr, _ = torch.linalg.qr(resid_projection, mode="reduced")
+
+    proj_u = torch.sparse.mm(spatial_compressed.t(), orth_qr)
+    right_term = proj_u.T @ temporal_compressed
+    if factorized_ring_term is not None:
+        right_term -= (proj_u.T @ f1) @ f2
+    right_term -= torch.sparse.mm(a.t(), orth_qr).T @ c.T
+    right_term -= orth_qr.T @ b
+
+    left_svd, sing_svd, right_svd = torch.linalg.svd(right_term, full_matrices=False)
+    left_term = orth_qr @ left_svd
+    return left_term[:, :background_rank], sing_svd[:background_rank], right_svd[:background_rank, :]
+
+
 
