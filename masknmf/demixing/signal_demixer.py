@@ -425,7 +425,7 @@ def _compute_residual_correlation_image(
 
 
 def _compute_standard_correlation_image(
-        spatial_compressed: SparseCOOTensor,
+        spatial_compressed: SparseCSRTensor,
         temporal_compressed: torch.Tensor,
         temporal_demixed: torch.Tensor,
         fov_dims: tuple[int, int],
@@ -450,53 +450,34 @@ def _compute_standard_correlation_image(
         corr_array (StandardCorrelationImages): A FactorizedVideo object that can lazily compute correlation images.
     """
     num_frames = temporal_compressed.shape[1]
-    # Step 1: Standardize c
-    # c = temporal_demixed - torch.mean(temporal_demixed, dim=0, keepdim=True)
-    # c_norm = torch.sqrt(torch.sum(c * c, dim=0, keepdim=True))
-    # c /= c_norm
-
-    ##Step 2: Compute the mean of the UV video
     v_mean = torch.mean(temporal_compressed, dim=1, keepdim=True)
-    uv_mean = torch.sparse.mm(spatial_compressed, v_mean)  # Dims: d x 1
+    uv_mean = torch.sparse.mm(spatial_compressed, v_mean).squeeze(1)  # (pixels,)
 
     if compression_pixelwise_norms is None:
-        """
-        Step 3: Compute the pixelwise norm of the mean-subtracted PMD data. Exploit low-rank of PMD here.
-        We want to find diag([UV - m1^T][temporal_compressed^TU^T - 1m^T]) here.
-        """
-        uv_meanzero_norm = torch.zeros(
-            (spatial_compressed.shape[0], 1), device=device, dtype=spatial_compressed.dtype
-        )
-        v_sum = torch.sum(temporal_compressed, dim=1, keepdim=True)
-        uv_sum = torch.sparse.mm(spatial_compressed, v_sum)
-        uv_meanzero_norm += (-2) * uv_sum * uv_mean
-        uv_meanzero_norm += uv_mean * uv_mean * num_frames
-
-        # To finish norm computation, need to compute diag(UVV^TU). This is rowsum(UVV^T (hadamard) spatial_compressed).
-        batch_iters = math.ceil(spatial_compressed.shape[0] / pixel_batch_size)
-        for k in range(batch_iters):
-            start = pixel_batch_size * k
+        # ||UV_i||^2, uncentered
+        norms_sq = torch.zeros(spatial_compressed.shape[0], device=device, dtype=temporal_compressed.dtype)
+        for start in range(0, spatial_compressed.shape[0], pixel_batch_size):
             end = min(start + pixel_batch_size, spatial_compressed.shape[0])
             idx = torch.arange(start, end, device=device, dtype=torch.long)
-            u_subset = csr_index_select_rows(spatial_compressed, idx)
-            uv_subset = torch.sparse.mm(u_subset, temporal_compressed)
-            uv_meanzero_norm[start:end] += torch.linalg.norm(uv_subset, dim = 1, keepdim=True)**2
-        compression_pixelwise_norms = torch.sqrt(uv_meanzero_norm)
+            uv_subset = torch.sparse.mm(csr_index_select_rows(spatial_compressed, idx), temporal_compressed)
+            norms_sq[start:end] = uv_subset.square().sum(dim=1)
+    else:
+        norms_sq = compression_pixelwise_norms.reshape(-1).square()
 
+    # ||UV_i - m_i 1||^2 = ||UV_i||^2 - T m_i^2
+    meanzero_norms_sq = norms_sq - num_frames * uv_mean.square()
     if noise_std is not None:
-        compression_pixelwise_norms = compression_pixelwise_norms.square()
-        compression_pixelwise_norms += num_frames * (noise_std.flatten() ** 2)
-        compression_pixelwise_norms = torch.sqrt(compression_pixelwise_norms)
+        meanzero_norms_sq += num_frames * noise_std.flatten().square()
+    compression_meanzero_norms = torch.sqrt(meanzero_norms_sq.clamp_min(0))
 
     corr_array = StandardCorrelationImages.from_tensors(
         spatial_compressed.to_sparse_coo(),
         temporal_compressed,
         temporal_demixed,
-        uv_mean.squeeze(),
-        compression_pixelwise_norms.squeeze(),
+        uv_mean,
+        compression_meanzero_norms,
         fov_dims,
     )
-
     return corr_array
 
 
