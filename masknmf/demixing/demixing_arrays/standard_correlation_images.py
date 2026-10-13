@@ -22,8 +22,11 @@ class StandardCorrelationImages(ArrayLike):
                                             'standard_correlation_image_mean',
                                             'standard_correlation_image_normalizer'])
 
-        ## Caution: This tensor is "settable" (when you update self._temporal_demixed the correlation image dynamically changes). So the getter for c should just call flyweight.c
+        ## Caution: This tensor is "settable" (when you update self._temporal_demixed the correlation image dynamically changes).
+        ## So the getter for should not just call flyweight.temporal_demixed, it should actually store its own field for this
         self._temporal_demixed = None
+        self._temporal_demixed_mean = None
+        self._temporal_demixed_centered_norm = None
         self.temporal_demixed = flyweight.temporal_demixed
         self._pixel_mat = torch.arange(self.shape[1]*self.shape[2], device=self.device, dtype=torch.long).reshape(
             self.shape[1], self.shape[2])
@@ -51,8 +54,7 @@ class StandardCorrelationImages(ArrayLike):
         Args:
             spatial_compressed (torch.sparse_coo_tensor): shape (pixels, rank)
             temporal_compressed (torch.Tensor): shape (rank, frames)
-            temporal_demixed (torch.Tensor): shape (frames, number of neural signals). This is the temporal traces matrix, where every
-                column has mean 0 and Frobenius norm 1.
+            temporal_demixed (torch.Tensor): shape (frames, number of neural signals). This is the temporal traces matrix
             standard_correlation_image_mean (torch.Tensor): shape (pixels), the mean of spatial_compressed times temporal_compressed
             standard_correlation_image_normalizer (torch.Tensor): shape (pixels), the pixelwise l2 norm of (spatial_compressed times temporal_compressed) - movie_mean
             fov_dims (tuple[int, int]): A (fov_height, fov_width) tuple describing spatial imaging dimensions
@@ -92,6 +94,8 @@ class StandardCorrelationImages(ArrayLike):
         self._ones_frames = self._ones_frames.to(new_device)
         self._pixel_mat = self._pixel_mat.to(new_device)
         self._temporal_demixed = self._temporal_demixed.to(new_device)
+        self._temporal_demixed_mean = self._temporal_demixed_mean.to(new_device)
+        self._temporal_demixed_centered_norm = self._temporal_demixed_centered_norm.to(new_device)
 
     @property
     def temporal_demixed(self) -> torch.Tensor:
@@ -106,12 +110,12 @@ class StandardCorrelationImages(ArrayLike):
         if new_tensor.shape[0] != self.temporal_compressed.shape[1]:
             raise ValueError(
                 f"Input temporal trace matrix has {new_tensor.shape[0]} frames"
-                f"which is incompatible with the movie, which has {self._v.shape[1]} frames"
+                f"which is incompatible with the movie, which has {self.temporal_compressed.shape[1]} frames"
             )
-        mean_zero = new_tensor - torch.mean(new_tensor, dim=0, keepdim=True)
-        mean_zero /= torch.linalg.norm(mean_zero, dim=0, keepdim=True)
-        mean_zero = torch.nan_to_num(mean_zero, nan=0.0, posinf=0.0, neginf=0.0)
-        self._temporal_demixed = mean_zero
+        new_tensor = new_tensor.to(self.device)
+        _temporal_demixed_var, self._temporal_demixed_mean = torch.var_mean(new_tensor, dim=0, correction=0, keepdim=True)
+        self._temporal_demixed_centered_norm = torch.sqrt((_temporal_demixed_var * new_tensor.shape[0]))
+        self._temporal_demixed = new_tensor
 
     @property
     def spatial_compressed(self) -> torch.sparse_coo_tensor:
@@ -149,12 +153,16 @@ class StandardCorrelationImages(ArrayLike):
         frame_indexer, item = self._parse_indices(item)
 
         # Step 3: Now slice the data with frame_indexer (careful: if the ndims has shrunk, add a dim)
+        # Note: "frames" here are images for each neuron. These are NOT the timepoints of the signals
         c_crop = self.temporal_demixed[:, frame_indexer]
         if c_crop.ndim < self.temporal_demixed.ndim:
             c_crop = c_crop.unsqueeze(1)
+        c_crop = c_crop - self._temporal_demixed_mean[:, frame_indexer]
+        c_crop /= self._temporal_demixed_centered_norm[:, frame_indexer]
+        c_crop.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0) #In-place
 
-        v_crop = self.temporal_compressed @ c_crop
-        ones_crop = self._ones_frames @ c_crop
+        vc_crop = self.temporal_compressed @ c_crop
+        # ones_crop = self._ones_frames @ c_crop
 
         # Step 4: Deal with remaining indices after lazy computing the frame(s)
         if isinstance(item, tuple) and check_spatial_crop_effect(
@@ -163,7 +171,7 @@ class StandardCorrelationImages(ArrayLike):
             pixel_space_crop = self._pixel_mat[item[1:]]
             u_indices = pixel_space_crop.flatten()
             u_crop = torch.index_select(self.spatial_compressed, 0, u_indices)
-            mean_crop = torch.index_select(self.standard_correlation_image_mean, 0, u_indices)
+            # mean_crop = torch.index_select(self.standard_correlation_image_mean, 0, u_indices)
             movie_normalizer_crop = torch.index_select(
                 self.standard_correlation_image_normalizer, 0, u_indices
             )
@@ -173,24 +181,27 @@ class StandardCorrelationImages(ArrayLike):
                 u_crop = self._spatial_compressed_csr
             else:
                 u_crop = self.spatial_compressed
-            mean_crop = self.standard_correlation_image_mean
+            # mean_crop = self.standard_correlation_image_mean
             movie_normalizer_crop = self.standard_correlation_image_normalizer
             implied_fov = self.shape[1], self.shape[2]
 
-        product = (
-            torch.sparse.mm(u_crop, v_crop) - mean_crop.unsqueeze(1) @ ones_crop
-        ) / movie_normalizer_crop.unsqueeze(1)
+        """
+        Now we do ((UV - Mean)/Normalizer) @ (c_centered / c_normalizer) 
+        Here division is elementwise division
+        Note that since c is centered, (mean / normalizer) @ (c_centered/c_normalizer) is 0, so we can omit this
+        """
 
+        product = torch.sparse.mm(u_crop, vc_crop)
+        product /= movie_normalizer_crop.unsqueeze(1)
+        product.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
 
         product = product.reshape((implied_fov[0], implied_fov[1], -1))
-        product = product.permute(2, 0, 1)
-
-        return torch.nan_to_num(product, nan=0.0, posinf=0.0, neginf=0.0)
+        return product.permute(2, 0, 1)
 
     def __getitem__(
         self,
         item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
     ) -> np.ndarray:
         product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
+        product = product.cpu().numpy().astype(self.dtype, copy=False)
         return product
