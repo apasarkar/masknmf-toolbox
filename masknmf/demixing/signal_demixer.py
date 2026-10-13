@@ -585,7 +585,7 @@ def process_custom_signals(
 
 
 def append_signals(
-        a: SparseCOOTensor,
+        a: SparseCSRTensor,
         c: torch.Tensor,
         init_res: InitializationResults,
         u_sparse: SparseCOOTensor,
@@ -600,17 +600,16 @@ def append_signals(
         init_res (InitializationResults): the new signals
         spatial_compressed, temporal_compressed: the CompressionArray factors, used for the baseline
     """
-    a = a.coalesce()
-    a_new = init_res.spatial_demixed.coalesce().to(a.device)
+    a_new = init_res.spatial_demixed.to(a.device)
     c_new = init_res.temporal_demixed.to(c.device)
-    a_row, a_col = a.indices()
-    new_row, new_col = a_new.indices()
+    a_row, a_col = decompress_csr_rows(a.crow_indices(), a.values().numel()), a.col_indices()
+    new_row, new_col = decompress_csr_rows(a_new.crow_indices(), a_new.values().numel()), a_new.col_indices()
     rows = torch.cat([a_row, new_row])
     cols = torch.cat([a_col, new_col + a.shape[1]])
     vals = torch.cat([a.values(), a_new.values()])
     a_all = torch.sparse_coo_tensor(
         torch.stack([rows, cols]), vals, (a.shape[0], a.shape[1] + a_new.shape[1])
-    ).coalesce()
+    ).coalesce().to_sparse_csr()
     c_all = torch.cat([c, c_new], dim=1)
     b = regression_update.baseline_update(get_mean_data(u_sparse, v), a_all, c_all)
     return InitializationResults(a_all, a_all.bool(), c_all, b)
@@ -2118,7 +2117,7 @@ def merge_components(
         added_counter = 0
         for comp in comps:
             logger.debug(f"merging {comp}")
-            comp = list(comp)
+            comp = sorted(comp)
             good_comps = torch.Tensor(comp).to(device).long()
 
             a_merge = csr_index_select_cols(a, good_comps)
@@ -2475,19 +2474,30 @@ class SignalDemixer:
             drop (Sequence[int] | None): indices of signals to leave out of the resumed pass
         """
         if results.factorized_background_term1 is not None and results.factorized_background_term2 is not None:
-            ring_term = (results.factorized_background_term1, results.factorized_background_term2)
+            ring_term = (results.factorized_background_term1.to(device), results.factorized_background_term2.to(device))
         else:
             ring_term = None
-        a = results.spatial_demixed.coalesce()
+        a = results.spatial_demixed.coalesce().to_sparse_csr()
         c = results.temporal_demixed
         if drop:
             keep = torch.ones(a.shape[1], dtype=torch.bool, device=a.device)
             keep[torch.as_tensor(list(drop), dtype=torch.long, device=a.device)] = False
             keep = torch.nonzero(keep).squeeze(1)
-            a = a.index_select(1, keep).coalesce()
+            a = csr_index_select_cols(a, keep)
             c = c[:, keep.to(c.device)]
+
+        compression_array = masknmf.CompressionArray.from_tensors(results.compression_array.shape,
+                                                                  results.spatial_compressed,
+                                                                  results.temporal_compressed,
+                                                                  results.mean_image,
+                                                                  results.noise_variance_image,
+                                                                  spatial_compressed_local_projector=results.spatial_compressed_local_projector,
+                                                                  spatial_trend_basis=results.spatial_trend_basis,
+                                                                  temporal_trend_basis=results.temporal_trend_basis,
+                                                                  device=device
+                                                                  )
         return cls(
-            results.compression_array,
+            compression_array,
             device=device,
             frame_batch_size=frame_batch_size,
             a=a,
@@ -2550,9 +2560,12 @@ class InitializingState(SignalProcessingState):
         self.temporal_compressed = self.v
         self.compression_array = self.pmd_obj
 
-        self.factorized_ring_term = factorized_ring_term
+        self.factorized_ring_term = (
+            None if factorized_ring_term is None
+            else (factorized_ring_term[0].to(self.device), factorized_ring_term[1].to(self.device))
+        )
 
-        if robust_noise_term is None and factorized_ring_term is None:
+        if robust_noise_term is None:
             self.robust_noise_term = self._sketch_robust_variance_term()
         else:
             self.robust_noise_term = robust_noise_term
@@ -3091,7 +3104,7 @@ class DemixingState(SignalProcessingState):
         """
         Lots of HALS updates can be done in parallel because the underlying signals don't overlap
         """
-        self.blocks = _compute_hals_schedule(self.mask_ab,
+        self.blocks = _compute_hals_schedule(self.a,
                                              self.device,
                                              self.frame_batch_size)
 
@@ -3509,7 +3522,7 @@ class DemixingState(SignalProcessingState):
         indices_to_keep = self._flag_components_for_deletion(corr_th_del,
                                                              min_brightness)
         if indices_to_keep.shape[0] < self.a.shape[1]:
-            self.a = csr_index_select_cols(a, indices_to_keep)
+            self.a = csr_index_select_cols(self.a, indices_to_keep)
             self.mask_ab = csr_index_select_cols(self.mask_ab, indices_to_keep)
             self.c = torch.index_select(self.c, 1, indices_to_keep)
             self.standard_correlation_image.temporal_demixed = self.c

@@ -119,7 +119,7 @@ def color_and_get_tensors(graph: nx.Graph,
         chunk
         for nodes in color_to_nodes.values()
         for chunk in torch.split(
-            torch.tensor(nodes, dtype=torch.long, device=device),
+            torch.tensor(sorted(nodes), dtype=torch.long, device=device),
             frame_batch_size,
         )
     ]
