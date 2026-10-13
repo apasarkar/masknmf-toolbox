@@ -2574,7 +2574,7 @@ class InitializingState(SignalProcessingState):
         self._init_results = None
 
         if a is not None:
-            self.a = a.to(self.device)
+            self.a = a.to(self.device).to_sparse_csr()
         else:
             self.a = None
 
@@ -2909,6 +2909,8 @@ class DemixingState(SignalProcessingState):
         self.compression_array = compression_array
 
         self.spatial_compressed = compression_array.spatial_compressed.to(device).to_sparse_csr()
+        if compression_array.spatial_compressed_local_projector is None:
+            raise ValueError("The compression result must have a spatial_compressed_local_projector")
         self.spatial_compressed_local_projector = compression_array.spatial_compressed_local_projector.t().to_sparse_csr().to(device)
         self.temporal_compressed = compression_array.temporal_compressed.to(device)
 
