@@ -19,7 +19,7 @@ class PiecewiseRigidMotionCorrectionConfig:
     max_deviation_rigid: tuple[int, int] = (2, 2)
     pixel_weighting: Optional[np.ndarray] = None
     template: Optional[np.ndarray] = None
-    reference_highpass_sigma: Optional[float] = None
+    reference_highpass_sigma: float | None = None
 
 @dataclass
 class GradientMotionCorrectionConfig:
