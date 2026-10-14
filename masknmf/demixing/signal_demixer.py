@@ -2343,7 +2343,7 @@ def right_singular_vector_routine(u: SparseCSRTensor,
     We have the residual movie (without fluctuating background), UV - AC - B where U/V are the spatial/temporal compression results,
     A/C are the spatial/temporal demixing results, and B is a (pixels, 1) tensor describing background
 
-    We have an (orthogonalized) temporal basis for the background, v_bkgd, (frames, target rank)
+    We have an (orthogonalized) temporal basis for the background, v_bkgd, (target rank, frames)
     This routine computes the spectrum + right singular vectors for (UV - AC - B)v_bkgd
     """
     target_output = torch.zeros(v_bkgd.shape[0],
@@ -2355,26 +2355,31 @@ def right_singular_vector_routine(u: SparseCSRTensor,
     for k in range(num_iters):
         start_1 = k * effective_batch_size
         end_1 = min(target_output.shape[0], start_1 + effective_batch_size)
-        v_subset1 = v[start_1:end_1, :]
+        v_subset1 = v_bkgd[start_1:end_1, :]
         subset = torch.sparse.mm(u, v @ v_subset1.T)
         subset -= torch.sparse.mm(a, c.T @ v_subset1.T)
         subset -= torch.sparse.mm(b, torch.sum(v_subset1.T, dim=0, keepdim=True))
 
         for j in range(k, num_iters):
-            start_2 = j * effective_batch_size
-            end_2 = min(target_output.shape[0], start_2 + effective_batch_size)
-            v_subset2 = v[start_2:end_2, :]
-            subset2 = torch.sparse.mm(u, v @ v_subset2.T)
-            subset2 -= torch.sparse.mm(a, c @ v_subset2.T)
-            subset2 -= torch.sparse.mm(b, torch.sum(v_subset2.T, dim=0, keepdim=True))
+            if j == k:
+                subset2 = v_subset1
+                start_2 = start_1
+                end_2 = end_1
+            else:
+                start_2 = j * effective_batch_size
+                end_2 = min(target_output.shape[0], start_2 + effective_batch_size)
+                v_subset2 = v_bkgd[start_2:end_2, :]
+                subset2 = torch.sparse.mm(u, v @ v_subset2.T)
+                subset2 -= torch.sparse.mm(a, c.T @ v_subset2.T)
+                subset2 -= torch.sparse.mm(b, torch.sum(v_subset2.T, dim=0, keepdim=True))
 
-            prod = subset @ subset2.T
+            prod = subset.T @ subset2
             target_output[start_1:end_1, start_2:end_2] = prod
             target_output[start_2:end_2, start_1:end_1] = prod.T
 
     final_output = (target_output + target_output.T) / 2
 
-    eigenvalues, eigenvectors = torch.linalg.eigh(final_output.astype(torch.double))
+    eigenvalues, eigenvectors = torch.linalg.eigh(final_output.astype(torch.double()))
     eigenvalues, eigenvectors = eigenvalues.flip(0), eigenvectors.flip(1)
     return eigenvectors.T.to(v_bkgd.dtype), eigenvectors.clamp_min_(0).sqrt().to(v_bkgd.dtype)
 
