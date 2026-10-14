@@ -677,12 +677,12 @@ def downsample_sparse(sparse_tensor: SparseCSRTensor,
     height, width = fov_dims[0], fov_dims[1]
     rows, cols = decompress_csr_rows(sparse_tensor.crow_indices(), sparse_tensor.values().numel()), sparse_tensor.col_indices()
     sparse_values = sparse_tensor.values()
-    h_vals = torch.floor(rows / width)
-    w_vals = rows - h_vals * width
+    h_vals = rows // width # torch.floor(rows / width)
+    w_vals = rows % width # - h_vals * width
 
     new_height, new_width = height // downsample_factor, width // downsample_factor
-    h_vals /= downsample_factor
-    w_vals /= downsample_factor
+    h_vals = h_vals // downsample_factor
+    w_vals = w_vals // downsample_factor
     h_vals = torch.floor(h_vals).long()
     good_indices = (h_vals < new_height).long()
     w_vals = torch.floor(w_vals).long()

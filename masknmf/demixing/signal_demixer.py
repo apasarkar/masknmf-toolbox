@@ -2346,36 +2346,37 @@ def right_singular_vector_routine(u: SparseCSRTensor,
     We have an (orthogonalized) temporal basis for the background, v_bkgd, (frames, target rank)
     This routine computes the spectrum + right singular vectors for (UV - AC - B)v_bkgd
     """
-    target_output = torch.zeros(v_bkgd.shape[1],
-                                v_bkgd.shape[1],
+    target_output = torch.zeros(v_bkgd.shape[0],
+                                v_bkgd.shape[0],
                                 dtype=v_bkgd.dtype,
                                 device=v_bkgd.device)
     effective_batch_size = frame_batch_size // 2 #Since we will load two chunks of this size at a time
-    num_iters = math.ceil(target_output.shape / effective_batch_size)
+    num_iters = math.ceil(target_output.shape[0] / effective_batch_size)
     for k in range(num_iters):
         start_1 = k * effective_batch_size
         end_1 = min(target_output.shape[0], start_1 + effective_batch_size)
-        v_subset1 = v[:, start_1:end_1]
-        subset = torch.sparse.mm(u, v @ v_subset1)
-        subset -= torch.sparse.mm(a, c @ v_subset1)
-        subset -= torch.sparse.mm(b, torch.sum(v_subset1, dim=0, keepdim=True))
+        v_subset1 = v[start_1:end_1, :]
+        subset = torch.sparse.mm(u, v @ v_subset1.T)
+        subset -= torch.sparse.mm(a, c.T @ v_subset1.T)
+        subset -= torch.sparse.mm(b, torch.sum(v_subset1.T, dim=0, keepdim=True))
 
         for j in range(k, num_iters):
             start_2 = j * effective_batch_size
             end_2 = min(target_output.shape[0], start_2 + effective_batch_size)
-            v_subset2 = v[:, start_2:end_2]
-            subset2 = torch.sparse.mm(u, v @ v_subset2)
-            subset2 -= torch.sparse.mm(a, c @ v_subset2)
-            subset2 -= torch.sparse.mm(b, torch.sum(v_subset2, dim=0, keepdim=True))
+            v_subset2 = v[start_2:end_2, :]
+            subset2 = torch.sparse.mm(u, v @ v_subset2.T)
+            subset2 -= torch.sparse.mm(a, c @ v_subset2.T)
+            subset2 -= torch.sparse.mm(b, torch.sum(v_subset2.T, dim=0, keepdim=True))
 
-            prod = subset.T @ subset2
-            target_output[start1:end1, start2:end2] = prod
+            prod = subset @ subset2.T
+            target_output[start_1:end_1, start_2:end_2] = prod
+            target_output[start_2:end_2, start_1:end_1] = prod.T
 
-    target_prod_bin = (target_output > 0).to(target_output.dtype)
-    final_output = (target_output + target_output.T) / (target_prod_bin + target_prod_bin.T)
+    final_output = (target_output + target_output.T) / 2
 
-    eigenvalues, eigenvectors = torch.linalg.eigh(final_output)
-    return eigenvalues.T, torch.sqrt(eigenvectors.clamp_min_(0))
+    eigenvalues, eigenvectors = torch.linalg.eigh(final_output.astype(torch.double))
+    eigenvalues, eigenvectors = eigenvalues.flip(0), eigenvectors.flip(1)
+    return eigenvectors.T.to(v_bkgd.dtype), eigenvectors.clamp_min_(0).sqrt().to(v_bkgd.dtype)
 
 # Code for min Laplacian re-assignment of signal from background to A/C components
 def construct_laplacian_matrix(height: int,
@@ -2594,7 +2595,7 @@ class SignalDemixer:
                                                                   spatial_compressed_local_projector=results.spatial_compressed_local_projector,
                                                                   spatial_trend_basis=results.spatial_trend_basis,
                                                                   temporal_trend_basis=results.temporal_trend_basis,
-                                                                  device=device
+                                                                  device='cpu'
                                                                   )
         return cls(
             compression_array,
@@ -3009,7 +3010,7 @@ class DemixingState(SignalProcessingState):
         self._results = None
         self.compression_array = compression_array
 
-        self.spatial_compressed = compression_array.spatial_compressed.to(device).to_sparse_csr()
+        self.spatial_compressed = compression_array.spatial_compressed.coalesce().to_sparse_csr().to(device)
         if compression_array.spatial_compressed_local_projector is None:
             raise ValueError("The compression result must have a spatial_compressed_local_projector")
         self.spatial_compressed_local_projector = compression_array.spatial_compressed_local_projector.t().to_sparse_csr().to(device)
@@ -3292,7 +3293,7 @@ class DemixingState(SignalProcessingState):
         effective_frame_batch_size = self.frame_batch_size // 2
         num_iters = math.ceil(x.shape[1] / effective_frame_batch_size)
         numerator = torch.zeros(self.spatial_compressed.shape[0],
-                                device=self.spatial_compresed.device,
+                                device=self.spatial_compressed.device,
                                 dtype=self.spatial_compressed.dtype)
         denominator = torch.zeros_like(numerator)
         for k in range(num_iters):
@@ -3340,13 +3341,16 @@ class DemixingState(SignalProcessingState):
                                                              self.background_rank)
 
         num_iters = math.ceil(v_bkgd.shape[0] / self.frame_batch_size)
-        new_left_term = torch.zeros(self.spatial_compressed_local_projector.shape[0], v_bkgd.shape[0])
+        new_left_term = torch.zeros(self.spatial_compressed_local_projector.shape[0],
+                                    v_bkgd.shape[0],
+                                    device=self.device,
+                                    dtype=v_bkgd.dtype)
         for k in range(num_iters):
             start = k * self.frame_batch_size
             end = min(start + self.frame_batch_size, v_bkgd.shape[0])
             v_bkgd_curr = v_bkgd[start:end, :].T
             output = torch.sparse.mm(self.spatial_compressed, self.temporal_compressed @ v_bkgd_curr)
-            output -= torch.sparse.mm(self.a, self.c @ v_bkgd_curr)
+            output -= torch.sparse.mm(self.a, self.c.T @ v_bkgd_curr)
             output -= self.b @ torch.sum(v_bkgd_curr, dim=0, keepdim=True)
             output = torch.sparse.mm(self.spatial_compressed_local_projector, output)
             new_left_term[:, start:end] = output
