@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import torch
 import numpy as np
+import logging
 import math
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
@@ -36,6 +37,8 @@ from masknmf.demixing.background_estimation import RingModel
 from masknmf.compression import CompressionArray
 from masknmf.compression.preprocessing import SplineDetrend
 from masknmf import display
+
+logger = logging.getLogger(__name__)
 
 
 class DemixingError(Exception):
@@ -1048,7 +1051,7 @@ def delete_comp(
             - spatial_masks (torch.sparse_coo_tensor): Updated sparse tensor of dimensions (d, K')
               containing the spatial masks after deletion.
     """
-    print(reasoning_message)
+    logger.info(reasoning_message)
     pos = torch.nonzero(components_to_delete)[:, 0]
     neg = torch.nonzero(components_to_delete == 0)[:, 0]
     if int(torch.sum(components_to_delete).cpu()) == spatial_components.shape[1]:
@@ -1705,7 +1708,7 @@ def superpixel_init(
         uv_mean = get_mean_data(u_sparse, v)
         b = regression_update.baseline_update(uv_mean, a, c)
     else:
-        print(f'shape of a_ini is {a_ini.shape} and c_ini is {c_ini.shape} and pure_pix is {pure_pix.shape}')
+        logger.debug(f'shape of a_ini is {a_ini.shape} and c_ini is {c_ini.shape} and pure_pix is {pure_pix.shape}')
         a, c = prepare_iteration_uv(
             pure_pix,
             a_ini,
@@ -1874,7 +1877,7 @@ def merge_components(
         num_preserved_comps = a_preserved.shape[1]
         added_counter = 0
         for comp in comps:
-            print(f"merging {comp}")
+            logger.debug(f"merging {comp}")
             comp = list(comp)
             good_comps = torch.Tensor(comp).to(device).long()
 
@@ -2418,7 +2421,7 @@ class InitializingState(SignalProcessingState):
                 frame_batch_size=self.frame_batch_size,
                 robust_noise_term=self.robust_noise_term
             )
-            print("Now in demixing state")
+            logger.debug("Now in demixing state")
 
     @property
     def state_description(self):
@@ -2453,7 +2456,7 @@ class InitializingState(SignalProcessingState):
             plot_en (bool): Used for debugging; whether to plot the superpixels and pure superpixel plots.
         """
         if mad_threshold != self._th:
-            print(
+            logger.info(
                 f"Computing correlation data structure with MAD threshold  {mad_threshold}"
             )
 
@@ -2533,7 +2536,7 @@ class InitializingState(SignalProcessingState):
                 processed_spatial_tensor = spatial_footprints.to(self.device)
             else:
                 if spatial_footprints.ndim == 3:
-                    print(
+                    logger.warning(
                         f"Passed in 3D dense torch.tensor for custom initialization. This "
                         f"will be slower because the code will convert to numpy, reshape to 2D, and then "
                         f"construct the sparse torch tensor. For faster processing pass in a torch.sparse_coo_tensor"
@@ -2785,7 +2788,7 @@ class DemixingState(SignalProcessingState):
                 factorized_ring_term=background_term,
                 robust_noise_term=self.robust_noise_term
             )
-            print("Now in the initialization state")
+            logger.debug("Now in the initialization state")
 
     def precompute_quantities(self):
         """
@@ -3049,7 +3052,7 @@ class DemixingState(SignalProcessingState):
                 "zero a!",
                 plot_en,
             )
-            print(f"new shape of a is {self.a.shape}")
+            logger.debug(f"new shape of a is {self.a.shape}")
             self.update_hals_scheduler()
 
     def temporal_update(self, denoise=False, plot_en=False, c_nonneg=True):
@@ -3447,7 +3450,7 @@ class DemixingState(SignalProcessingState):
         elif isinstance(denoise, bool):
             denoise = [denoise for i in range(maxiter)]
         elif len(denoise) != maxiter:
-            print(
+            logger.warning(
                 "Length of denoise list is not consistent, setting all denoise values to false for this pass of NMF"
             )
             denoise = [False for i in range(maxiter)]

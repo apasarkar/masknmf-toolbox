@@ -32,11 +32,24 @@ class Theme:
     border: Color = (0.35, 0.35, 0.37, 0.7)
     danger: Color = (0.75, 0.15, 0.15, 0.8)
     danger_hover: Color = (0.90, 0.20, 0.20, 1.0)
+    emphasis: Color = (1.00, 0.62, 0.10, 1.0)
+    emphasis_hover: Color = (1.00, 0.74, 0.30, 1.0)
     rounding: float = 6.0
     card_rounding: float = 0.0
 
 
 THEME = Theme()
+
+# contrasting rgb colors for traces drawn together, given out in the order they are drawn
+GROUP_COLORS = (
+    (1.00, 0.55, 0.10),
+    (0.25, 0.85, 0.35),
+    (0.95, 0.35, 0.90),
+    (0.35, 0.80, 1.00),
+    (1.00, 0.95, 0.35),
+    (0.65, 0.50, 1.00),
+    (1.00, 1.00, 1.00),
+)
 
 
 def em(x: float = 1.0) -> float:
@@ -121,7 +134,7 @@ class Grid:
 
 
 def grid(captions) -> Grid:
-    """Measure a :class:`Grid` at the cursor: the caption column fits the longest of ``captions`` as a checkbox, the rest splits in two."""
+    """Measure a :class:`Grid` at the cursor: the caption column fits the longest of ``captions`` as a checkbox, the rest splits in two cells of at most 12 em."""
     gap = em(0.6)
     x0 = imgui.get_cursor_pos_x()
     caption_w = (
@@ -130,15 +143,25 @@ def grid(captions) -> Grid:
         + imgui.get_style().item_inner_spacing.x
         + gap
     )
-    cell_w = (imgui.get_content_region_avail().x - caption_w - gap) / 2
+    # capped, so a wide panel does not stretch every button and slider with it
+    cell_w = min((imgui.get_content_region_avail().x - caption_w - gap) / 2, em(12))
     return Grid((x0 + caption_w, x0 + caption_w + cell_w + gap), cell_w, gap, imgui.calc_text_size("(?)").x + em(0.3))
 
 
-def help_mark(text: str):
-    """A dim (?) after the last item, on its line, with ``text`` as its tooltip."""
-    imgui.same_line(0, em(0.3))
+def help_mark(text: str, x: float | None = None):
+    """A dim (?) after the last item, on its line, with ``text`` as its tooltip; at ``x`` when given and the item ends before it."""
+    if x is None:
+        imgui.same_line(0, em(0.3))
+    else:
+        imgui.same_line(max(x, imgui.get_item_rect_max().x - imgui.get_window_pos().x + imgui.get_scroll_x() + em(0.3)))
     imgui.text_disabled("(?)")
     if imgui.is_item_hovered():
+        imgui.set_tooltip(text)
+
+
+def tooltip(text: str):
+    """``text`` as the tooltip of the last item, disabled or not."""
+    if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
         imgui.set_tooltip(text)
 
 
@@ -172,7 +195,7 @@ def button_colors(fill, hover, text=None, on: bool = True):
 
 def popup(title: str, is_open: bool, theme: Theme = THEME) -> tuple[bool, bool]:
     """
-    Begin a centered, auto-sized, closable window.
+    Begin a centered, auto-sized, closable window with an opaque background.
 
     Returns
     -------
@@ -182,14 +205,25 @@ def popup(title: str, is_open: bool, theme: Theme = THEME) -> tuple[bool, bool]:
         imgui.get_main_viewport().get_center(), imgui.Cond_.appearing, pivot=imgui.ImVec2(0.5, 0.5)
     )
     imgui.push_style_var(imgui.StyleVar_.window_rounding, theme.rounding)
-    imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(em(1.0), em(0.8)))
+    imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(em(1.0), round(em(0.8))))
+    background = imgui.get_style().color_(imgui.Col_.window_bg)
+    imgui.push_style_color(imgui.Col_.window_bg, imgui.ImVec4(background.x, background.y, background.z, 1.0))
     opened, is_open = imgui.begin(
         f"{title}###{title}",
         is_open,
         flags=imgui.WindowFlags_.no_saved_settings | imgui.WindowFlags_.always_auto_resize,
     )
+    imgui.pop_style_color()
     imgui.pop_style_var(2)
     return opened, is_open
+
+
+def opaque_popups() -> None:
+    """Make the current context's popups, menus and tooltips fully opaque."""
+    style = imgui.get_style()
+    color = style.color_(imgui.Col_.popup_bg)
+    if color.w < 1.0:
+        style.set_color_(imgui.Col_.popup_bg, imgui.ImVec4(color.x, color.y, color.z, 1.0))
 
 
 def close_button(theme: Theme = THEME) -> bool:

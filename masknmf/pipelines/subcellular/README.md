@@ -34,7 +34,7 @@ import h5py
 import numpy as np
 import masknmf
 
-run = Path("results/20260908_112158_glutamate-calcium-spine")
+run = Path("results/20260908T112158_glutamate-calcium-spine")
 results = masknmf.utils.results_files(run)["calcium"]
 with h5py.File(results, "r") as f:
     retained_frames = f["retained_frames"][()]

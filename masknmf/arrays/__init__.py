@@ -1,4 +1,4 @@
-from .array_interfaces import LazyFrameLoader, ArrayLike, TensorFlyWeight
+from .array_interfaces import LazyFrameLoader, ArrayLike, TensorFlyWeight, SwitchableArray
 from .data_loaders import TiffArray, Hdf5Array, TiffSeriesLoader
 
 __all__ = ["TiffArray",
@@ -6,4 +6,5 @@ __all__ = ["TiffArray",
            "Hdf5Array",
            "LazyFrameLoader",
            "ArrayLike",
-           "TensorFlyWeight"]
+           "TensorFlyWeight",
+           "SwitchableArray"]

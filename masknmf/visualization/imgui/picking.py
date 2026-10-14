@@ -2,6 +2,9 @@ from typing import Optional
 import numpy as np
 import torch
 
+# px the pointer may travel between press and release and still be a click; pygfx's double-click has no such rule
+CLICK_SLOP = 4
+
 
 def component_at_pixel(a, centers, fov_shape, pick_index, mask=None, radius=None) -> Optional[int]:
     """

@@ -1,9 +1,11 @@
 """Sortable, filterable ROI table shared by the ROI viewers."""
 
-from typing import Callable, Optional, Sequence
+from typing import Callable, Container, Optional, Sequence
 
 import numpy as np
 from imgui_bundle import imgui
+
+from masknmf.visualization.imgui.theme import THEME, to_vec4
 
 
 class RoiOrder:
@@ -103,40 +105,57 @@ def draw_roi_table(
     on_shift_select: Optional[Callable[[int], None]] = None,
     row_color: Optional[Callable[[int], Optional[tuple]]] = None,
     prefix_rows: Sequence[tuple] = (),
+    hidden: Container[str] = (),
+    row_label: Optional[Callable[[int], str]] = None,
+    fit_headers: bool = False,
 ) -> bool:
     """
     Sortable, clipped ROI table. Returns the new ``scroll_to_current`` flag.
 
     ``column_names[0]`` is the id column; every other name is rendered by
     ``formatters[name](item)`` and is sortable when it is a key of
-    ``order.columns``. ``cursor`` highlights the row under ``order.pos`` (off: nothing is
+    ``order.columns``; a right-click on a header shows or hides columns, those in ``hidden`` start
+    hidden. ``cursor`` highlights the row under ``order.pos`` (off: nothing is
     selected, the cursor only seeds up / down); ``is_grouped`` highlights rows beyond it; ctrl and
     shift clicks route to ``on_ctrl_select`` / ``on_shift_select`` when given,
     else to ``on_select``. ``row_color`` tints the id cell (rgb in 0-1).
     ``prefix_rows`` are ``(item, label)`` pairs pinned above the sorted rows, outside
-    ``order`` but routed to the same formatters and callbacks.
+    ``order`` but routed to the same formatters and callbacks. ``row_label`` names an item's id cell (default: the item).
+    ``fit_headers`` sizes every column to its header and scrolls sideways when they overflow, rather than truncating.
     """
     flags = (
         imgui.TableFlags_.sortable
         | imgui.TableFlags_.row_bg
         | imgui.TableFlags_.resizable
+        | imgui.TableFlags_.hideable
         | imgui.TableFlags_.scroll_y
     )
+    if fit_headers:
+        flags |= imgui.TableFlags_.scroll_x
+    # the sort arrow and the cell padding beside each header
+    fit = (lambda name: imgui.calc_text_size(name).x + imgui.get_font_size() * 1.6) if fit_headers else None
     avail = imgui.get_content_region_avail()
     if not imgui.begin_table(table_id, len(column_names), flags, imgui.ImVec2(0, avail.y)):
         return scroll_to_current
     imgui.table_setup_scroll_freeze(0, 1)
     # the current sort seeds imgui's default, so it survives a change of columns
     descending = 0 if order.ascending else imgui.TableColumnFlags_.prefer_sort_descending
+    width = imgui.TableColumnFlags_.width_fixed if fit_headers else 0
     imgui.table_setup_column(
-        column_names[0], imgui.TableColumnFlags_.default_sort | descending if order.sort_by is None else 0
+        column_names[0],
+        imgui.TableColumnFlags_.no_hide
+        | width
+        | (imgui.TableColumnFlags_.default_sort | descending if order.sort_by is None else 0),
+        fit(column_names[0]) if fit_headers else 0.0,
     )
     for name in column_names[1:]:
         sortable = name in order.columns
         flags = 0 if sortable else imgui.TableColumnFlags_.no_sort
         if name == order.sort_by:
             flags |= imgui.TableColumnFlags_.default_sort | descending
-        imgui.table_setup_column(name, flags)
+        if name in hidden:
+            flags |= imgui.TableColumnFlags_.default_hide
+        imgui.table_setup_column(name, flags | width, fit(name) if fit_headers else 0.0)
     imgui.table_headers_row()
 
     specs = imgui.table_get_sort_specs()
@@ -160,7 +179,7 @@ def draw_roi_table(
                 highlighted = is_grouped is not None and is_grouped(item)
             else:
                 item = int(order.order[row - pinned])
-                label = f"{item}"
+                label = f"{item}" if row_label is None else row_label(item)
                 highlighted = (cursor and row - pinned == order.pos) or (is_grouped is not None and is_grouped(item))
             imgui.table_next_row()
             imgui.table_next_column()
@@ -193,28 +212,81 @@ def draw_roi_table(
     return scroll_to_current
 
 
+def draw_range_slider(
+    str_id: str, lo: float, hi: float, span: tuple, fmt: str = "%.3g", width: float = -1
+) -> tuple[bool, float, float]:
+    """
+    A range slider: two lines on one frame with the span between them filled and the values read in the
+    middle. A press or drag moves the nearer line, a double-click puts both back at the ends of ``span``.
+
+    Returns (changed, lo, hi).
+    """
+    span_lo, span_hi = float(span[0]), float(span[1])
+    style = imgui.get_style()
+    if width < 0:
+        width = imgui.get_content_region_avail().x
+    width = max(width, imgui.get_frame_height() * 2)
+    height = imgui.get_frame_height()
+    pos = imgui.get_cursor_screen_pos()
+    imgui.invisible_button(str_id, imgui.ImVec2(width, height))
+    grab = max(3.0, round(imgui.get_font_size() * 0.2))
+    x0, x1 = pos.x + style.frame_padding.x + grab / 2, pos.x + width - style.frame_padding.x - grab / 2
+    scale = (x1 - x0) / (span_hi - span_lo) if span_hi > span_lo else 0.0
+    storage = imgui.get_state_storage()
+    key = imgui.get_id(f"{str_id}.grab")
+    changed = False
+    if imgui.is_item_activated():
+        # the grab nearer the press moves; with both at one spot, the one on the side of the press
+        mx = imgui.get_mouse_pos().x
+        lo_x, hi_x = x0 + (lo - span_lo) * scale, x0 + (hi - span_lo) * scale
+        storage.set_int(key, 0 if mx - lo_x < hi_x - mx else 1)
+    if imgui.is_item_active() and scale:
+        value = span_lo + (min(max(imgui.get_mouse_pos().x, x0), x1) - x0) / scale
+        if storage.get_int(key, 0) == 0:
+            changed, lo = min(value, hi) != lo, min(value, hi)
+        else:
+            changed, hi = max(value, lo) != hi, max(value, lo)
+    if imgui.is_item_hovered() and imgui.is_mouse_double_clicked(0):
+        changed, lo, hi = (lo, hi) != (span_lo, span_hi), span_lo, span_hi
+    draw = imgui.get_window_draw_list()
+    active = imgui.is_item_active()
+    frame = (
+        imgui.Col_.frame_bg_active
+        if active
+        else imgui.Col_.frame_bg_hovered if imgui.is_item_hovered() else imgui.Col_.frame_bg
+    )
+    draw.add_rect_filled(
+        pos, imgui.ImVec2(pos.x + width, pos.y + height), imgui.get_color_u32(frame), style.frame_rounding
+    )
+    lo_x, hi_x = x0 + (lo - span_lo) * scale, x0 + (hi - span_lo) * scale
+    top, bottom = pos.y + 2, pos.y + height - 2
+    draw.add_rect_filled(
+        imgui.ImVec2(lo_x, top), imgui.ImVec2(hi_x, bottom), imgui.get_color_u32(imgui.ImVec4(*THEME.accent[:3], 0.35))
+    )
+    for i, x in enumerate((lo_x, hi_x)):
+        held = active and storage.get_int(key, 0) == i
+        color = imgui.get_color_u32(imgui.Col_.text) if held else imgui.get_color_u32(to_vec4(THEME.accent))
+        draw.add_rect_filled(imgui.ImVec2(x - grab / 2, top), imgui.ImVec2(x + grab / 2, bottom), color)
+    label = f"{fmt % lo} - {fmt % hi}"
+    size = imgui.calc_text_size(label)
+    draw.add_text(
+        imgui.ImVec2(pos.x + (width - size.x) / 2, pos.y + (height - size.y) / 2),
+        imgui.get_color_u32(imgui.Col_.text),
+        label,
+    )
+    return changed, lo, hi
+
+
 def draw_range_filter(order: RoiOrder, id_suffix: str = "", width: float = -1) -> bool:
     """
-    A column picker and a range slider over ``order.range_column``, or nothing when no column is set.
+    A two-line slider over ``order.range_column``'s span, or nothing when no column is set.
 
-    Does not rebuild; True when the column or the limits changed.
+    Does not rebuild; True when the limits changed.
     """
     if order.range_column is None:
         return False
-    names = list(order.columns)
-    imgui.set_next_item_width(imgui.get_font_size() * 5.5)
-    picked, index = imgui.combo(f"##range_column{id_suffix}", names.index(order.range_column), names)
-    if picked:
-        order.set_range_column(names[index])
-    imgui.same_line()
     fmt = "%.0f" if np.asarray(order.columns[order.range_column]).dtype.kind in "iub" else "%.3g"
-    lo, hi = order.range_span
-    imgui.set_next_item_width(width)
-    changed, lo, hi = imgui.drag_float_range2(
-        f"##range{id_suffix}",
-        float(order.range_limits[0]), float(order.range_limits[1]), max((hi - lo) / 200, 1e-6), lo, hi,
-        f"{order.range_column} >= {fmt}", f"{order.range_column} <= {fmt}",
-    )
+    changed, lo, hi = draw_range_slider(f"##range{id_suffix}", *order.range_limits, order.range_span, fmt, width)
     if changed:
         order.range_limits = (lo, hi)
-    return picked or changed
+    return changed

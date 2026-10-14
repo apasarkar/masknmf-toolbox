@@ -1,6 +1,6 @@
 from enum import Enum
 import numpy as np
-from masknmf.utils import SparseCOOTensor
+from masknmf.utils import SparseCOOTensor, is_cpu
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
@@ -46,6 +46,7 @@ class ResidualCorrelationImages(ArrayLike):
         )
         self._pixel_mat = torch.arange(self.shape[1] * self.shape[2], device=self.device, dtype=torch.long).reshape(
             self.shape[1], self.shape[2])
+        self._spatial_compressed_csr = self.spatial_compressed.cpu().to_sparse_csr()
 
     @classmethod
     def from_tensors(
@@ -237,7 +238,10 @@ class ResidualCorrelationImages(ArrayLike):
             )
             implied_fov = pixel_space_crop.shape
         else:
-            u_crop = self.spatial_compressed
+            if is_cpu(self.device):
+                u_crop = self._spatial_compressed_csr
+            else:
+                u_crop = self.spatial_compressed
             a_crop = self.spatial_demixed
             mean_crop = self.residual_correlation_image_mean
             movie_normalizer_crop = self.residual_correlation_image_normalizer

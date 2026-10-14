@@ -2,6 +2,7 @@ from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 from masknmf.utils._serialization import load_dict
 from masknmf.utils import Serializer
 from masknmf.utils import SparseCOOTensor
+from masknmf.utils import is_cpu
 import torch
 import numpy as np
 
@@ -112,6 +113,7 @@ class CompressionArray(ArrayLike, Serializer):
             self.shape[1] * self.shape[2], device=self.flyweight.device,
         ).reshape(self.shape[1], self.shape[2])
 
+        self._spatial_compressed_csr = self.spatial_compressed.cpu().to_sparse_csr()
 
 
     @property
@@ -388,7 +390,10 @@ class CompressionArray(ArrayLike, Serializer):
             implied_fov = pixel_space_crop.shape
         else:
             spatial_crop_terms = None
-            spatial_compressed_crop = self.spatial_compressed
+            if is_cpu(self.device):
+                spatial_compressed_crop = self._spatial_compressed_csr
+            else:
+                spatial_compressed_crop = self.spatial_compressed
             mean_image_crop = self.mean_image.flatten()
             noise_variance_image_crop = self.noise_variance_image.flatten()
             implied_fov = self.shape[1], self.shape[2]
