@@ -2362,7 +2362,7 @@ def right_singular_vector_routine(u: SparseCSRTensor,
 
         for j in range(k, num_iters):
             if j == k:
-                subset2 = v_subset1
+                subset2 = subset
                 start_2 = start_1
                 end_2 = end_1
             else:
@@ -2379,9 +2379,9 @@ def right_singular_vector_routine(u: SparseCSRTensor,
 
     final_output = (target_output + target_output.T) / 2
 
-    eigenvalues, eigenvectors = torch.linalg.eigh(final_output.astype(torch.double()))
+    eigenvalues, eigenvectors = torch.linalg.eigh(final_output.double())
     eigenvalues, eigenvectors = eigenvalues.flip(0), eigenvectors.flip(1)
-    return eigenvectors.T.to(v_bkgd.dtype), eigenvectors.clamp_min_(0).sqrt().to(v_bkgd.dtype)
+    return eigenvectors.T.to(v_bkgd.dtype), eigenvalues.clamp_min_(0).sqrt().to(v_bkgd.dtype)
 
 # Code for min Laplacian re-assignment of signal from background to A/C components
 def construct_laplacian_matrix(height: int,
@@ -2546,8 +2546,6 @@ class SignalDemixer:
         self.pmd_obj = pmd_array
         self.pmd_obj.to('cpu')
         self.shape = self.pmd_obj.shape
-
-        self.v = self.pmd_obj.temporal_compressed.float().to(self.device)
 
         self.fov_height = self.shape[1]
         self.fov_width = self.shape[2]
