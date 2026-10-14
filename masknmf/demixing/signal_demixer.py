@@ -2332,6 +2332,50 @@ def _dilate_support_keys(support: SparseCSRTensor,
                                            keys[coord < size - 1] + stride]))
     return keys
 
+def right_singular_vector_routine(u: SparseCSRTensor,
+                                  v: torch.Tensor,
+                                  a: SparseCSRTensor,
+                                  c: torch.Tensor,
+                                  b: torch.Tensor,
+                                  v_bkgd: torch.Tensor,
+                                  frame_batch_size: int):
+    """
+    We have the residual movie (without fluctuating background), UV - AC - B where U/V are the spatial/temporal compression results,
+    A/C are the spatial/temporal demixing results, and B is a (pixels, 1) tensor describing background
+
+    We have an (orthogonalized) temporal basis for the background, v_bkgd, (frames, target rank)
+    This routine computes the spectrum + right singular vectors for (UV - AC - B)v_bkgd
+    """
+    target_output = torch.zeros(v_bkgd.shape[1],
+                                v_bkgd.shape[1],
+                                dtype=v_bkgd.dtype,
+                                device=v_bkgd.device)
+    effective_batch_size = frame_batch_size // 2 #Since we will load two chunks of this size at a time
+    num_iters = math.ceil(target_output.shape / effective_batch_size)
+    for k in range(num_iters):
+        start_1 = k * effective_batch_size
+        end_1 = min(target_output.shape[0], start_1 + effective_batch_size)
+        v_subset1 = v[:, start_1:end_1]
+        subset = torch.sparse.mm(u, v @ v_subset1)
+        subset -= torch.sparse.mm(a, c @ v_subset1)
+        subset -= torch.sparse.mm(b, torch.sum(v_subset1, dim=0, keepdim=True))
+
+        for j in range(k, num_iters):
+            start_2 = j * effective_batch_size
+            end_2 = min(target_output.shape[0], start_2 + effective_batch_size)
+            v_subset2 = v[:, start_2:end_2]
+            subset2 = torch.sparse.mm(u, v @ v_subset2)
+            subset2 -= torch.sparse.mm(a, c @ v_subset2)
+            subset2 -= torch.sparse.mm(b, torch.sum(v_subset2, dim=0, keepdim=True))
+
+            prod = subset.T @ subset2
+            target_output[start1:end1, start2:end2] = prod
+
+    target_prod_bin = (target_output > 0).to(target_output.dtype)
+    final_output = (target_output + target_output.T) / (target_prod_bin + target_prod_bin.T)
+
+    eigenvalues, eigenvectors = torch.linalg.eigh(final_output)
+    return eigenvalues.T, torch.sqrt(eigenvectors.clamp_min_(0))
 
 # Code for min Laplacian re-assignment of signal from background to A/C components
 def construct_laplacian_matrix(height: int,
@@ -2494,7 +2538,7 @@ class SignalDemixer:
         """
         self.device = device
         self.pmd_obj = pmd_array
-        self.pmd_obj.to(device)
+        self.pmd_obj.to('cpu')
         self.shape = self.pmd_obj.shape
 
         self.u_sparse = self.pmd_obj.spatial_compressed.float().to(self.device).coalesce()
@@ -2609,10 +2653,10 @@ class InitializingState(SignalProcessingState):
 
         self.pmd_obj = pmd_arr
         self.device = device
-        self.pmd_obj.to(self.device)
+        self.pmd_obj.to("cpu") ##Always keep compression object on CPU, forcing the SignalDemixer/State to manage relevant tensors
 
-        self.spatial_compressed = self.pmd_obj.spatial_compressed.coalesce().to_sparse_csr() ## It's not purely sparse CSR
-        self.v = self.pmd_obj.temporal_compressed
+        self.spatial_compressed = self.pmd_obj.spatial_compressed.coalesce().to_sparse_csr().to(self.device) ## It's not purely sparse CSR
+        self.v = self.pmd_obj.temporal_compressed.to(self.device)
         self.temporal_compressed = self.v
         self.compression_array = self.pmd_obj
 
@@ -3185,15 +3229,6 @@ class DemixingState(SignalProcessingState):
         device = self.device
         num_frames = self.temporal_compressed.shape[1]
         random_data = torch.randn(num_frames, background_rank + num_oversamples, device=device)
-        resid_projection = (torch.sparse.mm(self.spatial_compressed, self.temporal_compressed @ random_data) -
-                            torch.sparse.mm(self.a, self.c.T @ random_data) -
-                            self.b @ torch.sum(random_data, dim=0, keepdim=True))
-        resid_projection = resid_projection.reshape(self.fov_height, self.fov_width, resid_projection.shape[1])
-        resid_projection = masknmf.compression.decomposition.spatial_downsample(resid_projection, downsampling_factor)
-        resid_projection = resid_projection.reshape(resid_projection.shape[0] * resid_projection.shape[1],
-                                                    resid_projection.shape[2])
-        orth_qr, tri_qr = torch.linalg.qr(resid_projection, mode="reduced")
-
         # Downsample spatial_compressed, A and B
         u_downsample = masknmf.compression.decomposition.downsample_sparse(self.spatial_compressed,
                                                                            (self.fov_height, self.fov_width),
@@ -3201,9 +3236,21 @@ class DemixingState(SignalProcessingState):
         a_downsample = masknmf.compression.decomposition.downsample_sparse(self.a,
                                                                            (self.fov_height, self.fov_width),
                                                                            downsampling_factor)
-        b_downsample = masknmf.compression.decomposition.spatial_downsample(self.b.reshape(self.fov_height, self.fov_width, 1),
-                                                                            downsampling_factor).squeeze()
+        b_downsample = masknmf.compression.decomposition.spatial_downsample(
+            self.b.reshape(self.fov_height, self.fov_width, 1),
+            downsampling_factor).squeeze()
         b_downsample = b_downsample.reshape(b_downsample.shape[0] * b_downsample.shape[1], 1)
+
+        resid_projection = (torch.sparse.mm(u_downsample, self.temporal_compressed @ random_data) -
+                            torch.sparse.mm(a_downsample, self.c.T @ random_data) -
+                            b_downsample @ torch.sum(random_data, dim=0, keepdim=True))
+        # resid_projection = resid_projection.reshape(self.fov_height, self.fov_width, resid_projection.shape[1])
+        # resid_projection = masknmf.compression.decomposition.spatial_downsample(resid_projection, downsampling_factor)
+        # resid_projection = resid_projection.reshape(resid_projection.shape[0] * resid_projection.shape[1],
+                                                    # resid_projection.shape[2])
+        orth_qr, tri_qr = torch.linalg.qr(resid_projection, mode="reduced")
+
+
 
         right_term = torch.sparse.mm(u_downsample.t(), orth_qr).T @ self.temporal_compressed
         right_term -= torch.sparse.mm(a_downsample.t(), orth_qr).T @ self.c.T
@@ -3211,13 +3258,16 @@ class DemixingState(SignalProcessingState):
         #Project the residual onto this orth spatial basis
         _, _, v_bkgd = torch.linalg.svd(right_term, full_matrices=False)
 
-        #Go back to full resolution data, project onto the v_bkgd temporal basis
-        left_term = torch.sparse.mm(self.spatial_compressed, self.temporal_compressed @ v_bkgd.T)
-        left_term -= torch.sparse.mm(self.a, (self.c.T @ v_bkgd.T))
-        left_term -= self.b @ torch.sum(v_bkgd.T, dim=0, keepdim=True)
-        u, s, v_left = torch.linalg.svd(left_term, full_matrices=False)
-        v_final = v_left @ v_bkgd
-        return u[:, :background_rank], s[:background_rank], v_final[:background_rank, :]
+        right_eig, spectrum = right_singular_vector_routine(self.spatial_compressed,
+                                                            self.temporal_compressed,
+                                                            self.a,
+                                                            self.c,
+                                                            self.b,
+                                                            v_bkgd,
+                                                            self.frame_batch_size)
+
+        v_final = right_eig @ v_bkgd
+        return spectrum[:background_rank], v_final[:background_rank, :]
 
     def static_baseline_update(self):
         if self.factorized_ring_term is not None:
@@ -3231,18 +3281,40 @@ class DemixingState(SignalProcessingState):
     def lowrank_ring_update(self,
                             x: torch.tensor):
         """
-        Given: a factorization xy^t where x is in the spatial_compressed basis, y is orthogonal, this fits an unconstrained ring model
+        Given: a factorization Uxy^T where y is orthogonal, this fits an unconstrained ring model
         and projects the result onto the spatial_compressed spatial basis
+        Note that because y is orthogonal, it disappears from the calculation entirely
         """
         self.W.weights = torch.ones(
             (self.shape[0] * self.shape[1]), device=self.device
         ).float()
-        wx = self.W.forward(x)
-        numerator = torch.sum(wx * x, dim=1)
-        denominator = torch.sum(wx * wx, dim=1)
+
+        effective_frame_batch_size = self.frame_batch_size // 2
+        num_iters = math.ceil(x.shape[1] / effective_frame_batch_size)
+        numerator = torch.zeros(self.spatial_compressed.shape[0],
+                                device=self.spatial_compresed.device,
+                                dtype=self.spatial_compressed.dtype)
+        denominator = torch.zeros_like(numerator)
+        for k in range(num_iters):
+            start = k * effective_frame_batch_size
+            end = min(start + effective_frame_batch_size, x.shape[1])
+            ux = torch.sparse.mm(self.spatial_compressed, x[:, start:end])
+            wux = self.W.forward(ux)
+            numerator += torch.einsum("ij,ij->i", ux, wux)
+            denominator += torch.einsum("ij,ij->i", wux, wux)
+
         weights = torch.nan_to_num(numerator / denominator, nan=0.0)
-        wx *= weights[:, None]
-        projection = self.compression_array.project_frames(wx, standardize=False)
+        projection = torch.zeros(self.spatial_compressed_local_projector.shape[0],
+                                 x.shape[1],
+                                 device=self.device,
+                                 dtype=self.spatial_compressed.dtype)
+
+        for k in range(num_iters):
+            start = k * effective_frame_batch_size
+            end = min(start + effective_frame_batch_size, x.shape[1])
+            ux = torch.sparse.mm(self.spatial_compressed, x[:, start:end])
+            weighted_wux = weights[:, None] * self.W.forward(ux)
+            projection[:, start:end] = torch.sparse.mm(self.spatial_compressed_local_projector, weighted_wux)
         return projection
 
     def fluctuating_baseline_update(self,
@@ -3257,18 +3329,28 @@ class DemixingState(SignalProcessingState):
                 the number of components used to explain 95% of the data. Use this as the background rank for subsequent steps.
         """
         if self.background_rank is None:
-            u_bkgd, s_bkgd, v_bkgd = self.lowrank_background_svd(downsampling_factor,
+            s_bkgd, v_bkgd = self.lowrank_background_svd(downsampling_factor,
                                                                  background_sketch)
             explained_variance_term = torch.cumsum(s_bkgd ** 2, dim=0) / torch.sum(s_bkgd ** 2)
             min_rank = int(torch.argmax((explained_variance_term >= 0.99).float()).item())
             self.background_rank = min_rank + 1 ## This is the new estimate
             display(f"The estimated min rank is {self.background_rank}")
 
-        u_bkgd, s_bkgd, v_bkgd = self.lowrank_background_svd(downsampling_factor,
+        s_bkgd, v_bkgd = self.lowrank_background_svd(downsampling_factor,
                                                              self.background_rank)
-        new_left_term = self.compression_array.project_frames(u_bkgd, standardize=False)
-        new_left_term = torch.sparse.mm(self.spatial_compressed, new_left_term)
-        new_left_term *= s_bkgd[None, :]
+
+        num_iters = math.ceil(v_bkgd.shape[0] / self.frame_batch_size)
+        new_left_term = torch.zeros(self.spatial_compressed_local_projector.shape[0], v_bkgd.shape[0])
+        for k in range(num_iters):
+            start = k * self.frame_batch_size
+            end = min(start + self.frame_batch_size, v_bkgd.shape[0])
+            v_bkgd_curr = v_bkgd[start:end, :].T
+            output = torch.sparse.mm(self.spatial_compressed, self.temporal_compressed @ v_bkgd_curr)
+            output -= torch.sparse.mm(self.a, self.c @ v_bkgd_curr)
+            output -= self.b @ torch.sum(v_bkgd_curr, dim=0, keepdim=True)
+            output = torch.sparse.mm(self.spatial_compressed_local_projector, output)
+            new_left_term[:, start:end] = output
+
         ring_weighted_left_term = self.lowrank_ring_update(new_left_term)
         self.factorized_ring_term = (ring_weighted_left_term, v_bkgd)
 
