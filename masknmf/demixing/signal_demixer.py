@@ -2547,7 +2547,6 @@ class SignalDemixer:
         self.pmd_obj.to('cpu')
         self.shape = self.pmd_obj.shape
 
-        self.u_sparse = self.pmd_obj.spatial_compressed.float().to(self.device).coalesce()
         self.v = self.pmd_obj.temporal_compressed.float().to(self.device)
 
         self.fov_height = self.shape[1]

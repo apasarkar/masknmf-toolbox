@@ -27,6 +27,8 @@ class RingModel:
             (self.shape[0] * self.shape[1]), device=self.device, dtype=torch.float32
         )
 
+
+
     def _construct_ring_kernel(self) -> torch.Tensor:
         # Create a grid of coordinates (y, x) relative to the center
         range_values = torch.arange(
@@ -127,15 +129,18 @@ class RingModel:
 
         # Pad kernel to match padded image size
         kh, kw = self.kernel.shape
-        kernel_padded = torch.zeros((frames, 1, H_pad, W_pad), dtype=torch.float32, device=images.device)
-        # Place kernel at top-left corner
-        kernel_padded[:, 0, :kh, :kw] = self.kernel
-        # Center the kernel (equivalent to fftshift)
+
+        # Broadcast-friendly fft kernel
+        kernel_padded = torch.zeros((1, 1, H_pad, W_pad), dtype=torch.float32, device=images.device)
+        kernel_padded[0, 0, :kh, :kw] = self.kernel
         kernel_padded = torch.roll(kernel_padded, shifts=(-kh // 2, -kw // 2), dims=(-2, -1))
+        kernel_fft = torch.fft.rfft2(kernel_padded, dim=(-2, -1))  # (1, 1, H_pad, W_pad // 2 + 1), broadcasts
+
+        # # Place kernel at top-left corner
+        # # Center the kernel (equivalent to fftshift)
 
         # FFT-based convolution
         images_fft = torch.fft.rfft2(images_padded.float(), dim=(-2, -1))
-        kernel_fft = torch.fft.rfft2(kernel_padded.float(), dim=(-2, -1))
         fft_product = images_fft * kernel_fft
         convolved = torch.fft.irfft2(fft_product, s=(H_pad, W_pad), dim=(-2, -1))  # (frames, 1, H+2r, W+2r)
 
