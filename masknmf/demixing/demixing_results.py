@@ -646,14 +646,6 @@ class DemixingResults(Serializer, BaseResults):
         return self._fluctuating_background_array
 
     @property
-    def multiunit_background_array(self) -> MultiunitBackgroundArray:
-        if self._multiunit_background_array is None:
-            self._multiunit_background_array = MultiunitBackgroundArray.from_flyweight(self.fov_shape,
-                                                                                       self.flyweight,
-                                                                                       rescale=self.rescale)
-        return self._multiunit_background_array
-
-    @property
     def static_background_array(self) -> StaticBackgroundArray:
 
         if self._static_background_array is None:

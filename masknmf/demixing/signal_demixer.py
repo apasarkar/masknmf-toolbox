@@ -2255,7 +2255,99 @@ def spatial_comp_plot(
     plt.tight_layout()
     plt.show()
     return fig
+#
+# def _vectorize_nd_coords(dimensions: tuple[int, ...],
+#                          coordinates: tuple[torch.Tensor, ...]) -> torch.Tensor:
+#     """Row-major (C order) flattening of N-d integer coordinates. Uses Horner form"""
+#     out = coordinates[0].long()
+#     for dim, coord in zip(dimensions[1:], coordinates[1:]):
+#         out = out * dim + coord.long()
+#     return out
+#
+# def _unvectorize_nd_coords(dimensions, coordinates):
+#     """Inverse of _vectorize_nd_coords; integer arithmetic only."""
+#     out = []
+#     for dim in reversed(dimensions[1:]):
+#         out.append(coordinates % dim)
+#         coordinates = coordinates // dim
+#     out.append(coordinates)
+#     return tuple(reversed(out))
 
+def _eval_sparse_dense_matmul(sparse_tensor: SparseCSRTensor,
+                              dense_tensor: torch.Tensor,
+                              rows: torch.Tensor,
+                              cols: torch.Tensor):
+    """
+    This routine evaluates a bunch of row/col of a bunch of sparse-dense matvec operations.
+    The goal is to avoid fully expanding out sparse_tensor @ dense_tensor
+    """
+    final_output = torch.zeros(rows.numel(), dtype=sparse_tensor.dtype, device=sparse_tensor.device)
+    sparse_tensor_subset = csr_index_select_rows(sparse_tensor, rows)
+    subset_rows = decompress_csr_rows(sparse_tensor_subset.crow_indices(), sparse_tensor_subset.values().numel())
+    subset_cols = sparse_tensor_subset.col_indices()
+    subset_vals = sparse_tensor_subset.values()
+
+    ##Each subset row only needs to interact with a specific column of dense_tensor
+    dense_tensor_values = dense_tensor[subset_cols, cols[subset_rows]] * subset_vals
+
+    final_output.index_add_(0, subset_rows, dense_tensor_values)
+    return final_output
+
+
+def _evaluate_global_residual_correlation(spatial_compressed: SparseCSRTensor,
+                                          temporal_compressed: torch.Tensor,
+                                          ring_left: torch.Tensor | None,
+                                          ring_right: torch.Tensor | None,
+                                          spatial_demixed: SparseCSRTensor,
+                                          temporal_demixed: torch.Tensor,
+                                          residual_normalizer: torch.Tensor,
+                                          temporal_demixed_subset: torch.Tensor,
+                                          rows: torch.Tensor,
+                                          cols: torch.Tensor):
+    """(U(V - F1F2) - AC) c~ / normalizer at the (rows, cols) pairs; cols index the subset."""
+    var, mean = torch.var_mean(temporal_demixed_subset, dim=0, correction=0)
+    c_sub = (temporal_demixed_subset - mean) / torch.sqrt(var * temporal_demixed.shape[0])
+    c_sub.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+
+    vc = temporal_compressed @ c_sub
+    if ring_left is not None and ring_right is not None:
+        vc -= ring_left @ (ring_right @ c_sub)
+    out = _eval_sparse_dense_matmul(spatial_compressed, vc, rows, cols)
+    out -= _eval_sparse_dense_matmul(spatial_demixed, temporal_demixed.T @ c_sub, rows, cols)
+    out /= residual_normalizer.reshape(-1)[rows]
+    return out.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+
+def _dilate_support_keys(support: SparseCSRTensor,
+                         fov_height: int,
+                         fov_width: int,
+                         radius: int) -> torch.Tensor:
+    """
+    Square (2 * radius + 1) x (2 * radius + 1) dilation of every column's support, clipped to the FOV.
+
+    Args:
+        support (SparseCSRTensor): shape (fov_height * fov_width, num_signals). Only the sparsity pattern is used.
+        fov_height (int): height of the field of view
+        fov_width (int): width of the field of view
+        radius (int): dilation radius in pixels
+
+    Returns:
+        keys (torch.Tensor): sorted, unique int64 keys signal * (fov_height * fov_width) + pixel for every
+            (signal, pixel) pair in the dilated supports. Every input (signal, pixel) pair is included.
+
+    The dilation is separable, so it is applied one pixel at a time along each axis with deduplication
+    after every step. Peak memory is about 3x the current key set, instead of (2 * radius + 1) ** 2 times
+    the input when all offsets are expanded at once.
+    """
+    num_px = fov_height * fov_width
+    rows = decompress_csr_rows(support.crow_indices(), support.values().numel())
+    keys = torch.unique(support.col_indices().long() * num_px + rows.long())
+    for size, stride in ((fov_height, fov_width), (fov_width, 1)):  # vertical steps, then horizontal steps
+        for _ in range(radius):
+            coord = (keys % num_px) // stride % size
+            keys = torch.unique(torch.cat([keys,
+                                           keys[coord > 0] - stride,
+                                           keys[coord < size - 1] + stride]))
+    return keys
 
 
 # Code for min Laplacian re-assignment of signal from background to A/C components
@@ -2550,6 +2642,7 @@ class InitializingState(SignalProcessingState):
             self.robust_noise_term = self._sketch_robust_variance_term()
         else:
             self.robust_noise_term = robust_noise_term
+
 
 
         self._init_results = None
@@ -3360,140 +3453,202 @@ class DemixingState(SignalProcessingState):
         return indices_to_keep
 
 
+
     def greedy_connected_comps(self,
                                fov_height: int,
                                fov_width: int,
-                               a_subset: SparseCOOTensor,
-                               thresholded_correlation_image_frames: torch.Tensor,
-                               expansion_radius:int = 5
-                               ):
+                               support_correlation_values: SparseCSRTensor,
+                               start: int,
+                               end: int,
+                               per_signal_thresholds: torch.Tensor,
+                               expansion_radius: int = 5):
         """
-        We will get row, col values from the current mask. We will convert this to:
-        col, height, width index representation.
-        We will find out which of these indices have a value of at least 1 in the thresholded image
-        We will only keep those
-        We will re-vectorize the result. We can just "append" this to the original sparse tensor, so long as the values associated
-        with these new indices are 0. When we call coalesce() on this final tensor, the row/col indices with value 0 will
-        be included. This is desirable (this is how the spatial HALS code starts working with the expanded (or contracted) "a" footprints
+        Finds the pixels to add to the supports of signals start, ..., end - 1.
+
+        Dilates each signal's current support (the sparsity pattern of support_correlation_values) by
+        expansion_radius pixels, drops pixels already on the support, evaluates the residual correlation
+        image at the remaining pixels, and keeps the pixels at or above that signal's threshold.
+        Pixels already on the support are thresholded separately, in _mask_expansion_routine.
+
+        Args:
+            fov_height (int): height of the field of view
+            fov_width (int): width of the field of view
+            support_correlation_values (SparseCSRTensor): shape (num_pixels, num_signals). Residual correlation
+                values on the current supports; same sparsity pattern as self.a
+            start (int): first signal in this batch
+            end (int): one past the last signal in this batch
+            per_signal_thresholds (torch.Tensor): shape (num_signals,). Correlation threshold for each signal
+            expansion_radius (int): dilation radius in pixels
+
+        Returns:
+            rows (torch.Tensor): pixel indices of the added pixels
+            cols (torch.Tensor): global signal indices of the added pixels
         """
-        height_indices, width_indices, frame_indices = sparse_dilation_routine(fov_height,
-                                                                               fov_width,
-                                                                               a_subset,
-                                                                               expansion_radius=expansion_radius)
+        device = self.device
+        num_px = fov_height * fov_width
+        neuron_ids = torch.arange(start, end, device=device, dtype=torch.long)
+        signal_thresholds = per_signal_thresholds[start:end]
 
-        corr_bool_mask = thresholded_correlation_image_frames[frame_indices, height_indices, width_indices] > 0
+        # Current supports of this batch, as keys local_signal * num_px + pixel
+        mask_subset = csr_index_select_cols(support_correlation_values, neuron_ids)
+        support_rows = decompress_csr_rows(mask_subset.crow_indices(), mask_subset.values().numel())
+        support_keys = mask_subset.col_indices().long() * num_px + support_rows.long()
 
-        height_indices = height_indices[corr_bool_mask]
-        width_indices = width_indices[corr_bool_mask]
-        frame_indices = frame_indices[corr_bool_mask]
+        # Dilated supports (sorted, unique). Every support key is also a dilated key, so searchsorted finds it
+        all_keys = _dilate_support_keys(mask_subset, fov_height, fov_width, expansion_radius)
+        on_support = torch.zeros_like(all_keys, dtype=torch.bool)
+        on_support[torch.searchsorted(all_keys, support_keys)] = True
+        new_keys = all_keys[~on_support]
+        new_rows = new_keys % num_px
+        new_local_ids = new_keys // num_px
 
-        final_rows = height_indices * fov_width + width_indices #C order vectorization
-        final_cols = frame_indices
+        new_corr_values = _evaluate_global_residual_correlation(self.spatial_compressed,
+                                                                self.temporal_compressed,
+                                                                self.factorized_ring_term[0],
+                                                                self.factorized_ring_term[1],
+                                                                self.a,
+                                                                self.c,
+                                                                self.residual_correlation_image.residual_correlation_image_normalizer,
+                                                                self.c[:, neuron_ids],
+                                                                new_rows,
+                                                                new_local_ids)
 
-        return final_rows, final_cols
+        keep = new_corr_values >= signal_thresholds[new_local_ids]
+        return new_rows[keep], neuron_ids[new_local_ids[keep]]
+    #
+    # def greedy_connected_comps(self,
+    #                            fov_height: int,
+    #                            fov_width: int,
+    #                            support_correlation_values: SparseCSRTensor,
+    #                            start: int,
+    #                            end: int,
+    #                            per_signal_thresholds: torch.Tensor,
+    #                            expansion_radius: int = 5
+    #                            ):
+    #     """
+    #     The strategy here -- iterate over blocks
+    #     - Take the row/col indices of a_subset, dilate by expansion radius pixels
+    #     - Deduplicate all of them
+    #     - Remove pixels already belonging to support of a_subset
+    #     - Run eval(row, col) to get the correlation image values off the support
+    #     - Threshold the pixels already belonging to the support
+    #     - Combine the eval + support-thresholded pixels
+    #
+    #     This functions returns the (row, col) data describing candidate pixels that potentially belong to the expanded
+    #     support of each neuron but do not belong to the existing support
+    #
+    #     """
+    #     device = self.device
+    #     neuron_ids = torch.arange(start, end, device=device, dtype=torch.long)
+    #     signal_thresholds = per_signal_thresholds[start:end]
+    #     masks = support_correlation_values ## This is a COO tensor that has the same row/col as masks
+    #     mask_subset = csr_index_select_cols(masks, neuron_ids)
+    #     height_indices, width_indices, local_id_indices = sparse_dilation_routine(fov_height,
+    #                                                                            fov_width,
+    #                                                                            mask_subset,
+    #                                                                            expansion_radius=expansion_radius)
+    #
+    #     all_coords = _vectorize_nd_coords((fov_height, fov_width, neuron_ids.numel()),
+    #                                       (height_indices, width_indices, local_id_indices))
+    #
+    #     all_coords = torch.unique(all_coords, sorted=True) ## Remove duplicates
+    #
+    #     """
+    #     Now get the row/col data from mask_subset. Unvectorize the row --> height/width indices then vecotrize the
+    #     (height, width, id) indices to 1D
+    #     """
+    #     mask_subset_rows = decompress_csr_rows(mask_subset.crow_indices(), mask_subset.values().numel())
+    #     mask_subset_height, mask_subset_width = _unvectorize_nd_coords((fov_height, fov_width),
+    #                                                                    mask_subset_rows)
+    #     mask_subset_local_id_indices = mask_subset.col_indices()
+    #     mask_coords = _vectorize_nd_coords((fov_height, fov_width, neuron_ids.numel()),
+    #                                        (mask_subset_height, mask_subset_width, mask_subset_local_id_indices))
+    #     mask_subset_vals = mask_subset.values()
+    #
+    #     potential_matches = torch.searchsorted(all_coords, mask_coords)
+    #     match_indicator = torch.zeros_like(all_coords, dtype=torch.bool)
+    #     match_indicator[potential_matches] = (all_coords[potential_matches] == mask_coords)
+    #     match_indicator.logical_not_() ## We want all data that is not part of the existing support
+    #     new_coords = all_coords[match_indicator]
+    #     new_height, new_width, new_signal_id = _unvectorize_nd_coords((fov_height, fov_width, neuron_ids.numel()),
+    #                                               new_coords)
+    #
+    #     new_row = _vectorize_nd_coords((fov_height, fov_width),
+    #                                    (new_height, new_width))
+    #     new_col = new_signal_id
+    #
+    #
+    #
+    #     ## Now pull out the row/col/values from the existing supports that contain high correlation values
+    #     keep_mask_ids = mask_subset_vals >= signal_thresholds[mask_subset_local_id_indices]
+    #
+    #     mask_final_vals = mask_subset_vals[keep_mask_ids]
+    #     mask_final_coords = mask_coords[keep_mask_ids]
+    #
+    #     mask_final_height, mask_final_width, mask_final_signal_ids = _unvectorize_nd_coords((fov_height, fov_width, neuron_ids.numel()),
+    #                                                                                         mask_final_coords)
+    #
+    #     mask_final_rows = _vectorize_nd_coords((fov_height, fov_width),
+    #                                           (mask_final_height, mask_final_width))
+    #     mask_final_cols = neuron_ids[mask_final_signal_ids]
+    #
+    #     ## Now compute the correlation values on the new pixels.
+    #     new_pixel_height, new_pixel_width, new_pixel_signal_id = _unvectorize_nd_coords((fov_height, fov_width, neuron_ids.numel()),
+    #                                                                                     new_coords)
+    #     new_pixel_rows = _vectorize_nd_coords((fov_height, fov_width),
+    #                                           (new_pixel_height, new_pixel_width))
+    #     new_pixel_corr_values = _evaluate_global_residual_correlation(self.spatial_compressed,
+    #                                                                   self.temporal_compressed,
+    #                                                                   self.factorized_ring_term[0],
+    #                                                                   self.factorized_ring_term[1],
+    #                                                                   self.a,
+    #                                                                   self.c,
+    #                                                                   self.residual_correlation_image.residual_correlation_image_normalizer,
+    #                                                                   self.c[:, neuron_ids],
+    #                                                                   new_pixel_rows,
+    #                                                                   new_pixel_signal_id)
+    #
+    #     keep_new_pixels = new_pixel_corr_values >= signal_thresholds[new_pixel_signal_id]
+    #     new_pixel_rows = new_pixel_rows[keep_new_pixels]
+    #     new_pixel_signal_id = new_pixel_signal_id[keep_new_pixels]
+    #     new_pixel_cols = neuron_ids[new_pixel_signal_id]
+    #     return new_pixel_rows, new_pixel_cols
 
+    def _mask_expansion_routine(self, relative_correlation_fraction, spatial_comps, residual_correlation_data,
+                                neuron_batch_size: int = 500):
+        support = residual_correlation_data.residual_correlation_image_support_values.to_sparse_csr()
+        if not (torch.equal(support.crow_indices(), spatial_comps.crow_indices())
+                and torch.equal(support.col_indices(), spatial_comps.col_indices())):
+            raise RuntimeError("Residual correlation support values are stale relative to spatial_comps")
 
-    def _mask_expansion_routine(
-            self,
-            relative_correlation_fraction: float,
-            mask: SparseCOOTensor,
-            spatial_comps: SparseCOOTensor,
-            residual_correlation_data: ResidualCorrelationImages,
-    ) -> tuple[SparseCOOTensor, SparseCOOTensor]:
-        num_iters = math.ceil(spatial_comps.shape[1] / self.frame_batch_size)
+        corr = support.values()  # one value per nonzero of `a`, same order
+        a_cols = spatial_comps.col_indices()
+        a_rows = decompress_csr_rows(spatial_comps.crow_indices(), corr.numel())
+        num_signals = spatial_comps.shape[1]
 
-        final_spatial_rows = []
-        final_spatial_cols = []
-        final_spatial_values = []
+        max_corr = torch.full((num_signals,), float("-inf"), device=corr.device, dtype=corr.dtype)
+        max_corr.scatter_reduce_(0, a_cols, corr, "amax", include_self=True)
+        thresholds = max_corr * relative_correlation_fraction
 
-        final_mask_rows = []
-        final_mask_cols = []
+        # Shrink pixels (keep existing pixels above threshold, with their current values)
+        # Always keep each signal's peak pixel so no footprint becomes empty.
+        keep = (corr >= thresholds[a_cols]) | (corr == max_corr[a_cols])
+        rows, cols, vals = [a_rows[keep]], [a_cols[keep]], [spatial_comps.values()[keep]]
 
-        max_correlation_values = torch.zeros(
-            spatial_comps.shape[1], device=self.device
-        ).float()
-        (
-            _,
-            correlation_cols,
-        ) = residual_correlation_data.residual_correlation_image_support_values.indices()
-        correlation_values = (
-            residual_correlation_data.residual_correlation_image_support_values.values()
-        )
+        # Grow pixels (new pixels around each support, starting at 0 (spatial HALS fills them in))
+        for start in range(0, num_signals, neuron_batch_size):
+            end = min(start + neuron_batch_size, num_signals)
+            new_rows, new_cols = self.greedy_connected_comps(self.shape[0], self.shape[1], support,
+                                                             start, end, thresholds)
+            rows.append(new_rows)
+            cols.append(new_cols)
+            vals.append(torch.zeros(new_cols.numel(), device=corr.device, dtype=corr.dtype))
 
-        max_correlation_values.scatter_reduce_(
-            0, correlation_cols, correlation_values, "amax", include_self=False
-        )
-        max_correlation_thresholds = (
-                max_correlation_values * relative_correlation_fraction
-        )
-
-        for k in range(num_iters):
-            start = k * self.frame_batch_size
-            end = min(spatial_comps.shape[1], start + self.frame_batch_size)
-            neuron_indices = torch.arange(start, end, device=self.device).long()
-
-            curr_thresholds = max_correlation_thresholds[start:end]
-
-            curr_residual_images = residual_correlation_data.getitem_tensor(
-                slice(start, end)
-            )  # Images x fov dim 1 x fov dim 2
-
-            curr_thresholded_residual_images = (
-                    curr_thresholds[:, None, None] < curr_residual_images
-            ).float()
-            curr_masks = csr_index_select_cols(mask, neuron_indices)
-            # curr_masks = torch.index_select(mask, 1, neuron_indices).coalesce()
-
-
-            final_rows, local_cols = self.greedy_connected_comps(self.shape[0],
-                                                                    self.shape[1],
-                                                                    curr_masks,
-                                                                    curr_thresholded_residual_images)
-            final_cols = neuron_indices[local_cols]
-            final_vals = torch.zeros_like(final_cols).float()
-
-            final_spatial_rows.append(final_rows)
-            final_spatial_cols.append(final_cols)
-            final_spatial_values.append(final_vals)
-
-            final_mask_rows.append(final_rows)
-            final_mask_cols.append(final_cols)
-
-        original_a_rows = decompress_csr_rows(spatial_comps.crow_indices(), spatial_comps.values().numel())
-        original_a_cols = spatial_comps.col_indices()
-        # original_a_rows, original_a_cols = spatial_comps.indices()
-        original_a_values = spatial_comps.values()
-
-        final_spatial_rows.append(original_a_rows)
-        final_spatial_cols.append(original_a_cols)
-        final_spatial_values.append(original_a_values)
-
-        # Construct the new mask
-        final_mask_rows = torch.cat(final_mask_rows, 0)
-        final_mask_cols = torch.cat(final_mask_cols, 0)
-        final_mask_values = torch.ones_like(final_mask_cols).float()
-        final_mask = torch.sparse_coo_tensor(
-            torch.stack([final_mask_rows, final_mask_cols]),
-            final_mask_values,
-            spatial_comps.shape,
-        ).coalesce()
-
-        ##Make sure all nonzero values are actually either 1 or 0.
-        final_mask = torch.sparse_coo_tensor(
-            final_mask.indices(),
-            torch.ones_like(final_mask.values(), dtype=final_mask.values().dtype),
-            final_mask.shape
-        ).coalesce()
-
-        final_spatial_rows = torch.cat(final_spatial_rows, 0)
-        final_spatial_cols = torch.cat(final_spatial_cols, 0)
-        final_spatial_values = torch.cat(final_spatial_values, 0)
-        final_spatial = torch.sparse_coo_tensor(
-            torch.stack([final_spatial_rows, final_spatial_cols]),
-            final_spatial_values,
-            spatial_comps.shape,
-        ).coalesce()
-        return final_mask.to_sparse_csr(), final_spatial.to_sparse_csr()
+        a_new = torch.sparse_coo_tensor(torch.stack([torch.cat(rows), torch.cat(cols)]), torch.cat(vals),
+                                        spatial_comps.shape).coalesce().to_sparse_csr()
+        mask = torch.sparse_csr_tensor(a_new.crow_indices(), a_new.col_indices(),
+                                       torch.ones_like(a_new.values()), size=a_new.shape)
+        return mask, a_new
 
     def support_update_routine(
             self,
@@ -3514,12 +3669,11 @@ class DemixingState(SignalProcessingState):
             self.compute_residual_correlation_image()
 
         # Currently using rigid mask
-        self.mask_ab = self.a.bool()#.coalesce()
         self.mask_ab, self.a = self._mask_expansion_routine(
             relative_correlation_fraction,
-            self.mask_ab,
             self.a,
             self.residual_correlation_image,
+            self.frame_batch_size
         )
 
         self.residual_correlation_image = None
