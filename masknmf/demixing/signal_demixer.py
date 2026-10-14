@@ -2377,7 +2377,7 @@ def right_singular_vector_routine(u: SparseCSRTensor,
             target_output[start_1:end_1, start_2:end_2] = prod
             target_output[start_2:end_2, start_1:end_1] = prod.T
 
-    eigenvalues, eigenvectors = torch.linalg.eigh(final_output.double())
+    eigenvalues, eigenvectors = torch.linalg.eigh(target_output.double())
     eigenvalues, eigenvectors = eigenvalues.flip(0), eigenvectors.flip(1)
     return eigenvectors.T.to(v_bkgd.dtype), eigenvalues.clamp_min_(0).sqrt().to(v_bkgd.dtype)
 
