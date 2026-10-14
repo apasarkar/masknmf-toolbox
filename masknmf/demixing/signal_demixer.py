@@ -2255,23 +2255,6 @@ def spatial_comp_plot(
     plt.tight_layout()
     plt.show()
     return fig
-#
-# def _vectorize_nd_coords(dimensions: tuple[int, ...],
-#                          coordinates: tuple[torch.Tensor, ...]) -> torch.Tensor:
-#     """Row-major (C order) flattening of N-d integer coordinates. Uses Horner form"""
-#     out = coordinates[0].long()
-#     for dim, coord in zip(dimensions[1:], coordinates[1:]):
-#         out = out * dim + coord.long()
-#     return out
-#
-# def _unvectorize_nd_coords(dimensions, coordinates):
-#     """Inverse of _vectorize_nd_coords; integer arithmetic only."""
-#     out = []
-#     for dim in reversed(dimensions[1:]):
-#         out.append(coordinates % dim)
-#         coordinates = coordinates // dim
-#     out.append(coordinates)
-#     return tuple(reversed(out))
 
 def _eval_sparse_dense_matmul(sparse_tensor: SparseCSRTensor,
                               dense_tensor: torch.Tensor,
@@ -3515,104 +3498,6 @@ class DemixingState(SignalProcessingState):
 
         keep = new_corr_values >= signal_thresholds[new_local_ids]
         return new_rows[keep], neuron_ids[new_local_ids[keep]]
-    #
-    # def greedy_connected_comps(self,
-    #                            fov_height: int,
-    #                            fov_width: int,
-    #                            support_correlation_values: SparseCSRTensor,
-    #                            start: int,
-    #                            end: int,
-    #                            per_signal_thresholds: torch.Tensor,
-    #                            expansion_radius: int = 5
-    #                            ):
-    #     """
-    #     The strategy here -- iterate over blocks
-    #     - Take the row/col indices of a_subset, dilate by expansion radius pixels
-    #     - Deduplicate all of them
-    #     - Remove pixels already belonging to support of a_subset
-    #     - Run eval(row, col) to get the correlation image values off the support
-    #     - Threshold the pixels already belonging to the support
-    #     - Combine the eval + support-thresholded pixels
-    #
-    #     This functions returns the (row, col) data describing candidate pixels that potentially belong to the expanded
-    #     support of each neuron but do not belong to the existing support
-    #
-    #     """
-    #     device = self.device
-    #     neuron_ids = torch.arange(start, end, device=device, dtype=torch.long)
-    #     signal_thresholds = per_signal_thresholds[start:end]
-    #     masks = support_correlation_values ## This is a COO tensor that has the same row/col as masks
-    #     mask_subset = csr_index_select_cols(masks, neuron_ids)
-    #     height_indices, width_indices, local_id_indices = sparse_dilation_routine(fov_height,
-    #                                                                            fov_width,
-    #                                                                            mask_subset,
-    #                                                                            expansion_radius=expansion_radius)
-    #
-    #     all_coords = _vectorize_nd_coords((fov_height, fov_width, neuron_ids.numel()),
-    #                                       (height_indices, width_indices, local_id_indices))
-    #
-    #     all_coords = torch.unique(all_coords, sorted=True) ## Remove duplicates
-    #
-    #     """
-    #     Now get the row/col data from mask_subset. Unvectorize the row --> height/width indices then vecotrize the
-    #     (height, width, id) indices to 1D
-    #     """
-    #     mask_subset_rows = decompress_csr_rows(mask_subset.crow_indices(), mask_subset.values().numel())
-    #     mask_subset_height, mask_subset_width = _unvectorize_nd_coords((fov_height, fov_width),
-    #                                                                    mask_subset_rows)
-    #     mask_subset_local_id_indices = mask_subset.col_indices()
-    #     mask_coords = _vectorize_nd_coords((fov_height, fov_width, neuron_ids.numel()),
-    #                                        (mask_subset_height, mask_subset_width, mask_subset_local_id_indices))
-    #     mask_subset_vals = mask_subset.values()
-    #
-    #     potential_matches = torch.searchsorted(all_coords, mask_coords)
-    #     match_indicator = torch.zeros_like(all_coords, dtype=torch.bool)
-    #     match_indicator[potential_matches] = (all_coords[potential_matches] == mask_coords)
-    #     match_indicator.logical_not_() ## We want all data that is not part of the existing support
-    #     new_coords = all_coords[match_indicator]
-    #     new_height, new_width, new_signal_id = _unvectorize_nd_coords((fov_height, fov_width, neuron_ids.numel()),
-    #                                               new_coords)
-    #
-    #     new_row = _vectorize_nd_coords((fov_height, fov_width),
-    #                                    (new_height, new_width))
-    #     new_col = new_signal_id
-    #
-    #
-    #
-    #     ## Now pull out the row/col/values from the existing supports that contain high correlation values
-    #     keep_mask_ids = mask_subset_vals >= signal_thresholds[mask_subset_local_id_indices]
-    #
-    #     mask_final_vals = mask_subset_vals[keep_mask_ids]
-    #     mask_final_coords = mask_coords[keep_mask_ids]
-    #
-    #     mask_final_height, mask_final_width, mask_final_signal_ids = _unvectorize_nd_coords((fov_height, fov_width, neuron_ids.numel()),
-    #                                                                                         mask_final_coords)
-    #
-    #     mask_final_rows = _vectorize_nd_coords((fov_height, fov_width),
-    #                                           (mask_final_height, mask_final_width))
-    #     mask_final_cols = neuron_ids[mask_final_signal_ids]
-    #
-    #     ## Now compute the correlation values on the new pixels.
-    #     new_pixel_height, new_pixel_width, new_pixel_signal_id = _unvectorize_nd_coords((fov_height, fov_width, neuron_ids.numel()),
-    #                                                                                     new_coords)
-    #     new_pixel_rows = _vectorize_nd_coords((fov_height, fov_width),
-    #                                           (new_pixel_height, new_pixel_width))
-    #     new_pixel_corr_values = _evaluate_global_residual_correlation(self.spatial_compressed,
-    #                                                                   self.temporal_compressed,
-    #                                                                   self.factorized_ring_term[0],
-    #                                                                   self.factorized_ring_term[1],
-    #                                                                   self.a,
-    #                                                                   self.c,
-    #                                                                   self.residual_correlation_image.residual_correlation_image_normalizer,
-    #                                                                   self.c[:, neuron_ids],
-    #                                                                   new_pixel_rows,
-    #                                                                   new_pixel_signal_id)
-    #
-    #     keep_new_pixels = new_pixel_corr_values >= signal_thresholds[new_pixel_signal_id]
-    #     new_pixel_rows = new_pixel_rows[keep_new_pixels]
-    #     new_pixel_signal_id = new_pixel_signal_id[keep_new_pixels]
-    #     new_pixel_cols = neuron_ids[new_pixel_signal_id]
-    #     return new_pixel_rows, new_pixel_cols
 
     def _mask_expansion_routine(self, relative_correlation_fraction, spatial_comps, residual_correlation_data,
                                 neuron_batch_size: int = 500):
