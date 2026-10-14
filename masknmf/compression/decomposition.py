@@ -683,9 +683,7 @@ def downsample_sparse(sparse_tensor: SparseCSRTensor,
     new_height, new_width = height // downsample_factor, width // downsample_factor
     h_vals = h_vals // downsample_factor
     w_vals = w_vals // downsample_factor
-    h_vals = torch.floor(h_vals).long()
     good_indices = (h_vals < new_height).long()
-    w_vals = torch.floor(w_vals).long()
     good_indices *= (w_vals < new_width).long()
     new_rows = h_vals * new_width + w_vals
 
