@@ -34,7 +34,8 @@ from .demixing_utils import (
     csr_index_select_rows,
     csr_index_select_cols,
     decompress_csr_rows,
-    _eval_sparse_dense_matmul
+    _eval_sparse_dense_matmul,
+    gpu_mem
 )
 
 from masknmf.demixing import regression_update
@@ -42,23 +43,13 @@ from masknmf.demixing.background_estimation import RingModel
 from masknmf.compression import CompressionArray
 from masknmf.compression.preprocessing import SplineDetrend
 from masknmf import display
-import contextlib, torch
+
 
 logger = logging.getLogger(__name__)
 
 
 
 _LAPLACIAN_SHIFTS = ((0, 1), (1, 0), (-1, 0), (0, -1), (-1, -1), (-1, 1), (1, -1), (1, 1))
-
-@contextlib.contextmanager
-def gpu_mem(label):
-    torch.cuda.reset_peak_memory_stats()
-    start = torch.cuda.memory_allocated()
-    yield
-    peak, end = torch.cuda.max_memory_allocated(), torch.cuda.memory_allocated()
-    gib = 2 ** 30
-    print(f"{label:30s} start {start/gib:6.2f}  peak {peak/gib:6.2f} (+{(peak-start)/gib:5.2f})  end {end/gib:6.2f} GiB")
-
 
 
 class DemixingError(Exception):
@@ -3803,25 +3794,20 @@ class DemixingState(SignalProcessingState):
         """
         # Key: precompute_quantities is a setup function which must be run first in this routine
         # self.background_rank = None #Always estimate the background rank each time
-        with gpu_mem("detrender"):
-            self.detrender = detrender
-            if self.detrender is not None:
-                self.detrender.to(self.device)
+        self.detrender = detrender
+        if self.detrender is not None:
+            self.detrender.to(self.device)
 
-        with gpu_mem("precompute"):
-            self.precompute_quantities()
-            self.W = RingModel(
-                self.shape[0], self.shape[1], ring_radius, self.device
-            )
+        self.precompute_quantities()
+        self.W = RingModel(
+            self.shape[0], self.shape[1], ring_radius, self.device
+        )
 
-        with gpu_mem("hals schedule"):
-            self.update_hals_scheduler()
+        self.update_hals_scheduler()
 
-        with gpu_mem("standard corr img"):
-            self.initialize_standard_correlation_image()
+        self.initialize_standard_correlation_image()
 
-        with gpu_mem("compute resid corr img"):
-            self.compute_residual_correlation_image()
+        self.compute_residual_correlation_image()
 
         if isinstance(support_threshold, list) or isinstance(support_threshold, tuple):
             if len(support_threshold) == 2:
@@ -3855,61 +3841,45 @@ class DemixingState(SignalProcessingState):
         background_enabled: bool = False
         background_reassigned: bool = False
         for iters in tqdm(range(maxiter)):
-            with gpu_mem("b update"):
-                self.static_baseline_update()
+            self.static_baseline_update()
 
             if ring_model_start_pt is not None and iters >= ring_model_start_pt:
-                with gpu_mem("laplacian"):
-                    background_enabled = True
+                background_enabled = True
 
 
             if background_enabled:
                 if self.factorized_ring_term is not None and reassign_background and iters == maxiter - 1:
-                    with gpu_mem("reassign bkgd"):
-                        # graph_laplacian = construct_laplacian_matrix(self.shape[0],
-                        #                                              self.shape[1],
-                        #                                              offset=max(1, ring_radius // 2),
-                        #                                              device=self.device)
-                        # self.reassign_background_to_signal(graph_laplacian, c_nonneg=c_nonneg)
-                        self.reassign_background_to_signal(max(1, ring_radius // 2), c_nonneg=c_nonneg)
-                        background_reassigned = True
-                        # del graph_laplacian
-                        background_reassigned = True
+                    self.reassign_background_to_signal(max(1, ring_radius // 2), c_nonneg=c_nonneg)
+                    background_reassigned = True
 
-                with gpu_mem("fluctuating baseline update"):
-                    self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
+                self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
 
-            with gpu_mem("spatial update"):
-                self.spatial_update(plot_en=plot_en)
+            self.spatial_update(plot_en=plot_en)
 
-            with gpu_mem("baseline update"):
-                self.static_baseline_update()
+            self.static_baseline_update()
 
-            with gpu_mem("temporal update"):
-                denoise_flag = denoise[iters]
-                self.temporal_update(
-                    denoise=denoise_flag, plot_en=plot_en, c_nonneg=c_nonneg
-                )
+            denoise_flag = denoise[iters]
+            self.temporal_update(
+                denoise=denoise_flag, plot_en=plot_en, c_nonneg=c_nonneg
+            )
 
             if update_frequency and ((iters + 1) % update_frequency == 0):
                 ##First: Compute correlation images
-                with gpu_mem("std corr img setter"):
-                    self.standard_correlation_image.temporal_demixed = self.c
+                self.standard_correlation_image.temporal_demixed = self.c
 
                 # Merge signals as needed and update the scheduler
-                with gpu_mem("merge signals"):
-                    if not background_reassigned:
-                        original_shape = self.a.shape[1]
-                        self.merge_signals(merge_threshold, merge_overlap_threshold, plot_en)
+                if not background_reassigned:
+                    original_shape = self.a.shape[1]
+                    self.merge_signals(merge_threshold, merge_overlap_threshold, plot_en)
 
-                        if self.a.shape[1] < original_shape:
-                            self.update_hals_scheduler()
-                with gpu_mem("support update"):
-                    self.support_update_routine(
-                        support_threshold[iters],
-                        deletion_threshold,
-                        min_brightness=min_brightness_list[iters]
-                    )
+                    if self.a.shape[1] < original_shape:
+                        self.update_hals_scheduler()
+
+                self.support_update_routine(
+                    support_threshold[iters],
+                    deletion_threshold,
+                    min_brightness=min_brightness_list[iters]
+                )
 
 
                 self.update_hals_scheduler()

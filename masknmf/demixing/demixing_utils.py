@@ -10,6 +10,18 @@ from collections import defaultdict
 from masknmf.utils import SparseCOOTensor, SparseCSRTensor
 
 logger = logging.getLogger(__name__)
+import contextlib
+import torch
+
+
+@contextlib.contextmanager
+def gpu_mem(label):
+    torch.cuda.reset_peak_memory_stats()
+    start = torch.cuda.memory_allocated()
+    yield
+    peak, end = torch.cuda.max_memory_allocated(), torch.cuda.memory_allocated()
+    gib = 2 ** 30
+    print(f"{label:30s} start {start/gib:6.2f}  peak {peak/gib:6.2f} (+{(peak-start)/gib:5.2f})  end {end/gib:6.2f} GiB")
 
 
 def decompress_csr_rows(crow: torch.Tensor, num_nonzero: int):
