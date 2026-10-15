@@ -6,7 +6,8 @@ from masknmf.utils import SparseCOOTensor, SparseCSRTensor
 from masknmf.demixing.demixing_utils import (construct_graph_from_sparse_tensor,
                                              color_and_get_tensors,
                                              csr_index_select_rows,
-                                             decompress_csr_rows)
+                                             decompress_csr_rows,
+                                             _eval_sparse_dense_matmul)
 
 
 def baseline_update(uv_mean, a, c, to_torch=False):
@@ -33,68 +34,32 @@ def baseline_update(uv_mean, a, c, to_torch=False):
         return b
 
 
-def spatial_update_hals(
-        u_sparse: torch.Tensor,
-        v: torch.Tensor,
-        a_sparse: SparseCSRTensor,
-        c: torch.Tensor,
-        b: torch.Tensor,
-        q: tuple[torch.Tensor, torch.Tensor] | None = None,
-        blocks: torch.Tensor | list | None = None,
-        mask_ab: SparseCOOTensor = None,
-        frame_batch_size: int = 500,
-):
-    """
-    Computes a spatial HALS updates:
-    Params:
-        u_sparse (torch.sparse_csr_tensor): Sparse matrix, with dimensions (d x R)
-        v (torch.Tensor): Dimensions R x T. Dimensions R x T, where T is the number of frames, where all rows are orthonormal.
-            Note:  V must contain the 1 x T vector of all 1's in its rowspan.
-        a_sparse (torch.sparse_csr_tensor): dimensions d x k, where k represents the number of neural signals.
-        c (torch.Tensor): Dimensions T x k
-        b (torch.Tensor): Dimensions d x 1. Represents static background
-        q (torch.tensor): This is the factorized ring model term; u@r@q@v gives you the full ring model movie
-        blocks (torch.tenso |  list | None): Describes which components can be updated in parallel. Typically a list of 1D tensors, each describing indices
-        mask_ab (torch.sparse_coo_tensor): Dimensions (d x k). For each neuron, indicates the allowed support of neuron
-        frame_batch_size (int): Roughly the number of dense frames of data that are expanded out in GPU memory
-
-    Returns:
-        a_sparse: torch.sparse_coo_tensor. Dimensions d x k, containing updated spatial matrix
-
-    """
-    # Load all values onto device in torch
+def spatial_update_hals(u_sparse: SparseCSRTensor,
+                        v: torch.Tensor,
+                        a_sparse: SparseCSRTensor,
+                        c: torch.Tensor,
+                        b: torch.Tensor,
+                        q: tuple[torch.Tensor, torch.Tensor] | None = None,
+                        blocks: torch.Tensor | list | None = None,
+                        mask_ab=None,
+                        frame_batch_size=500):
     device = v.device
-
-    c_sq_norm = torch.linalg.norm(c, dim=0, keepdim=True) ** 2
-    ctc = torch.matmul(c.t(), c)
-    ctc /= c_sq_norm
-    """
-    We will now compute the following expression: 
-    This is part of the 'residual video' that we regress onto the spatial components below
-    """
-    normalized_c_sum = (torch.sum(c, dim=0, keepdim=True) / c_sq_norm).squeeze(0)
-
+    c_sq_norm = torch.linalg.norm(c, dim=0) ** 2                       # (K,)
+    normalized_c_sum = torch.sum(c, dim=0) / c_sq_norm                 # (K,)
     if blocks is None:
         blocks = torch.arange(c.shape[1], device=device).unsqueeze(1)
 
     index_dtype = a_sparse.col_indices().dtype
     column_lut = torch.zeros(a_sparse.shape[1], device=device, dtype=index_dtype)
-    row_lut = torch.zeros(a_sparse.shape[0], device=device, dtype=index_dtype)
     membership_lut = torch.zeros(a_sparse.shape[1], device=device, dtype=torch.bool)
     a_rows = decompress_csr_rows(a_sparse.crow_indices(), a_sparse.values().numel())
     a_cols = a_sparse.col_indices()
     a_values = a_sparse.values()
-    diff = v @ c
-    if q is not None:
-        diff -= q[0] @ (q[1] @ c)
-    diff /= c_sq_norm
+
     for index_select_tensor in blocks:
-        num_iters = math.ceil(index_select_tensor.shape[0] / frame_batch_size)
-        for i in range(num_iters):
-            start_pt = i * frame_batch_size
-            end_pt = min(start_pt + frame_batch_size, index_select_tensor.shape[0])
-            subset_tensor = index_select_tensor[start_pt:end_pt]
-            column_lut[subset_tensor] = torch.arange(subset_tensor.shape[0], device=device)
+        for start_pt in range(0, index_select_tensor.shape[0], frame_batch_size):
+            subset_tensor = index_select_tensor[start_pt:start_pt + frame_batch_size]
+            column_lut[subset_tensor] = torch.arange(subset_tensor.shape[0], device=device, dtype=index_dtype)
             membership_lut[subset_tensor] = True
             col_mask = membership_lut[a_cols]
             col_indices = a_cols[col_mask]
@@ -102,24 +67,111 @@ def spatial_update_hals(
             row_indices = a_rows[col_mask]
             curr_values = a_values[col_mask]
 
-            ## Rows are guaranteed to be unique since the signals being updated at any point in time do not overlap
-            ## We exploit this significantly reduce number of matmuls
-            u_subset = csr_index_select_rows(u_sparse, row_indices)
-            a_subset = csr_index_select_rows(a_sparse, row_indices)
-            term1 = torch.sparse.mm(u_subset, diff[:, subset_tensor])
-            term2 = torch.sparse.mm(a_subset, ctc[:, subset_tensor])
+            # Only this subset's columns of (V - F1 F2) c / ||c||^2 and C^T c / ||c||^2
+            c_sub = c[:, subset_tensor]                                # (T, s)
+            diff_sub = v @ c_sub                                       # (R, s)
+            if q is not None:
+                diff_sub -= q[0] @ (q[1] @ c_sub)
+            diff_sub /= c_sq_norm[subset_tensor]
+            ctc_sub = (c.T @ c_sub) / c_sq_norm[subset_tensor]         # (K, s)
 
-            remapped_row_indices = torch.arange(term1.shape[0], dtype=remapped_col_indices.dtype, device=remapped_col_indices.device)
-            updated_values = term1[remapped_row_indices, remapped_col_indices] - term2[remapped_row_indices, remapped_col_indices] - \
-                             b[row_indices, :].squeeze() * normalized_c_sum[col_indices] #baseline_projection[row_indices, col_indices]
-            curr_values += updated_values
+            # Each support entry needs only its own signal's column: gather, don't form (rows x s) products
+            term1 = _eval_sparse_dense_matmul(u_sparse, diff_sub, row_indices, remapped_col_indices)
+            term2 = _eval_sparse_dense_matmul(a_sparse, ctc_sub, row_indices, remapped_col_indices)
+            curr_values += term1 - term2 - b[row_indices, 0] * normalized_c_sum[col_indices]
             curr_values.relu_()
             a_sparse.values().masked_scatter_(col_mask, curr_values)
 
-            ##Critical: reset the membership LUT
             membership_lut[subset_tensor] = False
-
     return a_sparse
+#
+# def spatial_update_hals(
+#         u_sparse: torch.Tensor,
+#         v: torch.Tensor,
+#         a_sparse: SparseCSRTensor,
+#         c: torch.Tensor,
+#         b: torch.Tensor,
+#         q: tuple[torch.Tensor, torch.Tensor] | None = None,
+#         blocks: torch.Tensor | list | None = None,
+#         mask_ab: SparseCOOTensor = None,
+#         frame_batch_size: int = 500,
+# ):
+#     """
+#     Computes a spatial HALS updates:
+#     Params:
+#         u_sparse (torch.sparse_csr_tensor): Sparse matrix, with dimensions (d x R)
+#         v (torch.Tensor): Dimensions R x T. Dimensions R x T, where T is the number of frames, where all rows are orthonormal.
+#             Note:  V must contain the 1 x T vector of all 1's in its rowspan.
+#         a_sparse (torch.sparse_csr_tensor): dimensions d x k, where k represents the number of neural signals.
+#         c (torch.Tensor): Dimensions T x k
+#         b (torch.Tensor): Dimensions d x 1. Represents static background
+#         q (torch.tensor): This is the factorized ring model term; u@r@q@v gives you the full ring model movie
+#         blocks (torch.tenso |  list | None): Describes which components can be updated in parallel. Typically a list of 1D tensors, each describing indices
+#         mask_ab (torch.sparse_coo_tensor): Dimensions (d x k). For each neuron, indicates the allowed support of neuron
+#         frame_batch_size (int): Roughly the number of dense frames of data that are expanded out in GPU memory
+#
+#     Returns:
+#         a_sparse: torch.sparse_coo_tensor. Dimensions d x k, containing updated spatial matrix
+#
+#     """
+#     # Load all values onto device in torch
+#     device = v.device
+#
+#     c_sq_norm = torch.linalg.norm(c, dim=0, keepdim=True) ** 2
+#     ctc = torch.matmul(c.t(), c)
+#     ctc /= c_sq_norm
+#     """
+#     We will now compute the following expression:
+#     This is part of the 'residual video' that we regress onto the spatial components below
+#     """
+#     normalized_c_sum = (torch.sum(c, dim=0, keepdim=True) / c_sq_norm).squeeze(0)
+#
+#     if blocks is None:
+#         blocks = torch.arange(c.shape[1], device=device).unsqueeze(1)
+#
+#     index_dtype = a_sparse.col_indices().dtype
+#     column_lut = torch.zeros(a_sparse.shape[1], device=device, dtype=index_dtype)
+#     row_lut = torch.zeros(a_sparse.shape[0], device=device, dtype=index_dtype)
+#     membership_lut = torch.zeros(a_sparse.shape[1], device=device, dtype=torch.bool)
+#     a_rows = decompress_csr_rows(a_sparse.crow_indices(), a_sparse.values().numel())
+#     a_cols = a_sparse.col_indices()
+#     a_values = a_sparse.values()
+#     diff = v @ c
+#     if q is not None:
+#         diff -= q[0] @ (q[1] @ c)
+#     diff /= c_sq_norm
+#     for index_select_tensor in blocks:
+#         num_iters = math.ceil(index_select_tensor.shape[0] / frame_batch_size)
+#         for i in range(num_iters):
+#             start_pt = i * frame_batch_size
+#             end_pt = min(start_pt + frame_batch_size, index_select_tensor.shape[0])
+#             subset_tensor = index_select_tensor[start_pt:end_pt]
+#             column_lut[subset_tensor] = torch.arange(subset_tensor.shape[0], device=device)
+#             membership_lut[subset_tensor] = True
+#             col_mask = membership_lut[a_cols]
+#             col_indices = a_cols[col_mask]
+#             remapped_col_indices = column_lut[col_indices]
+#             row_indices = a_rows[col_mask]
+#             curr_values = a_values[col_mask]
+#
+#             ## Rows are guaranteed to be unique since the signals being updated at any point in time do not overlap
+#             ## We exploit this significantly reduce number of matmuls
+#             u_subset = csr_index_select_rows(u_sparse, row_indices)
+#             a_subset = csr_index_select_rows(a_sparse, row_indices)
+#             term1 = torch.sparse.mm(u_subset, diff[:, subset_tensor])
+#             term2 = torch.sparse.mm(a_subset, ctc[:, subset_tensor])
+#
+#             remapped_row_indices = torch.arange(term1.shape[0], dtype=remapped_col_indices.dtype, device=remapped_col_indices.device)
+#             updated_values = term1[remapped_row_indices, remapped_col_indices] - term2[remapped_row_indices, remapped_col_indices] - \
+#                              b[row_indices, :].squeeze() * normalized_c_sum[col_indices] #baseline_projection[row_indices, col_indices]
+#             curr_values += updated_values
+#             curr_values.relu_()
+#             a_sparse.values().masked_scatter_(col_mask, curr_values)
+#
+#             ##Critical: reset the membership LUT
+#             membership_lut[subset_tensor] = False
+#
+#     return a_sparse
 
 def temporal_update_hals(
     u_sparse: SparseCSRTensor,

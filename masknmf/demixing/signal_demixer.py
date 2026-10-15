@@ -33,8 +33,10 @@ from .demixing_utils import (
     torch_dense_to_sparse_coo,
     csr_index_select_rows,
     csr_index_select_cols,
-    decompress_csr_rows
+    decompress_csr_rows,
+    _eval_sparse_dense_matmul
 )
+
 from masknmf.demixing import regression_update
 from masknmf.demixing.background_estimation import RingModel
 from masknmf.compression import CompressionArray
@@ -43,6 +45,10 @@ from masknmf import display
 import contextlib, torch
 
 logger = logging.getLogger(__name__)
+
+
+
+_LAPLACIAN_SHIFTS = ((0, 1), (1, 0), (-1, 0), (0, -1), (-1, -1), (-1, 1), (1, -1), (1, 1))
 
 @contextlib.contextmanager
 def gpu_mem(label):
@@ -66,6 +72,47 @@ class NoSignalsDetectedError(DemixingError):
     detected signal. Callers should either lower the threshold and retry, or
     treat this as a terminal condition for the current input.
     """
+
+
+def _sparse_transpose_times_laplacian(a: SparseCSRTensor,
+                                      fov_height: int,
+                                      fov_width: int,
+                                      offset: int) -> SparseCSRTensor:
+    """
+    a^T L as a (num_signals, num_pixels) CSR tensor, where L is the graph Laplacian built by
+    construct_laplacian_matrix(fov_height, fov_width, offset=offset). L is never formed.
+
+    L is symmetric, so (a^T L)[k, j] = (L a)[j, k] = deg_j * a[j, k] - sum over the 8 offset-neighbours i of j of a[i, k].
+    Each nonzero of a contributes to at most 9 entries.
+
+    Args:
+        a (SparseCSRTensor): (fov_height * fov_width, num_signals)
+        fov_height (int): field of view height
+        fov_width (int): field of view width
+        offset (int): neighbour distance used by the Laplacian
+
+    Returns:
+        SparseCSRTensor: (num_signals, fov_height * fov_width), at most 9 * nnz(a) nonzeros
+    """
+    rows = decompress_csr_rows(a.crow_indices(), a.values().numel())
+    cols = a.col_indices()
+    vals = a.values()
+    h, w = rows // fov_width, rows % fov_width
+    degree = torch.zeros_like(vals)
+    pixel_idx, signal_idx, out_vals = [], [], []
+    for dy, dx in _LAPLACIAN_SHIFTS:
+        hh, ww = h + dy * offset, w + dx * offset
+        valid = (hh >= 0) & (hh < fov_height) & (ww >= 0) & (ww < fov_width)
+        degree += valid.to(vals.dtype)
+        pixel_idx.append((hh * fov_width + ww)[valid])
+        signal_idx.append(cols[valid])
+        out_vals.append(-vals[valid])
+    pixel_idx.append(rows)
+    signal_idx.append(cols)
+    out_vals.append(degree * vals)
+    return torch.sparse_coo_tensor(torch.stack([torch.cat(signal_idx), torch.cat(pixel_idx)]),
+                                   torch.cat(out_vals),
+                                   (a.shape[1], a.shape[0])).coalesce().to_sparse_csr()
 
 def make_mask_dynamic(
         corr_img_all_r: np.ndarray,
@@ -2256,27 +2303,6 @@ def spatial_comp_plot(
     plt.show()
     return fig
 
-def _eval_sparse_dense_matmul(sparse_tensor: SparseCSRTensor,
-                              dense_tensor: torch.Tensor,
-                              rows: torch.Tensor,
-                              cols: torch.Tensor):
-    """
-    This routine evaluates a bunch of row/col of a bunch of sparse-dense matvec operations.
-    The goal is to avoid fully expanding out sparse_tensor @ dense_tensor
-    """
-    final_output = torch.zeros(rows.numel(), dtype=sparse_tensor.dtype, device=sparse_tensor.device)
-    sparse_tensor_subset = csr_index_select_rows(sparse_tensor, rows)
-    subset_rows = decompress_csr_rows(sparse_tensor_subset.crow_indices(), sparse_tensor_subset.values().numel())
-    subset_cols = sparse_tensor_subset.col_indices()
-    subset_vals = sparse_tensor_subset.values()
-
-    ##Each subset row only needs to interact with a specific column of dense_tensor
-    dense_tensor_values = dense_tensor[subset_cols, cols[subset_rows]] * subset_vals
-
-    final_output.index_add_(0, subset_rows, dense_tensor_values)
-    return final_output
-
-
 def _evaluate_global_residual_correlation(spatial_compressed: SparseCSRTensor,
                                           temporal_compressed: torch.Tensor,
                                           ring_left: torch.Tensor | None,
@@ -3429,33 +3455,39 @@ class DemixingState(SignalProcessingState):
             self.update_hals_scheduler()
 
     def reassign_background_to_signal(self,
-                                      graph_laplacian: SparseCSRTensor,
+                                      laplacian_offset: int,
                                       c_nonneg: bool = True):
         """
-        TODO: Add documentation explaining what this is doing
-        temporal_compressed* = (a^T L a)^{-1} (a^T @ L @ spatial_compressed @ factorized_ring_term1 @ factorized_ring_term2)
-
-        Updates the temporal component so that it contains the signals
-
+        Moves the part of the fluctuating background that the Laplacian attributes to the signals into c:
+            c += ((a^T L a)^{-1} a^T L U F1 F2)^T
+        L is applied implicitly (never formed). U F1 is evaluated in contiguous row blocks of about
+        frame_batch_size frames' worth of memory; U's rows are sliced as views, not copied.
         """
+        num_pixels = self.fov_height * self.fov_width
+        ring_left, ring_right = self.factorized_ring_term                  # (R, r), (r, T)
+        background_rank = ring_left.shape[1]
 
-        # Compute spatial_compressed @ factorized_ring_term1 to collapse rank
-        u_term1 = torch.sparse.mm(self.spatial_compressed, self.factorized_ring_term[0])
-        lu_term1 = torch.sparse.mm(graph_laplacian, u_term1)
-        alu_term1 = torch.sparse.mm(self.a.t(), lu_term1)  # Shape (num_neurons, background_rank)
+        atl = _sparse_transpose_times_laplacian(self.a, self.fov_height, self.fov_width, laplacian_offset)  # (K, P)
+        atla = torch.sparse.mm(atl, self.a).to_dense()                                                      # (K, K)
 
-        La = torch.sparse.mm(graph_laplacian, self.a)  # sparse (p, n)
+        u = self.spatial_compressed
+        crow, col, val = u.crow_indices(), u.col_indices(), u.values()
+        rows_per_chunk = max(1, (num_pixels * self.frame_batch_size) // (2 * background_rank))
+        alu = torch.zeros(self.a.shape[1], background_rank, device=ring_left.device, dtype=ring_left.dtype)
+        for start in range(0, num_pixels, rows_per_chunk):
+            end = min(start + rows_per_chunk, num_pixels)
+            lo, hi = int(crow[start]), int(crow[end])
+            u_rows = torch.sparse_csr_tensor(crow[start:end + 1] - lo, col[lo:hi], val[lo:hi],
+                                             size=(end - start, u.shape[1]))
+            x_chunk = torch.sparse.mm(u_rows, ring_left)                                          # (n, r)
+            atl_chunk = csr_index_select_cols(atl, torch.arange(start, end, device=crow.device))  # (K, n)
+            alu += torch.sparse.mm(atl_chunk, x_chunk)
+            del x_chunk, atl_chunk
 
-        # a^T L a : (n, n) — dense, tiny
-        atLa = torch.sparse.mm(self.a.t(), La).to_dense()  # (n, n)
-
-        ### Get (atLa)^-1a^tLTerm1
-        appl_inverse = torch.linalg.lstsq(atLa, alu_term1).solution
-        c_modify = appl_inverse @ self.factorized_ring_term[1]
-        self.c += c_modify.T
+        appl_inverse = torch.linalg.lstsq(atla, alu).solution             # (K, r)
+        self.c += (appl_inverse @ ring_right).T
         if c_nonneg:
             self.c.clamp_(min=0)
-
 
     def _flag_components_for_deletion(self,
                                       deletion_threshold: float,
@@ -3779,12 +3811,14 @@ class DemixingState(SignalProcessingState):
             if background_enabled:
                 if self.factorized_ring_term is not None and reassign_background and iters == maxiter - 1:
                     with gpu_mem("reassign bkgd"):
-                        graph_laplacian = construct_laplacian_matrix(self.shape[0],
-                                                                     self.shape[1],
-                                                                     offset=max(1, ring_radius // 2),
-                                                                     device=self.device)
-                        self.reassign_background_to_signal(graph_laplacian, c_nonneg=c_nonneg)
-                        del graph_laplacian
+                        # graph_laplacian = construct_laplacian_matrix(self.shape[0],
+                        #                                              self.shape[1],
+                        #                                              offset=max(1, ring_radius // 2),
+                        #                                              device=self.device)
+                        # self.reassign_background_to_signal(graph_laplacian, c_nonneg=c_nonneg)
+                        self.reassign_background_to_signal(max(1, ring_radius // 2), c_nonneg=c_nonneg)
+                        background_reassigned = True
+                        # del graph_laplacian
                         background_reassigned = True
 
                 with gpu_mem("fluctuating baseline update"):

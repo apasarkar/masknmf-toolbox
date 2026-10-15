@@ -47,6 +47,29 @@ def csr_index_select_rows(U, idx):
     return torch.sparse_csr_tensor(new_crow, col[src], val[src], size=(idx.numel(), U.shape[1]))
 
 
+def _eval_sparse_dense_matmul(sparse_tensor: SparseCSRTensor,
+                              dense_tensor: torch.Tensor,
+                              rows: torch.Tensor,
+                              cols: torch.Tensor):
+    """
+    This routine evaluates a bunch of row/col of a bunch of sparse-dense matvec operations.
+    The goal is to avoid fully expanding out sparse_tensor @ dense_tensor
+    """
+    final_output = torch.zeros(rows.numel(), dtype=sparse_tensor.dtype, device=sparse_tensor.device)
+    sparse_tensor_subset = csr_index_select_rows(sparse_tensor, rows)
+    subset_rows = decompress_csr_rows(sparse_tensor_subset.crow_indices(), sparse_tensor_subset.values().numel())
+    subset_cols = sparse_tensor_subset.col_indices()
+    subset_vals = sparse_tensor_subset.values()
+
+    ##Each subset row only needs to interact with a specific column of dense_tensor
+    dense_tensor_values = dense_tensor[subset_cols, cols[subset_rows]] * subset_vals
+
+    final_output.index_add_(0, subset_rows, dense_tensor_values)
+    return final_output
+
+
+
+
 def _max_ac_routine(a: SparseCOOTensor,
                     c: torch.Tensor):
     """
