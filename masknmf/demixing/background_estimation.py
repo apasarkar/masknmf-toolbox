@@ -133,7 +133,7 @@ class RingModel:
         # Broadcast-friendly fft kernel
         kernel_padded = torch.zeros((1, 1, H_pad, W_pad), dtype=torch.float32, device=images.device)
         kernel_padded[0, 0, :kh, :kw] = self.kernel
-        kernel_padded = torch.roll(kernel_padded, shifts=(-kh // 2, -kw // 2), dims=(-2, -1))
+        kernel_padded = torch.roll(kernel_padded, shifts=(-(kh // 2), -(kw // 2)), dims=(-2, -1))
         kernel_fft = torch.fft.rfft2(kernel_padded, dim=(-2, -1))  # (1, 1, H_pad, W_pad // 2 + 1), broadcasts
 
         # # Place kernel at top-left corner

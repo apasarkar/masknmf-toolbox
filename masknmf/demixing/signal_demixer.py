@@ -2358,6 +2358,14 @@ def _dilate_support_keys(support: SparseCSRTensor,
                                            keys[coord < size - 1] + stride]))
     return keys
 
+def _csr_row_slice(x: SparseCSRTensor, start: int, end: int) -> SparseCSRTensor:
+    """Rows start:end of a CSR tensor. col_indices and values are views; only the small crow slice is new."""
+    crow = x.crow_indices()
+    lo, hi = int(crow[start]), int(crow[end])
+    return torch.sparse_csr_tensor(crow[start:end + 1] - lo, x.col_indices()[lo:hi], x.values()[lo:hi],
+                                   size=(end - start, x.shape[1]))
+
+
 def right_singular_vector_routine(u: SparseCSRTensor,
                                   v: torch.Tensor,
                                   a: SparseCSRTensor,
@@ -2366,46 +2374,44 @@ def right_singular_vector_routine(u: SparseCSRTensor,
                                   v_bkgd: torch.Tensor,
                                   frame_batch_size: int):
     """
-    We have the residual movie (without fluctuating background), UV - AC - B where U/V are the spatial/temporal compression results,
-    A/C are the spatial/temporal demixing results, and B is a (pixels, 1) tensor describing background
+    SVD of M = (UV - AC^T - b1^T) v_bkgd^T, shape (pixels, rank), without forming M.
 
-    We have an (orthogonalized) temporal basis for the background, v_bkgd, (target rank, frames)
-    This routine computes the spectrum + right singular vectors for (UV - AC - B)v_bkgd
+    M^T M is accumulated over blocks of rows. A block has pixels * frame_batch_size // rank rows, so it holds
+    the same number of values as frame_batch_size full frames; the A and b terms are subtracted in place, so
+    the block is the only (rows, rank) buffer. Every row of M is computed exactly once.
+
+    Args:
+        u (SparseCSRTensor): (pixels, compression rank)
+        v (torch.Tensor): (compression rank, frames)
+        a (SparseCSRTensor): (pixels, signals)
+        c (torch.Tensor): (frames, signals)
+        b (torch.Tensor): (pixels, 1) static baseline
+        v_bkgd (torch.Tensor): (rank, frames), orthonormal rows
+        frame_batch_size (int): memory budget, in full frames
+
+    Returns:
+        vh (torch.Tensor): (rank, rank), rows are right singular vectors of M, in descending order
+        s (torch.Tensor): (rank,) singular values of M, descending
     """
-    target_output = torch.zeros(v_bkgd.shape[0],
-                                v_bkgd.shape[0],
-                                dtype=v_bkgd.dtype,
-                                device=v_bkgd.device)
-    effective_batch_size = frame_batch_size // 2 #Since we will load two chunks of this size at a time
-    num_iters = math.ceil(target_output.shape[0] / effective_batch_size)
-    for k in range(num_iters):
-        start_1 = k * effective_batch_size
-        end_1 = min(target_output.shape[0], start_1 + effective_batch_size)
-        v_subset1 = v_bkgd[start_1:end_1, :]
-        subset = torch.sparse.mm(u, v @ v_subset1.T)
-        subset -= torch.sparse.mm(a, c.T @ v_subset1.T)
-        subset -= torch.sparse.mm(b, torch.sum(v_subset1.T, dim=0, keepdim=True))
+    rank = v_bkgd.shape[0]
+    num_pixels = u.shape[0]
+    rows_per_block = max(1, (num_pixels * frame_batch_size) // rank)
 
-        for j in range(k, num_iters):
-            if j == k:
-                subset2 = subset
-                start_2 = start_1
-                end_2 = end_1
-            else:
-                start_2 = j * effective_batch_size
-                end_2 = min(target_output.shape[0], start_2 + effective_batch_size)
-                v_subset2 = v_bkgd[start_2:end_2, :]
-                subset2 = torch.sparse.mm(u, v @ v_subset2.T)
-                subset2 -= torch.sparse.mm(a, c.T @ v_subset2.T)
-                subset2 -= torch.sparse.mm(b, torch.sum(v_subset2.T, dim=0, keepdim=True))
-
-            prod = subset.T @ subset2
-            target_output[start_1:end_1, start_2:end_2] = prod
-            target_output[start_2:end_2, start_1:end_1] = prod.T
-
-    eigenvalues, eigenvectors = torch.linalg.eigh(target_output.double())
+    vt = v_bkgd.T                                   # (frames, rank)
+    w_u = v @ vt                                    # (compression rank, rank)
+    w_a = c.T @ vt                                  # (signals, rank)
+    w_b = vt.sum(dim=0)                             # (rank,)
+    gram = torch.zeros(rank, rank, dtype=torch.float64, device=v_bkgd.device)
+    for start in range(0, num_pixels, rows_per_block):
+        end = min(start + rows_per_block, num_pixels)
+        m = torch.sparse.mm(_csr_row_slice(u, start, end), w_u)
+        m.addmm_(_csr_row_slice(a, start, end), w_a, alpha=-1)
+        m.addr_(b[start:end, 0], w_b, alpha=-1)
+        gram += (m.T @ m).double()
+        del m
+    eigenvalues, eigenvectors = torch.linalg.eigh(gram)
     eigenvalues, eigenvectors = eigenvalues.flip(0), eigenvectors.flip(1)
-    return eigenvectors.T.to(v_bkgd.dtype), eigenvalues.clamp_min_(0).sqrt().to(v_bkgd.dtype)
+    return eigenvectors.T.to(v_bkgd.dtype), eigenvalues.clamp_min(0).sqrt().to(v_bkgd.dtype)
 
 # Code for min Laplacian re-assignment of signal from background to A/C components
 def construct_laplacian_matrix(height: int,
