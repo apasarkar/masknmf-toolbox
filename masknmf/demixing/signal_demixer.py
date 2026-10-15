@@ -3729,7 +3729,6 @@ class DemixingState(SignalProcessingState):
 
         with gpu_mem("hals schedule"):
             self.update_hals_scheduler()
-            graph_laplacian = None
 
         with gpu_mem("standard corr img"):
             self.initialize_standard_correlation_image()
@@ -3775,16 +3774,19 @@ class DemixingState(SignalProcessingState):
             if ring_model_start_pt is not None and iters >= ring_model_start_pt:
                 with gpu_mem("laplacian"):
                     background_enabled = True
-                    graph_laplacian = construct_laplacian_matrix(self.shape[0],
-                                                                 self.shape[1],
-                                                                 offset=max(1, ring_radius // 2),
-                                                                 device=self.device)
+
 
             if background_enabled:
                 if self.factorized_ring_term is not None and reassign_background and iters == maxiter - 1:
                     with gpu_mem("reassign bkgd"):
+                        graph_laplacian = construct_laplacian_matrix(self.shape[0],
+                                                                     self.shape[1],
+                                                                     offset=max(1, ring_radius // 2),
+                                                                     device=self.device)
                         self.reassign_background_to_signal(graph_laplacian, c_nonneg=c_nonneg)
+                        del graph_laplacian
                         background_reassigned = True
+
                 with gpu_mem("fluctuating baseline update"):
                     self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
 
