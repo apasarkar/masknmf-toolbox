@@ -219,7 +219,56 @@ def _compute_residual_correlation_image(
         device: torch.device | str = "cpu",
 ) -> ResidualCorrelationImages:
     """
-    Insert docs here
+    Computes the residual correlation image of every demixed signal, and returns them in a factorized form that
+    can be evaluated lazily.
+
+    The residual movie is R = UV - UF1F2 - AC^T - R_m 1^T, where U, V are the compression factors, F1, F2 are the
+    fluctuating background factors, A, C are the demixed signals (C mean-subtracted internally) and R_m is the
+    pixelwise mean of UV - UF1F2. Because C is centered, R has zero temporal mean at every pixel.
+
+    The residual correlation image of signal i is the pixelwise correlation between its centered trace c_i and the
+    residual movie with that signal added back, R + a_i c_i^T. The normalizer of each pixel is the norm of that
+    movie, plus num_frames * noise_std^2 when a noise estimate is given.
+
+    On the support of a_i this image differs from signal to signal, so those values are computed exactly here and
+    stored, one value per nonzero of spatial_demixed. Off the support, adding back a_i c_i^T changes nothing, so the
+    returned ResidualCorrelationImages object evaluates those pixels lazily from the factors and the pixelwise mean
+    and normalizer of R.
+
+    Args:
+        spatial_compressed (torch.sparse_csr_tensor): shape (num_pixels, compression_rank). The spatial basis of the
+            compression decomposition. Must be in CSR layout.
+        temporal_compressed (torch.Tensor): shape (compression_rank, num_frames). The temporal basis of the
+            compression decomposition.
+        factorized_ring_term (tuple[torch.Tensor, torch.Tensor] | None): (F1, F2), with shapes
+            (compression_rank, background_rank) and (background_rank, num_frames). U @ F1 @ F2 is the fluctuating
+            background movie. If None, no fluctuating background is subtracted.
+        spatial_demixed (torch.sparse_csr_tensor | torch.sparse_coo_tensor): shape (num_pixels, num_signals). The
+            spatial footprints of the demixed signals.
+        temporal_demixed (torch.Tensor): shape (num_frames, num_signals). The temporal traces of the demixed signals.
+            Does not need to be mean-subtracted or normalized.
+        fov_dims (tuple[int, int]): (fov_height, fov_width)
+        compression_pixelwise_norms (torch.Tensor | None): shape (num_pixels,). The uncentered pixelwise l2 norm of
+            UV, i.e. ||(UV)_i||_2 for each pixel i. Computed here if not provided; pass the cached value to avoid
+            reconstructing the compressed movie.
+        blocks (torch.Tensor | list | None): A list of 1D index tensors that partitions the signals into groups that
+            are processed together. Signals in the same block must have disjoint spatial supports (no shared pixels
+            in the sparsity pattern of spatial_demixed, including explicit zeros), and every signal must appear in
+            exactly one block. If None, every signal is processed on its own, which is correct but slow.
+        noise_std (torch.Tensor | None): shape (fov_height, fov_width) or (num_pixels,). A pixelwise noise standard
+            deviation. num_frames * noise_std^2 is added to every squared normalizer, which keeps the correlations
+            of low-variance pixels from being inflated. If None, no noise term is added.
+        frame_batch_size (int): The number of fluctuating background components processed at once when computing
+            the background contribution to the pixelwise norms; also sets the pixel batch size used to compute
+            compression_pixelwise_norms when it is not provided.
+        device (torch.device | str): The device on which computations occur (given to pytorch to move tensors around).
+
+    Returns:
+        residual_array (ResidualCorrelationImages): An array-like object, in ResidCorrMode.DEFAULT, that lazily
+            computes the residual correlation images. Its residual_correlation_image_support_values has the sparsity
+            pattern of spatial_demixed and holds the exact values on each signal's support;
+            residual_correlation_image_mean (num_pixels,) and residual_correlation_image_normalizer (num_pixels,)
+            are the pixelwise mean and noise-adjusted norm of R, used for the off-support values.
     """
     num_frames = temporal_compressed.shape[1]
     num_signals = spatial_demixed.shape[1]
