@@ -44,7 +44,8 @@ class FrameWindow(LazyFrameLoader):
             return self._movie[self._start + (int(indices) % num_frames)]
         return self._movie[np.asarray(indices) % num_frames + self._start]
 
-
+# frames dropped from each end of the movie
+CROP_FRAMES = 300
 class OnePhotonCalciumPipeline(BasePipeline):
     """
     Population calcium imaging with a 1p microscope.
@@ -122,19 +123,18 @@ class OnePhotonCalciumPipeline(BasePipeline):
             data: np.ndarray | ArrayLike | None,
             frame_rate: float,
             exclude_border_radius: int = 0,
-            crop_frames: int = 0,
             remove_intermediates: bool = True) -> Path:
         """
-        Motion corrects, compresses (with denoising) and demixes a 1p movie.
+        Motion corrects, compresses (with denoising) and demixes a 1p movie. The first and last CROP_FRAMES (300) frames
+        are dropped
         Args:
             data: The raw (frames, height, width) movie
             frame_rate (float): frames per second; sets the detrenders' windows
             exclude_border_radius (int): Pixels at each fov edge that are ignored when compressing
-            crop_frames (int): Frames dropped (lazily) from both the start and the end of the movie. 0 keeps everything
             remove_intermediates (bool): Drop the CompressionArray group once demixing is done
         """
         self.run_config =  {"frame_rate": frame_rate, "exclude_border_radius": exclude_border_radius,
-                           "crop_frames": crop_frames, "remove_intermediates": remove_intermediates}
+                           "crop_frames": CROP_FRAMES, "remove_intermediates": remove_intermediates}
         moco_data = None
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
@@ -145,10 +145,10 @@ class OnePhotonCalciumPipeline(BasePipeline):
             results_path = self.results_path()
             if data is None:
                 raise ValueError("data is None need to specify dataset")
-            if crop_frames > 0:
-                if data.shape[0] <= 2 * crop_frames:
-                    raise ValueError(f"Cannot crop {crop_frames} frames from both ends of a {data.shape[0]}-frame movie")
-                data = FrameWindow(data, crop_frames, data.shape[0] - crop_frames)
+            if data.shape[0] <= 2 * CROP_FRAMES:
+                raise ValueError(f"Movie has {data.shape[0]} frames; it needs more than {2 * CROP_FRAMES} "
+                                 f"to drop {CROP_FRAMES} from each end")
+            data = FrameWindow(data, CROP_FRAMES, data.shape[0] - CROP_FRAMES)
 
             moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
                                                         exclude_border_radius)
