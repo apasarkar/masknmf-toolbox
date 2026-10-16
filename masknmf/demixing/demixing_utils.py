@@ -82,17 +82,16 @@ def _eval_sparse_dense_matmul(sparse_tensor: SparseCSRTensor,
 
 
 
-def _max_ac_routine(a: SparseCOOTensor,
+def _max_ac_routine(a: SparseCSRTensor,
                     c: torch.Tensor):
     """
 
     Args:
-        a (torch.sparse_coo_tensor): Spatial footprints, shape (num_pixels, num_neurons)
+        a (SparseCSRTensor): Spatial footprints, shape (num_pixels, num_neurons)
         c (torch.Tensor): Temporal footprints, shape (num_frames, num_neurons)
     Returns:
         - torch.Tensor. shape (num_neurons)
     """
-    # a = a.coalesce()
     accumulator = torch.zeros(a.shape[1], device=a.device)
     cols = a.col_indices()
     vals = torch.abs(a.values())
