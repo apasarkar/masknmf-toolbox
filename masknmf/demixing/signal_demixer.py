@@ -2453,68 +2453,6 @@ def right_singular_vector_routine(u: SparseCSRTensor,
     eigenvalues, eigenvectors = eigenvalues.flip(0), eigenvectors.flip(1)
     return eigenvectors.T.to(v_bkgd.dtype), eigenvalues.clamp_min(0).sqrt().to(v_bkgd.dtype)
 
-# Code for min Laplacian re-assignment of signal from background to A/C components
-def construct_laplacian_matrix(height: int,
-                               width: int,
-                               offset: int = 20,
-                               device='cpu'):
-    """
-    Construct a sparse graph laplacian matrix describing the (offset)-dilated 8 neighborhood structure of an image.
-    """
-
-    rows = []
-    cols = []
-    vals = []
-    final_shape = (height * width, height * width)
-
-    y, x = torch.meshgrid(torch.arange(height, device=device),
-                          torch.arange(width, device=device), indexing='ij')
-
-    indices = y * width + x
-
-    degree_counter = torch.zeros(height * width, device=device, dtype=torch.float32)
-    for shift in [(0, offset),
-                  (offset, 0),
-                  (-1 * offset, 0),
-                  (0, -1 * offset),
-                  (-1 * offset, -1 * offset),
-                  (-1 * offset, offset),
-                  (offset, -1 * offset),
-                  (offset, offset)]:
-        y_shift = shift[0]
-        x_shift = shift[1]
-        curr_y = y + y_shift
-        curr_x = x + x_shift
-
-        good_elts_y = torch.logical_and(curr_y < height, curr_y >= 0)
-        good_elts_x = torch.logical_and(curr_x < width, curr_x >= 0)
-        good_elts = torch.logical_and(good_elts_y, good_elts_x)
-
-        curr_cols = curr_y * width + curr_x
-        curr_cols = curr_cols[good_elts]
-        curr_rows = indices[good_elts]
-        rows.append(curr_rows)
-        cols.append(curr_cols)
-        vals.append(torch.ones_like(curr_rows).float() * (-1))
-        degree_counter[curr_rows] -= 1
-
-    # Now add the center values
-    diag_indices = torch.arange(height * width, device=device)
-    diag_vals = degree_counter * -1
-    rows.append(diag_indices)
-    cols.append(diag_indices)
-    vals.append(diag_vals)
-
-    rows = torch.concatenate(rows, dim=0)
-    cols = torch.concatenate(cols, dim=0)
-    vals = torch.concatenate(vals, dim=0)
-
-    laplacian_mat = torch.sparse_coo_tensor(torch.stack([rows, cols]),
-                                            vals,
-                                            final_shape).coalesce().to_sparse_csr()
-    return laplacian_mat
-
-
 
 def pixel_batch_size_from_frame_batch_size(height: int, width: int, frames: int, frame_batch_size) -> float:
     return math.floor(height * width * frame_batch_size / frames)
@@ -3362,8 +3300,8 @@ class DemixingState(SignalProcessingState):
             (self.shape[0] * self.shape[1]), device=self.device
         ).float()
 
-        effective_frame_batch_size = self.frame_batch_size // 2
-        num_iters = math.ceil(x.shape[1] / effective_frame_batch_size)
+        effective_frame_batch_size = self.frame_batch_size // 3
+        num_iters = max(1, math.ceil(x.shape[1] / effective_frame_batch_size))
         numerator = torch.zeros(self.spatial_compressed.shape[0],
                                 device=self.spatial_compressed.device,
                                 dtype=self.spatial_compressed.dtype)
@@ -3422,8 +3360,8 @@ class DemixingState(SignalProcessingState):
             end = min(start + self.frame_batch_size, v_bkgd.shape[0])
             v_bkgd_curr = v_bkgd[start:end, :].T
             output = torch.sparse.mm(self.spatial_compressed, self.temporal_compressed @ v_bkgd_curr)
-            output -= torch.sparse.mm(self.a, self.c.T @ v_bkgd_curr)
-            output -= self.b @ torch.sum(v_bkgd_curr, dim=0, keepdim=True)
+            output.addmm_(self.a, self.c.T @ v_bkgd_curr, alpha=-1)
+            output.addr_(self.b[:, 0], v_bkgd_curr.sum(dim=0), alpha=-1)
             output = torch.sparse.mm(self.spatial_compressed_local_projector, output)
             new_left_term[:, start:end] = output
 
@@ -3852,7 +3790,8 @@ class DemixingState(SignalProcessingState):
                     self.reassign_background_to_signal(max(1, ring_radius // 2), c_nonneg=c_nonneg)
                     background_reassigned = True
 
-                self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
+                with gpu_mem("fluctuating background"):
+                    self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
 
             self.spatial_update(plot_en=plot_en)
 
