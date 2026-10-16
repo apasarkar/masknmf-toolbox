@@ -8,6 +8,7 @@ import torch
 import math
 from tqdm import tqdm
 
+from masknmf.utils import SparseCSRTensor
 from masknmf.motion_correction.registration_arrays import OphysArray
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import GradientMotionCorrectionConfig
@@ -23,7 +24,7 @@ from pathlib import Path
 def _hals_on_a_trend(blocks: list[torch.Tensor],
                      spatial_trend: torch.Tensor,
                      temporal_trend: torch.Tensor,
-                     a: torch.sparse_coo_tensor,
+                     a: SparseCSRTensor,
                      c: torch.Tensor,
                      nonneg: bool = False):
     """
@@ -55,7 +56,7 @@ def _hals_on_a_trend(blocks: list[torch.Tensor],
 def hals_multi_iter_trend(block: list[torch.Tensor],
                           spatial_trend_basis: torch.Tensor,
                           temporal_trend_basis: torch.Tensor,
-                          a: torch.sparse_coo_tensor,
+                          a: SparseCSRTensor,
                           c: torch.Tensor,
                           nonneg: bool = False,
                           num_iters=10):
@@ -70,7 +71,7 @@ def hals_multi_iter_trend(block: list[torch.Tensor],
     return c
 
 
-def hals_on_trend(a: torch.sparse_coo_tensor,
+def hals_on_trend(a: SparseCSRTensor,
                   c: torch.Tensor,
                   spatial_trend_basis: torch.Tensor,
                   temporal_trend_basis: torch.Tensor,
@@ -239,7 +240,7 @@ def compute_final_denoised_c_estimates(pmd_arr: masknmf.CompressionArray,
                                                dmr.static_baseline[:, None])
 
     rescaled_a = rescale_a(dmr.spatial_demixed, pmd_arr.noise_variance_image).coalesce()
-    c_trend_estimate = hals_on_trend(rescaled_a,
+    c_trend_estimate = hals_on_trend(rescaled_a.to_sparse_csr(),
                                      c_spike_estimate,
                                      pmd_arr.spatial_trend_basis,
                                      pmd_arr.temporal_trend_basis)

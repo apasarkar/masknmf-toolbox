@@ -5,6 +5,7 @@ from masknmf.arrays import ArrayLike
 from masknmf.demixing.demixing_results import DemixingResults
 from masknmf.demixing.regression_update import _fast_a_squared_norm
 from masknmf.demixing.signal_demixer import _compute_hals_schedule
+from masknmf.demixing.demixing_utils import csr_index_select_rows, csr_index_select_cols
 
 
 def hals_multi_iter_raw(block: list[torch.Tensor],
@@ -41,10 +42,10 @@ def _hals_on_raw(blocks: list[torch.Tensor],
     ata = torch.sparse.mm(a.t(), a)
 
     for block in blocks:
-        a_ia = torch.index_select(ata, 0, block)
+        a_ia = csr_index_select_rows(ata, block)
         a_iac_block = torch.sparse.mm(a_ia, c.t())
 
-        a_subset = torch.index_select(a, 1, block).t().coalesce()
+        a_subset = csr_index_select_cols(a, block).t()
         projection = torch.sparse.mm(a_subset, movie.T) - a_iac_block  # Numerator for the regression
         projection /= a_sq_norm[block][:, None]
 
@@ -92,7 +93,7 @@ def estimate_temporal_demixed_raw(results: DemixingResults,
 
         c_new[start_pt:end_pt, :] = hals_multi_iter_raw(blocks,
                                                     data,
-                                                    results.spatial_demixed,
+                                                    results.spatial_demixed.to_sparse_csr(),
                                                     c_new[start_pt:end_pt, :],
                                                     nonneg=nonneg)
 

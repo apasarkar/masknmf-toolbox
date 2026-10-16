@@ -38,6 +38,7 @@ class NMFConfig:
     plot_en: bool = False
     reassign_background: bool = True
     detrender: Optional[SplineDetrenderBase] = None
+    sign: str = "unconstrained"
 
 @dataclass
 class SinglepassDemixingConfig:
