@@ -3790,8 +3790,7 @@ class DemixingState(SignalProcessingState):
                     self.reassign_background_to_signal(max(1, ring_radius // 2), c_nonneg=c_nonneg)
                     background_reassigned = True
 
-                with gpu_mem("fluctuating background"):
-                    self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
+                self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
 
             self.spatial_update(plot_en=plot_en)
 
