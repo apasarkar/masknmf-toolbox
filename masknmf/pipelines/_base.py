@@ -12,6 +12,7 @@ import time
 import numpy as np
 import torch
 from typing import *
+from functools import partial
 
 from masknmf._version import __version__
 from masknmf.pipelines.scraper import slugify, config_json_value, config_from_json
@@ -25,6 +26,8 @@ from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorre
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig, SinglepassDemixingConfig, SuperpixelInitConfig
 from masknmf.utils import display, get_timestamp, TIMESTAMP_FORMAT, has_group, drop_group, torch_select_device
+from masknmf.motion_correction.registration_arrays import FilteredArray
+from masknmf.motion_correction.spatial_filters import compute_highpass_filter_kernel, image_filter
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,9 @@ def heartbeat(name: str, start: float, seconds: float, stop: threading.Event):
         logger.info(f"{name} still running after {timedelta(seconds=round(time.monotonic() - start))}")
 
 
+def _highpass_relu(frames: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
+        """Highpass frames with kernel, then clip at zero."""
+        return torch.relu(image_filter(frames.to(kernel.device), kernel))
 class BasePipeline(ABC):
     """
     Motion correction, compression (and optional demixing) of one session.
@@ -281,18 +287,25 @@ class BasePipeline(ABC):
             display("Not Running Motion Correction")
             moco_data = data
         else:
+            reference_sigma = None
             if config is None or isinstance(config, RigidMotionCorrectionConfig):
                 moco_strategy = RigidMotionCorrector(**asdict(RigidMotionCorrectionConfig() if config is None else config),
                                                      device=self.device, batch_size=self.frame_batch_size)
             elif isinstance(config, PiecewiseRigidMotionCorrectionConfig):
-                moco_strategy = PiecewiseRigidMotionCorrector(**asdict(config), device=self.device,
+                kwargs = asdict(config)
+                reference_sigma = kwargs.pop("reference_highpass_sigma")
+                moco_strategy = PiecewiseRigidMotionCorrector(**kwargs, device=self.device,
                                                               batch_size=self.frame_batch_size)
             else:
                 raise ValueError("Invalid MotionCorrectionConfig input")
             with self.step("motion correction"):
+                reference_data = data
+                if reference_sigma is not None:
+                    #estimate shifts on a highpassed copy of the data, but apply them to the raw data
+                    reference_data = self._highpassed_reference(data, reference_sigma)
                 if moco_strategy.template is None:
-                    moco_strategy.compute_template(data)
-                moco_data = moco_strategy.motion_correct(data)
+                    moco_strategy.compute_template(reference_data)
+                moco_data = moco_strategy.motion_correct(reference_data, target_movie=data)
                 moco_data.output_device = moco_data.strategy.device
                 moco_data.export(results_path)
 
@@ -306,7 +319,13 @@ class BasePipeline(ABC):
             shift_mask[-1 * exclude_border_radius:, :] = 0
             shift_mask[:, -1 * exclude_border_radius:] = 0
         return moco_data, shift_mask
-
+    
+    def _highpassed_reference(self, data: ArrayLike, sigma: float) -> FilteredArray:
+        """A lazy view of data, highpassed with sigma pixels and clipped at zero, used to estimate shifts."""
+        kernel = compute_highpass_filter_kernel([sigma, sigma]).to(self.torch_device)
+        return FilteredArray(data, partial(_highpass_relu, kernel=kernel),
+                             batching=self.frame_batch_size, device=self.torch_device)
+    
     def compress_strategy(self,
                           config: CompressConfig | CompressDenoiseConfig | None,
                           pixel_weighting: np.ndarray | None = None) -> CompressStrategy:

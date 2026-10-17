@@ -12,6 +12,7 @@ class SuperpixelInitConfig:
     patch_size: tuple[int, int] = (40, 40)
     detrender: Optional[SplineDetrenderBase] = None
     sign: Literal["positive", "negative", "unconstrained"] = "unconstrained"
+    carry_background: bool = False #for keeping the previous pass's background estimate
 
 @dataclass
 class CustomInitConfig:
@@ -50,6 +51,16 @@ class MultipassDemixingConfig:
 
 #### Below are configs for the different decimation strategies used to initialize cells
 @dataclass
+class GlobalSignalFilterConfig:
+    """
+    Config for removing the shared (global) background fluctuation from the compressed data instead of spatially
+    highpassing it. Used for 1p (miniscope) data, where out-of-focus light is correlated across the whole fov.
+    rank is the number of global components that are subtracted.
+    """
+    rank: int = 20
+    num_oversamples: int = 5
+
+@dataclass
 class SpatialHighpassConfig:
     """
     Config for the filtering we do on the compressed data to produced a new dataset that exposes signals (for the NMF initialization step)
@@ -59,5 +70,7 @@ class SpatialHighpassConfig:
 
 # every config a pipeline's spatial highpass and multipass demixing steps can take; see MotionCorrectionConfigs
 SpatialHighpassConfigs = SpatialHighpassConfig
+# either way of making the filtered copy of the compressed data that the first demixing passes run on
+CompressedFilterConfigs = SpatialHighpassConfig | GlobalSignalFilterConfig
 MultipassDemixingConfigs = MultipassDemixingConfig
 
