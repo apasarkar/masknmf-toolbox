@@ -1328,7 +1328,7 @@ class ClassificationVis:
                     return
                 self._clf_done = (
                     f"predicted {len(self._pred)} ROIs (pred column; labels unchanged, "
-                    "accept predictions copies them into unlabeled ROIs)"
+                    "accept copies them into unlabeled ROIs)"
                 )
 
     def _draw_panel(self):
@@ -1677,8 +1677,10 @@ class ClassificationVis:
             busy = self._clf_busy
             problem = self._training_problem()
             can_train = problem is None and self.classifier is not None and not busy
+            # train | classify | accept share the row, so the card keeps its height
+            third = (row_w - 2 * em(0.6)) / 3
             imgui.begin_disabled(not can_train)
-            if imgui.button("train", imgui.ImVec2(w, 0)):
+            if imgui.button("train", imgui.ImVec2(third, 0)):
                 self.train()
             imgui.end_disabled()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
@@ -1698,7 +1700,7 @@ class ClassificationVis:
                 and (source[0] == "trained" or os.path.isfile(source[1]))
             )
             imgui.begin_disabled(not can_classify)
-            if imgui.button("classify", imgui.ImVec2(w, 0)):
+            if imgui.button("classify", imgui.ImVec2(third, 0)):
                 self.classify()
             imgui.end_disabled()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
@@ -1706,16 +1708,17 @@ class ClassificationVis:
                     "predict every ROI with the selected classifier into the pred column; "
                     "labels are left as they are"
                 )
+            imgui.same_line(0, em(0.6))
             has_pred = bool((self._pred >= 0).any()) and not busy
             imgui.begin_disabled(not has_pred)
-            if imgui.button("accept predictions", imgui.ImVec2(row_w, 0)):
+            if imgui.button("accept", imgui.ImVec2(third, 0)):
                 n = self.accept_predictions()
                 self._clf_done = f"{n} unlabeled ROIs took their prediction (ctrl+z undoes)"
             imgui.end_disabled()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
                 imgui.set_tooltip(
-                    "copy the predictions into the unlabeled ROIs; they then count as your labels "
-                    "and are trained on"
+                    "accept predictions: copy them into the unlabeled ROIs; they then count as your "
+                    "labels and are trained on (ctrl+z undoes)"
                 )
             _, self._auto_classify = imgui.checkbox("classify on load", self._auto_classify)
             if imgui.is_item_hovered():
