@@ -143,7 +143,7 @@ CLASSIFY = (
     ),
     ("Select classifier", "a saved .roicat_classifier: its classes join the list, classify on load turns on"),
     ("classify", "predicts every ROI into the pred column; your labels are left as they are"),
-    ("accept predictions", "copies the predictions into the unlabeled ROIs, which are then trained on (ctrl+z undoes)"),
+    ("accept", "copies the predictions into the unlabeled ROIs, which are then trained on (ctrl+z undoes)"),
     (
         "pred",
         "the prediction and its confidence in the table, red where it disagrees with your label: fix it, "
