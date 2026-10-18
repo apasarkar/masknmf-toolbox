@@ -235,7 +235,7 @@ def spec_for(slug: str) -> scraper.PipelineSpec:
 KEYS_RECORD = ("masknmf_version", "pipeline", "run", "inputs", "timings")
 
 
-def config_record(loaded: Any) -> Optional[dict]:
+def config_record(loaded: Any) -> dict | None:
     """
     A config file's object with the argument values under "configs". Run folders from before they were nested
     there hold them at the top level, beside "pipeline".

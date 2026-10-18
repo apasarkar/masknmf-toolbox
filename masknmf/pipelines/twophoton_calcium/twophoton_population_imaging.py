@@ -10,6 +10,7 @@ from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConf
 from typing import *
 import numpy as np
 from pathlib import Path
+import gc
 import torch
 
 
@@ -46,15 +47,17 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
                                                   sign="positive") #Only prioritize positive deviations for 2p calcium imaging
             curr_nmf_conf = NMFConfig(support_threshold=(0.95, corr_threshold),
-                                      ring_model_start_pt=None)
+                                      ring_model_start_pt=None,
+                                      sign="positive")
             filtered_passes.append(SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf))
 
         unfiltered_passes = []
-        for corr_threshold, support_threshold in [(0.8, 0.4), (0.8, 0.4), (0.8, 0.4)]:
+        for corr_threshold, support_threshold in [(0.8, 0.4), (0.6, 0.4), (0.6, 0.4)]:
             curr_init_conf = SuperpixelInitConfig(mad_correlation_threshold=corr_threshold,
                                                   sign="positive")
             curr_nmf_conf = NMFConfig(support_threshold=(0.95, support_threshold),
-                                      ring_model_start_pt=0)
+                                      ring_model_start_pt=0,
+                                      sign="positive")
             unfiltered_passes.append(SinglepassDemixingConfig(curr_init_conf, curr_nmf_conf))
 
         return {'motion_correct_config': RigidMotionCorrectionConfig(),
@@ -146,7 +149,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         spatial_filt_pmd = masknmf.demixing.filters.spatial_filter_compressed_array(pmd_denoise,
                                                                                     batch_size=self.frame_batch_size,
                                                                                     filter_sigma=self.spatial_highpass_config.filter_sigma)
-
+        pmd_denoise.to('cpu')
+        spatial_filt_pmd.to('cpu')
         torch.cuda.empty_cache()
 
 
@@ -172,6 +176,10 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             signals_array = curr_demix_results.signals_array
             a_init = signals_array.export_spatial_demixed()
             c_init = signals_array.export_temporal_demixed()
+
+            del highpass_pmd_demixer, spatial_filt_pmd, curr_demix_results
+            gc.collect()
+            torch.cuda.empty_cache()
 
             ##Now overwrite the first pass of the UnfilteredDemixingConfig to be "custom" since we're using results from above
             # unfiltered_demixing_config_used.DemixingConfigs[0].InitConfig = CustomInitConfig(a_init, c_init, c_nonneg=True)

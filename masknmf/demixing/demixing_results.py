@@ -277,10 +277,8 @@ class DemixingResults(Serializer, BaseResults):
             self.flyweight.background_correlation_image_normalizer = background_correlation_image_normalizer.to(self._device)
 
         if multiunit_basis_term1 is None or multiunit_basis_term2 is None:
-            self.flyweight.multiunit_basis_term1 = torch.zeros(self.spatial_compressed.shape[1], 1, dtype=self.spatial_compressed.dtype,
-                                                               device=self._device)
-            self.flyweight.multiunit_basis_term2 = torch.zeros((1, self.temporal_compressed.shape[1]), dtype=self.spatial_compressed.dtype,
-                                                               device=self._device)
+            self.flyweight.multiunit_basis_term1 = None
+            self.flyweight.multiunit_basis_term2 = None
         else:
             self.flyweight.multiunit_basis_term1 = multiunit_basis_term1.to(self._device)
             self.flyweight.multiunit_basis_term2 = multiunit_basis_term2.to(self._device)
@@ -536,6 +534,50 @@ class DemixingResults(Serializer, BaseResults):
             self.flyweight.fluctuating_background_roi_averages = fluctuating_background_roi_averages
             self.flyweight.residual_roi_averages = residual_roi_averages
 
+    def compute_multiunit_residual_factorization(
+            self,
+            test_rank: int = 200,
+            num_oversamples: int = 5,
+            explained_variance_cutoff: float = 0.99,
+    ) -> None:
+        """
+        Compute a low-rank factorization of the residual (UV - AC - static - fluctuating background)
+        and store it as multiunit_basis_term1 / multiunit_basis_term2.
+
+        Runs on the current device; call .to("cuda") first for large datasets.
+        """
+        from masknmf.demixing.demixing_utils import extract_multiunit_factorization
+
+        term1, term2 = extract_multiunit_factorization(
+            self.compression_array,
+            self.spatial_compressed,
+            self.temporal_compressed,
+            self.spatial_demixed,
+            self.temporal_demixed,
+            self.static_baseline,
+            factorized_ring_term=(self.factorized_background_term1, self.factorized_background_term2),
+            test_rank=test_rank,
+            num_oversamples=num_oversamples,
+            explained_variance_cutoff=explained_variance_cutoff,
+        )
+        self.flyweight.multiunit_basis_term1 = term1.to(self.device)
+        self.flyweight.multiunit_basis_term2 = term2.to(self.device)
+        self._multiunit_background_array = None  # rebuild from the new terms on next access
+
+    @property
+    def has_multiunit_factorization(self) -> bool:
+        return self.multiunit_basis_term1 is not None and self.multiunit_basis_term2 is not None
+
+    @property
+    def multiunit_background_array(self) -> MultiunitBackgroundArray | None:
+        if not self.has_multiunit_factorization:
+            return None
+        if self._multiunit_background_array is None:
+            self._multiunit_background_array = MultiunitBackgroundArray.from_flyweight(self.fov_shape,
+                                                                                       self.flyweight,
+                                                                                       rescale=self.rescale)
+        return self._multiunit_background_array
+
     @property
     def compression_array_roi_averages(self) -> torch.Tensor:
         return self.flyweight.compression_array_roi_averages
@@ -625,14 +667,6 @@ class DemixingResults(Serializer, BaseResults):
                                                                             self.flyweight,
                                                                             rescale=self.rescale)
         return self._fluctuating_background_array
-
-    @property
-    def multiunit_background_array(self) -> MultiunitBackgroundArray:
-        if self._multiunit_background_array is None:
-            self._multiunit_background_array = MultiunitBackgroundArray.from_flyweight(self.fov_shape,
-                                                                                       self.flyweight,
-                                                                                       rescale=self.rescale)
-        return self._multiunit_background_array
 
     @property
     def static_background_array(self) -> StaticBackgroundArray:

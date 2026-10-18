@@ -7,65 +7,122 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import torch
 import networkx as nx
 from collections import defaultdict
-from masknmf.utils import SparseCOOTensor
+from masknmf.utils import SparseCOOTensor, SparseCSRTensor
 
 logger = logging.getLogger(__name__)
+import contextlib
+import torch
 
 
-def _max_ac_routine(a: SparseCOOTensor,
+@contextlib.contextmanager
+def gpu_mem(label):
+    torch.cuda.reset_peak_memory_stats()
+    start = torch.cuda.memory_allocated()
+    yield
+    peak, end = torch.cuda.max_memory_allocated(), torch.cuda.memory_allocated()
+    gib = 2 ** 30
+    print(f"{label:30s} start {start/gib:6.2f}  peak {peak/gib:6.2f} (+{(peak-start)/gib:5.2f})  end {end/gib:6.2f} GiB")
+
+
+def decompress_csr_rows(crow: torch.Tensor, num_nonzero: int):
+    indices = torch.arange(crow.numel() - 1, device=crow.device, dtype=crow.dtype)
+    return torch.repeat_interleave(indices, crow.diff(), output_size=num_nonzero)
+
+def csr_index_select_cols(a: torch.Tensor, cols: torch.Tensor) -> torch.Tensor:
+    """
+    torch.index_select(a, 1, cols) for a sparse CSR tensor, without going through COO.
+    cols must not contain duplicates. If cols is increasing (e.g. an arange or a sorted keep-list),
+    the result keeps sorted column indices within each row; otherwise sort them afterwards.
+    """
+    crow, col, val = a.crow_indices(), a.col_indices(), a.values()
+    lut = torch.full((a.shape[1],), -1, dtype=col.dtype, device=col.device)
+    lut[cols] = torch.arange(cols.numel(), dtype=col.dtype, device=col.device)   # old column -> new column
+    new_col = lut.index_select(0, col)
+    keep = new_col >= 0
+    rows = torch.repeat_interleave(torch.arange(a.shape[0], device=crow.device), crow.diff(), output_size=val.numel())
+    counts = torch.bincount(rows[keep], minlength=a.shape[0])
+    new_crow = torch.zeros(a.shape[0] + 1, dtype=crow.dtype, device=crow.device)
+    torch.cumsum(counts, 0, out=new_crow[1:])
+    return torch.sparse_csr_tensor(new_crow, new_col[keep], val[keep], size=(a.shape[0], cols.numel()))
+
+def csr_index_select_rows(U, idx):
+    crow, col, val = U.crow_indices(), U.col_indices(), U.values()
+    idx = idx.to(crow.device, crow.dtype)
+    starts = crow[idx]
+    counts = crow[idx + 1] - starts
+    new_crow = torch.zeros(idx.numel() + 1, dtype=crow.dtype, device=crow.device)
+    torch.cumsum(counts, 0, out=new_crow[1:])
+    nnz = int(new_crow[-1])
+    row_ids = torch.repeat_interleave(torch.arange(idx.numel(), device=crow.device), counts, output_size=nnz)
+    pos = torch.arange(nnz, device=crow.device, dtype=crow.dtype)
+    src = starts[row_ids] + (pos - new_crow[:-1][row_ids])
+    return torch.sparse_csr_tensor(new_crow, col[src], val[src], size=(idx.numel(), U.shape[1]))
+
+
+def _eval_sparse_dense_matmul(sparse_tensor: SparseCSRTensor,
+                              dense_tensor: torch.Tensor,
+                              rows: torch.Tensor,
+                              cols: torch.Tensor):
+    """
+    This routine evaluates a bunch of row/col of a bunch of sparse-dense matvec operations.
+    The goal is to avoid fully expanding out sparse_tensor @ dense_tensor
+    """
+    final_output = torch.zeros(rows.numel(), dtype=sparse_tensor.dtype, device=sparse_tensor.device)
+    sparse_tensor_subset = csr_index_select_rows(sparse_tensor, rows)
+    subset_rows = decompress_csr_rows(sparse_tensor_subset.crow_indices(), sparse_tensor_subset.values().numel())
+    subset_cols = sparse_tensor_subset.col_indices()
+    subset_vals = sparse_tensor_subset.values()
+
+    ##Each subset row only needs to interact with a specific column of dense_tensor
+    dense_tensor_values = dense_tensor[subset_cols, cols[subset_rows]] * subset_vals
+
+    final_output.index_add_(0, subset_rows, dense_tensor_values)
+    return final_output
+
+
+
+
+def _max_ac_routine(a: SparseCSRTensor,
                     c: torch.Tensor):
     """
 
     Args:
-        a (torch.sparse_coo_tensor): Spatial footprints, shape (num_pixels, num_neurons)
+        a (SparseCSRTensor): Spatial footprints, shape (num_pixels, num_neurons)
         c (torch.Tensor): Temporal footprints, shape (num_frames, num_neurons)
     Returns:
         - torch.Tensor. shape (num_neurons)
     """
-    a = a.coalesce()
     accumulator = torch.zeros(a.shape[1], device=a.device)
-    _, cols = a.indices()
+    cols = a.col_indices()
     vals = torch.abs(a.values())
     accumulator.scatter_reduce_(0, cols, vals, "amax", include_self=False)
     accumulator *= torch.amax(torch.abs(c), dim=0)
     return accumulator
 
 
-def brightness_order(a: SparseCOOTensor,
+def brightness_order(a: SparseCSRTensor,
                      c: torch.Tensor):
     brightnesses = _max_ac_routine(a, c)
     idx_sort = torch.argsort(brightnesses, descending=True)
     return idx_sort, brightnesses
 
-def construct_graph_from_sparse_tensor(adj_tensor: SparseCOOTensor) -> nx.Graph:
+def construct_graph_from_sparse_tensor(adj_tensor: SparseCSRTensor) -> nx.Graph:
     """
     Constructs a NetworkX graph from a sparse COO tensor representing an adjacency matrix.
 
     Args:
-        adj_tensor (torch.sparse_coo_tensor): A sparse COO tensor representing the adjacency matrix of the graph.
+        adj_tensor (torch.sparse_csr_tensor): A sparse CSR tensor representing the adjacency matrix of the graph.
 
     Returns:
         nx.Graph: A NetworkX graph constructed from the sparse tensor, including all nodes.
     """
-    # Move tensor to CPU if it's on CUDA
+    crow = adj_tensor.crow_indices().cpu()
+    rows = torch.repeat_interleave(torch.arange(adj_tensor.shape[0]), crow.diff()).numpy()
+    cols = adj_tensor.col_indices().cpu().numpy()
 
-    curr_indices = adj_tensor.indices().cpu()
-    # Convert indices to NumPy arrays
-    rows = curr_indices[0].numpy()
-    cols = curr_indices[1].numpy()
-
-    # Determine the number of nodes
-    num_nodes = adj_tensor.shape[0]
-
-    # Create the NetworkX graph
     graph = nx.Graph()
-
-    # Add all nodes to the graph
-    graph.add_nodes_from(range(num_nodes))
-
-    # Add edges to the graph
+    graph.add_nodes_from(range(adj_tensor.shape[0]))
     graph.add_edges_from(zip(rows, cols))
-
     return graph
 
 
@@ -96,7 +153,7 @@ def color_and_get_tensors(graph: nx.Graph,
         chunk
         for nodes in color_to_nodes.values()
         for chunk in torch.split(
-            torch.tensor(nodes, dtype=torch.long, device=device),
+            torch.tensor(sorted(nodes), dtype=torch.long, device=device),
             frame_batch_size,
         )
     ]
@@ -335,6 +392,92 @@ def get_box(img: np.ndarray) -> tuple[int, int, int, int]:
     else:
         x, y = np.nonzero(img)
         return int(np.amin(x)), int(np.amax(x)), int(np.amin(y)), int(np.amax(y))
+
+
+def extract_multiunit_factorization(
+        compression_array,
+        spatial_compressed: torch.Tensor,
+        temporal_compressed: torch.Tensor,
+        a: torch.Tensor,
+        c: torch.Tensor,
+        b: torch.Tensor,
+        factorized_ring_term: tuple[torch.Tensor, torch.Tensor] | None = None,
+        test_rank: int = 200,
+        num_oversamples: int = 5,
+        explained_variance_cutoff: float = 0.99,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Low-rank factorization of the residual UV - AC - b1^T - UF1F2, truncated to the
+    rank that explains `explained_variance_cutoff` of its variance.
+
+    Args:
+        compression_array: provides project_frames(), used to map the spatial basis
+            back into the compression basis
+        spatial_compressed: (num_pixels, compression_rank) sparse
+        temporal_compressed: (compression_rank, num_frames)
+        a: (num_pixels, num_signals) sparse spatial footprints
+        c: (num_frames, num_signals) temporal traces
+        b: static baseline, (num_pixels,) or (num_pixels, 1)
+        factorized_ring_term: (F1, F2) with shapes (compression_rank, r), (r, num_frames), or None
+
+    Returns:
+        (spatial term projected via compression_array.project_frames, (rank, num_frames) temporal term)
+    """
+    left_svd, sing, right_svd = _multiunit_factorization_routine(
+        spatial_compressed, temporal_compressed, a, c, b,
+        factorized_ring_term=factorized_ring_term,
+        background_rank=test_rank,
+        num_oversamples=num_oversamples,
+    )
+    explained_variance = torch.cumsum(sing ** 2, dim=0) / torch.sum(sing ** 2)
+    effective_rank = int(torch.argmax((explained_variance >= explained_variance_cutoff).float()).item()) + 1
+
+    left_svd = compression_array.project_frames(left_svd[:, :effective_rank], standardize=False)
+    return left_svd, sing[:effective_rank, None] * right_svd[:effective_rank, :]
+
+
+def _multiunit_factorization_routine(
+        spatial_compressed: torch.Tensor,
+        temporal_compressed: torch.Tensor,
+        a: torch.Tensor,
+        c: torch.Tensor,
+        b: torch.Tensor,
+        factorized_ring_term: tuple[torch.Tensor, torch.Tensor] | None = None,
+        background_rank: int = 200,
+        num_oversamples: int = 5,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Randomized SVD of the residual UV - AC - b1^T - UF1F2 (row-mean subtracted in the sketch).
+
+    Returns:
+        left (num_pixels, k), singular values (k,), right (k, num_frames), with k = background_rank
+    """
+    device = temporal_compressed.device
+    b = b.reshape(-1, 1)  # DemixingResults stores the baseline squeezed to 1D
+    num_frames = temporal_compressed.shape[1]
+    random_data = torch.randn(num_frames, background_rank + num_oversamples,
+                              device=device, dtype=temporal_compressed.dtype)
+
+    resid_projection = (torch.sparse.mm(spatial_compressed, temporal_compressed @ random_data)
+                        - torch.sparse.mm(a, c.T @ random_data)
+                        - b @ torch.sum(random_data, dim=0, keepdim=True))
+    if factorized_ring_term is not None:
+        f1, f2 = factorized_ring_term
+        resid_projection -= torch.sparse.mm(spatial_compressed, f1 @ (f2 @ random_data))
+
+    resid_projection -= torch.mean(resid_projection, dim=1, keepdim=True)
+    orth_qr, _ = torch.linalg.qr(resid_projection, mode="reduced")
+
+    proj_u = torch.sparse.mm(spatial_compressed.t(), orth_qr)
+    right_term = proj_u.T @ temporal_compressed
+    if factorized_ring_term is not None:
+        right_term -= (proj_u.T @ f1) @ f2
+    right_term -= torch.sparse.mm(a.t(), orth_qr).T @ c.T
+    right_term -= orth_qr.T @ b
+
+    left_svd, sing_svd, right_svd = torch.linalg.svd(right_term, full_matrices=False)
+    left_term = orth_qr @ left_svd
+    return left_term[:, :background_rank], sing_svd[:background_rank], right_svd[:background_rank, :]
 
 
 

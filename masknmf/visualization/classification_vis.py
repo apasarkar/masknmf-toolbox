@@ -456,7 +456,7 @@ class ClassificationVis:
                             dmr.global_residual_correlation_image.cpu().numpy(),
                         )
 
-                    f.append(brightness_order(dmr.spatial_demixed, dmr.temporal_demixed)[1].cpu().numpy())
+                    f.append(brightness_order(dmr.spatial_demixed.to_sparse_csr(), dmr.temporal_demixed)[1].cpu().numpy())
                     c = dmr.temporal_demixed.cpu().numpy()  # (num_frames, num_rois)
                     mean = c.mean(axis=0)
                     std = c.std(axis=0)
