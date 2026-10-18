@@ -310,8 +310,8 @@ class RoicatClassifier:
             ROI images to classify; paths are loaded into a RoicatDataAdapter.
         write : bool
             With paths: store ``class_predictions`` / ``class_probabilities`` /
-            ``classified_with`` in each session's ``.labels.hdf5`` sidecar and give
-            still-unlabeled ROIs the predicted label (existing labels are kept).
+            ``classified_with`` in each session's ``.labels.hdf5`` sidecar. The labels
+            are left as they are, so predictions never become training labels.
 
         Returns
         -------
@@ -353,8 +353,8 @@ class RoicatClassifier:
             if n not in names:
                 names.append(n)
         pred = np.array([names.index(n) for n in predicted], dtype=np.int64)
-        labels = np.full(len(pred), -1, dtype=np.int64) if stored is None or len(stored) != len(pred) else stored.copy()
-        fill = labels < 0
-        labels[fill] = pred[fill]
-        write_labels(path, labels, names)
+        if stored is None or len(stored) != len(pred):
+            stored = np.full(len(pred), -1, dtype=np.int64)
+        # labels unchanged; written so label_names holds every name pred indexes into
+        write_labels(path, stored, names)
         write_predictions(path, pred, probs.max(axis=1), self._path or "")

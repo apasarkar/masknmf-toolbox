@@ -1199,8 +1199,9 @@ class ClassificationVis:
             None uses the selected source (the classifier trained here or the file
             picked with Select classifier); a path loads that file.
 
-        Predictions fill the pred column; ROIs still unlabeled take the prediction,
-        existing labels are kept.
+        Predictions fill the pred column only; labels are left as they are, so a
+        prediction never ends up in the training set. accept_predictions copies them
+        into the unlabeled ROIs.
         """
         if self._clf_busy:
             return
@@ -1234,8 +1235,8 @@ class ClassificationVis:
 
         self._run_clf("classifying...", work)
 
-    def _apply_predictions(self, names_by_session, probs_by_session) -> int:
-        """Store predictions, label the unlabeled ROIs with them; returns how many were labeled"""
+    def _apply_predictions(self, names_by_session, probs_by_session):
+        """Store predictions in the pred column; labels are not touched"""
         flat = [str(n) for s in names_by_session for n in s]
         if len(flat) != len(self._class_labels):
             raise ValueError(f"got {len(flat)} predictions for {len(self._class_labels)} ROIs")
@@ -1245,9 +1246,13 @@ class ClassificationVis:
         index = {n: i for i, n in enumerate(self._label_names)}
         self._pred = np.array([index[n] for n in flat], dtype=np.int64)
         self._probs = np.concatenate([p.max(axis=1) for p in probs_by_session]).astype(np.float32)
-        fill = np.flatnonzero(self._class_labels < 0)
-        self.label(fill, self._pred[fill])
         self._rebuild_order()
+
+    def accept_predictions(self) -> int:
+        """Give every unlabeled ROI its prediction (undo with ctrl+z); returns how many were labeled"""
+        fill = np.flatnonzero((self._class_labels < 0) & (self._pred >= 0))
+        if len(fill) > 0:
+            self.label(fill, self._pred[fill])
         return len(fill)
 
     def _poll_classifier(self):
@@ -1271,13 +1276,13 @@ class ClassificationVis:
             else:
                 self._classified_with = result[3]
                 try:
-                    n = self._apply_predictions(result[1], result[2])
+                    self._apply_predictions(result[1], result[2])
                 except ValueError as e:
                     self._error = f"classify failed: {e}"
                     return
                 self._clf_done = (
-                    f"predicted {len(self._pred)} ROIs, {n} unlabeled ones took the prediction "
-                    "(existing labels kept, see the pred column)"
+                    f"predicted {len(self._pred)} ROIs (pred column; labels unchanged, "
+                    "accept predictions copies them into unlabeled ROIs)"
                 )
 
     def _draw_panel(self):
@@ -1649,8 +1654,19 @@ class ClassificationVis:
             imgui.end_disabled()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
                 imgui.set_tooltip(
-                    "predict every ROI with the selected classifier: unlabeled ROIs take the "
-                    "prediction, existing labels are kept"
+                    "predict every ROI with the selected classifier into the pred column; "
+                    "labels are left as they are"
+                )
+            has_pred = bool((self._pred >= 0).any()) and not busy
+            imgui.begin_disabled(not has_pred)
+            if imgui.button("accept predictions", imgui.ImVec2(row_w, 0)):
+                n = self.accept_predictions()
+                self._clf_done = f"{n} unlabeled ROIs took their prediction (ctrl+z undoes)"
+            imgui.end_disabled()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                imgui.set_tooltip(
+                    "copy the predictions into the unlabeled ROIs; they then count as your labels "
+                    "and are trained on"
                 )
             _, self._auto_classify = imgui.checkbox("classify on load", self._auto_classify)
             if imgui.is_item_hovered():

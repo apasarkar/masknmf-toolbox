@@ -273,7 +273,7 @@ masknmf view "sessions/*/results.hdf5" --classify --labels soma,dendrite,junk --
 # train; every ROI in every session must be labeled. writes cells.roicat_classifier and cells.training.json
 masknmf train-classifier "sessions/*/results.hdf5" --out cells
 
-# classify new sessions; unlabeled ROIs take the predictions
+# classify new sessions; predictions are stored, labels are left as they are
 masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classifier --device cpu
 ```
 
