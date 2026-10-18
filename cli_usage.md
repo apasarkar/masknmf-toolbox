@@ -270,7 +270,7 @@ Label ROIs by hand, train a ROICaT classifier, classify new sessions.
 # label ROIs; --classifier is where Train saves, and an existing file is selected for Classify
 masknmf view "sessions/*/results.hdf5" --classify --labels soma,dendrite,junk --classifier cells.roicat_classifier
 
-# train; every ROI in every session must be labeled. writes cells.roicat_classifier and cells.training.json
+# train on the labeled ROIs; unlabeled ones are left out. writes cells.roicat_classifier and cells.training.json
 masknmf train-classifier "sessions/*/results.hdf5" --out cells
 
 # classify new sessions; predictions are stored, labels are left as they are

@@ -42,7 +42,7 @@ STEPS = (
     (fa.ICON_FA_FOLDER_OPEN, "Load", "sessions: results files or a folder"),
     (fa.ICON_FA_TAG, "Label", "1-9 each ROI; 0 clears"),
     (fa.ICON_FA_IMAGE, "View", "backgrounds, the full FOV"),
-    (fa.ICON_FA_GRADUATION_CAP, "Train", "every ROI labeled, 2 per class"),
+    (fa.ICON_FA_GRADUATION_CAP, "Train", "on labeled ROIs, 2 per class"),
     (fa.ICON_FA_WAND_MAGIC_SPARKLES, "Classify", "new sessions; fix, train again"),
 )
 # the three looks a label rests on
@@ -138,8 +138,8 @@ CLASSIFY = (
     ("button", "description"),
     (
         "train",
-        "fits a ROICaT classifier on the labels, every ROI labeled and at least 2 per class, and saves it to "
-        "the path",
+        "fits a ROICaT classifier on the labeled ROIs, at least 2 per class (unlabeled ones are left out), "
+        "and saves it to the path",
     ),
     ("Select classifier", "a saved .roicat_classifier: its classes join the list, classify on load turns on"),
     ("classify", "predicts every ROI into the pred column; your labels are left as they are"),
