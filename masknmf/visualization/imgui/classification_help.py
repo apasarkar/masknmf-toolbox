@@ -142,7 +142,8 @@ CLASSIFY = (
         "the path",
     ),
     ("Select classifier", "a saved .roicat_classifier: its classes join the list, classify on load turns on"),
-    ("classify", "predicts every ROI: unlabeled ROIs take the prediction, your labels are kept"),
+    ("classify", "predicts every ROI into the pred column; your labels are left as they are"),
+    ("accept predictions", "copies the predictions into the unlabeled ROIs, which are then trained on (ctrl+z undoes)"),
     (
         "pred",
         "the prediction and its confidence in the table, red where it disagrees with your label: fix it, "
@@ -418,7 +419,7 @@ def draw_classification_help(is_open: bool, keys_open: bool) -> tuple[bool, bool
     imgui.dummy(imgui.ImVec2(w, 1.4 * em + bh + 1.4 * em))
     imgui.text_colored(
         DIM,
-        "unlabeled ROIs take the prediction, yours stay; red where the two disagree: fix it and train again",
+        "labels stay yours, predictions stay in pred; red where the two disagree: fix it and train again",
     )
     table("classify", CLASSIFY)
 

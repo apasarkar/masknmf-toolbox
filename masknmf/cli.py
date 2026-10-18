@@ -844,7 +844,7 @@ def command_train_classifier(args: argparse.Namespace) -> None:
 
 
 def command_classify(args: argparse.Namespace) -> None:
-    """Classify every ROI in each results file; predictions go to its labels sidecar, unlabeled ROIs take them."""
+    """Classify every ROI in each results file; predictions go to its labels sidecar, the labels are left as they are."""
     sessions = demixing_sessions(files=expand_results(entries=args.results))
     if not Path(args.classifier).is_file():
         fail(f"no such classifier: {args.classifier}")
