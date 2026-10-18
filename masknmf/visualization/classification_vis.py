@@ -708,10 +708,8 @@ class ClassificationVis:
             self._error = None
         except OSError as e:
             self._error = f"save failed: {e}"
-        if self._classifier is not None and self.labels_complete:
-            self._classifier.labels = [
-                [self._label_names[i] for i in s] for s in self.class_labels_by_session
-            ]
+        if self._classifier is not None:
+            self._classifier.labels = self._labels_for_classifier()
 
     def wait(self, timeout: Optional[float] = None) -> bool:
         """
@@ -1152,6 +1150,31 @@ class ClassificationVis:
     def labels_complete(self) -> bool:
         return len(self._class_labels) > 0 and bool((self._class_labels >= 0).all())
 
+    def _labels_for_classifier(self) -> list[list]:
+        """One list per session of class names, -1 where the ROI is unlabeled (left out of training)"""
+        labels = []
+        for session in self.class_labels_by_session:
+            session_names = []
+            for index in session:
+                if index < 0:
+                    session_names.append(-1)
+                else:
+                    session_names.append(self._label_names[index])
+            labels.append(session_names)
+        return labels
+
+    def _training_problem(self) -> Optional[str]:
+        """Why the labels can't be trained on yet, or None when they can"""
+        labeled = self._class_labels[self._class_labels >= 0]
+        counts = np.bincount(labeled, minlength=len(self._label_names))
+        used = [i for i, c in enumerate(counts) if c > 0]
+        if len(used) < 2:
+            return "label ROIs from at least 2 classes"
+        rare = [self._label_names[i] for i in used if counts[i] < _MIN_PER_CLASS]
+        if rare:
+            return f"training needs at least {_MIN_PER_CLASS} ROIs per class, too few: {', '.join(rare)}"
+        return None
+
     def _default_classifier_path(self) -> str:
         base = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
         return os.path.join(base, "classifier")
@@ -1186,17 +1209,13 @@ class ClassificationVis:
         """
         Hand the labels to the RoicatClassifier, train it in a background thread
         and save the package to classifier_path (default: <first session dir>/classifier).
-        Every ROI must be labeled first, with at least 2 ROIs per class.
+        Only labeled ROIs are trained on; at least 2 classes with 2 ROIs each are needed.
         """
         if self._clf_busy:
             return
-        if not self.labels_complete:
-            self._error = "label every ROI before training"
-            return
-        counts = np.bincount(self._class_labels, minlength=len(self._label_names))
-        rare = [n for n, c in zip(self._label_names, counts) if 0 < c < _MIN_PER_CLASS]
-        if rare:
-            self._error = f"training needs at least {_MIN_PER_CLASS} ROIs per class, too few: {', '.join(rare)}"
+        problem = self._training_problem()
+        if problem:
+            self._error = problem
             return
         if self._adapter_missing():
             self._error = f"cannot train: {self._adapter_missing()}"
@@ -1206,7 +1225,7 @@ class ClassificationVis:
         if not self._classifier_path:
             self._classifier_path = self._default_classifier_path()
         path = self._classifier_path
-        names = [[self._label_names[i] for i in s] for s in self.class_labels_by_session]
+        names = self._labels_for_classifier()
         clf = self.classifier
 
         def work():
@@ -1656,16 +1675,19 @@ class ClassificationVis:
             imgui.pop_text_wrap_pos()
 
             busy = self._clf_busy
-            can_train = self.labels_complete and self.classifier is not None and not busy
+            problem = self._training_problem()
+            can_train = problem is None and self.classifier is not None and not busy
             imgui.begin_disabled(not can_train)
             if imgui.button("train", imgui.ImVec2(w, 0)):
                 self.train()
             imgui.end_disabled()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                n_labeled = int((self._class_labels >= 0).sum())
                 imgui.set_tooltip(
-                    "train a ROICaT classifier on the labeled ROIs and save it to the path above"
-                    if can_train or busy
-                    else "label every ROI first (training needs complete labels)"
+                    f"train a ROICaT classifier on the {n_labeled} of {len(self._class_labels)} labeled ROIs "
+                    "and save it to the path above; unlabeled ROIs are left out"
+                    if problem is None or busy
+                    else problem
                 )
             imgui.same_line(0, em(0.6))
             source = self._clf_source
