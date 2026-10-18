@@ -803,13 +803,13 @@ def command_view(args: argparse.Namespace) -> None:
 def command_train_classifier(args: argparse.Namespace) -> None:
     """Train a ROICaT classifier on the labels the classification viewer saved beside each results file."""
     sessions = demixing_sessions(files=expand_results(entries=args.results))
-    incomplete = []
+    unlabeled = []
     for filepath in sessions:
         labels, _ = read_labels(filepath)
-        if labels is None or (labels < 0).any():
-            incomplete.append(filepath)
-    if len(incomplete) > 0:
-        fail("every ROI must be labeled before training; label these with masknmf view --classify:\n  " + "\n  ".join(incomplete))
+        if labels is None:
+            unlabeled.append(filepath)
+    if len(unlabeled) > 0:
+        fail("no labels saved for these; label them with masknmf view --classify:\n  " + "\n  ".join(unlabeled))
 
     classifier = RoicatClassifier.from_masknmf(sessions)
     try:
