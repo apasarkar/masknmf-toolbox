@@ -6,7 +6,7 @@ import numpy as np
 from fastplotlib.ui import ImguiWindow
 from imgui_bundle import imgui, implot
 
-from masknmf.visualization.imgui.layout import HANDLE_THICKNESS, draw_edge_handle
+from masknmf.visualization.imgui.layout import draw_edge_handle
 from masknmf.visualization.imgui.theme import em, opaque_popups, to_vec4
 
 _CURSOR_COLOR = imgui.ImVec4(1.0, 1.0, 1.0, 0.7)
@@ -220,7 +220,8 @@ class TracePlot:
         if self._menu is not None and imgui.begin_main_menu_bar():
             self._menu()
             imgui.end_main_menu_bar()
-        moved = self.draw(reserve=HANDLE_THICKNESS)
+        # the handle's thickness grows with the UI scale
+        moved = self.draw(reserve=self._window._separator_thickness)
         draw_edge_handle(self._window)
         if moved is not None and self.on_frame is not None:
             self.on_frame(moved)

@@ -2,7 +2,18 @@
 
 import pytest
 
-from masknmf.visualization.imgui.keybinds import CLASSIFICATION, DEMIXING, DOWN, HELP, KEYBINDS, MASKS, UP
+from masknmf.visualization.imgui.keybinds import (
+    CLASSIFICATION,
+    DEMIXING,
+    DESKTOP_SIZE,
+    DOWN,
+    HELP,
+    KEYBINDS,
+    LARGER,
+    MASKS,
+    SMALLER,
+    UP,
+)
 
 
 @pytest.mark.parametrize("table", [DEMIXING, CLASSIFICATION], ids=["demixing", "classification"])
@@ -18,5 +29,5 @@ def test_no_key_with_its_modifiers_binds_twice_in_a_table(table):
 
 
 def test_both_viewers_share_the_common_binds():
-    for bind in (UP, DOWN, MASKS, HELP, KEYBINDS):
+    for bind in (UP, DOWN, MASKS, HELP, KEYBINDS, LARGER, SMALLER, DESKTOP_SIZE):
         assert bind in DEMIXING.values() and bind in CLASSIFICATION.values()

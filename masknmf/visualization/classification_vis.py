@@ -13,6 +13,7 @@ from masknmf.visualization.imgui.files import PathPrompt, draw_path_prompt
 from masknmf.visualization.imgui.classification_help import draw_classification_help
 from masknmf.visualization.imgui.keybinds import CLASSIFICATION, LABEL_KEYS, pressed
 from masknmf.visualization.imgui.options import draw_options_menu, draw_options_popup
+from masknmf.visualization.imgui.scale import push_font_em, scale_figure
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, opaque_popups
 from masknmf.demixing.curation import latest_results
@@ -1785,7 +1786,7 @@ class ClassificationVis:
             imgui.same_line(0, em(0.6))
         color, text = self._status_message()
         imgui.align_text_to_frame_padding()
-        imgui.push_font(imgui.get_font(), em(0.85))
+        push_font_em(0.85)
         imgui.text_colored(to_vec4(color), text)
         imgui.pop_font()
 
@@ -1956,4 +1957,5 @@ class ClassificationVis:
         return self._figure
 
     def show(self):
+        scale_figure(self._figure)
         return self._figure.show()

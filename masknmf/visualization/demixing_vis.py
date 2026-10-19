@@ -51,6 +51,7 @@ from masknmf.visualization.imgui import (
 from masknmf.visualization.imgui.curation_help import draw_curation_help
 from masknmf.visualization.imgui.keybinds import DEMIXING, pressed
 from masknmf.visualization.imgui.options import OPTIONS_LABEL, draw_options_popup
+from masknmf.visualization.imgui.scale import scale_figure
 from masknmf.visualization.rois import MARKED_COLOR, SELECTED_ALPHA, FootprintSet
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.demixing import CellStats, estimate_temporal_demixed_raw, update_signals, write_curated
@@ -2206,6 +2207,7 @@ class SingleSessionDemixingVis:
         return self._reference_index
 
     def show(self):
+        scale_figure(self.fov_widget.figure)
         return self.fov_widget.show()
 
     def close(self):
@@ -2316,4 +2318,5 @@ def visualize_superpixels_peaks(init_results: masknmf.InitializationResults):
         name=image_panels[2],
     )
 
+    scale_figure(ndw_corr.figure)
     return ndw_corr.show()

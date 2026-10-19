@@ -16,6 +16,7 @@ from masknmf.visualization.imgui.layout import is_notebook_canvas
 from masknmf.visualization.imgui.movie_player import MoviePlayer
 from masknmf.visualization.imgui.picking import CLICK_SLOP
 from masknmf.visualization.imgui.options import OPTIONS
+from masknmf.visualization.imgui.scale import scale_figure
 from masknmf.visualization.imgui.theme import opaque_popups
 
 _CMAPS = ("gray", "viridis", "magma", "inferno", "turbo")
@@ -460,6 +461,7 @@ class SummaryImageViewer:
                 extent=(0.0, 1.0, 0.0, 1.0),
                 window_flags=imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.no_background | imgui.WindowFlags_.no_inputs,
             )
+            scale_figure(self._window)
             self._window.show()
             imgui.set_current_context(context)
         elif not separate and self._window is not None:

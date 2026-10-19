@@ -8,6 +8,7 @@ import pytest
 from rendercanvas.offscreen import RenderCanvas
 
 from masknmf import launcher
+from masknmf.visualization.imgui import scale
 
 
 class Loop:
@@ -26,7 +27,9 @@ class Loop:
 
 
 @pytest.fixture
-def window():
+def window(monkeypatch):
+    # a scale of 1 whatever the desktop running the tests is scaled to
+    monkeypatch.setattr(scale, "SIZE", scale.Size(ui_scale=1.0))
     window = launcher.Launcher()
     window.attach(canvas=RenderCanvas(size=launcher.SIZE_WINDOW, pixel_ratio=1), loop=Loop())
     return window

@@ -9,6 +9,7 @@ import masknmf.arrays
 from masknmf.arrays.array_interfaces import ArrayLike
 from masknmf.utils import display
 from masknmf.visualization.imgui import TracePlot, resolve_time_reference
+from masknmf.visualization.imgui.scale import scale_figure
 from masknmf.motion_correction import BaseRegistrationArray
 
 def compute_mean_subtract(mean: np.ndarray | torch.Tensor,
@@ -193,6 +194,7 @@ class MotionCorrectionVis:
         return self._traces
 
     def show(self):
+        scale_figure(self.widget.figure)
         return self.widget.show()
 
 

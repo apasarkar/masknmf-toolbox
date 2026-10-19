@@ -40,6 +40,7 @@ from masknmf.visualization.imgui import (
 from masknmf.visualization.imgui.keybinds import MULTISESSION, pressed
 from masknmf.visualization.imgui.options import draw_options_menu, draw_options_popup
 from masknmf.visualization.imgui.panels import KEYBINDS_LABEL, hint_button_width
+from masknmf.visualization.imgui.scale import scale_figure
 from masknmf.visualization.summary_widget import SummaryImageViewer
 
 _UNCLUSTERED_COLOR = (0.45, 0.45, 0.45)
@@ -1150,6 +1151,7 @@ class MultiSessionDemixingVis:
         return self._traces
 
     def show(self):
+        scale_figure(self._ndw.figure)
         return self._ndw.show()
 
     def close(self):
