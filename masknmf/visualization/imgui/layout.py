@@ -54,7 +54,7 @@ def draw_edge_handle(window) -> None:
     """
     Resize / collapse handle for a "top" or "left" edge window, which fastplotlib
     only provides for "bottom" and "right". Call it last in the window's draw
-    callback and reserve ``HANDLE_THICKNESS`` on the inboard edge yourself.
+    callback and reserve the window's ``_separator_thickness`` on the inboard edge yourself.
     """
     location = getattr(window, "location", None)
     if location not in _HANDLE_CURSORS:

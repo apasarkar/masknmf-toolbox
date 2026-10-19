@@ -18,6 +18,7 @@ from wgpu.utils.imgui import ImguiRenderer
 from masknmf.visualization.imgui.guide import ACCENT, CARD, DIM, EDGE, KEY, PLOT, TEXT, arrow, box, heading, u32
 from masknmf.visualization.imgui.keybinds import CLASSIFICATION
 from masknmf.visualization.imgui.panels import draw_keybinds_button, draw_keybinds_popup
+from masknmf.visualization.imgui.scale import fit_canvas, push_font_em, scaled
 from masknmf.visualization.imgui.theme import popup
 
 WARN = imgui.ImVec4(0.95, 0.68, 0.25, 1.0)
@@ -225,7 +226,7 @@ def cards(dl, items: tuple) -> None:
             child_flags=imgui.ChildFlags_.borders,
             window_flags=imgui.WindowFlags_.no_scrollbar,
         )
-        imgui.push_font(None, 1.8 * em)
+        push_font_em(1.8)
         imgui.set_cursor_pos_x((card_w - imgui.calc_text_size(icon).x) / 2)
         imgui.text_colored(ACCENT, icon)
         imgui.pop_font()
@@ -487,9 +488,10 @@ def main() -> None:
     from rendercanvas.auto import RenderCanvas, loop
 
     canvas = RenderCanvas(title="classification help", size=(760, 1000), update_mode="continuous", max_fps=60)
+    fit_canvas(canvas)
     renderer = ImguiRenderer(wgpu.utils.get_default_device(), canvas)
     load_fonts()
-    renderer.set_gui(partial(draw_window, {"open": True, "keys": False}))
+    renderer.set_gui(scaled(partial(draw_window, {"open": True, "keys": False})))
     canvas.request_draw(renderer.render)
     loop.run()
 

@@ -34,10 +34,10 @@ from masknmf.demixing.curation import latest_results
 from masknmf.io import group_name_compression, group_name_demixing, group_names_registration, stage_groups
 from masknmf.pipelines import scraper
 from masknmf.visualization.imgui import guide
+from masknmf.visualization.imgui.scale import DIR_CONFIG, Scaler, fit_canvas, push_font_em
 from masknmf.visualization.imgui.theme import button_colors, tooltip
 
 
-DIR_CONFIG = Path.home() / ".config" / "masknmf"
 FILEPATH_RUN_CONFIGS = DIR_CONFIG / "launcher_configs.json"
 
 PIPELINE_INITIAL = "two-photon-calcium"
@@ -557,6 +557,7 @@ class Launcher:
         self.loop = None
         self.dialog: Optional[idl.FileDialog] = None
         self.font: Optional[imgui.ImFont] = None
+        self.scaler = Scaler()
 
         self.store = idl.JsonPreferenceStore(path=str(DIR_CONFIG / "recent.json"))
         self.config = idl.FileDialogConfig(
@@ -1078,7 +1079,7 @@ class Launcher:
         destroys the texture the frame is drawn into.
 
         Args:
-            canvas (BaseRenderCanvas): The canvas; its logical size is kept at least SIZE_MIN
+            canvas (BaseRenderCanvas): The canvas; its logical size is kept at least SIZE_MIN times the UI scale
             loop (BaseLoop): The loop running the canvas
         """
         self.canvas = canvas
@@ -1092,13 +1093,15 @@ class Launcher:
         canvas.request_draw(renderer.render)
 
     def keep_minimum_size(self, event: dict) -> None:
-        """Resize the canvas back up to SIZE_MIN when it is made smaller."""
+        """Resize the canvas back up to SIZE_MIN, times the UI scale, when it is made smaller."""
         width, height = event["width"], event["height"]
-        if width < SIZE_MIN[0] or height < SIZE_MIN[1]:
-            self.loop.call_soon(self.canvas.set_logical_size, max(width, SIZE_MIN[0]), max(height, SIZE_MIN[1]))
+        min_width, min_height = (round(v * self.scaler.applied) for v in SIZE_MIN)
+        if width < min_width or height < min_height:
+            self.loop.call_soon(self.canvas.set_logical_size, max(width, min_width), max(height, min_height))
 
     def draw_window(self) -> None:
-        """One frame: the dialog in a borderless imgui window covering the canvas."""
+        """One frame: the dialog in a borderless imgui window covering the canvas, at the UI scale."""
+        self.scaler()
         viewport = imgui.get_main_viewport()
         imgui.push_font(self.font, self.font.legacy_size)
         imgui.set_next_window_pos(viewport.pos)
@@ -1140,7 +1143,7 @@ class Launcher:
         """The name and version, then what masknmf does."""
         em = imgui.get_font_size()
         imgui.dummy(imgui.ImVec2(0, 0.2 * em))
-        imgui.push_font(None, 1.5 * em)
+        push_font_em(1.5)
         imgui.text_colored(COLOR_SUBSECTION, "masknmf")
         imgui.pop_font()
         imgui.same_line(0, 0.6 * em)
@@ -1211,7 +1214,7 @@ class Launcher:
         """The page's title and line, then the page."""
         em = imgui.get_font_size()
         key, icon, name, hint = next(page for page in PAGES if page[0] == self.page)
-        imgui.push_font(None, 1.35 * em)
+        push_font_em(1.35)
         imgui.text_colored(COLOR_SUBSECTION, f"{icon}  {name}")
         imgui.pop_font()
         imgui.text_colored(COLOR_DIM, hint)
@@ -1284,7 +1287,9 @@ class Launcher:
 
         gap = 1.4 * em
         card_w = (w - 4 * gap) / 5
-        card_h = 6.8 * em
+        # tall enough for the longest hint as wrapped, which a narrow window (or a large UI scale) wraps more
+        hint_h = max(imgui.calc_text_size(hint, None, False, card_w - em).y for *_, hint in STEPS)
+        card_h = max(6.8 * em, 5.1 * em + hint_h)
         for i, (page, icon, name, hint) in enumerate(STEPS):
             if i:
                 right = imgui.get_item_rect_max()
@@ -1292,7 +1297,7 @@ class Launcher:
                 guide.arrow(dl, right.x + 0.25 * em, right.x + gap - 0.25 * em, mid)
                 imgui.same_line(0, gap)
             clicked, a = guide.card_button(dl, f"step{i}", imgui.ImVec2(card_w, card_h))
-            imgui.push_font(None, 1.8 * em)
+            push_font_em(1.8)
             size = imgui.calc_text_size(icon)
             dl.add_text(imgui.get_font(), 1.8 * em, imgui.ImVec2(a.x + (card_w - size.x) / 2, a.y + 0.6 * em), guide.u32(COLOR_SUBSECTION), icon)
             imgui.pop_font()
@@ -2180,7 +2185,9 @@ def run_launcher() -> Optional[list[str]]:
 
     DIR_CONFIG.mkdir(parents=True, exist_ok=True)
     window = Launcher()
-    window.attach(canvas=RenderCanvas(title="masknmf", size=SIZE_WINDOW, update_mode="continuous", max_fps=60), loop=loop)
+    canvas = RenderCanvas(title="masknmf", size=SIZE_WINDOW, update_mode="continuous", max_fps=60)
+    fit_canvas(canvas)
+    window.attach(canvas=canvas, loop=loop)
     print("\r\033[K", end="", file=sys.stderr, flush=True)
     loop.run()
     return window.argv
