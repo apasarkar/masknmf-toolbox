@@ -17,37 +17,6 @@ import numpy as np
 from pathlib import Path
 import torch
 
-class FrameWindow(LazyFrameLoader):
-    """A lazy view of frames [start, stop) of a movie. Nothing is read until frames are asked for."""
-
-    def __init__(self, movie: ArrayLike, start: int, stop: int):
-        self._movie = movie
-        self._start = start
-        self._stop = stop
-
-    @property
-    def dtype(self):
-        return self._movie.dtype
-
-    @property
-    def shape(self) -> tuple[int, int, int]:
-        return (self._stop - self._start, *self._movie.shape[1:])
-
-    @property
-    def ndim(self) -> int:
-        return 3
-
-    def _compute_at_indices(self, indices: list | int | slice | np.ndarray) -> np.ndarray:
-        num_frames = self.shape[0]
-        if isinstance(indices, slice):
-            first, last, step = indices.indices(num_frames)
-            return self._movie[self._start + first:self._start + last:step]
-        if isinstance(indices, (int, np.integer)):
-            return self._movie[self._start + (int(indices) % num_frames)]
-        return self._movie[np.asarray(indices) % num_frames + self._start]
-
-# frames dropped from each end of the movie
-CROP_FRAMES = 300
 class OnePhotonCalciumPipeline(BasePipeline):
     """
     Population calcium imaging pipeline for 1p imaging. Common characteristics: high background contamination,
@@ -163,8 +132,7 @@ class OnePhotonCalciumPipeline(BasePipeline):
             exclude_border_radius: int = 0,
             remove_intermediates: bool = True) -> Path:
         """
-        Motion corrects, compresses (with denoising) and demixes a 1p movie. The first and last CROP_FRAMES (300) frames
-        are dropped
+        Motion corrects, compresses (with denoising) and demixes a 1p movie
         Args:
             data: The raw (frames, height, width) movie
             frame_rate (float): frames per second; sets the detrenders' windows
@@ -172,7 +140,7 @@ class OnePhotonCalciumPipeline(BasePipeline):
             remove_intermediates (bool): Drop the CompressionArray group once demixing is done
         """
         self.run_config =  {"frame_rate": frame_rate, "exclude_border_radius": exclude_border_radius,
-                           "crop_frames": CROP_FRAMES, "remove_intermediates": remove_intermediates}
+                            "remove_intermediates": remove_intermediates}
         moco_data = None
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
@@ -183,10 +151,6 @@ class OnePhotonCalciumPipeline(BasePipeline):
             results_path = self.results_path()
             if data is None:
                 raise ValueError("data is None need to specify dataset")
-            if data.shape[0] <= 2 * CROP_FRAMES:
-                raise ValueError(f"Movie has {data.shape[0]} frames; it needs more than {2 * CROP_FRAMES} "
-                                 f"to drop {CROP_FRAMES} from each end")
-            # data = FrameWindow(data, CROP_FRAMES, data.shape[0] - CROP_FRAMES)
             data = data
 
             moco_data, shift_mask = self.motion_correct(data,
