@@ -22,7 +22,7 @@ from masknmf.compression.preprocessing import MaximinSplineDetrend
 from masknmf.demixing import SignalDemixer, DemixingResults, NoSignalsDetectedError
 from masknmf.motion_correction import BaseRegistrationArray, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.motion_correction.moco_preprocessing import construct_moco_template
-from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig
+from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig, MotionCorrectionFilterConfig, SpatialHighpassMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig, SinglepassDemixingConfig, SuperpixelInitConfig
 from masknmf.utils import display, get_timestamp, TIMESTAMP_FORMAT, has_group, drop_group, torch_select_device
@@ -275,6 +275,7 @@ class BasePipeline(ABC):
                        data: np.ndarray | ArrayLike,
                        config: RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig | Literal["skip"] | None,
                        results_path: str,
+                       filter_config: MotionCorrectionFilterConfig | None = None,
                        exclude_border_radius: int = 0) -> tuple[np.ndarray | ArrayLike, np.ndarray]:
         """
         Register data with a rigid (the default when config is None) or piecewise rigid corrector and export it to
@@ -287,22 +288,21 @@ class BasePipeline(ABC):
             display("Not Running Motion Correction")
             moco_data = data
         else:
-            reference_sigma = None
             if config is None or isinstance(config, RigidMotionCorrectionConfig):
                 moco_strategy = RigidMotionCorrector(**asdict(RigidMotionCorrectionConfig() if config is None else config),
                                                      device=self.device, batch_size=self.frame_batch_size)
             elif isinstance(config, PiecewiseRigidMotionCorrectionConfig):
                 kwargs = asdict(config)
-                reference_sigma = kwargs.pop("reference_highpass_sigma")
                 moco_strategy = PiecewiseRigidMotionCorrector(**kwargs, device=self.device,
                                                               batch_size=self.frame_batch_size)
             else:
                 raise ValueError("Invalid MotionCorrectionConfig input")
             with self.step("motion correction"):
-                reference_data = data
-                if reference_sigma is not None:
-                    #estimate shifts on a highpassed copy of the data, but apply them to the raw data
-                    reference_data = self._highpassed_reference(data, reference_sigma)
+                if filter_config is None:
+                    reference_data = data
+                else:
+                    # Define a filtered version of the movie, estimate shifts by motion correcting that movie, apply to original movie
+                    reference_data = self._filtered_reference(data, filter_config)
                 if moco_strategy.template is None:
                     moco_strategy.compute_template(reference_data)
                 moco_data = moco_strategy.motion_correct(reference_data, target_movie=data)
@@ -320,11 +320,18 @@ class BasePipeline(ABC):
             shift_mask[:, -1 * exclude_border_radius:] = 0
         return moco_data, shift_mask
     
-    def _highpassed_reference(self, data: ArrayLike, sigma: float) -> FilteredArray:
-        """A lazy view of data, highpassed with sigma pixels and clipped at zero, used to estimate shifts."""
-        kernel = compute_highpass_filter_kernel([sigma, sigma]).to(self.torch_device)
-        return FilteredArray(data, partial(_highpass_relu, kernel=kernel),
-                             batching=self.frame_batch_size, device=self.torch_device)
+    def _filtered_reference(self, data: ArrayLike, config: MotionCorrectionFilterConfig) -> FilteredArray:
+        """Define a lazy transformation of the input dataset that we use to compute per-frame shifts, and we
+        apply this to the original dataset
+        """
+        if isinstance(config, SpatialHighpassMotionCorrectionConfig):
+            "Here we use a highpassed movie (box - gaussian kernel) with kernel parameter sigma. clipped at 0"
+            sigma = config.reference_highpass_sigma
+            kernel = compute_highpass_filter_kernel([sigma, sigma]).to(self.torch_device)
+            return FilteredArray(data, partial(_highpass_relu, kernel=kernel),
+                                 batching=self.frame_batch_size, device=self.torch_device)
+        else:
+            raise ValueError(f"Invalid config type for filtered motion correction, type {type(config)} and it is {config}")
     
     def compress_strategy(self,
                           config: CompressConfig | CompressDenoiseConfig | None,

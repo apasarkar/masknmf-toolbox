@@ -135,22 +135,25 @@ def filter_global_signal_compression_array(
 
     # --- Global signal in pixel space, multiplication order exploits low-rank structure ---
     temporal_compressed_global = torch.sparse.mm(
-        compression_array.spatial_compressed_local_projector.T, global_spatial_basis * singular_values[None, :]
+        compression_array.spatial_compressed_local_projector.T.to_sparse_csr(), global_spatial_basis * singular_values[None, :]
     ) @ right_singular_vectors
 
     temporal_compressed_global_subtracted = temporal_compressed - temporal_compressed_global
 
-    temporal_compressed_global_subtracted -= torch.mean(temporal_compressed_global_subtracted, dim = 1, keepdims=True)
+    final_mean_basis = torch.mean(temporal_compressed_global_subtracted, dim = 1, keepdims=True)
+    temporal_compressed_global_subtracted -= final_mean_basis
+
+    final_mean = torch.sparse.mm(spatial_compressed, final_mean_basis)
 
     # --- Build residual CompressionArray (spatial_compressed unchanged, temporal_compressed replaced) ---
     num_frames, fov_height, fov_width = compression_array.shape
-    new_mean = torch.zeros(fov_height, fov_width, device=device)
+    final_mean = final_mean.reshape(fov_height, fov_width)
     residual_compression_array = masknmf.CompressionArray.from_tensors(
         compression_array.shape,
         spatial_compressed,
         temporal_compressed_global_subtracted,
-        new_mean,
-        torch.ones_like(new_mean),
+        final_mean,
+        compression_array.noise_variance_image,
         spatial_compressed_local_projector=compression_array.spatial_compressed_local_projector,
         device="cpu",
     )

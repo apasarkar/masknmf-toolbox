@@ -19,12 +19,16 @@ class PiecewiseRigidMotionCorrectionConfig:
     max_deviation_rigid: tuple[int, int] = (2, 2)
     pixel_weighting: Optional[np.ndarray] = None
     template: Optional[np.ndarray] = None
-    reference_highpass_sigma: float | None = None
 
 @dataclass
 class GradientMotionCorrectionConfig:
     num_frames_template: int = 300
 
+@dataclass
+class SpatialHighpassMotionCorrectionConfig:
+    reference_highpass_sigma: float | None = None
+
 # every config a pipeline's motion correction step can take; a pipeline annotating its argument with this alias offers any config added here
 MotionCorrectionConfigs = RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig
+MotionCorrectionFilterConfig = SpatialHighpassMotionCorrectionConfig ## Add to this if more filters are ever used
 
