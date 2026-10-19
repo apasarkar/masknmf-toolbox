@@ -24,6 +24,11 @@ class PiecewiseRigidMotionCorrectionConfig:
 class GradientMotionCorrectionConfig:
     num_frames_template: int = 300
 
+@dataclass
+class SpatialHighpassMotionCorrectionConfig:
+    reference_highpass_sigma: float | None = None
+
 # every config a pipeline's motion correction step can take; a pipeline annotating its argument with this alias offers any config added here
 MotionCorrectionConfigs = RigidMotionCorrectionConfig | PiecewiseRigidMotionCorrectionConfig
+MotionCorrectionFilterConfig = SpatialHighpassMotionCorrectionConfig ## Add to this if more filters are ever used
 

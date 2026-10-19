@@ -108,8 +108,10 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 raise ValueError("data is None starting from the motion correction step. Specify a dataset")
             if self.load_into_ram:
                 data = self.read_into_ram(data)
-            moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
-                                                        exclude_border_radius)
+            moco_data, shift_mask = self.motion_correct(data,
+                                                        self.motion_correct_config,
+                                                        results_path,
+                                                        exclude_border_radius=exclude_border_radius)
 
             compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
             compress_strategy.detrender = self.spline_detrender(data.shape[0], frame_rate, window_seconds=40,
