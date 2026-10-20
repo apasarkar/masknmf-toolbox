@@ -371,10 +371,11 @@ class OnePhotonCulturePipeline(BasePipeline):
             else:
                 frame_weighting = active_frames
 
-            good_frame_indicator = torch.as_tensor(good_frame_indicator).numpy().astype(np.bool)
-            frame_weighting = frame_weighting[good_frame_indicator]
+            if good_frame_indicator is not None:
+                good_frame_indicator = torch.as_tensor(good_frame_indicator).numpy().astype(np.bool)
+                frame_weighting = frame_weighting[good_frame_indicator]
             if np.sum(frame_weighting) == 0:
-                raise ValueError("None of the good frames ovelap with the active frames")
+                raise ValueError("None of the frame weights are positive")
 
             compress_strategy = self.compress_strategy(replace(self.compress_config, frame_weighting=frame_weighting))
 
@@ -444,7 +445,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             self.drop_compression(results_path)
 
         return self.finish()
-    
+
 
 
 
