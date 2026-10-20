@@ -306,9 +306,9 @@ class DemixingResults(Serializer, BaseResults):
 
     @classmethod
     def infill_bad_frames(cls,
-                          demix_results: masknmf.DemixingResults,
+                          demix_results: "DemixingResults",
                           good_frame_indicator: torch.Tensor | np.ndarray | list,
-                          device: torch.device | str = "cpu"):
+                          device: torch.device | str = "cpu") -> "DemixingResults":
         """
         If demixing was run on a subset of the frames ("good frames"), this routine produces a new demixing results
         object where all time series are expanded to include zero values at the bad frames. Useful to ensure
@@ -321,13 +321,13 @@ class DemixingResults(Serializer, BaseResults):
         if indicator_num_good_frames != int(demix_results.shape[0]):
             raise ValueError(f"Number of good frames specified by the frame labelling, {indicator_num_good_frames}, "
                              f"does not match the number of frames in the data {demix_results_num_frames}")
-        new_shape = tuple(int(good_frame_indicator.numel()), int(demix_results.shape[1]), int(demix_results.shape[2]))
+        new_shape = (int(good_frame_indicator.numel()), int(demix_results.shape[1]), int(demix_results.shape[2]))
 
         new_demixing_results = cls(shape=new_shape,
                                    spatial_compressed = demix_results.spatial_compressed,
                                    temporal_compressed = infill_bad_timepoints(demix_results.temporal_compressed, good_frame_indicator, device=device),
                                    spatial_demixed = demix_results.spatial_demixed,
-                                   temporal_demixed =  infill_bad_timepoints(demix_results.temporal_demixed, good_frame_indicator, device=device),
+                                   temporal_demixed =  infill_bad_timepoints(demix_results.temporal_demixed.T, good_frame_indicator, device=device).T,
                                    mean_image = demix_results.mean_image,
                                    noise_variance_image = demix_results.noise_variance_image,
                                    spatial_compressed_local_projector = demix_results.spatial_compressed_local_projector,
@@ -344,12 +344,12 @@ class DemixingResults(Serializer, BaseResults):
                                    background_correlation_image_mean = demix_results.background_correlation_image_mean,
                                    background_correlation_image_normalizer = demix_results.background_correlation_image_normalizer,
                                    global_residual_correlation_image = demix_results.global_residual_correlation_image,
-                                   compression_array_roi_averages = infill_bad_timepoints(compression_array_roi_averages, good_frame_indicator, device=device),
-                                   fluctuating_background_roi_averages = infill_bad_timepoints(fluctuating_background_roi_averages, good_frame_indicator, device=device),
-                                   residual_roi_averages = infill_bad_timepoints(residual_roi_averages , good_frame_indicator, device=device),
+                                   compression_array_roi_averages = infill_bad_timepoints(demix_results.compression_array_roi_averages, good_frame_indicator, device=device),
+                                   fluctuating_background_roi_averages = infill_bad_timepoints(demix_results.fluctuating_background_roi_averages, good_frame_indicator, device=device),
+                                   residual_roi_averages = infill_bad_timepoints(demix_results.residual_roi_averages , good_frame_indicator, device=device),
                                    multiunit_basis_term1 = demix_results.multiunit_basis_term1,
-                                   multiunit_basis_term2 = infill_bad_timepoints(multiunit_basis_term2, good_frame_indicator, device=device),
-                                   temporal_demixed_raw = infill_bad_timepoints(temporal_demixed_raw, good_frame_indicator, device=device),
+                                   multiunit_basis_term2 = infill_bad_timepoints(demix_results.multiunit_basis_term2, good_frame_indicator, device=device),
+                                   temporal_demixed_raw = infill_bad_timepoints(demix_results.temporal_demixed_raw.T, good_frame_indicator, device=device).T,
                                    device=device)
         return new_demixing_results
 

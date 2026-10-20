@@ -3,6 +3,7 @@ from masknmf.arrays import LazyFrameLoader, ArrayLike
 
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, MotionCorrectionConfigs
+from masknmf.compression import CompressionArray
 from masknmf.pipelines.configs.compression_configs import CompressDenoiseConfig, CompressionConfigs
 import torch
 from typing import *
@@ -61,15 +62,17 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         data = self._construct_ophys_array(data,
                                            indicator_polarity=indicator_polarity,
                                            good_frame_indicator=good_frame_indicator)
-        moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
-                                                    exclude_border_radius)
+        moco_data, shift_mask = self.motion_correct(data,
+                                                    self.motion_correct_config,
+                                                    results_path,
+                                                    exclude_border_radius=exclude_border_radius)
 
         compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
 
         with self.step("compression"):
             compressed_results = compress_strategy.compress(moco_data)
             if good_frame_indicator is not None:
-                compressed_results = masknmf.CompressionArray.infill_bad_frames(compressed_results,
+                compressed_results = CompressionArray.infill_bad_frames(compressed_results,
                                                                                 good_frame_indicator=good_frame_indicator,
                                                                                 device='cpu')
             compressed_results.export(results_path)

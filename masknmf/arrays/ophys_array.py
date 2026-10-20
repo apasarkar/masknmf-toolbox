@@ -5,8 +5,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from masknmf import ArrayLike
-
+from masknmf.arrays.array_interfaces import ArrayLike
 
 class OphysArray(ArrayLike):
     """

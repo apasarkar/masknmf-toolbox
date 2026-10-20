@@ -17,7 +17,10 @@ def infill_bad_timepoints(analyzed_timeseries: torch.Tensor | None,
     good_timepoint_indicator = torch.as_tensor(good_timepoint_indicator).to(torch.bool).to(device) #no-op if already tensor
 
     if analyzed_timeseries.ndim == 1:
+        squeeze_flag = True
         analyzed_timeseries = analyzed_timeseries[None, :]
+    else:
+        squeeze_flag = False
 
     if good_timepoint_indicator.ndim != 1:
         raise ValueError("good_timepoint_indicator must be one-dimensional")
@@ -27,9 +30,9 @@ def infill_bad_timepoints(analyzed_timeseries: torch.Tensor | None,
     indicator_num_good_frames = torch.count_nonzero(good_timepoint_indicator)
     if num_data_frames != indicator_num_good_frames:
         raise ValueError(f"Number of good frames specified by the frame labelling, {indicator_num_good_frames}, "
-                         f"does not match the number of frames in the data {num_good_frames}")
+                         f"does not match the number of frames in the data {num_data_frames}")
 
-    final_tensor = torch.zeros(num_series, num_data_frames, dtype=analyzed_timeseries.dtype, device=analyzed_timeseries.device)
+    final_tensor = torch.zeros(num_series, good_timepoint_indicator.numel(), dtype=analyzed_timeseries.dtype, device=analyzed_timeseries.device)
     final_tensor[:, good_timepoint_indicator] = analyzed_timeseries
 
-    return final_tensor.squeeze(0)
+    return final_tensor.squeeze(0) if squeeze_flag else final_tensor

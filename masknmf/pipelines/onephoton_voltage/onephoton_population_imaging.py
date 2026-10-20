@@ -340,14 +340,14 @@ class OnePhotonCulturePipeline(BasePipeline):
             if self.motion_correct_config.lower() == "skip":
                 moco_array = self._construct_ophys_array(data,
                                                          indicator_polarity=indicator_polarity,
-                                                         good_frame_indicator=good_frame_indicator),
+                                                         good_frame_indicator=good_frame_indicator)
 
             else:
                 raise ValueError("Invalid MotionCorrectionConfig input")
         else:
             mov = self._construct_ophys_array(data,
                                               indicator_polarity=indicator_polarity,
-                                              good_frame_indicator=good_frame_indicator),
+                                              good_frame_indicator=good_frame_indicator)
 
             with self.step("motion correction"):
                 mean_img = torch.mean(mov[:self.motion_correct_config.num_frames_template], dim=0)
@@ -355,7 +355,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                 moco_array = corrector.motion_correct(mov)
                 moco_array.output_device=device
 
-        self.run_config = {"frame_rate": frame_rate, "indicator_sign": indicator_sign,
+        self.run_config = {"frame_rate": frame_rate, "indicator_polarity": indicator_polarity,
                            "remove_intermediates": remove_intermediates}
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":

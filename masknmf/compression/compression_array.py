@@ -190,9 +190,9 @@ class CompressionArray(ArrayLike, Serializer):
 
     @classmethod
     def infill_bad_frames(cls,
-                          compression_results: CompressionArray,
+                          compression_results: "CompressionArray",
                           good_frame_indicator: torch.Tensor | np.ndarray | list,
-                          device: torch.device | str = "cpu"):
+                          device: torch.device | str = "cpu") -> "DemixingResults":
         """
         Often useful to exclude bad frames from analysis and process rest of the movie.
         If compression is the end result of the analysis, this routine returns an updated version of the
@@ -208,7 +208,7 @@ class CompressionArray(ArrayLike, Serializer):
         if indicator_num_good_frames != int(compression_results.shape[0]):
             raise ValueError(f"Number of good frames specified by the frame labelling, {indicator_num_good_frames}, "
                              f"does not match the number of frames in the data {compression_results_num_frames}")
-        new_shape = tuple(int(good_frame_indicator.numel()), int(compression_results.shape[1]), int(compression_results.shape[2]))
+        new_shape = (int(good_frame_indicator.numel()), int(compression_results.shape[1]), int(compression_results.shape[2]))
         new_compression_results = cls.from_tensors(shape=new_shape,
                                                    spatial_compressed = compression_results.spatial_compressed,
                                                    temporal_compressed = infill_bad_timepoints(compression_results.temporal_compressed,
@@ -218,7 +218,9 @@ class CompressionArray(ArrayLike, Serializer):
                                                    noise_variance_image = compression_results.noise_variance_image,
                                                    spatial_compressed_local_projector=compression_results.spatial_compressed_local_projector,
                                                    spatial_trend_basis=compression_results.spatial_trend_basis,
-                                                   temporal_trend_basis=comrpession_results.temporal_trend_basis,
+                                                   temporal_trend_basis=infill_bad_timepoints(compression_results.temporal_trend_basis,
+                                                                                              good_frame_indicator,
+                                                                                              device=device),
                                                    device=device)
         return new_compression_results
 

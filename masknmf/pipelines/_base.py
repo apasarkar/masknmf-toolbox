@@ -410,7 +410,7 @@ class BasePipeline(ABC):
     def _construct_ophys_array(self,
                                data: ArrayLike,
                                indicator_polarity: Literal["positive", "negative"],
-                               good_frame_indicator: torch.Tensor | np.ndarray):
+                               good_frame_indicator: torch.Tensor | np.ndarray | list | None):
         if indicator_polarity.lower() not in {"positive", "negative"}:
             raise ValueError("indicator polarity can only be positive or negative")
         ophys_output = OphysArray(data,
