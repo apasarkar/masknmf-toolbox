@@ -79,6 +79,39 @@ def test_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
                 return True
     return False
 
+def infill_bad_timepoints(analyzed_timeseries: torch.Tensor | None,
+                          good_timepoint_indicator: torch.Tensor,
+                          device: torch.device | str = "cpu") -> torch.Tensor | None:
+    """
+    Expands time series data derived from "good timepoints" to series that include "bad timepoints".
+    The value is 0 at those points.
+    Args:
+        analyzed_timeseries (torch.Tensor): Shape (num_series, num_good_timepoints) or (num_good_timepoints,)
+        good_timepoint_indicator (torch.Tensor): Boolean tensor whose length is the total number of time points, good and bad
+    """
+    if analyzed_timeseries is None:
+        return None
+    analyzed_timeseries = torch.as_tensor(analyzed_timeseries).to(device) #no-op if tensor already
+    good_timepoint_indicator = torch.as_tensor(good_timepoint_indicator).to(torch.bool).to(device) #no-op if already tensor
+
+    if analyzed_timeseries.ndim == 1:
+        analyzed_timeseries = analyzed_timeseries[None, :]
+
+    if good_timepoint_indicator.ndim != 1:
+        raise ValueError("good_timepoint_indicator must be one-dimensional")
+
+    num_series = analyzed_timeseries.shape[0]
+    num_data_frames = analyzed_timeseries.shape[1]
+    indicator_num_good_frames = torch.count_nonzero(good_timepoint_indicator)
+    if num_data_frames != indicator_num_good_frames:
+        raise ValueError(f"Number of good frames specified by the frame labelling, {indicator_num_good_frames}, "
+                         f"does not match the number of frames in the data {num_good_frames}")
+
+    final_tensor = torch.zeros(num_series, num_data_frames, dtype=analyzed_timeseries.dtype, device=analyzed_timeseries.device)
+    final_tensor[:, good_timepoint_indicator] = analyzed_timeseries
+
+    return final_tensor.squeeze(0)
+
 class DemixingResults(Serializer, BaseResults):
     _serialized = {
         "shape",
@@ -177,7 +210,7 @@ class DemixingResults(Serializer, BaseResults):
             factorized_background_term2 (torch.Tensor | None): tensor used to express low-rank background estimate
             static_baseline (torch.Tensor). The per-pixel static baseline_image.
                 If not provided, the below code will set it so that the residual movie has mean 0.
-                The residual is defined as UV - AC - Fluctuaating background - Static Background
+                The residual is defined as UV - AC - Fluctuating background - Static Background
             standard_correlation_image_mean (torch.Tensor | None): the mean image used to lazily construct the standard correlation image per neuron
             standard_correlation_image_normalizer (torch.Tensor | None): the normalizer image used to lazily construct the standard correlation image per neuron
             residual_correlation_image_support_values (SparseCOOTensor | None): Shape (num_pixels, num_neurons). A sparse tensor describing the residual correlation
@@ -192,6 +225,8 @@ class DemixingResults(Serializer, BaseResults):
             temporal_demixed_raw (torch.Tensor | None): shape (number of frames, number of neural signals). temporal_demixed
                 re-estimated from the registered raw movie, with no compression or denoising
             device (str): 'cpu' or 'cuda'. used to manage where the tensors reside
+            good_frame_indicator (torch.Tensor | None): A 1D boolean indicator, describing which timepoints from the raw data
+                were processed (good frames) and which were ignored.
         """
         self._device = device
         self._shape = tuple(shape)
@@ -300,6 +335,55 @@ class DemixingResults(Serializer, BaseResults):
 
         # Move all tracked tensors to desired location so everything is on one device
         self.to(self._device)
+
+    @classmethod
+    def infill_bad_frames(cls,
+                          demix_results: masknmf.DemixingResults,
+                          good_frame_indicator: torch.Tensor,
+                          device: torch.device | str = "cpu"):
+        """
+        If demixing was run on a subset of the frames ("good frames"), this routine produces a new demixing results
+        object where all time series are expanded to include zero values at the bad frames. Useful to ensure
+        that the output data matches the dimensions of the input data
+        """
+        ## First validate number of good frames equals number of frames that were actually demixed
+        good_frame_indicator = good_frame_indicator.to(device).to(torch.bool)
+        indicator_num_good_frames = int(torch.count_nonzero(good_frame_indicator))
+        demix_results_num_frames = int(demix_results.shape[0])
+        if indicator_num_good_frames != int(demix_results.shape[0]):
+            raise ValueError(f"Number of good frames specified by the frame labelling, {indicator_num_good_frames}, "
+                             f"does not match the number of frames in the data {demix_results_num_frames}")
+        new_shape = tuple(int(good_frame_indicator.numel()), int(demix_results.shape[1]), int(demix_results.shape[2]))
+
+        new_demixing_results = cls(shape=new_shape,
+                                   spatial_compressed = demix_results.spatial_compressed,
+                                   temporal_compressed = infill_bad_timepoints(demix_results.temporal_compressed, good_frame_indicator, device=device),
+                                   spatial_demixed = demix_results.spatial_demixed,
+                                   temporal_demixed =  infill_bad_timepoints(demix_results.temporal_demixed, good_frame_indicator, device=device),
+                                   mean_image = demix_results.mean_image,
+                                   noise_variance_image = demix_results.noise_variance_image,
+                                   spatial_compressed_local_projector = demix_results.spatial_compressed_local_projector,
+                                   spatial_trend_basis = demix_results.spatial_trend_basis,
+                                   temporal_trend_basis = infill_bad_timepoints(demix_results.temporal_trend_basis, good_frame_indicator, device=device),
+                                   factorized_background_term1 = demix_results.factorized_background_term1,
+                                   factorized_background_term2 = infill_bad_timepoints(demix_results.factorized_background_term2, good_frame_indicator, device=device),
+                                   static_baseline = demix_results.static_baseline,
+                                   standard_correlation_image_mean = demix_results.standard_correlation_image_mean,
+                                   standard_correlation_image_normalizer = demix_results.standard_correlation_image_normalizer,
+                                   residual_correlation_image_support_values = demix_results.residual_correlation_image_support_values,
+                                   residual_correlation_image_mean = demix_results.residual_correlation_image_mean,
+                                   residual_correlation_image_normalizer = demix_results.residual_correlation_image_normalizer,
+                                   background_correlation_image_mean = demix_results.background_correlation_image_mean,
+                                   background_correlation_image_normalizer = demix_results.background_correlation_image_normalizer,
+                                   global_residual_correlation_image = demix_results.global_residual_correlation_image,
+                                   compression_array_roi_averages = infill_bad_timepoints(compression_array_roi_averages, good_frame_indicator, device=device),
+                                   fluctuating_background_roi_averages = infill_bad_timepoints(fluctuating_background_roi_averages, good_frame_indicator, device=device),
+                                   residual_roi_averages = infill_bad_timepoints(residual_roi_averages , good_frame_indicator, device=device),
+                                   multiunit_basis_term1 = demix_results.multiunit_basis_term1,
+                                   multiunit_basis_term2 = infill_bad_timepoints(multiunit_basis_term2, good_frame_indicator, device=device),
+                                   temporal_demixed_raw = infill_bad_timepoints(temporal_demixed_raw, good_frame_indicator, device=device),
+                                   device=device)
+        return new_demixing_results
 
 
     @property
