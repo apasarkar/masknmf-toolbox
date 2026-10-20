@@ -6,7 +6,7 @@ from masknmf.demixing.demixing_arrays import SignalsArray, ResidualCorrelationIm
 import torch
 from masknmf.utils import Serializer, SparseCOOTensor
 from masknmf.arrays.array_interfaces import TensorFlyWeight
-from masknmf.utils import display
+from masknmf.utils import display, infill_bad_timepoints
 from masknmf.demixing._base_results import BaseResults
 
 
@@ -79,38 +79,6 @@ def test_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
                 return True
     return False
 
-def infill_bad_timepoints(analyzed_timeseries: torch.Tensor | None,
-                          good_timepoint_indicator: torch.Tensor,
-                          device: torch.device | str = "cpu") -> torch.Tensor | None:
-    """
-    Expands time series data derived from "good timepoints" to series that include "bad timepoints".
-    The value is 0 at those points.
-    Args:
-        analyzed_timeseries (torch.Tensor): Shape (num_series, num_good_timepoints) or (num_good_timepoints,)
-        good_timepoint_indicator (torch.Tensor): Boolean tensor whose length is the total number of time points, good and bad
-    """
-    if analyzed_timeseries is None:
-        return None
-    analyzed_timeseries = torch.as_tensor(analyzed_timeseries).to(device) #no-op if tensor already
-    good_timepoint_indicator = torch.as_tensor(good_timepoint_indicator).to(torch.bool).to(device) #no-op if already tensor
-
-    if analyzed_timeseries.ndim == 1:
-        analyzed_timeseries = analyzed_timeseries[None, :]
-
-    if good_timepoint_indicator.ndim != 1:
-        raise ValueError("good_timepoint_indicator must be one-dimensional")
-
-    num_series = analyzed_timeseries.shape[0]
-    num_data_frames = analyzed_timeseries.shape[1]
-    indicator_num_good_frames = torch.count_nonzero(good_timepoint_indicator)
-    if num_data_frames != indicator_num_good_frames:
-        raise ValueError(f"Number of good frames specified by the frame labelling, {indicator_num_good_frames}, "
-                         f"does not match the number of frames in the data {num_good_frames}")
-
-    final_tensor = torch.zeros(num_series, num_data_frames, dtype=analyzed_timeseries.dtype, device=analyzed_timeseries.device)
-    final_tensor[:, good_timepoint_indicator] = analyzed_timeseries
-
-    return final_tensor.squeeze(0)
 
 class DemixingResults(Serializer, BaseResults):
     _serialized = {
@@ -339,7 +307,7 @@ class DemixingResults(Serializer, BaseResults):
     @classmethod
     def infill_bad_frames(cls,
                           demix_results: masknmf.DemixingResults,
-                          good_frame_indicator: torch.Tensor,
+                          good_frame_indicator: torch.Tensor | np.ndarray | list,
                           device: torch.device | str = "cpu"):
         """
         If demixing was run on a subset of the frames ("good frames"), this routine produces a new demixing results
@@ -347,7 +315,7 @@ class DemixingResults(Serializer, BaseResults):
         that the output data matches the dimensions of the input data
         """
         ## First validate number of good frames equals number of frames that were actually demixed
-        good_frame_indicator = good_frame_indicator.to(device).to(torch.bool)
+        good_frame_indicator = torch.as_tensor(good_frame_indicator).to(device).to(torch.bool)
         indicator_num_good_frames = int(torch.count_nonzero(good_frame_indicator))
         demix_results_num_frames = int(demix_results.shape[0])
         if indicator_num_good_frames != int(demix_results.shape[0]):

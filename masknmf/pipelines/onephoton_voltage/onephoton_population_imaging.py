@@ -307,8 +307,9 @@ class OnePhotonCulturePipeline(BasePipeline):
     def run(self,
             data: np.ndarray | ArrayLike,
             frame_rate: float,
-            indicator_sign: Literal["negative", "positive"],
             active_frames: np.ndarray,
+            indicator_polarity: Literal["positive", "negative"] = "negative",
+            good_frame_indicator: torch.Tensor | np.ndarray | list | None = None,
             remove_intermediates: bool = True) -> Path:
         """
                 Uses the API to run rigid motion correction, compression (with denoising), and demixing.
@@ -317,15 +318,12 @@ class OnePhotonCulturePipeline(BasePipeline):
                 this filtered data, it returns to the unfiltered data to further demix.
                 Args:
                     data (Union[np.ndarray, LazyFrameLoader, ArrayLike]): The raw (frames, height, width) data stack
-                    motion_correct_config: Config object specifying parameters for motion correcting the data. If None,
-                        uses RigidMotionCorrectionConfig defaults. If "skip", skips motion correction entirely.
-                    compress_config: Config object specifying parameters for compressing the data.
-                        If None is specified, the joint compression + denoising code is run
-                    DemixConfig: Config object specifying parameters for demixing the data
-                    output_folder: Every stage is written to ``<output_folder>/<timestamp>_one-photon-culture/results.hdf5``,
-                        one hdf5 group per stage. With compress_config "skip", output_folder is instead an existing run
-                        folder whose results.hdf5 holds the compression; demixing is written into that same file
-                    load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
+                    frame_rate (float): The frame rate in Hz
+                    active_frames (np.ndarray): Indicates frames where activity can occur (this is a hard constraint imposed for e.g.
+                        if there is an optogenetic stimulus
+                    indicator_polarity (Literal["positive", "negative"]): Whether the indicator is positively or negatively tuned
+                    good_frame_indicator (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
+
                     remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
                         results carry the pmd)
 
@@ -336,22 +334,20 @@ class OnePhotonCulturePipeline(BasePipeline):
         device = self.torch_device
 
         ## Decide whether to motion correct data or not. You must have access to raw data
-        negative_indicator = True if indicator_sign == "negative" else False
         if self.load_into_ram:
             data = self.read_into_ram(data)
         if isinstance(self.motion_correct_config, str):
             if self.motion_correct_config.lower() == "skip":
-                moco_array = OphysArray(data,
-                                        negative_indicator=negative_indicator,
-                                        include_mean=True,
-                                        device=device)
+                moco_array = self._construct_ophys_array(data,
+                                                         indicator_polarity=indicator_polarity,
+                                                         good_frame_indicator=good_frame_indicator),
+
             else:
                 raise ValueError("Invalid MotionCorrectionConfig input")
         else:
-            mov = OphysArray(data,
-                             negative_indicator=negative_indicator,
-                             include_mean=True,
-                             device=device)
+            mov = self._construct_ophys_array(data,
+                                              indicator_polarity=indicator_polarity,
+                                              good_frame_indicator=good_frame_indicator),
 
             with self.step("motion correction"):
                 mean_img = torch.mean(mov[:self.motion_correct_config.num_frames_template], dim=0)
@@ -432,7 +428,9 @@ class OnePhotonCulturePipeline(BasePipeline):
                                                  a_rawdata_scale,
                                                  full_c_estimate_denoised)
 
-
+        if good_frame_indicator is not None:
+            curr_demix_results = masknmf.DemixingResults.infill_bad_frames(curr_demix_results,
+                                                                  good_frame_indicator=good_frame_indicator)
 
         curr_demix_results.export(results_path)
         save_dict({"a": a_rawdata_scale, "c_denoised": full_c_estimate_denoised, "c_raw": c_regressed_on_raw},

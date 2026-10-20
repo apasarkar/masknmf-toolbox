@@ -46,7 +46,11 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         return {'motion_correct_config': RigidMotionCorrectionConfig(),
                 'compress_config': CompressDenoiseConfig()}
 
-    def run(self, data: np.ndarray | ArrayLike, exclude_border_radius: int = 0) -> Path:
+    def run(self,
+            data: np.ndarray | ArrayLike,
+            indicator_polarity: Literal["positive", "negative"] = "positive",
+            good_frame_indicator: torch.Tensor | np.ndarray | list | None = None,
+            exclude_border_radius: int = 0) -> Path:
         """
         Uses the API to run rigid motion correction, compression (with denoising)
         """
@@ -54,6 +58,9 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         results_path = self.results_path()
         if self.load_into_ram:
             data = self.read_into_ram(data)
+        data = self._construct_ophys_array(data,
+                                           indicator_polarity=indicator_polarity,
+                                           good_frame_indicator=good_frame_indicator)
         moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
                                                     exclude_border_radius)
 
@@ -61,6 +68,10 @@ class WidefieldSinglechannelPipeline(BasePipeline):
 
         with self.step("compression"):
             compressed_results = compress_strategy.compress(moco_data)
+            if good_frame_indicator is not None:
+                compressed_results = masknmf.CompressionArray.infill_bad_frames(compressed_results,
+                                                                                good_frame_indicator=good_frame_indicator,
+                                                                                device='cpu')
             compressed_results.export(results_path)
         return self.finish()
 
