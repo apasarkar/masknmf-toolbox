@@ -9,7 +9,8 @@ from masknmf.motion_correction.strategies import MotionCorrectionStrategy
 import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, LazyFrameLoader
 from tqdm import tqdm
-from masknmf.motion_correction.registration_arrays import OphysArray, BaseRegistrationArray
+from masknmf.motion_correction.registration_arrays import BaseRegistrationArray
+from masknmf.arrays.ophys_array import OphysArray
 import copy
 
 from masknmf.utils._serialization import load_dict, save_dict

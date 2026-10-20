@@ -9,7 +9,7 @@ import math
 from tqdm import tqdm
 
 from masknmf.utils import SparseCSRTensor
-from masknmf.motion_correction.registration_arrays import OphysArray
+from masknmf.arrays.ophys_array import OphysArray
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import GradientMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressDenoiseConfig, CompressionConfigs
