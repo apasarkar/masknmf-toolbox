@@ -2,7 +2,7 @@ from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 from masknmf.utils._serialization import load_dict
 from masknmf.utils import Serializer
 from masknmf.utils import SparseCOOTensor
-from masknmf.utils import is_cpu
+from masknmf.utils import is_cpu, infill_bad_timepoints
 import torch
 import numpy as np
 
@@ -188,6 +188,46 @@ class CompressionArray(ArrayLike, Serializer):
         d = load_dict(path, f"{prefix}/{cls.__name__}" if prefix else cls.__name__)
         return cls.from_tensors(**d, **kwargs)
 
+    @classmethod
+    def infill_bad_frames(cls,
+                          compression_results: "CompressionArray",
+                          good_frame_indicator: torch.Tensor | np.ndarray | list,
+                          device: torch.device | str = "cpu",
+                          rescale: bool = True,
+                          include_trend: bool = False) -> "DemixingResults":
+        """
+        Often useful to exclude bad frames from analysis and process rest of the movie.
+        If compression is the end result of the analysis, this routine returns an updated version of the
+        CompressionArray with the bad frame timepoints infilled with zeros.
+        Args:
+            compression_results (CompressionArray): The existing compression array
+            good_frame_indicator (torch.Tensor | np.ndarray | list | None): An indexed list of good frames
+            device (torch.device | str): The device on which this data sits
+        """
+        good_frame_indicator = torch.as_tensor(good_frame_indicator).to(device).to(torch.bool)
+        indicator_num_good_frames = int(torch.count_nonzero(good_frame_indicator))
+        compression_results_num_frames = int(compression_results.shape[0])
+        if indicator_num_good_frames != int(compression_results.shape[0]):
+            raise ValueError(f"Number of good frames specified by the frame labelling, {indicator_num_good_frames}, "
+                             f"does not match the number of frames in the data {compression_results_num_frames}")
+        new_shape = (int(good_frame_indicator.numel()), int(compression_results.shape[1]), int(compression_results.shape[2]))
+        new_compression_results = cls.from_tensors(shape=new_shape,
+                                                   spatial_compressed = compression_results.spatial_compressed,
+                                                   temporal_compressed = infill_bad_timepoints(compression_results.temporal_compressed,
+                                                                                               good_frame_indicator,
+                                                                                               device=device),
+                                                   mean_image = compression_results.mean_image,
+                                                   noise_variance_image = compression_results.noise_variance_image,
+                                                   spatial_compressed_local_projector=compression_results.spatial_compressed_local_projector,
+                                                   spatial_trend_basis=compression_results.spatial_trend_basis,
+                                                   temporal_trend_basis=infill_bad_timepoints(compression_results.temporal_trend_basis,
+                                                                                              good_frame_indicator,
+                                                                                              device=device),
+                                                   device=device,
+                                                   rescale=rescale,
+                                                   include_trend=include_trend)
+        return new_compression_results
+
     @property
     def rescale(self) -> bool:
         return self._rescale
@@ -289,6 +329,7 @@ class CompressionArray(ArrayLike, Serializer):
         Array shape (num_frames, fov_height, fov_width)
         """
         return self._shape
+
     @property
     def ndim(self) -> int:
         """

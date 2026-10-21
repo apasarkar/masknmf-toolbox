@@ -129,6 +129,8 @@ class OnePhotonCalciumPipeline(BasePipeline):
     def run(self,
             data: np.ndarray | ArrayLike | None,
             frame_rate: float,
+            indicator_polarity: Literal["positive", "negative"] = "positive",
+            good_frame_indicator: torch.Tensor | np.ndarray | None = None,
             exclude_border_radius: int = 0,
             remove_intermediates: bool = True) -> Path:
         """
@@ -151,7 +153,9 @@ class OnePhotonCalciumPipeline(BasePipeline):
             results_path = self.results_path()
             if data is None:
                 raise ValueError("data is None need to specify dataset")
-            data = data
+            data = self._construct_ophys_array(data,
+                                               indicator_polarity=indicator_polarity,
+                                               good_frame_indicator=good_frame_indicator)
 
             moco_data, shift_mask = self.motion_correct(data,
                                                         self.motion_correct_config,
@@ -211,6 +215,10 @@ class OnePhotonCalciumPipeline(BasePipeline):
                 final_results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
                     final_results, moco_data, device=self.torch_device,
                     nonneg=True, frame_batch_size=self.frame_batch_size)
+
+        if good_frame_indicator is not None:
+            final_results = masknmf.DemixingResults.infill_bad_frames(final_results,
+                                                                  good_frame_indicator=good_frame_indicator)
         final_results.export(results_path)
         if remove_intermediates:
             self.drop_compression(results_path)

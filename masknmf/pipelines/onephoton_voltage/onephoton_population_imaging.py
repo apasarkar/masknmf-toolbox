@@ -9,7 +9,8 @@ import math
 from tqdm import tqdm
 
 from masknmf.utils import SparseCSRTensor
-from masknmf.motion_correction.registration_arrays import OphysArray
+from masknmf.demixing.demixing_utils import csr_index_select_cols, csr_index_select_rows
+from masknmf.arrays.ophys_array import OphysArray
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import GradientMotionCorrectionConfig
 from masknmf.pipelines.configs.compression_configs import CompressDenoiseConfig, CompressionConfigs
@@ -42,7 +43,7 @@ def _hals_on_a_trend(blocks: list[torch.Tensor],
     a_sq_norm = masknmf.demixing.regression_update._fast_a_squared_norm(a)  # (num_signals)
 
     for block in blocks:
-        a_subset = torch.index_select(a, 1, block).t().coalesce()
+        a_subset = csr_index_select_cols(a, block).t()
         projection = torch.sparse.mm(a_subset, spatial_trend) @ temporal_trend - atac[
             block]  # Numerator for the regression
         projection /= a_sq_norm[block][:, None]
@@ -76,11 +77,11 @@ def hals_on_trend(a: SparseCSRTensor,
                   spatial_trend_basis: torch.Tensor,
                   temporal_trend_basis: torch.Tensor,
                   batch_size: int = 200,
-                  num_iters: int = 10,
-                  device='cuda'):
+                  num_iters: int = 10):
     """
     Here we want to run hierarchical alternating least squares (unconstrained) to update the temporal components of each signal w.r.t. the raw data
     """
+    device = a.device
     blocks = masknmf.demixing.signal_demixer._compute_hals_schedule(a,
                                                                     device,
                                                                     frame_batch_size=batch_size)
@@ -141,8 +142,7 @@ def hals_on_rawdata(moco_data: np.ndarray,
                     a: torch.sparse_coo_tensor,
                     c: torch.Tensor,
                     batch_size: int = 200,
-                    num_iters: int = 10,
-                    device='cuda'):
+                    num_iters: int = 10):
     """
     Here we want to run hierarchical alternating least squares (unconstrained) to update the temporal components of each signal w.r.t. the raw data
 
@@ -197,7 +197,7 @@ def _hals_on_raw(blocks: list[torch.Tensor],
     a_sq_norm = masknmf.demixing.regression_update._fast_a_squared_norm(a)  # (num_signals)
 
     for block in blocks:
-        a_subset = torch.index_select(a, 1, block).t().coalesce()
+        a_subset = csr_index_select_cols(a, block).t()
         projection = torch.sparse.mm(a_subset, movie.T) - atac[block]  # Numerator for the regression
         projection /= a_sq_norm[block][:, None]
 
@@ -233,9 +233,9 @@ def compute_final_denoised_c_estimates(pmd_arr: masknmf.CompressionArray,
         c (torch.Tensor): Shape (num_frames, num_neurons). Initial temporal estimates of the spiking activity
     """
 
-    c_spike_estimate = hals_multi_iter_fullpmd(pmd_arr.spatial_compressed,
+    c_spike_estimate = hals_multi_iter_fullpmd(pmd_arr.spatial_compressed.to_sparse_csr(),
                                                pmd_arr.temporal_compressed,
-                                               dmr.spatial_demixed,
+                                               dmr.spatial_demixed.to_sparse_csr(),
                                                c,
                                                dmr.static_baseline[:, None])
 
@@ -307,8 +307,9 @@ class OnePhotonCulturePipeline(BasePipeline):
     def run(self,
             data: np.ndarray | ArrayLike,
             frame_rate: float,
-            indicator_sign: Literal["negative", "positive"],
-            active_frames: np.ndarray,
+            active_frames: np.ndarray | None = None,
+            indicator_polarity: Literal["positive", "negative"] = "negative",
+            good_frame_indicator: torch.Tensor | np.ndarray | list | None = None,
             remove_intermediates: bool = True) -> Path:
         """
                 Uses the API to run rigid motion correction, compression (with denoising), and demixing.
@@ -317,15 +318,12 @@ class OnePhotonCulturePipeline(BasePipeline):
                 this filtered data, it returns to the unfiltered data to further demix.
                 Args:
                     data (Union[np.ndarray, LazyFrameLoader, ArrayLike]): The raw (frames, height, width) data stack
-                    motion_correct_config: Config object specifying parameters for motion correcting the data. If None,
-                        uses RigidMotionCorrectionConfig defaults. If "skip", skips motion correction entirely.
-                    compress_config: Config object specifying parameters for compressing the data.
-                        If None is specified, the joint compression + denoising code is run
-                    DemixConfig: Config object specifying parameters for demixing the data
-                    output_folder: Every stage is written to ``<output_folder>/<timestamp>_one-photon-culture/results.hdf5``,
-                        one hdf5 group per stage. With compress_config "skip", output_folder is instead an existing run
-                        folder whose results.hdf5 holds the compression; demixing is written into that same file
-                    load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
+                    frame_rate (float): The frame rate in Hz
+                    active_frames (np.ndarray): Indicates frames where activity can occur (this is a hard constraint imposed for e.g.
+                        if there is an optogenetic stimulus
+                    indicator_polarity (Literal["positive", "negative"]): Whether the indicator is positively or negatively tuned
+                    good_frame_indicator (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
+
                     remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
                         results carry the pmd)
 
@@ -336,22 +334,20 @@ class OnePhotonCulturePipeline(BasePipeline):
         device = self.torch_device
 
         ## Decide whether to motion correct data or not. You must have access to raw data
-        negative_indicator = True if indicator_sign == "negative" else False
         if self.load_into_ram:
             data = self.read_into_ram(data)
         if isinstance(self.motion_correct_config, str):
             if self.motion_correct_config.lower() == "skip":
-                moco_array = OphysArray(data,
-                                        negative_indicator=negative_indicator,
-                                        include_mean=True,
-                                        device=device)
+                moco_array = self._construct_ophys_array(data,
+                                                         indicator_polarity=indicator_polarity,
+                                                         good_frame_indicator=good_frame_indicator)
+
             else:
                 raise ValueError("Invalid MotionCorrectionConfig input")
         else:
-            mov = OphysArray(data,
-                             negative_indicator=negative_indicator,
-                             include_mean=True,
-                             device=device)
+            mov = self._construct_ophys_array(data,
+                                              indicator_polarity=indicator_polarity,
+                                              good_frame_indicator=good_frame_indicator)
 
             with self.step("motion correction"):
                 mean_img = torch.mean(mov[:self.motion_correct_config.num_frames_template], dim=0)
@@ -359,8 +355,25 @@ class OnePhotonCulturePipeline(BasePipeline):
                 moco_array = corrector.motion_correct(mov)
                 moco_array.output_device=device
 
-        self.run_config = {"frame_rate": frame_rate, "indicator_sign": indicator_sign,
+        self.run_config = {"frame_rate": frame_rate, "indicator_polarity": indicator_polarity,
                            "remove_intermediates": remove_intermediates}
+
+        if active_frames is None:
+            active = np.ones((data.shape[0])).astype(bool)
+        else:
+            active = np.asarray(active_frames).astype(bool)
+        if not active.size == int(data.shape[0]):
+            raise ValueError("Active must be a 1D boolean vector whose length is equal to number of frames in the data")
+
+        if good_frame_indicator is not None:
+            good = torch.as_tensor(good_frame_indicator).cpu().numpy().astype(bool)
+            if good.size != int(data.shape[0]):
+                raise ValueError("good_frame_indicator must be a 1D boolean vector whose length is equal to number of frames in the data")
+            active_in_good = active[good]  # use for `v = ...` and expand_traces_to_all_frames
+            demixed_frames = active & good  # use for DemixingResults.infill_bad_frames
+        else:
+            active_in_good, demixed_frames = active, active
+
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
                 results_path = self.results_path(resume=True)
@@ -369,11 +382,13 @@ class OnePhotonCulturePipeline(BasePipeline):
         else:
             results_path = self.results_path()
 
-            ## Add the run-specific frame weighting to a copy of the config, so the pipeline's own is untouched
             if self.compress_config.frame_weighting is not None:
-                frame_weighting = self.compress_config.frame_weighting * active_frames.astype(self.compress_config.frame_weighting.dtype)
+                config_weighting = np.asarray(self.compress_config.frame_weighting)
+                if good_frame_indicator is not None:
+                    config_weighting = config_weighting[good]
+                frame_weighting = config_weighting * active_in_good.astype(config_weighting.dtype)
             else:
-                frame_weighting = active_frames
+                frame_weighting = active_in_good.astype("float")
 
             compress_strategy = self.compress_strategy(replace(self.compress_config, frame_weighting=frame_weighting))
 
@@ -388,7 +403,8 @@ class OnePhotonCulturePipeline(BasePipeline):
 
         pmd_denoise = masknmf.CompressionArray.from_hdf5(results_path)
 
-        v = pmd_denoise.temporal_compressed[:, active_frames.astype('bool')]
+        v = pmd_denoise.temporal_compressed[:, active_in_good.astype('bool')]
+        trend_basis_used = pmd_denoise.temporal_trend_basis[:, torch.as_tensor(active_in_good).to(torch.bool)] if pmd_denoise.temporal_trend_basis is not None else None
         new_shape = (v.shape[1], pmd_denoise.shape[1], pmd_denoise.shape[2])
 
         pmd_arr_truncated = masknmf.CompressionArray.from_tensors(new_shape,  # fov shape
@@ -398,7 +414,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                                                                   pmd_denoise.noise_variance_image,
                                                                   pmd_denoise.spatial_compressed_local_projector,
                                                                   pmd_denoise.spatial_trend_basis,
-                                                                  pmd_denoise.temporal_trend_basis)
+                                                                  trend_basis_used)
 
 
 
@@ -420,19 +436,27 @@ class OnePhotonCulturePipeline(BasePipeline):
         pmd_denoise.to(device)
         curr_demix_results.to(device)
 
+        ## Expand to all frames that were compressed (the good frame indices)
         c_all_frames = expand_traces_to_all_frames(curr_demix_results.temporal_demixed,
-                                                   active_frames)
+                                                   active_in_good)
 
         with self.step("raw scale estimates"):
+
             a_rawdata_scale, full_c_estimate_denoised = compute_final_denoised_c_estimates(pmd_denoise,
                                                                                      curr_demix_results,
                                                                                      c_all_frames)
 
             c_regressed_on_raw = hals_on_rawdata(moco_array,
-                                                 a_rawdata_scale,
+                                                 a_rawdata_scale.to_sparse_csr(),
                                                  full_c_estimate_denoised)
 
+        if good_frame_indicator is not None:
+            full_c_estimate_denoised = masknmf.utils.infill_bad_timepoints(full_c_estimate_denoised.T, good, device=device).T
+            c_regressed_on_raw = masknmf.utils.infill_bad_timepoints(c_regressed_on_raw.T, good, device=device).T
 
+        if good_frame_indicator is not None:
+            curr_demix_results = masknmf.DemixingResults.infill_bad_frames(curr_demix_results,
+                                                                  good_frame_indicator=demixed_frames)
 
         curr_demix_results.export(results_path)
         save_dict({"a": a_rawdata_scale, "c_denoised": full_c_estimate_denoised, "c_raw": c_regressed_on_raw},

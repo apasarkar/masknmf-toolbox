@@ -3,6 +3,7 @@ from masknmf.arrays import LazyFrameLoader, ArrayLike
 
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, MotionCorrectionConfigs
+from masknmf.compression import CompressionArray
 from masknmf.pipelines.configs.compression_configs import CompressDenoiseConfig, CompressionConfigs
 import torch
 from typing import *
@@ -46,7 +47,11 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         return {'motion_correct_config': RigidMotionCorrectionConfig(),
                 'compress_config': CompressDenoiseConfig()}
 
-    def run(self, data: np.ndarray | ArrayLike, exclude_border_radius: int = 0) -> Path:
+    def run(self,
+            data: np.ndarray | ArrayLike,
+            indicator_polarity: Literal["positive", "negative"] = "positive",
+            good_frame_indicator: torch.Tensor | np.ndarray | list | None = None,
+            exclude_border_radius: int = 0) -> Path:
         """
         Uses the API to run rigid motion correction, compression (with denoising)
         """
@@ -54,13 +59,22 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         results_path = self.results_path()
         if self.load_into_ram:
             data = self.read_into_ram(data)
-        moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
-                                                    exclude_border_radius)
+        data = self._construct_ophys_array(data,
+                                           indicator_polarity=indicator_polarity,
+                                           good_frame_indicator=good_frame_indicator)
+        moco_data, shift_mask = self.motion_correct(data,
+                                                    self.motion_correct_config,
+                                                    results_path,
+                                                    exclude_border_radius=exclude_border_radius)
 
         compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
 
         with self.step("compression"):
             compressed_results = compress_strategy.compress(moco_data)
+            if good_frame_indicator is not None:
+                compressed_results = CompressionArray.infill_bad_frames(compressed_results,
+                                                                                good_frame_indicator=good_frame_indicator,
+                                                                                device='cpu')
             compressed_results.export(results_path)
         return self.finish()
 

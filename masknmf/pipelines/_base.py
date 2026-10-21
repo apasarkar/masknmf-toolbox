@@ -16,7 +16,7 @@ from functools import partial
 
 from masknmf._version import __version__
 from masknmf.pipelines.scraper import slugify, config_json_value, config_from_json
-from masknmf.arrays import ArrayLike
+from masknmf.arrays import ArrayLike, OphysArray
 from masknmf.compression import CompressionArray, CompressStrategy, CompressDenoiseStrategy
 from masknmf.compression.preprocessing import MaximinSplineDetrend
 from masknmf.demixing import SignalDemixer, DemixingResults, NoSignalsDetectedError
@@ -406,6 +406,20 @@ class BasePipeline(ABC):
         """Remove the CompressionArray group once demixing is done; the demixing results carry the pmd."""
         display("Removing intermediates")
         drop_group(results_path, CompressionArray.__name__)
+
+    def _construct_ophys_array(self,
+                               data: ArrayLike,
+                               indicator_polarity: Literal["positive", "negative"],
+                               good_frame_indicator: torch.Tensor | np.ndarray | list | None):
+        if indicator_polarity.lower() not in {"positive", "negative"}:
+            raise ValueError("indicator polarity can only be positive or negative")
+        ophys_output = OphysArray(data,
+                                  negative_indicator = True if indicator_polarity.lower() == "negative" else False,
+                                  include_mean = True,
+                                  device=self.torch_device,
+                                  good_frames = good_frame_indicator)
+        return ophys_output
+
 
     @abstractmethod
     def run(self, **kwargs) -> Path:
