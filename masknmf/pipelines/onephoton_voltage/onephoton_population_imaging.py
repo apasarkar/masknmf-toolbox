@@ -357,6 +357,15 @@ class OnePhotonCulturePipeline(BasePipeline):
 
         self.run_config = {"frame_rate": frame_rate, "indicator_polarity": indicator_polarity,
                            "remove_intermediates": remove_intermediates}
+
+        active = np.asarray(active_frames).astype(bool)
+        if good_frame_indicator is not None:
+            good = torch.as_tensor(good_frame_indicator).cpu().numpy().astype(bool)
+            active_in_good = active[good]  # use for `v = ...` and expand_traces_to_all_frames
+            demixed_frames = active & good  # use for DemixingResults.infill_bad_frames
+        else:
+            active_in_good, demixed_frames = active, active
+
         if isinstance(self.compress_config, str):
             if self.compress_config.lower() == "skip":
                 results_path = self.results_path(resume=True)
@@ -365,17 +374,13 @@ class OnePhotonCulturePipeline(BasePipeline):
         else:
             results_path = self.results_path()
 
-            ## Add the run-specific frame weighting to a copy of the config, so the pipeline's own is untouched
             if self.compress_config.frame_weighting is not None:
-                frame_weighting = self.compress_config.frame_weighting * active_frames.astype(self.compress_config.frame_weighting.dtype)
+                config_weighting = np.asarray(self.compress_config.frame_weighting)
+                if good_frame_indicator is not None:
+                    config_weighting = config_weighting[good]
+                frame_weighting = config_weighting * active_in_good.astype(config_weighting.dtype)
             else:
-                frame_weighting = active_frames
-
-            if good_frame_indicator is not None:
-                good_frame_indicator = torch.as_tensor(good_frame_indicator).numpy().astype(np.bool)
-                frame_weighting = frame_weighting[good_frame_indicator]
-            if np.sum(frame_weighting) == 0:
-                raise ValueError("None of the frame weights are positive")
+                frame_weighting = active_in_good.astype("float")
 
             compress_strategy = self.compress_strategy(replace(self.compress_config, frame_weighting=frame_weighting))
 
@@ -390,7 +395,8 @@ class OnePhotonCulturePipeline(BasePipeline):
 
         pmd_denoise = masknmf.CompressionArray.from_hdf5(results_path)
 
-        v = pmd_denoise.temporal_compressed[:, active_frames.astype('bool')]
+        v = pmd_denoise.temporal_compressed[:, active_in_good.astype('bool')]
+        trend_basis_used = pmd_denoise.temporal_trend_basis[:, torch.as_tensor(active_in_good).to(torch.bool)] if pmd_denoise.temporal_trend_basis is not None else None
         new_shape = (v.shape[1], pmd_denoise.shape[1], pmd_denoise.shape[2])
 
         pmd_arr_truncated = masknmf.CompressionArray.from_tensors(new_shape,  # fov shape
@@ -400,7 +406,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                                                                   pmd_denoise.noise_variance_image,
                                                                   pmd_denoise.spatial_compressed_local_projector,
                                                                   pmd_denoise.spatial_trend_basis,
-                                                                  pmd_denoise.temporal_trend_basis)
+                                                                  trend_basis_used)
 
 
 
@@ -422,10 +428,12 @@ class OnePhotonCulturePipeline(BasePipeline):
         pmd_denoise.to(device)
         curr_demix_results.to(device)
 
+        ## Expand to all frames that were compressed (the good frame indices)
         c_all_frames = expand_traces_to_all_frames(curr_demix_results.temporal_demixed,
-                                                   active_frames)
+                                                   active_in_good)
 
         with self.step("raw scale estimates"):
+
             a_rawdata_scale, full_c_estimate_denoised = compute_final_denoised_c_estimates(pmd_denoise,
                                                                                      curr_demix_results,
                                                                                      c_all_frames)
@@ -435,8 +443,12 @@ class OnePhotonCulturePipeline(BasePipeline):
                                                  full_c_estimate_denoised)
 
         if good_frame_indicator is not None:
+            full_c_estimate_denoised = masknmf.utils.infill_bad_timepoints(full_c_estimate_denoised.T, good, device=c.device).T
+            c_regressed_on_raw = masknmf.utils.infill_bad_timepoints(c_regressed_on_raw.T, good, device=c.device).T
+
+        if good_frame_indicator is not None:
             curr_demix_results = masknmf.DemixingResults.infill_bad_frames(curr_demix_results,
-                                                                  good_frame_indicator=good_frame_indicator)
+                                                                  good_frame_indicator=demixed_frames)
 
         curr_demix_results.export(results_path)
         save_dict({"a": a_rawdata_scale, "c_denoised": full_c_estimate_denoised, "c_raw": c_regressed_on_raw},

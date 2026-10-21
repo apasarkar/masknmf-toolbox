@@ -327,7 +327,7 @@ class DemixingResults(Serializer, BaseResults):
                                    spatial_compressed = demix_results.spatial_compressed,
                                    temporal_compressed = infill_bad_timepoints(demix_results.temporal_compressed, good_frame_indicator, device=device),
                                    spatial_demixed = demix_results.spatial_demixed,
-                                   temporal_demixed =  infill_bad_timepoints(demix_results.temporal_demixed.T, good_frame_indicator, device=device).T,
+                                   temporal_demixed = None if demix_results.temporal_demixed is None else infill_bad_timepoints(demix_results.temporal_demixed.T, good_frame_indicator, device=device).T,
                                    mean_image = demix_results.mean_image,
                                    noise_variance_image = demix_results.noise_variance_image,
                                    spatial_compressed_local_projector = demix_results.spatial_compressed_local_projector,
@@ -349,7 +349,7 @@ class DemixingResults(Serializer, BaseResults):
                                    residual_roi_averages = infill_bad_timepoints(demix_results.residual_roi_averages , good_frame_indicator, device=device),
                                    multiunit_basis_term1 = demix_results.multiunit_basis_term1,
                                    multiunit_basis_term2 = infill_bad_timepoints(demix_results.multiunit_basis_term2, good_frame_indicator, device=device),
-                                   temporal_demixed_raw = infill_bad_timepoints(demix_results.temporal_demixed_raw.T, good_frame_indicator, device=device).T,
+                                   temporal_demixed_raw = None if demix_results.temporal_demixed_raw is None else infill_bad_timepoints(demix_results.temporal_demixed_raw.T, good_frame_indicator, device=device).T,
                                    device=device)
         return new_demixing_results
 
