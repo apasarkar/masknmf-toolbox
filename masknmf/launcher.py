@@ -173,7 +173,8 @@ COMMANDS = (
 # placeholders until the pipeline classes carry docstrings
 DESCRIPTIONS = {
     "two-photon-calcium": "Two-photon calcium: registration, PMD compression, a spatial high-pass, demixing filtered and unfiltered.",
-    "one-photon-culture": "One-photon cultures: registration, compression and demixing; takes an active_frames .npy.",
+    "one-photon-calcium": "One-photon calcium: registration on high-passed frames, compression, demixing filtered and unfiltered.",
+    "one-photon-culture": "One-photon cultures: registration, compression and demixing; an active_frames .npy is optional.",
     "widefield-singlechannel": "Widefield, one channel: registration and compression only, no demixing.",
     "glutamate-calcium-spine": "Spine imaging, a glutamate and a calcium movie: registration, compression and demixing.",
 }

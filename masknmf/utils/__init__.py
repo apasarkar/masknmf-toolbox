@@ -2,10 +2,12 @@ from .display import display, get_timestamp, TIMESTAMP_FORMAT
 from ._serialization import Serializer
 from ._cuda import torch_select_device, is_cpu
 from .tensor_types import SparseCOOTensor, SparseCSRTensor
+from ._analysis import infill_bad_timepoints
 
 __all__ = ["display",
            "get_timestamp",
            "TIMESTAMP_FORMAT",
            "Serializer",
            "SparseCSRTensor",
-           "SparseCOOTensor"]
+           "SparseCOOTensor",
+           "infill_bad_timepoints"]

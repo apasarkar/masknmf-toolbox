@@ -3,6 +3,7 @@ from masknmf.arrays import LazyFrameLoader, ArrayLike
 
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, MotionCorrectionConfigs
+from masknmf.compression import CompressionArray
 from masknmf.pipelines.configs.compression_configs import CompressDenoiseConfig, CompressionConfigs
 import torch
 from typing import *
@@ -46,7 +47,11 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         return {'motion_correct_config': RigidMotionCorrectionConfig(),
                 'compress_config': CompressDenoiseConfig()}
 
-    def run(self, data: np.ndarray | ArrayLike, exclude_border_radius: int = 0,
+    def run(self,
+            data: np.ndarray | ArrayLike,
+            indicator_polarity: Literal["positive", "negative"] = "positive",
+            good_frame_indicator: torch.Tensor | np.ndarray | list | None = None,
+            exclude_border_radius: int = 0,
             stop_after: Literal["registration", "compression"] = "compression",
             resume_from: str | Path | None = None) -> Path:
         """
@@ -59,14 +64,21 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         if ends_at_registration and isinstance(self.motion_correct_config, str) and resume_from is None:
             raise ValueError('a run ending after registration with motion_correct_config "skip" has nothing to write')
         resume_from, base = self.resume_source(resume_from, reuse_compression=False)
-        self.run_config = {"exclude_border_radius": exclude_border_radius, "stop_after": stop_after,
+        self.run_config = {"exclude_border_radius": exclude_border_radius, "indicator_polarity": indicator_polarity,
+                           "stop_after": stop_after,
                            "resume_from": None if resume_from is None else str(resume_from)}
         results_path = self.results_path(base)
         stored = None if resume_from is None else self.resume(resume_from, results_path, reuse_compression=False)
         if self.load_into_ram:
             data = self.read_into_ram(data)
-        moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
-                                                    exclude_border_radius, stored)
+        data = self._construct_ophys_array(data,
+                                           indicator_polarity=indicator_polarity,
+                                           good_frame_indicator=good_frame_indicator)
+        moco_data, shift_mask = self.motion_correct(data,
+                                                    self.motion_correct_config,
+                                                    results_path,
+                                                    exclude_border_radius=exclude_border_radius,
+                                                    stored=stored)
         if ends_at_registration:
             return self.finish()
 
@@ -74,6 +86,10 @@ class WidefieldSinglechannelPipeline(BasePipeline):
 
         with self.step("compression"):
             compressed_results = compress_strategy.compress(moco_data)
+            if good_frame_indicator is not None:
+                compressed_results = CompressionArray.infill_bad_frames(compressed_results,
+                                                                                good_frame_indicator=good_frame_indicator,
+                                                                                device='cpu')
             compressed_results.export(results_path)
         return self.finish()
 

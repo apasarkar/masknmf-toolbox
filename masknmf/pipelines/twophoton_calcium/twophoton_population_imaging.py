@@ -70,6 +70,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             data: np.ndarray | ArrayLike | None,
             frame_rate: float,
             exclude_border_radius: int = 0,
+            indicator_polarity: Literal["positive", "negative"] = "positive",
+            good_frame_indicator: torch.Tensor | np.ndarray | None = None,
             remove_intermediates: bool = False,
             stop_after: Literal["registration", "compression", "demixing"] = "demixing",
             resume_from: str | Path | None = None) -> Path:
@@ -80,16 +82,10 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 this filtered data, it returns to the unfiltered data to further demix.
                 Args:
                     data (Union[np.ndarray, ArrayLike]): The raw (frames, height, width) data stack
-                    motion_correct_config: Config object specifying parameters for motion correcting the data. If None,
-                        uses RigidMotionCorrectionConfig defaults. If "skip", skips motion correction entirely.
-                    compress_config: Config object specifying parameters for compressing the data.
-                        If None is specified, the joint compression + denoising code is run
-                    DemixConfig: Config object specifying parameters for demixing the data. With filtered_demixing_config
-                        "skip", the run ends after compression, kept for a later run with compress_config "skip"
-                    output_folder: Every stage is written to ``<output_folder>/<timestamp>_two-photon-calcium/results.hdf5``,
-                        one hdf5 group per stage. With compress_config "skip" and no resume_from, output_folder is
-                        instead an earlier run folder whose compression is reused, and the new run folder goes beside it
-                    load_into_ram (bool): Whether or not to load the full dataset into RAM for faster processing
+                    frame_rate (float): The frame rate in Hz
+                    exclude_border_radius (int): The number of pixels in border radius to exclude
+                    indicator_polarity (Literal["positive", "negative"]): Whether the indicator is positively or negatively tuned
+                    good_frame_indicator (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
                     remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
                         results carry the pmd); the registration shifts stay
                     stop_after: the last stage to run: "registration" writes the shifts and template and ends,
@@ -111,7 +107,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             raise ValueError("data is None starting from the motion correction step. Specify a dataset")
         resume_from, base = self.resume_source(resume_from, reuse_compression)
         self.run_config = {"frame_rate": frame_rate, "exclude_border_radius": exclude_border_radius,
-                           "remove_intermediates": remove_intermediates, "stop_after": stop_after,
+                           "indicator_polarity": indicator_polarity, "remove_intermediates": remove_intermediates, "stop_after": stop_after,
                            "resume_from": None if resume_from is None else str(resume_from)}
         results_path = self.results_path(base)
         stored = None if resume_from is None else self.resume(resume_from, results_path, reuse_compression)
@@ -120,8 +116,14 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         if data is not None:
             if self.load_into_ram:
                 data = self.read_into_ram(data)
-            moco_data, shift_mask = self.motion_correct(data, self.motion_correct_config, results_path,
-                                                        exclude_border_radius, stored)
+            data = self._construct_ophys_array(data,
+                                               indicator_polarity=indicator_polarity,
+                                               good_frame_indicator=good_frame_indicator)
+            moco_data, shift_mask = self.motion_correct(data,
+                                                        self.motion_correct_config,
+                                                        results_path,
+                                                        exclude_border_radius=exclude_border_radius,
+                                                        stored=stored)
         if stop_after == "registration":
             return self.finish()
 
@@ -199,6 +201,11 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         with self.step("raw traces"):
             latest_demix_results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
                 latest_demix_results, moco_data, device=self.torch_device, nonneg=True, frame_batch_size=self.frame_batch_size)
+
+        if good_frame_indicator is not None:
+            latest_demix_results = masknmf.DemixingResults.infill_bad_frames(latest_demix_results,
+                                                                  good_frame_indicator=good_frame_indicator)
+
         latest_demix_results.export(results_path)
         if remove_intermediates:
             self.drop_compression(results_path)

@@ -224,11 +224,11 @@ def test_one_photon_saves_its_gradient_registration_and_applies_it_on_resume(tmp
     movie = shifted_blob(num_frames=320)
     active = np.ones(movie.shape[0], dtype=bool)
     pipeline = masknmf.OnePhotonCulturePipeline(output_folder=str(tmp_path), device="cpu")
-    folder = pipeline.run(movie, frame_rate=30, indicator_sign="positive", active_frames=active, stop_after="registration")
+    folder = pipeline.run(movie, frame_rate=30, indicator_polarity="positive", active_frames=active, stop_after="registration")
     with h5py.File(folder / "results.hdf5") as file:
         assert set(file) == {"GradientMotionCorrector", "GradientRegistrationArray"}
         steps = file["GradientRegistrationArray/gradient_steps"][()]
-    resumed = pipeline.run(movie, frame_rate=30, indicator_sign="positive", active_frames=active,
+    resumed = pipeline.run(movie, frame_rate=30, indicator_polarity="positive", active_frames=active,
                             stop_after="registration", resume_from=folder / "results.hdf5")
     with h5py.File(resumed / "results.hdf5") as file:
         assert np.array_equal(file["GradientRegistrationArray/gradient_steps"][()], steps)
