@@ -141,7 +141,7 @@ class OphysArray(ArrayLike):
             frames = slice(start_pt, end_pt)
             data_subset = self._dataset[frames if self._frame_map is None else self._to_raw(frames)]
             if isinstance(data_subset, np.ndarray):
-                subset = torch.as_tensor(data_subset, device=device, dtype=self.dtype)
+                subset = torch.as_tensor(data_subset, device=self.device, dtype=self.dtype)
             elif isinstance(data_subset, torch.Tensor):
                 subset = data_subset.to(self.device).to(self.dtype)
             else:
