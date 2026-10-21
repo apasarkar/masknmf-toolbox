@@ -50,7 +50,7 @@ class RecordsFailure:
     """
     A pipeline's run that, when it raises after making its run folder, logs the error and records in config.json
     that the run failed, then lets the error through. BasePipeline wraps every subclass's run in one, so a run
-    started from Python leaves the same record as one started from the command line. A run given resume_from takes
+    started from Python leaves the same record as one started from the command line. A run given resume takes
     the settings it was not given from the earlier run's config.json first.
     """
 
@@ -157,7 +157,7 @@ class BasePipeline(ABC):
 
     def arguments_resumed(self, run: Callable, args: tuple, kwargs: dict) -> dict:
         """
-        The arguments of run by name. With a resume_from that has a config.json beside it, the run arguments not
+        The arguments of run by name. With a resume that has a config.json beside it, the run arguments not
         given and the config arguments of __init__ not given take that run's values; stop_after is this run's own.
 
         Args:
@@ -172,11 +172,11 @@ class BasePipeline(ABC):
         parameters_run = inspect.signature(run).parameters
         arguments = inspect.signature(run).bind_partial(self, *args, **kwargs).arguments
         del arguments[next(iter(parameters_run))]
-        if arguments.get("resume_from") is None:
+        if arguments.get("resume") is None:
             return arguments
-        filepath_config = Path(arguments["resume_from"]).expanduser().resolve().parent / "config.json"
+        filepath_config = Path(arguments["resume"]).expanduser().resolve().parent / "config.json"
         if not filepath_config.is_file():
-            logger.info(f"no config.json beside {arguments['resume_from']}; the settings not given are the defaults")
+            logger.info(f"no config.json beside {arguments['resume']}; the settings not given are the defaults")
             return arguments
         earlier = json.loads(filepath_config.read_text())
         if earlier.get("pipeline", type(self).__name__) != type(self).__name__:
@@ -293,14 +293,14 @@ class BasePipeline(ABC):
         display(f"Writing results to {path}")
         return path
 
-    def resume_source(self, resume_from: str | Path | None, reuse_compression: bool) -> tuple[Path | None, Path | None]:
+    def resume_source(self, resume: str | Path | None, reuse_compression: bool) -> tuple[Path | None, Path | None]:
         """
         The earlier results file a run resumes and the folder its new run folder goes in, checked before anything is
-        written. With reuse_compression and no resume_from, as compress_config "skip" asks, it is the results.hdf5 in
+        written. With reuse_compression and no resume, as compress_config "skip" asks, it is the results.hdf5 in
         output_folder, an earlier run folder, and the new run folder goes beside that one.
 
         Args:
-            resume_from (str | Path | None): The earlier results file, or None
+            resume (str | Path | None): The earlier results file, or None
             reuse_compression (bool): Whether its compression is reused, else only its registration
         Returns:
             Path | None: The earlier results file, or None for a run that resumes nothing
@@ -310,13 +310,13 @@ class BasePipeline(ABC):
             ValueError: If it holds no compression to reuse, or no registration when only that is reused
         """
         base = None
-        if resume_from is None and reuse_compression:
+        if resume is None and reuse_compression:
             folder = Path.cwd() if self.output_folder is None else self.output_folder
-            resume_from = folder / "results.hdf5"
+            resume = folder / "results.hdf5"
             base = folder.parent
-        if resume_from is None:
+        if resume is None:
             return None, None
-        path = Path(resume_from).expanduser().resolve()
+        path = Path(resume).expanduser().resolve()
         if not path.is_file():
             raise FileNotFoundError(f"no results file to resume from at {path}")
         if reuse_compression and not has_group(path, CompressionArray.__name__):
@@ -325,28 +325,28 @@ class BasePipeline(ABC):
             raise ValueError(f"{path} holds no registration to resume from")
         return path, base
 
-    def resume(self, resume_from: Path, results_path: str, reuse_compression: bool) -> type[BaseRegistrationArray] | None:
+    def resume(self, resume: Path, results_path: str, reuse_compression: bool) -> type[BaseRegistrationArray] | None:
         """
         Copy the registration of an earlier results file, and its compression with reuse_compression, into this run's
         results_path; the earlier file is left as it is. config.json keeps the inputs, configs and timings of the run
         that made what is reused.
 
         Args:
-            resume_from (Path): The earlier results file
+            resume (Path): The earlier results file
             results_path (str): This run's results file
             reuse_compression (bool): Whether the compression is copied too
         Returns:
             type[BaseRegistrationArray] | None: The registration array class copied, or None when there was none
         """
-        stored = next((c for c in REGISTRATION_ARRAYS.values() if has_group(resume_from, c.__name__)), None)
+        stored = next((c for c in REGISTRATION_ARRAYS.values() if has_group(resume, c.__name__)), None)
         names = [] if stored is None else [stored.__name__, stored._strategy_cls.__name__]
         if reuse_compression:
             names.append(CompressionArray.__name__)
-        with h5py.File(resume_from, "r") as source, h5py.File(results_path, "a") as target:
+        with h5py.File(resume, "r") as source, h5py.File(results_path, "a") as target:
             for name in names:
                 source.copy(source[name], target, name=name)
-        logger.info(f"reusing {', '.join(names)} from {resume_from}")
-        filepath_config = resume_from.parent / "config.json"
+        logger.info(f"reusing {', '.join(names)} from {resume}")
+        filepath_config = resume.parent / "config.json"
         earlier = json.loads(filepath_config.read_text()) if filepath_config.is_file() else {}
         reused = ["motion_correct_config"] + (["compress_config"] if reuse_compression else [])
         steps = ["motion correction"] + (["compression"] if reuse_compression else [])

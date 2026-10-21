@@ -117,13 +117,13 @@ def test_a_resumed_run_copies_what_it_reuses_into_a_new_folder_and_keeps_the_ear
                "timings": {"motion correction": {"seconds": 2.0}, "compression": {"seconds": 1.0}, "demixing": {}}}
     (earlier_folder / "config.json").write_text(json.dumps(earlier))
     pipeline = cls(output_folder=str(tmp_path))
-    resume_from, base = pipeline.resume_source(None, reuse_compression=False)
-    assert (resume_from, base) == (None, None)
+    resume, base = pipeline.resume_source(None, reuse_compression=False)
+    assert (resume, base) == (None, None)
     pipeline.output_folder = earlier_folder
-    resume_from, base = pipeline.resume_source(None, reuse_compression=True)
-    assert resume_from == (earlier_folder / "results.hdf5").resolve() and base == tmp_path.resolve()
+    resume, base = pipeline.resume_source(None, reuse_compression=True)
+    assert resume == (earlier_folder / "results.hdf5").resolve() and base == tmp_path.resolve()
     results_path = pipeline.results_path(base)
-    stored = pipeline.resume(resume_from, results_path, reuse_compression=True)
+    stored = pipeline.resume(resume, results_path, reuse_compression=True)
     assert stored is masknmf.RigidRegistrationArray
     folder = pipeline.run_folder
     assert folder.parent == tmp_path.resolve() and folder != earlier_folder
@@ -200,7 +200,7 @@ def test_a_step_records_its_peak_cuda_memory_only_on_a_cuda_device(tmp_path):
         pipeline.log_handler.close()
 
 
-def test_stop_after_registration_writes_the_shifts_and_resume_from_applies_them(tmp_path):
+def test_stop_after_registration_writes_the_shifts_and_resume_applies_them(tmp_path):
     movie = shifted_blob()
     pipeline = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path), device="cpu")
     folder = pipeline.run(movie, frame_rate=30, stop_after="registration")
@@ -211,11 +211,11 @@ def test_stop_after_registration_writes_the_shifts_and_resume_from_applies_them(
     assert config["configs"]["stop_after"] == "registration" and config["run"]["status"] == "done"
     assert list(config["timings"]) == ["motion correction"]
 
-    resumed = pipeline.run(movie, frame_rate=30, stop_after="registration", resume_from=folder / "results.hdf5")
+    resumed = pipeline.run(movie, frame_rate=30, stop_after="registration", resume=folder / "results.hdf5")
     assert resumed != folder
     with h5py.File(resumed / "results.hdf5") as file:
         assert np.array_equal(file["RigidRegistrationArray/shifts"][()], shifts)
-    assert json.loads((resumed / "config.json").read_text())["configs"]["resume_from"] == str(folder / "results.hdf5")
+    assert json.loads((resumed / "config.json").read_text())["configs"]["resume"] == str(folder / "results.hdf5")
     close_log(pipeline)
 
 
@@ -229,7 +229,7 @@ def test_one_photon_saves_its_gradient_registration_and_applies_it_on_resume(tmp
         assert set(file) == {"GradientMotionCorrector", "GradientRegistrationArray"}
         steps = file["GradientRegistrationArray/gradient_steps"][()]
     resumed = pipeline.run(movie, frame_rate=30, indicator_polarity="positive", active_frames=active,
-                            stop_after="registration", resume_from=folder / "results.hdf5")
+                            stop_after="registration", resume=folder / "results.hdf5")
     with h5py.File(resumed / "results.hdf5") as file:
         assert np.array_equal(file["GradientRegistrationArray/gradient_steps"][()], steps)
     close_log(pipeline)

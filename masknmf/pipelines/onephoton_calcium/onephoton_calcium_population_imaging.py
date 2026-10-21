@@ -140,7 +140,7 @@ class OnePhotonCalciumPipeline(BasePipeline):
             exclude_border_radius: int = 0,
             remove_intermediates: bool = False,
             stop_after: Literal["registration", "compression", "demixing"] = "demixing",
-            resume_from: str | Path | None = None,
+            resume: str | Path | None = None,
             min_brightness: float | None = None) -> Path:
         """
         Motion corrects, compresses (with denoising) and demixes a 1p movie
@@ -153,7 +153,7 @@ class OnePhotonCalciumPipeline(BasePipeline):
             remove_intermediates (bool): Drop the CompressionArray group once demixing is done
             stop_after: the last stage to run: "registration" writes the shifts and template and ends,
                 "compression" ends once the compression is written, "demixing" runs everything
-            resume_from: an earlier results file copied into the new run folder: its registration is applied to
+            resume: an earlier results file copied into the new run folder: its registration is applied to
                 data instead of estimating one, and with compress_config "skip" its compression is reused too.
                 The settings not given, all but stop_after, are that run's, from the config.json beside it.
                 The earlier file is left as it is
@@ -166,16 +166,16 @@ class OnePhotonCalciumPipeline(BasePipeline):
             raise ValueError(f"If compress_config is a string, it can only be `skip`")
         if reuse_compression and stop_after != "demixing":
             raise ValueError('compress_config "skip" reuses a compression for its demixing; stop_after leaves nothing to run')
-        if stop_after == "registration" and isinstance(self.motion_correct_config, str) and resume_from is None:
+        if stop_after == "registration" and isinstance(self.motion_correct_config, str) and resume is None:
             raise ValueError('stop_after "registration" with motion_correct_config "skip" has nothing to write')
         if data is None and not reuse_compression:
             raise ValueError("data is None starting from the motion correction step. Specify a dataset")
-        resume_from, base = self.resume_source(resume_from, reuse_compression)
+        resume, base = self.resume_source(resume, reuse_compression)
         self.run_config = {"frame_rate": frame_rate, "exclude_border_radius": exclude_border_radius,
                            "indicator_polarity": indicator_polarity, "remove_intermediates": remove_intermediates,
-                           "stop_after": stop_after, "resume_from": None if resume_from is None else str(resume_from)}
+                           "stop_after": stop_after, "resume": None if resume is None else str(resume)}
         results_path = self.results_path(base)
-        stored = None if resume_from is None else self.resume(resume_from, results_path, reuse_compression)
+        stored = None if resume is None else self.resume(resume, results_path, reuse_compression)
         # a resumed run without the raw movie has no registered movie to re-estimate raw traces from
         moco_data = None
         if data is not None:
