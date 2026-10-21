@@ -192,7 +192,9 @@ class CompressionArray(ArrayLike, Serializer):
     def infill_bad_frames(cls,
                           compression_results: "CompressionArray",
                           good_frame_indicator: torch.Tensor | np.ndarray | list,
-                          device: torch.device | str = "cpu") -> "DemixingResults":
+                          device: torch.device | str = "cpu",
+                          rescale: bool = True,
+                          include_trend: bool = False) -> "DemixingResults":
         """
         Often useful to exclude bad frames from analysis and process rest of the movie.
         If compression is the end result of the analysis, this routine returns an updated version of the
@@ -221,7 +223,9 @@ class CompressionArray(ArrayLike, Serializer):
                                                    temporal_trend_basis=infill_bad_timepoints(compression_results.temporal_trend_basis,
                                                                                               good_frame_indicator,
                                                                                               device=device),
-                                                   device=device)
+                                                   device=device,
+                                                   rescale=rescale,
+                                                   include_trend=include_trend)
         return new_compression_results
 
     @property
