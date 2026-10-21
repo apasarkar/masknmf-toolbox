@@ -795,7 +795,7 @@ class Launcher:
             return f"{filepath.name} does not fit {slug}"
         for param in (*self.spec.run_scalars, *self.spec.scalars):
             # a None the parameter does not take was recorded before it existed; where to start is chosen anew
-            if param.field not in configs or param.field == "resume_from":
+            if param.field not in configs or param.field == "resume":
                 continue
             if configs[param.field] is None and param.default is not None:
                 continue
@@ -821,7 +821,7 @@ class Launcher:
             "registration" and "compression", as available.
         """
         filepath = None if self.loaded_run is None else Path(self.loaded_run) / "results.hdf5"
-        if filepath is None or not filepath.is_file() or not any(p.field == "resume_from" for p in self.spec.run_scalars):
+        if filepath is None or not filepath.is_file() or not any(p.field == "resume" for p in self.spec.run_scalars):
             return []
         names = cli.groups_present(filepath_results=str(filepath))
         starts = ["registration"] if any(n in names for n in group_names_registration()) else []
@@ -841,7 +841,7 @@ class Launcher:
             "movie", "registration" or "compression".
         """
         self.start_from = start
-        resume = next(p for p in self.spec.run_scalars if p.field == "resume_from")
+        resume = next(p for p in self.spec.run_scalars if p.field == "resume")
         self.texts[resume.name] = "" if start == "movie" else str(Path(self.loaded_run) / "results.hdf5")
         compress = next((s for s in self.spec.sections if s.argument == "compress_config"), None)
         if compress is None:
@@ -975,7 +975,7 @@ class Launcher:
         # the one run argument that names a file
         for param in self.spec.run_scalars:
             path = self.texts[param.name].strip()
-            if param.field == "resume_from" and path != "" and not Path(path).expanduser().exists():
+            if param.field == "resume" and path != "" and not Path(path).expanduser().exists():
                 problems.append(f"not found: {path}")
         params = [*self.spec.run_scalars, *self.spec.scalars]
         problems += [e for e in (self.error_for(param=p) for p in params) if e is not None]
@@ -1523,7 +1523,7 @@ class Launcher:
                 self.draw_path(target=self.texts, key=param.name, filetypes=None, folders=True, hint="beside the movie")
             for param in spec.run_scalars:
                 # set by start from, under load config
-                if param.field == "resume_from":
+                if param.field == "resume":
                     continue
                 color = COLOR_ERROR if self.error_for(param=param) is not None else COLOR_MODIFIED if self.is_modified(param=param) else None
                 self.row(caption=param.field.replace("_", " "), color=color)
