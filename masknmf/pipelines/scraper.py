@@ -421,8 +421,8 @@ def config_from_json(value: Any, annotation: Any, base: Any = None) -> Any:
     """
     Read a value written with config_json_value back into the type an annotation names.
 
-    Fields a dict leaves out keep base's values, as does "*", which stands for what json could not
-    write. A list's items build on base's items at the same position, or on its last item past its end.
+    Fields a dict leaves out keep base's values, as does "*", which config_json_value writes for values json
+    cannot serialize. A list's items build on base's items at the same position, or on its last item past its end.
 
     Args:
         value (Any): The decoded json

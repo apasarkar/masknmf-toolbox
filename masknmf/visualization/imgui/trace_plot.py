@@ -46,6 +46,30 @@ class TracePlot:
             decimate (bool): draw a trace with more samples than the panel has pixel columns as a
                 min/max band under its mean, rather than a polyline that smears into a solid block.
         """
+        self._link_y = link_y
+        self._use_time = False
+        self._autofit = autofit
+        self._decimate = decimate
+        self._fit = False
+        self._fitted = set()  # panels whose axes have been fit to data at least once
+        self._force_fit = False  # one-shot "fit now", requested from the right-click settings popup
+        self._popup_id = f"##trace_settings_{id(self)}"
+        self._window = None
+        self._menu = None
+        self._linked = None  # (indices, dim) once linked
+        # called with the frame the playhead was dragged to
+        self.on_frame: Optional[Callable] = None
+        # called with (panel, line index) when a panel is double-clicked
+        self.on_pick: Optional[Callable] = None
+        self.background = None  # rgb(a) of the frame behind the panels, None for implot's own
+        # keep the playhead centered in the x span as it moves, pinned to an end of the recording near either end
+        self.follow = False
+        self._x_target = None  # the x limits follow sets this frame
+        self._held = False  # the playhead is being dragged
+        self.reset(panels, num_frames, frame_timings)
+
+    def reset(self, panels: Sequence[str], num_frames: int, frame_timings=None):
+        """Start over with these panels over a recording of ``num_frames``: no lines, marks or spans, the zoom to refit."""
         self._panels = tuple(panels)
         self._lines = {name: [] for name in self._panels}
         self._frames = np.arange(num_frames, dtype=np.float32)
@@ -57,29 +81,22 @@ class TracePlot:
             if self._timings.shape != self._frames.shape:
                 raise ValueError(f"{len(self._timings)} frame timings for {num_frames} frames")
             self._time = self._timings.astype(np.float32)
-        self._link_y = link_y
-        self._use_time = False
-        self._autofit = autofit
-        self._decimate = decimate
-        self._fit = False
-        self._fitted = set()  # panels whose axes have been fit to data at least once
-        self._force_fit = False  # one-shot "fit now", requested from the right-click settings popup
-        self._popup_id = f"##trace_settings_{id(self)}"
-        self._window = None
+        self._fitted = set()
         self._frame = 0
-        # called with the frame the playhead was dragged to
-        self.on_frame: Optional[Callable] = None
-        # called with (panel, line index) when a panel is double-clicked
-        self.on_pick: Optional[Callable] = None
         self._marks: list = []  # (label, frames, rgb): vertical lines in every panel
         self._spans: list = []  # (label, starts, stops, rgb): shaded epochs in every panel
-        self.background = None  # rgb(a) of the frame behind the panels, None for implot's own
-        # keep the playhead centered in the x span as it moves, pinned to an end of the recording near either end
-        self.follow = False
         self._x_span = None  # the x limits drawn last frame
-        self._x_target = None  # the x limits follow sets this frame
-        self._held = False  # the playhead is being dragged
         self._track = None  # (center, speed, seeking) of the followed span, None until follow takes over
+        if self._linked is not None:
+            # the widget's range for the dim is new too: its drag throttle, and the index snapped to a frame
+            indices, dim = self._linked
+            indices.ref_ranges[dim].throttle = _DRAG_THROTTLE
+            indices.set_dim_index(dim, indices[dim])
+
+    @property
+    def _ref(self) -> np.ndarray:
+        """The linked dim's units per frame: the timings when given, else frame numbers."""
+        return self._timings if self._timings is not None else self._frames
 
     @property
     def title(self) -> Optional[str]:
@@ -144,10 +161,18 @@ class TracePlot:
         self._marks.clear()
         self._spans.clear()
 
-    def dock(self, figure, size: int = 320, title: str = "traces") -> ImguiWindow:
-        """A resizable window along the top of ``figure``."""
+    def dock(self, figure, size: int = 320, title: str = "traces", menu: Optional[Callable] = None) -> ImguiWindow:
+        """
+        A resizable window along the top of ``figure``; ``menu`` draws the menus of a bar across the top of the
+        figure, in the strip the window keeps clear for it.
+        """
+        self._menu = menu
         self._window = ImguiWindow(update_call=self._draw_dock)
         figure.add_imgui_window(self._window, location="top", size=size, title=title)
+        if menu is not None:
+            # the flag only reserves the strip: fastplotlib draws the window's contents in a child, where a menu bar
+            # of the window's own cannot be begun, so the bar is the main one, drawn over the strip
+            self._window.window_flags |= imgui.WindowFlags_.menu_bar
         return self._window
 
     def link(self, indices, dim: str = "time"):
@@ -155,13 +180,13 @@ class TracePlot:
         Follow and drive a fastplotlib ReferenceIndices (``ndw.indices``) on ``dim``, in its reference units.
         Every value set on ``dim`` snaps to a frame: whole frame numbers, or a frame's timing.
         """
-        ref = self._timings if self._timings is not None else self._frames
         clamp, set_dim_index = indices._clamp, indices.set_dim_index
 
         def snap(d, value):
             value = clamp(d, value)
             if d != dim:
                 return value
+            ref = self._ref
             k = _nearest(ref, value)
             # play and step add one step to the index, which must still move a frame where timings are uneven
             current = indices[dim]
@@ -179,18 +204,22 @@ class TracePlot:
 
         indices._clamp = snap
         indices.set_dim_index = set_dim_index_once
+        self._linked = (indices, dim)
         indices.ref_ranges[dim].throttle = _DRAG_THROTTLE
         indices.set_dim_index(dim, indices[dim])
 
         def follow(current):
-            self.frame = np.searchsorted(ref, current[dim])
+            self.frame = np.searchsorted(self._ref, current[dim])
 
         indices.add_event_handler(follow)
         # cancel_awaiting: a drag only fetches the latest frame, like the widget's own slider
-        self.on_frame = lambda k: indices.set_dim_index(dim, float(ref[k]), cancel_awaiting=True)
+        self.on_frame = lambda k: indices.set_dim_index(dim, float(self._ref[k]), cancel_awaiting=True)
 
     def _draw_dock(self):
         opaque_popups()
+        if self._menu is not None and imgui.begin_main_menu_bar():
+            self._menu()
+            imgui.end_main_menu_bar()
         moved = self.draw(reserve=HANDLE_THICKNESS)
         draw_edge_handle(self._window)
         if moved is not None and self.on_frame is not None:
@@ -202,6 +231,8 @@ class TracePlot:
         scrolling zooms x only or y only."""
         if implot.get_current_context() is None:
             implot.create_context()
+        if not self._panels:
+            return None
         fit = self._resolve_fit()
         self._x_target = None if fit else self._follow_target()
         self._held = False

@@ -7,7 +7,6 @@ import pytorch_lightning as pl
 import torch.nn as nn
 import networkx as nx
 import numpy as np
-from pytorch_lightning.loggers import TensorBoardLogger
 from torch.utils.data import DataLoader
 import os
 import sys
@@ -266,8 +265,6 @@ def train_total_variance_denoiser(
             persistent_workers=True,
         )
 
-    logger = TensorBoardLogger("lightning_logs", name="total_variance")
-
     # Trainer(benchmark=True) sets the global torch.backends.cudnn.benchmark flag. Remember the
     # previous value so it can be restored after training (see below).
     previous_cudnn_benchmark = torch.backends.cudnn.benchmark
@@ -278,7 +275,8 @@ def train_total_variance_denoiser(
         devices=devices,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         precision=precision,
-        logger=logger,
+        logger=False,
+        enable_checkpointing=False,
         callbacks=[TQDMProgressBar(refresh_rate=log_every_n_steps)],
         benchmark=True,
     )

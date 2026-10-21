@@ -12,7 +12,6 @@ from roicat.util import get_default_parameters
 from roicat import helpers
 from roicat.util import RichFile_ROICaT
 import json
-import h5py
 from masknmf.utils import get_timestamp
 
 import warnings
@@ -434,22 +433,7 @@ class RoicatTrackingResults:
                 f"The new set of files has length {len(new_files)} but the number of "
                 f"sessions is {self.num_sessions}"
             )
-        new_files = tuple(self._abspath_entry(f) for f in new_files)
-        # a results file curated (or re-run) after tracking holds other ROIs than the ones the clusters index;
-        # files not on disk are left to the caller to report
-        for session, entry in enumerate(new_files):
-            if isinstance(entry, tuple) or not os.path.isfile(entry):
-                continue
-            with h5py.File(entry, "r") as f:
-                if "DemixingResults" not in f:
-                    continue
-                num_rois = int(f["DemixingResults"]["temporal_demixed"].shape[1])
-            if num_rois != self._n_roi_per_session[session]:
-                raise ValueError(
-                    f"session {session}: {entry} holds {num_rois} ROIs, the tracking {self._n_roi_per_session[session]}; "
-                    "the file was curated or re-run after tracking, so track the sessions' current files again"
-                )
-        self._session_files = new_files
+        self._session_files = tuple(self._abspath_entry(f) for f in new_files)
 
     @property
     def num_sessions(self) -> int:
@@ -697,7 +681,7 @@ class RoicatTrackingResults:
                 target = Path(filepath).resolve()
                 try:
                     # from the manifest's folder: still found after a move, under another drive letter or mount point
-                    target = target.relative_to(dir_save.parent, walk_up=True)
+                    target = Path(os.path.relpath(target, dir_save.parent))
                 except ValueError:
                     # another drive, so no relative path exists: the absolute one stays
                     pass

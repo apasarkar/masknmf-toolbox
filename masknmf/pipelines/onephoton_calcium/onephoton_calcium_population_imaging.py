@@ -133,38 +133,58 @@ class OnePhotonCalciumPipeline(BasePipeline):
             indicator_polarity: Literal["positive", "negative"] = "positive",
             good_frame_indicator: torch.Tensor | np.ndarray | None = None,
             exclude_border_radius: int = 0,
-            remove_intermediates: bool = True) -> Path:
+            remove_intermediates: bool = False,
+            stop_after: Literal["registration", "compression", "demixing"] = "demixing",
+            resume_from: str | Path | None = None) -> Path:
         """
         Motion corrects, compresses (with denoising) and demixes a 1p movie
         Args:
             data: The raw (frames, height, width) movie
             frame_rate (float): frames per second; sets the detrenders' windows
+            indicator_polarity (Literal["positive", "negative"]): Whether the indicator is positively or negatively tuned
+            good_frame_indicator (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
             exclude_border_radius (int): Pixels at each fov edge that are ignored when compressing
             remove_intermediates (bool): Drop the CompressionArray group once demixing is done
+            stop_after: the last stage to run: "registration" writes the shifts and template and ends,
+                "compression" ends once the compression is written, "demixing" runs everything
+            resume_from: an earlier results file copied into the new run folder: its registration is applied to
+                data instead of estimating one, and with compress_config "skip" its compression is reused too.
+                The settings not given, all but stop_after, are that run's, from the config.json beside it.
+                The earlier file is left as it is
         """
-        self.run_config =  {"frame_rate": frame_rate, "exclude_border_radius": exclude_border_radius,
-                            "remove_intermediates": remove_intermediates}
+        reuse_compression = isinstance(self.compress_config, str)
+        if reuse_compression and self.compress_config.lower() != "skip":
+            raise ValueError(f"If compress_config is a string, it can only be `skip`")
+        if reuse_compression and stop_after != "demixing":
+            raise ValueError('compress_config "skip" reuses a compression for its demixing; stop_after leaves nothing to run')
+        if stop_after == "registration" and isinstance(self.motion_correct_config, str) and resume_from is None:
+            raise ValueError('stop_after "registration" with motion_correct_config "skip" has nothing to write')
+        if data is None and not reuse_compression:
+            raise ValueError("data is None starting from the motion correction step. Specify a dataset")
+        resume_from, base = self.resume_source(resume_from, reuse_compression)
+        self.run_config = {"frame_rate": frame_rate, "exclude_border_radius": exclude_border_radius,
+                           "indicator_polarity": indicator_polarity, "remove_intermediates": remove_intermediates,
+                           "stop_after": stop_after, "resume_from": None if resume_from is None else str(resume_from)}
+        results_path = self.results_path(base)
+        stored = None if resume_from is None else self.resume(resume_from, results_path, reuse_compression)
+        # a resumed run without the raw movie has no registered movie to re-estimate raw traces from
         moco_data = None
-        if isinstance(self.compress_config, str):
-            if self.compress_config.lower() == "skip":
-                results_path = self.results_path(resume=True)
-            else:
-                raise ValueError(f"If compress_config is a string, it can only be `skip`")
-        else:
-            results_path = self.results_path()
-            if data is None:
-                raise ValueError("data is None need to specify dataset")
+        if data is not None:
+            if self.load_into_ram:
+                data = self.read_into_ram(data)
             data = self._construct_ophys_array(data,
                                                indicator_polarity=indicator_polarity,
                                                good_frame_indicator=good_frame_indicator)
-
             moco_data, shift_mask = self.motion_correct(data,
                                                         self.motion_correct_config,
                                                         results_path,
                                                         filter_config=self.motion_correct_filter_config,
-                                                        exclude_border_radius=exclude_border_radius)
+                                                        exclude_border_radius=exclude_border_radius,
+                                                        stored=stored)
+        if stop_after == "registration":
+            return self.finish()
 
-            display("Running Compression")
+        if not reuse_compression:
             compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
             compress_strategy.detrender = self.spline_detrender(data.shape[0], frame_rate, window_seconds=40,
                                                                 knot_seconds=25, sigma_seconds=0.3)
@@ -172,6 +192,8 @@ class OnePhotonCalciumPipeline(BasePipeline):
                 compressed_results = compress_strategy.compress(moco_data)
                 compressed_results.export(results_path)
 
+        if stop_after == "compression":
+            return self.finish()
         if isinstance(self.filtered_demixing_config, str):
             if self.filtered_demixing_config.lower() != "skip":
                 raise ValueError(f"If filtered_demixing_config is a string, it can only be `skip`")
@@ -194,7 +216,7 @@ class OnePhotonCalciumPipeline(BasePipeline):
         filtered_config_used = self.with_detrender(self.filtered_demixing_config, detrender)
         unfiltered_config_used = self.with_detrender(self.unfiltered_demixing_config, detrender)
 
-        filtered_results = self.run_multipass(filtered_demixer, filtered_config_used)
+        filtered_results = self.run_multipass(filtered_demixer, filtered_config_used, "filtered demixing")
 
         signals_array = filtered_results.signals_array
         a_init = signals_array.export_spatial_demixed()
@@ -210,7 +232,8 @@ class OnePhotonCalciumPipeline(BasePipeline):
                                                                            frame_batch_size=self.frame_batch_size)
         final_results = self.run_multipass(
             unfiltered_demixer,
-            MultipassDemixingConfig([custom_first_pass] + unfiltered_config_used.DemixingConfigs[1:]))
+            MultipassDemixingConfig([custom_first_pass] + unfiltered_config_used.DemixingConfigs[1:]),
+            "unfiltered demixing")
         if moco_data is not None:
             with self.step("raw traces"):
                 final_results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
