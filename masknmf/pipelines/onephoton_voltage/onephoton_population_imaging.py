@@ -9,6 +9,7 @@ import math
 from tqdm import tqdm
 
 from masknmf.utils import SparseCSRTensor
+from masknmf.demixing.demixing_utils import csr_index_select_cols, csr_index_select_rows
 from masknmf.arrays.ophys_array import OphysArray
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import GradientMotionCorrectionConfig
@@ -42,7 +43,7 @@ def _hals_on_a_trend(blocks: list[torch.Tensor],
     a_sq_norm = masknmf.demixing.regression_update._fast_a_squared_norm(a)  # (num_signals)
 
     for block in blocks:
-        a_subset = torch.index_select(a, 1, block).t().coalesce()
+        a_subset = csr_index_select_cols(a, block).t()
         projection = torch.sparse.mm(a_subset, spatial_trend) @ temporal_trend - atac[
             block]  # Numerator for the regression
         projection /= a_sq_norm[block][:, None]
@@ -76,11 +77,11 @@ def hals_on_trend(a: SparseCSRTensor,
                   spatial_trend_basis: torch.Tensor,
                   temporal_trend_basis: torch.Tensor,
                   batch_size: int = 200,
-                  num_iters: int = 10,
-                  device='cuda'):
+                  num_iters: int = 10):
     """
     Here we want to run hierarchical alternating least squares (unconstrained) to update the temporal components of each signal w.r.t. the raw data
     """
+    device = a.device
     blocks = masknmf.demixing.signal_demixer._compute_hals_schedule(a,
                                                                     device,
                                                                     frame_batch_size=batch_size)
@@ -141,8 +142,7 @@ def hals_on_rawdata(moco_data: np.ndarray,
                     a: torch.sparse_coo_tensor,
                     c: torch.Tensor,
                     batch_size: int = 200,
-                    num_iters: int = 10,
-                    device='cuda'):
+                    num_iters: int = 10):
     """
     Here we want to run hierarchical alternating least squares (unconstrained) to update the temporal components of each signal w.r.t. the raw data
 
@@ -197,7 +197,7 @@ def _hals_on_raw(blocks: list[torch.Tensor],
     a_sq_norm = masknmf.demixing.regression_update._fast_a_squared_norm(a)  # (num_signals)
 
     for block in blocks:
-        a_subset = torch.index_select(a, 1, block).t().coalesce()
+        a_subset = csr_index_select_cols(a, block).t()
         projection = torch.sparse.mm(a_subset, movie.T) - atac[block]  # Numerator for the regression
         projection /= a_sq_norm[block][:, None]
 
@@ -233,9 +233,9 @@ def compute_final_denoised_c_estimates(pmd_arr: masknmf.CompressionArray,
         c (torch.Tensor): Shape (num_frames, num_neurons). Initial temporal estimates of the spiking activity
     """
 
-    c_spike_estimate = hals_multi_iter_fullpmd(pmd_arr.spatial_compressed,
+    c_spike_estimate = hals_multi_iter_fullpmd(pmd_arr.spatial_compressed.to_sparse_csr(),
                                                pmd_arr.temporal_compressed,
-                                               dmr.spatial_demixed,
+                                               dmr.spatial_demixed.to_sparse_csr(),
                                                c,
                                                dmr.static_baseline[:, None])
 
@@ -307,7 +307,7 @@ class OnePhotonCulturePipeline(BasePipeline):
     def run(self,
             data: np.ndarray | ArrayLike,
             frame_rate: float,
-            active_frames: np.ndarray,
+            active_frames: np.ndarray | None = None,
             indicator_polarity: Literal["positive", "negative"] = "negative",
             good_frame_indicator: torch.Tensor | np.ndarray | list | None = None,
             remove_intermediates: bool = True) -> Path:
@@ -358,9 +358,17 @@ class OnePhotonCulturePipeline(BasePipeline):
         self.run_config = {"frame_rate": frame_rate, "indicator_polarity": indicator_polarity,
                            "remove_intermediates": remove_intermediates}
 
-        active = np.asarray(active_frames).astype(bool)
+        if active_frames is None:
+            active = np.ones((data.shape[0])).astype(bool)
+        else:
+            active = np.asarray(active_frames).astype(bool)
+        if not active.size == int(data.shape[0]):
+            raise ValueError("Active must be a 1D boolean vector whose length is equal to number of frames in the data")
+
         if good_frame_indicator is not None:
             good = torch.as_tensor(good_frame_indicator).cpu().numpy().astype(bool)
+            if good.numel() != int(data.shape[0]):
+                raise ValueError("good_frame_indicator must be a 1D boolean vector whose length is equal to number of frames in the data")
             active_in_good = active[good]  # use for `v = ...` and expand_traces_to_all_frames
             demixed_frames = active & good  # use for DemixingResults.infill_bad_frames
         else:
@@ -439,11 +447,11 @@ class OnePhotonCulturePipeline(BasePipeline):
                                                                                      c_all_frames)
 
             c_regressed_on_raw = hals_on_rawdata(moco_array,
-                                                 a_rawdata_scale,
+                                                 a_rawdata_scale.to_sparse_csr(),
                                                  full_c_estimate_denoised)
 
         if good_frame_indicator is not None:
-            full_c_estimate_denoised = masknmf.utils.infill_bad_timepoints(full_c_estimate_denoised.T, good, device=c.device).T
+            full_c_estimate_denoised = masknmf.utils.infill_bad_timepoints(full_c_estimate_denoised.T, good, device=device).T
             c_regressed_on_raw = masknmf.utils.infill_bad_timepoints(c_regressed_on_raw.T, good, device=c.device).T
 
         if good_frame_indicator is not None:
