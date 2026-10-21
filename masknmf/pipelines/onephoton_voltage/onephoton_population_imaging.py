@@ -367,7 +367,7 @@ class OnePhotonCulturePipeline(BasePipeline):
 
         if good_frame_indicator is not None:
             good = torch.as_tensor(good_frame_indicator).cpu().numpy().astype(bool)
-            if good.numel() != int(data.shape[0]):
+            if good.size != int(data.shape[0]):
                 raise ValueError("good_frame_indicator must be a 1D boolean vector whose length is equal to number of frames in the data")
             active_in_good = active[good]  # use for `v = ...` and expand_traces_to_all_frames
             demixed_frames = active & good  # use for DemixingResults.infill_bad_frames
@@ -452,7 +452,7 @@ class OnePhotonCulturePipeline(BasePipeline):
 
         if good_frame_indicator is not None:
             full_c_estimate_denoised = masknmf.utils.infill_bad_timepoints(full_c_estimate_denoised.T, good, device=device).T
-            c_regressed_on_raw = masknmf.utils.infill_bad_timepoints(c_regressed_on_raw.T, good, device=c.device).T
+            c_regressed_on_raw = masknmf.utils.infill_bad_timepoints(c_regressed_on_raw.T, good, device=device).T
 
         if good_frame_indicator is not None:
             curr_demix_results = masknmf.DemixingResults.infill_bad_frames(curr_demix_results,
