@@ -530,6 +530,32 @@ class BasePipeline(ABC):
                                   good_frames = good_frame_indicator)
         return ophys_output
 
+    @property
+    def demixing_configs(self) -> None | MultipassDemixingConfig | list[SinglepassDemixingConfig | MultipassDemixingConfig]:
+        return None
+
+    def _update_min_brightness(self, new_min_brightness: float):
+        """
+        This function iterates over all demixing configs and updates the min brightness
+        """
+        if new_min_brightness <= 0.0:
+            raise ValueError("The min brightness needs to be positive")
+        curr_demixing_configs = self.demixing_configs
+        if curr_demixing_configs is None:
+            return
+
+        if isinstance(curr_demixing_configs, (SinglepassDemixingConfig, MultipassDemixingConfig)):
+            curr_demixing_configs = [curr_demixing_configs]
+
+        if isinstance(curr_demixing_configs, list):
+            for cfg in curr_demixing_configs:
+                if isinstance(cfg, SinglepassDemixingConfig):
+                    cfg.NMFConfig.min_brightness = new_min_brightness
+                if isinstance(cfg, MultipassDemixingConfig):
+                    for elt in cfg.DemixingConfigs:
+                        elt.NMFConfig.min_brightness = new_min_brightness
+
+
 
     @abstractmethod
     def run(self, **kwargs) -> Path:
