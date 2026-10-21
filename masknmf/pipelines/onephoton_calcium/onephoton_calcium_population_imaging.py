@@ -140,8 +140,7 @@ class OnePhotonCalciumPipeline(BasePipeline):
             exclude_border_radius: int = 0,
             remove_intermediates: bool = False,
             stop_after: Literal["registration", "compression", "demixing"] = "demixing",
-            resume_from: str | Path | None = None,
-            min_brightness: float | None = None) -> Path:
+            resume_from: str | Path | None = None) -> Path:
         """
         Motion corrects, compresses (with denoising) and demixes a 1p movie
         Args:
@@ -158,9 +157,6 @@ class OnePhotonCalciumPipeline(BasePipeline):
                 The settings not given, all but stop_after, are that run's, from the config.json beside it.
                 The earlier file is left as it is
         """
-        if min_brightness is not None:
-            self._update_min_brightness(min_brightness)
-            print(self.demixing_configs)
         reuse_compression = isinstance(self.compress_config, str)
         if reuse_compression and self.compress_config.lower() != "skip":
             raise ValueError(f"If compress_config is a string, it can only be `skip`")

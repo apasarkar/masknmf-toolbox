@@ -534,7 +534,7 @@ class BasePipeline(ABC):
     def demixing_configs(self) -> None | MultipassDemixingConfig | list[SinglepassDemixingConfig | MultipassDemixingConfig]:
         return None
 
-    def _update_min_brightness(self, new_min_brightness: float):
+    def set_uniform_min_brightness(self, new_min_brightness: float):
         """
         This function iterates over all demixing configs and updates the min brightness
         """
