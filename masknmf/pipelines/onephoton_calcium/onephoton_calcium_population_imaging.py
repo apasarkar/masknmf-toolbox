@@ -120,6 +120,7 @@ class OnePhotonCalciumPipeline(BasePipeline):
                                                                                                   rank=self.global_filter_config.rank,
                                                                                                   num_oversamples=self.global_filter_config.num_oversamples)
 
+            compression_array.to(self.torch_device)
         if isinstance(self.spatial_highpass_config, SpatialHighpassConfigs):
             compression_array = masknmf.demixing.filters.spatial_filter_compressed_array(compression_array,
                                                                                          batch_size=self.frame_batch_size,
