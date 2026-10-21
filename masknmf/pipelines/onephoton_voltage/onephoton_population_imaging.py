@@ -304,6 +304,10 @@ class OnePhotonCulturePipeline(BasePipeline):
                 'compress_config': CompressDenoiseConfig(),
                 'demixing_config': MultipassDemixingConfig(conf_list)}
 
+    @property
+    def demixing_configs(self) -> list[SinglepassDemixingConfig | MultipassDemixingConfig]:
+        return self.demixing_config
+
     def run(self,
             data: np.ndarray | ArrayLike,
             frame_rate: float,
