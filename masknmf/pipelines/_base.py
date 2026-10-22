@@ -565,7 +565,7 @@ class BasePipeline(ABC):
         # a resumed run replaces every config not in configs_given with the earlier run's; mark the ones changed here
         configs_changed = self.demixing_configs if isinstance(self.demixing_configs, list) else [self.demixing_configs]
         for name in self.default_configs():
-            if any(getattr(self, name) is config for config in configs_changed):
+            if any(getattr(self, name) is config for config in configs_changed if not isinstance(config, str)):
                 self.configs_given.add(name)
 
 

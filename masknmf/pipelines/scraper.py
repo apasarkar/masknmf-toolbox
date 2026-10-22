@@ -119,6 +119,8 @@ class PipelineSpec:
     sections: list[Section]
     scalars: list[Param]
     run_params: list[Param]
+    # settable properties: meta parameters, each rewriting fields of the configs when set
+    properties: list[Param]
 
     @property
     def movie_params(self) -> list[Param]:
@@ -479,7 +481,7 @@ def scrape(cls_pipeline: type) -> PipelineSpec:
     Args:
         cls_pipeline (type): A pipeline from masknmf.pipelines
     Returns:
-        PipelineSpec: Its config sections, plain constructor arguments and run arguments
+        PipelineSpec: Its config sections, plain constructor arguments, run arguments and settable properties
     """
     sections = []
     scalars = []
@@ -549,12 +551,35 @@ def scrape(cls_pipeline: type) -> PipelineSpec:
             )
         )
 
+    properties = []
+    pipeline = cls_pipeline()
+    for name, attribute in inspect.getmembers(cls_pipeline, lambda a: isinstance(a, property) and a.fset is not None):
+        # a property this pipeline cannot use, such as min_brightness without demixing configs, raises when read
+        try:
+            current = getattr(pipeline, name)
+        except NotImplementedError:
+            continue
+        annotation = list(inspect.signature(attribute.fset).parameters.values())[1].annotation
+        properties.append(
+            Param(
+                name=name.replace("_", "-"),
+                field=name,
+                annotation=annotation,
+                default=current,
+                choices=first_literal(annotation=annotation),
+                settable=is_settable(annotation=annotation),
+                required=False,
+                kind="property",
+            )
+        )
+
     return PipelineSpec(
         slug=slugify(name_class=cls_pipeline.__name__),
         cls=cls_pipeline,
         sections=sections,
         scalars=scalars,
         run_params=run_params,
+        properties=properties,
     )
 
 

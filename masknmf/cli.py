@@ -368,6 +368,14 @@ def add_pipeline_options(parser: argparse.ArgumentParser, spec: scraper.Pipeline
             help=param.description,
         )
 
+    for param in spec.properties:
+        parser.add_argument(
+            param.flag,
+            default=None,
+            metavar="VALUE",
+            help=f"set in every config that has it, over the configs given; {param.description}",
+        )
+
     for section in spec.sections:
         parser.add_argument(
             f"--{section.name}-kind",
@@ -438,6 +446,10 @@ def command_params(args: argparse.Namespace) -> None:
 
     print("\nconstructor arguments")
     for param in spec.scalars:
+        print(f"  {param.field:28} {param.description}")
+
+    print("\nmeta parameters, set in every config that has them")
+    for param in spec.properties:
         print(f"  {param.field:28} {param.description}")
 
     for section in spec.sections:
@@ -592,6 +604,14 @@ def command_run(args: argparse.Namespace) -> None:
             kwargs_pipeline["output_folder"] = str(first if first.is_dir() else first.parent)
 
         pipeline = spec.cls(**kwargs_pipeline)
+        # meta parameters go on last, over the configs the pipeline was given
+        for param in spec.properties:
+            text = getattr(args, param.field, None)
+            if text is not None:
+                try:
+                    setattr(pipeline, param.field, scraper.coerce(param=param, text=text))
+                except ValueError as error:
+                    fail(str(error))
         pipeline.inputs = inputs
         pipeline.command = args.command
         shapes = ", ".join(
