@@ -8,7 +8,7 @@ from masknmf.demixing.filters import high_pass_filter_batch
 from masknmf.demixing.initialization_results import InitializationResults
 from masknmf.demixing.curation import update_signals, write_curated, latest_results, results_stem
 from masknmf.demixing.cell_stats import CellStats
-from masknmf.demixing.raw_traces import estimate_temporal_demixed_raw
+from masknmf.demixing.raw_traces import estimate_temporal_demixed_raw, estimate_temporal_demixed_trend
 
 __all__ = [
     "SignalsArray",
