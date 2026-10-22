@@ -168,8 +168,8 @@ class MotionCorrectionStrategy:
             # account for use cases with very few frames, ex: spatial transcriptomics
             num_frames_template = min(frames.shape[0], 500)
 
-            frames_loaded = frames[:num_frames_template]
-            template = np.median(frames_loaded, axis=0)
+            frames_loaded = torch.as_tensor(frames[:num_frames_template])
+            template = torch.quantile(frames_loaded, 0.5, dim=0).cpu().numpy()
             self._template = template
 
         ## Prepare the template estimation pipeline by establishing the chunks of data to sample

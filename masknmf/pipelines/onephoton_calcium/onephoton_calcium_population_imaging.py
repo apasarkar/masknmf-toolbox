@@ -127,6 +127,11 @@ class OnePhotonCalciumPipeline(BasePipeline):
                                                                                          filter_sigma=self.spatial_highpass_config.filter_sigma)
         return compression_array
 
+    @property
+    def demixing_configs(self) -> list[SinglepassDemixingConfig | MultipassDemixingConfig]:
+        return [self.filtered_demixing_config, self.unfiltered_demixing_config]
+
+
     def run(self,
             data: np.ndarray | ArrayLike | None,
             frame_rate: float,

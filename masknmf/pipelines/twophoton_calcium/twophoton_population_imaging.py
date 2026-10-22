@@ -66,6 +66,10 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 'filtered_demixing_config': MultipassDemixingConfig(filtered_passes),
                 'unfiltered_demixing_config': MultipassDemixingConfig(unfiltered_passes)}
 
+    @property
+    def demixing_configs(self) -> list[SinglepassDemixingConfig | MultipassDemixingConfig]:
+        return [self.filtered_demixing_config, self.unfiltered_demixing_config]
+
     def run(self,
             data: np.ndarray | ArrayLike | None,
             frame_rate: float,
