@@ -43,7 +43,7 @@ pmd_result = masknmf.compression.pmd_decomposition(
 )
 
 # get the residual
-pmd_residual = masknmf.PMDResidualArray(data, pmd_result)
+pmd_residual = masknmf.CompressionResidualArray(data, pmd_result)
 
 # view the movies, note that all these array are LAZY evaluated, allowing you to view extremely large datasets!
 iw = fpl.ImageWidget(

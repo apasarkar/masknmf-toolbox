@@ -1,0 +1,2216 @@
+"""
+The window `masknmf` opens when it is run with no arguments.
+
+A rail of functions on the left and one page each on the right: an Overview of what a run does, Run pipeline,
+Open results, Track sessions and Classify ROIs. Every value on a page becomes an argument of a `masknmf`
+command, so whatever is started here is a command line run, and the equivalent command is printed before it
+starts. Stage configs that differ from the pipeline's defaults are written to a json file passed as --config.
+"""
+
+from typing import Any, Optional
+
+import copy
+import dataclasses
+import glob
+import json
+import sys
+import threading
+import time
+import typing
+from pathlib import Path
+
+import imgui_bundle
+import imgui_data_loader as idl
+import numpy as np
+import wgpu
+from imgui_bundle import hello_imgui, imgui, imgui_ctx
+from imgui_bundle import icons_fontawesome_6 as fa
+from imgui_bundle import portable_file_dialogs as pfd
+from wgpu.utils.imgui import ImguiRenderer
+
+import masknmf
+from masknmf import cli
+from masknmf.demixing.curation import latest_results
+from masknmf.io import group_name_compression, group_name_demixing, group_names_registration, stage_groups
+from masknmf.pipelines import scraper
+from masknmf.pipelines._base import BasePipeline
+from masknmf.visualization.imgui import guide
+from masknmf.visualization.imgui.theme import button_colors, tooltip
+
+
+DIR_CONFIG = Path.home() / ".config" / "masknmf"
+FILEPATH_RUN_CONFIGS = DIR_CONFIG / "launcher_configs.json"
+
+PIPELINE_INITIAL = "two-photon-calcium"
+PAGE_INITIAL = "home"
+
+FILETYPES_MOVIE = [
+    idl.FileType("Movies", "*.tif *.tiff *.h5 *.hdf5"),
+    idl.FileType("All Files", "*"),
+]
+FILETYPES_ARRAY = [idl.FileType("NumPy", "*.npy")]
+FILETYPES_RESULTS = [
+    idl.FileType("Results", "*.h5 *.hdf5"),
+    idl.FileType("All Files", "*"),
+]
+FILETYPES_CLASSIFIER = [
+    idl.FileType("Classifier", "*.roicat_classifier"),
+    idl.FileType("All Files", "*"),
+]
+FILETYPES_RUN = [
+    idl.FileType("Run records", "config.json *.h5 *.hdf5"),
+    idl.FileType("All Files", "*"),
+]
+
+COLOR_TITLE = guide.KEY
+COLOR_SUBSECTION = guide.ACCENT
+COLOR_DIM = guide.DIM
+COLOR_WARN = imgui.ImVec4(1.0, 0.75, 0.3, 1.0)
+COLOR_MODIFIED = imgui.ImVec4(1.0, 0.72, 0.40, 1.0)
+COLOR_ERROR = imgui.ImVec4(1.0, 0.4, 0.4, 1.0)
+COLOR_OK = imgui.ImVec4(0.40, 0.90, 0.40, 1.0)
+COLOR_LIT = imgui.ImVec4(guide.ACCENT.x, guide.ACCENT.y, guide.ACCENT.z, 0.22)
+COLORS_RUN = (
+    imgui.ImVec4(0.13, 0.55, 0.13, 1.0),
+    imgui.ImVec4(0.18, 0.65, 0.18, 1.0),
+    imgui.ImVec4(0.10, 0.45, 0.10, 1.0),
+)
+COLORS_DEFAULTS = (
+    imgui.ImVec4(0.60, 0.35, 0.10, 1.0),
+    imgui.ImVec4(0.70, 0.42, 0.14, 1.0),
+    imgui.ImVec4(0.50, 0.28, 0.08, 1.0),
+)
+THEME = idl.Theme.dark().replace(
+    accent=(guide.ACCENT.x, guide.ACCENT.y, guide.ACCENT.z, 1.0),
+    accent_hover=(0.50, 0.75, 1.00, 1.0),
+    accent_active=(0.32, 0.60, 0.95, 1.0),
+    text=(guide.TEXT.x, guide.TEXT.y, guide.TEXT.z, 1.0),
+    text_dim=(guide.DIM.x, guide.DIM.y, guide.DIM.z, 1.0),
+    border=(guide.EDGE.x, guide.EDGE.y, guide.EDGE.z, 0.8),
+    button_face=(guide.CARD.x, guide.CARD.y, guide.CARD.z, 1.0),
+    button_face_hover=(guide.CARD_HOVER.x, guide.CARD_HOVER.y, guide.CARD_HOVER.z, 1.0),
+)
+
+DIR_FONTS = Path(imgui_bundle.__file__).parent / "assets" / "fonts"
+FONT_SIZE = 14
+SIZE_WINDOW = (1040, 720)
+SIZE_MIN = (62 * FONT_SIZE, 44 * FONT_SIZE)
+
+WIDTH_INPUT_EM = 7.5
+WIDTH_RAIL_EM = 13
+WIDTH_CAPTION_EM = 9
+
+NO_DEFAULT = object()
+
+# Track sessions: what a folder row is searched for, how many folders below it, and how long after the last edit
+PATTERN_RESULTS = "*results*.hdf5"
+DEPTH_SEARCH = 3
+DELAY_SEARCH = 0.4
+ROWS_FOUND = 12
+# the footer's command is cut after this many characters
+LENGTH_COMMAND = 300
+
+# the rail: a page key, its icon, its name, and the line under the name on its page
+PAGES = (
+    ("home", fa.ICON_FA_HOUSE, "Overview", "what a run does, stage by stage, and which function here takes it on"),
+    ("run", fa.ICON_FA_PLAY, "Run pipeline", "a pipeline over a movie: registration, compression and demixing into a run folder"),
+    ("open", fa.ICON_FA_FOLDER_OPEN, "Open results", "a results file, run folder or tracking run, in the viewer its stages call for"),
+    ("track", fa.ICON_FA_DIAGRAM_PROJECT, "Track sessions", "match ROIs across sessions' results files with ROICaT"),
+    ("classify", fa.ICON_FA_TAGS, "Classify ROIs", "label ROIs, train a classifier, classify new sessions"),
+)
+# the Overview's step cards: the page a click opens, icon, name, hint
+STEPS = (
+    ("run", fa.ICON_FA_PLAY, "Run", "a pipeline over a movie"),
+    ("open", fa.ICON_FA_FOLDER_OPEN, "Open", "results at any stage"),
+    ("open", fa.ICON_FA_DRAW_POLYGON, "Curate", "in the demixing viewer"),
+    ("track", fa.ICON_FA_DIAGRAM_PROJECT, "Track", "ROIs across sessions"),
+    ("classify", fa.ICON_FA_TAGS, "Classify", "label, train, classify"),
+)
+# the pipeline's flow: a stage, the check that follows it, what the stage does, and what to check
+FLOW = (
+    (
+        "motion correct",
+        "check the shifts",
+        "estimates a shift per frame on the raw movie, rigid or piecewise-rigid, against a template; only the shifts "
+        "and the template are kept, no registered movie is written",
+        "in the demixing viewer: the shift traces, and raw beside registered once the raw movie is given",
+    ),
+    (
+        "compress",
+        "check the compression",
+        "applies the shifts while compressing the movie into PMD factors, with its mean and noise variance images",
+        "in the demixing viewer: compressed beside raw, the residual, the mean and noise stills; lag-1 autocorrelation "
+        "stills once the raw movie is given",
+    ),
+    (
+        "demix",
+        "check the demixing",
+        "fits footprints, traces and a background to the compressed movie",
+        "in the demixing viewer's Curation: masks over the movie and the traces; delete wrong signals, draw missed cells, "
+        "Demix again",
+    ),
+)
+# the I/O diagram: a box label and its color
+IO_BOXES = (("movie", guide.TEXT), ("run folder", guide.ACCENT), ("results.hdf5", guide.KEY))
+# the files a run reads and writes, and what lands beside the results later
+IO_FILES = (
+    ("movie", "a .tif/.tiff file, a folder of tiffs read in name order, or an .h5/.hdf5 file with the name of its dataset"),
+    ("output folder", "each run makes a timestamped folder here; empty puts it beside the movie"),
+    ("results.hdf5", "one file per run holding every stage it reached; Open results reads it at any stage"),
+    ("config.json", "the values the run used, which masknmf run --config reads back"),
+    ("<results>.<time>.curated.hdf5", "a Demix from the viewer, beside the original, which is never changed; the newest opens in its place"),
+    ("<results>.labels.hdf5", "the labels Classify ROIs saves beside a results file"),
+    ("<time>_roicat-tracking/", "a tracking run and its manifest, in the folder Track sessions is given"),
+)
+# the commands the functions amount to, as the footer spells them
+COMMANDS = (
+    ("run --pipeline <pipeline> <movie> ... [--stop-after registration]", "a pipeline over a movie, or only its first stages; values changed under Parameters travel in a json config"),
+    ("run --config <run folder>/config.json", "the run again, on the movie it recorded unless another is given"),
+    ("view <results.hdf5> [--raw <movie>] [--compression]", "the demixing viewer on one session's results, at whatever stage they reached"),
+    ("view <tracking folder or manifest>", "the multisession viewer on a tracking run"),
+    ("view <results...> --classify [--labels a,b] [--classifier <path>]", "label and classify ROIs, one session per file"),
+    ("track <results...> --out <folder> --um-per-pixel <um>", "match ROIs across sessions with ROICaT"),
+)
+# placeholders until the pipeline classes carry docstrings
+DESCRIPTIONS = {
+    "two-photon-calcium": "Two-photon calcium: registration, PMD compression, a spatial high-pass, demixing filtered and unfiltered.",
+    "one-photon-calcium": "One-photon calcium: registration on high-passed frames, compression, demixing filtered and unfiltered.",
+    "one-photon-culture": "One-photon cultures: registration, compression and demixing; an active_frames .npy is optional.",
+    "widefield-singlechannel": "Widefield, one channel: registration and compression only, no demixing.",
+    "glutamate-calcium-spine": "Spine imaging, a glutamate and a calcium movie: registration, compression and demixing.",
+}
+STAGE_NOTES = {
+    "registration": "shifts and template; shown over the raw movie",
+    "compression": "PMD factors; the compressed movie, residual and stills",
+    "demixing": "footprints, traces, background; Curation and Signals",
+    "curated": "a curated file; its description says what was dropped",
+}
+# the viewers Open results offers: key, icon, name, when it applies
+VIEWERS = (
+    (
+        "demixing",
+        fa.ICON_FA_LAYER_GROUP,
+        "Demixing viewer",
+        "one session at any stage: registration (raw beside registered with the shifts, given the raw movie), compression "
+        "and denoising (compressed beside raw, the residual, the stills), demixing (Curation and Signals, Demix)",
+    ),
+    (
+        "classification",
+        fa.ICON_FA_TAGS,
+        "Classification viewer",
+        "label this session's ROIs, train and classify; a folder of results files opens every session",
+    ),
+    ("multisession", fa.ICON_FA_DIAGRAM_PROJECT, "Multisession viewer", "the ROIs tracked across a tracking run's sessions"),
+)
+
+
+def text_value(value: Any) -> str:
+    """
+    A run or constructor argument's value spelled as the command line takes it.
+
+    Parameters
+    ----------
+    value : Any
+        The value; None gives the empty text.
+
+    Returns
+    -------
+    str
+        true or false for a bool, comma separated items for a tuple or list, str(value) otherwise.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (tuple, list)):
+        return ",".join(str(v) for v in value)
+    return str(value)
+
+
+def text_default(param: scraper.Param) -> str:
+    """The text a parameter's input starts with: its default, spelled as the command line takes it."""
+    return "" if param.required else text_value(value=param.default)
+
+
+def text_of(value: Any) -> str:
+    """A config field's value as text: numbers and lists of them in full, configs by kind, anything else by type."""
+    if value is None:
+        return ""
+    if isinstance(value, np.ndarray):
+        return f"array {' x '.join(str(n) for n in value.shape)}"
+    if dataclasses.is_dataclass(value):
+        return scraper.kind_of(value=value)
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(text_of(value=v) for v in value)
+    if isinstance(value, (bool, int, str)):
+        return str(value)
+    return type(value).__name__
+
+
+def kind_or_none(value: Any) -> str:
+    """The kind of a config, "none" for None."""
+    return "none" if value is None else scraper.kind_of(value=value)
+
+
+def same(a: Any, b: Any) -> bool:
+    """Whether two config values are equal, comparing arrays by content instead of failing on them."""
+    if dataclasses.is_dataclass(a) or dataclasses.is_dataclass(b):
+        return type(a) is type(b) and all(same(getattr(a, f.name), getattr(b, f.name)) for f in dataclasses.fields(a))
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        return isinstance(a, np.ndarray) and isinstance(b, np.ndarray) and a.shape == b.shape and bool(np.array_equal(a, b))
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b))
+    try:
+        return bool(a == b)
+    except (TypeError, ValueError):
+        return a is b
+
+
+def widget_for(param: scraper.Param) -> str:
+    """
+    Which widget edits a parameter.
+
+    Args:
+        param (Param): The parameter
+    Returns:
+        str: "bool", "choice", "int", "float", "int2", "folder" or "text". Values that may be
+            None or have no default are typed as text, so leaving them empty stays possible.
+    """
+    members, allows_none = scraper.annotation_members(annotation=param.annotation)
+    if bool in members:
+        return "bool"
+    if param.choices is not None:
+        return "choice"
+    if Path in members:
+        return "folder"
+    if allows_none or param.required or len(members) != 1:
+        return "text"
+    member = members[0]
+    if member is int:
+        return "int"
+    if member is float:
+        return "float"
+    if typing.get_origin(member) is tuple and typing.get_args(member) == (int, int):
+        return "int2"
+    return "text"
+
+
+def is_number(value: Any) -> bool:
+    """Whether a value is an int or a float, booleans excluded."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def widget_for_field(param: scraper.Param, value: Any) -> str:
+    """
+    Which widget edits a config field, judged first by the value it holds and then by its annotation,
+    so a default of another type than annotated (None in an int field, a list in a tuple field) still
+    gets a widget that shows it.
+
+    Args:
+        param (Param): The field
+        value (Any): Its current value
+    Returns:
+        str: "bool", "choice", "int", "float", "int2", "float2", "sequence" or "text"
+    """
+    members, _ = scraper.annotation_members(annotation=param.annotation)
+    if value is None:
+        return "text"
+    if isinstance(value, bool):
+        return "bool" if bool in members else "text"
+    if param.choices is not None and value in param.choices:
+        return "choice"
+    if isinstance(value, int) and int in members:
+        return "int"
+    if is_number(value=value) and float in members:
+        return "float"
+    if isinstance(value, (list, tuple)) and len(value) == 2 and all(isinstance(v, int) and not isinstance(v, bool) for v in value):
+        return "int2"
+    if isinstance(value, (list, tuple)) and len(value) == 2 and all(is_number(value=v) for v in value):
+        return "float2"
+    if isinstance(value, (list, tuple)):
+        return "sequence"
+    return "text"
+
+
+def load_fonts() -> imgui.ImFont:
+    """Roboto with Font Awesome 6 merged in, at FONT_SIZE: the font fastplotlib's imgui figures use."""
+    io = imgui.get_io()
+    io.fonts.add_font_from_file_ttf(str(DIR_FONTS / "Roboto" / "Roboto-Regular.ttf"), FONT_SIZE, imgui.ImFontConfig())
+    config_icons = imgui.ImFontConfig()
+    config_icons.merge_mode = True
+    return io.fonts.add_font_from_file_ttf(str(DIR_FONTS / "Font_Awesome_6_Free-Solid-900.otf"), FONT_SIZE, config_icons)
+
+
+def apply_theme() -> None:
+    """hello_imgui's darcula-darker colors on the current imgui style, which its runner would otherwise apply."""
+    themed = hello_imgui.theme_to_style(hello_imgui.ImGuiTheme_.darcula_darker)
+    style = imgui.get_style()
+    for i in range(imgui.Col_.count):
+        style.set_color_(i, themed.color_(i))
+
+
+def is_hdf5(filepath: str) -> bool:
+    """Whether a path names an hdf5 file."""
+    return Path(filepath).suffix.lower() in cli.SUFFIXES_HDF5
+
+
+def find_sessions(rows: tuple[str, ...]) -> list[dict]:
+    """
+    The results files Track sessions' rows name, in row order: a folder stands for every PATTERN_RESULTS in it and
+    up to DEPTH_SEARCH folders below, in path order, and a glob for its matches, each results file replaced by its
+    newest curated file; a file stands for itself. A file two rows name is listed once.
+
+    Args:
+        rows (tuple[str, ...]): The rows filled in
+    Returns:
+        list[dict]: Per file its "path", the "row" naming it first, whether it holds demixing results ("demixing"),
+        the input "movie" its run's config.json names, and a "note" on what makes it doubtful as a session
+    """
+    found = {}
+    for row, entry in enumerate(rows):
+        path = Path(entry).expanduser()
+        if any(c in entry for c in "*?["):
+            matches = latest_results(cli.match_results(entry=entry)[0])
+        elif path.is_dir():
+            patterns = [str(path.joinpath(*["*"] * depth, PATTERN_RESULTS)) for depth in range(DEPTH_SEARCH + 1)]
+            matches = latest_results(sorted({m for p in patterns for m in cli.match_results(entry=p)[0]}))
+        elif path.is_file():
+            matches = [str(path)]
+        else:
+            matches = []
+        for match in matches:
+            found.setdefault(match, {"path": match, "row": row, "demixing": False, "movie": None, "note": ""})
+    sessions = list(found.values())
+    for session in sessions:
+        try:
+            session["demixing"] = group_name_demixing() in stage_groups(session["path"])
+        except (OSError, ValueError):
+            pass
+        try:
+            inputs = json.loads((Path(session["path"]).parent / "config.json").read_text()).get("inputs", {})
+        except (OSError, ValueError):
+            inputs = {}
+        session["movie"] = next(
+            (v["path"] for v in inputs.values() if isinstance(v, dict) and not str(v.get("path", "")).lower().endswith(".npy")),
+            None,
+        )
+    for session in sessions:
+        siblings = [s for s in sessions if Path(s["path"]).parent == Path(session["path"]).parent]
+        runs = [s for s in sessions if session["movie"] is not None and s["movie"] == session["movie"]]
+        if not session["demixing"]:
+            session["note"] = "holds no demixing results"
+        elif len(siblings) > 1:
+            session["note"] = f"one of {len(siblings)} results files in this run folder"
+        elif len(runs) > 1:
+            session["note"] = f"one of {len(runs)} runs on {Path(session['movie']).name}"
+    return sessions
+
+
+def common_folder(paths: list[str]) -> Path:
+    """The deepest folder holding every path; the first path's drive when they are on different drives."""
+    parents = [Path(p).parent for p in paths]
+    root = parents[0]
+    while root != root.parent and not all(p == root or root in p.parents for p in parents):
+        root = root.parent
+    return root
+
+
+def title_of(section: scraper.Section) -> str:
+    """A section's heading, e.g. "Motion correct" for motion-correct."""
+    return section.name.replace("-", " ").capitalize()
+
+
+def label_of(kind: str, section: scraper.Section) -> str:
+    """A config's name in a stage's dropdown, marking the pipeline's default."""
+    return f"{kind} (default)" if kind == section.default_kind else kind
+
+
+def draw_wrapped(text: str, color: Optional[imgui.ImVec4] = None) -> None:
+    """Text wrapped at the current window's right edge, in color when given."""
+    if color is None:
+        imgui.text_wrapped(text)
+    else:
+        idl.text_wrapped_colored(color, text)
+
+
+def same_line_if_fits(width: float) -> None:
+    """Continue the line when an item width wide still fits before the window's right edge."""
+    spacing = imgui.get_style().item_spacing.x
+    right = imgui.get_window_pos().x + imgui.get_window_size().x - imgui.get_style().window_padding.x
+    if imgui.get_item_rect_max().x + spacing + width <= right:
+        imgui.same_line()
+
+
+def draw_hint(text: str) -> None:
+    """A dim (?) after the previous item that shows text when hovered."""
+    imgui.same_line()
+    imgui.text_disabled("(?)")
+    if imgui.is_item_hovered():
+        idl.wrapped_tooltip(text)
+
+
+def draw_subsection(text: str, hint: str) -> None:
+    """A light blue subsection heading with a (?) hint."""
+    imgui.text_colored(COLOR_SUBSECTION, text)
+    draw_hint(text=hint)
+
+
+def draw_divider() -> None:
+    """Space, a separator, and space again, between sections."""
+    imgui.spacing()
+    imgui.separator()
+    imgui.spacing()
+    imgui.spacing()
+
+
+def diff_config(current: Any, default: Any, path: str, rows: list) -> None:
+    """
+    Append a row for every field of current that differs from default, descending into nested
+    configs and lists of configs.
+
+    Args:
+        current (Any): A config field's value
+        default (Any): The pipeline default's value at the same place, or NO_DEFAULT when it has none
+        path (str): Where the value sits, e.g. filtered_demixing_config.DemixingConfigs[0].NMFConfig
+        rows (list): Receives (path, current, default) text triples
+    """
+    if default is NO_DEFAULT:
+        return
+    if dataclasses.is_dataclass(current) and type(current) is type(default):
+        for field in dataclasses.fields(current):
+            if field.init:
+                diff_config(
+                    current=getattr(current, field.name),
+                    default=getattr(default, field.name),
+                    path=f"{path}.{field.name}",
+                    rows=rows,
+                )
+        return
+    if dataclasses.is_dataclass(current) or dataclasses.is_dataclass(default):
+        rows.append((path, kind_or_none(value=current), kind_or_none(value=default)))
+        return
+    holds_configs = any(isinstance(v, list) and len(v) > 0 and dataclasses.is_dataclass(v[0]) for v in (current, default))
+    if holds_configs and isinstance(current, list) and isinstance(default, list):
+        if len(current) != len(default):
+            rows.append((f"{path} passes", str(len(current)), str(len(default))))
+        for i, item in enumerate(current):
+            diff_config(current=item, default=default[i] if i < len(default) else NO_DEFAULT, path=f"{path}[{i}]", rows=rows)
+        return
+    if not same(current, default):
+        rows.append((path, text_of(value=current) or "none", text_of(value=default) or "none"))
+
+
+class Launcher:
+    """
+    State behind the launcher window: the page shown, the chosen pipeline and every value typed into the pages.
+
+    Args:
+        slug_initial (str): The pipeline selected when Run pipeline opens
+    """
+
+    def __init__(self, slug_initial: str = PIPELINE_INITIAL):
+        self.page = PAGE_INITIAL
+        self.slugs = sorted(scraper.pipeline_registry())
+        self.index_pipeline = self.slugs.index(slug_initial) if slug_initial in self.slugs else 0
+        self.spec: Optional[scraper.PipelineSpec] = None
+        self.paths: dict[str, str] = {}
+        self.texts: dict[str, str] = {}
+        self.values: dict[str, Any] = {}
+        self.buffers: dict[str, str] = {}
+        self.errors: dict[str, str] = {}
+        self.dataset = ""
+        # the run to load Run pipeline from, the folder it was loaded from until the pipeline is switched, and why
+        # the last load failed
+        self.paths_load: dict[str, str] = {"run": ""}
+        self.loaded_run: Optional[str] = None
+        self.message_load = ""
+        # where a run starts: "movie", or the loaded run's "registration" or "compression", and the stage values
+        # loaded, which a compression start replaces with skip
+        self.start_from = "movie"
+        self.values_loaded: dict[str, Any] = {}
+        # Open results: the path and the raw movie with its dataset, the viewer picked, and what the path holds
+        self.paths_open: dict[str, str] = {"source": "", "raw": ""}
+        self.dataset_raw = ""
+        self.viewer = ""
+        self.compression_check = False
+        self.inspected: Optional[str] = None
+        self.found: dict[str, Any] = {"kind": "", "detail": "", "stages": {}, "files": []}
+        # Track sessions: results rows results_0, results_1, ... and the out folder
+        self.paths_tracking: dict[str, str] = {"out": "", "results_0": ""}
+        self.um_per_pixel = 1.2
+        # the rows as last edited and when, the rows last searched with the sessions found, the search running, and
+        # the sessions checked or unchecked by hand
+        self.rows_edited: tuple[str, ...] = ()
+        self.time_edited = 0.0
+        self.found_tracking: tuple[tuple[str, ...], list[dict]] = ((), [])
+        self.searching: Optional[threading.Thread] = None
+        self.checked_tracking: dict[str, bool] = {}
+        # the output folder as last filled in from the sessions, replaced while the user leaves it
+        self.out_filled = ""
+        # Classify ROIs: results rows and the classifier file
+        self.paths_classify: dict[str, str] = {"classifier": "", "results_0": ""}
+        self.labels = ""
+        self.picker = None
+        self.target_picker: Optional[tuple[dict, str]] = None
+        self.argv: Optional[list[str]] = None
+        self.canvas = None
+        self.loop = None
+        self.dialog: Optional[idl.FileDialog] = None
+        self.font: Optional[imgui.ImFont] = None
+
+        self.store = idl.JsonPreferenceStore(path=str(DIR_CONFIG / "recent.json"))
+        self.config = idl.FileDialogConfig(
+            title="masknmf",
+            buttons=[],
+            theme=THEME,
+            header_draw=self.draw_header,
+            body_draw=self.draw_body,
+            footer_draw=self.draw_footer,
+            show_options_button=False,
+            close_on_select=False,
+            quit_on_escape=False,
+            on_cancel=self.quit,
+        )
+        self.select_pipeline(index=self.index_pipeline)
+
+    def select_pipeline(self, index: int) -> None:
+        """Switch pipelines, resetting every value but the movie paths."""
+        self.index_pipeline = index
+        self.spec = cli.spec_for(slug=self.slugs[index])
+        self.texts = {
+            param.name: text_default(param=param)
+            for param in (*self.spec.run_scalars, *self.spec.scalars)
+        }
+        self.values = {section.argument: section.value_for(kind=section.default_kind) for section in self.spec.sections}
+        self.buffers = {}
+        self.errors = {}
+        self.loaded_run = None
+        self.message_load = ""
+        self.start_from = "movie"
+        # the uniform min brightness control: while checked, every change of its value is set in every demixing pass
+        self.uniform_min_brightness_on = False
+        self.uniform_min_brightness = 1.0
+        for param in (*self.spec.movie_params, *self.spec.array_params):
+            self.paths.setdefault(param.field, "")
+
+    def select_kind(self, section: scraper.Section, kind: str) -> None:
+        """Give a section another config, at the pipeline's default when it is the default's kind."""
+        self.values[section.argument] = section.value_for(kind=kind)
+        self.forget(path=section.argument)
+
+    def forget(self, path: str) -> None:
+        """Drop the typed text and errors of every field under path, so they are read again from the values."""
+        self.buffers = {k: v for k, v in self.buffers.items() if not k.startswith(path)}
+        self.errors = {k: v for k, v in self.errors.items() if not k.startswith(path)}
+
+    def sections_changed(self) -> list[scraper.Section]:
+        """The sections whose config differs from the pipeline's default."""
+        return [s for s in self.spec.sections if not same(self.values[s.argument], s.default)]
+
+    def reset_field(self, config: Any, name: str, default: Any, path: str) -> None:
+        """Put one config field back to the pipeline's default."""
+        setattr(config, name, copy.deepcopy(default))
+        self.forget(path=path)
+
+    def reset_section(self, section: scraper.Section) -> None:
+        """Put a stage back to the pipeline's default config."""
+        self.values[section.argument] = section.value_for(kind=section.default_kind)
+        self.forget(path=section.argument)
+
+    def reset_all(self) -> None:
+        """Put every stage, run argument and constructor argument back to its default; paths and required values stay."""
+        for param in (*self.spec.run_scalars, *self.spec.scalars):
+            if not param.required:
+                self.texts[param.name] = text_default(param=param)
+        for section in self.spec.sections:
+            self.reset_section(section=section)
+
+    def select_nested(self, config: Any, name: str, kind: str, default: Any, path: str) -> None:
+        """
+        Give a nested config field another config, or None.
+
+        Args:
+            config (Any): The config holding the field
+            name (str): The field
+            kind (str): "none", or the kind of one of the configs the field's annotation allows
+            default (Any): The pipeline's default for the field, or NO_DEFAULT; choosing its kind restores it
+            path (str): Where the field sits
+        """
+        if kind == "none":
+            value = None
+        elif default is not NO_DEFAULT and default is not None and scraper.kind_of(value=default) == kind:
+            value = copy.deepcopy(default)
+        else:
+            annotation = scraper.resolve_hints(cls=type(config)).get(name)
+            members, _ = scraper.annotation_members(annotation=annotation)
+            by_kind = {scraper.config_kind(cls_config=m): m for m in members if dataclasses.is_dataclass(m)}
+            value = scraper.build_default(cls_config=by_kind[kind])
+        setattr(config, name, value)
+        self.forget(path=path)
+
+    def params_folder(self) -> list[scraper.Param]:
+        """Constructor arguments that name a folder, shown with the input."""
+        return [p for p in self.spec.scalars if widget_for(param=p) == "folder"]
+
+    def params_runtime(self) -> list[scraper.Param]:
+        """Constructor arguments that are neither configs nor folders."""
+        return [p for p in self.spec.scalars if widget_for(param=p) != "folder"]
+
+    def is_changed(self, param: scraper.Param) -> bool:
+        """Whether a value differs from its default and so has to be passed."""
+        return self.texts[param.name] != text_default(param=param)
+
+    def is_modified(self, param: scraper.Param) -> bool:
+        """Whether a value was changed from a default it has; filling in a required value is not a modification."""
+        return not param.required and self.is_changed(param=param)
+
+    def error_for(self, param: scraper.Param) -> Optional[str]:
+        """Why a value would be rejected, or None when it parses."""
+        text = self.texts[param.name]
+        if not param.required and not self.is_changed(param=param):
+            return None
+        if text == "" and param.required:
+            return f"{param.field} is required"
+        try:
+            scraper.coerce(param=param, text=text)
+        except ValueError as error:
+            return str(error)
+        return None
+
+    def value_of(self, param: scraper.Param):
+        """A parameter's value as its widget shows it: the typed text parsed, or its default if it does not parse."""
+        try:
+            return scraper.coerce(param=param, text=self.texts[param.name])
+        except ValueError:
+            return param.default
+
+    def movies_given(self) -> list[str]:
+        """The movie paths filled in, in run argument order."""
+        return [
+            self.paths[param.field].strip()
+            for param in self.spec.movie_params
+            if self.paths[param.field].strip() != ""
+        ]
+
+    def results_given(self, target: dict) -> list[str]:
+        """The results rows filled in, in session order."""
+        return [p.strip() for k, p in target.items() if k.startswith("results_") and p.strip() != ""]
+
+    def update_sessions(self) -> None:
+        """Search Track sessions' rows again once they have stayed unchanged for DELAY_SEARCH and no search is running."""
+        rows = tuple(self.results_given(target=self.paths_tracking))
+        if rows != self.rows_edited:
+            self.rows_edited = rows
+            self.time_edited = time.monotonic()
+        if rows == self.found_tracking[0] or time.monotonic() - self.time_edited < DELAY_SEARCH:
+            return
+        if self.searching is None or not self.searching.is_alive():
+            self.searching = threading.Thread(target=self.search_sessions, args=(rows,), daemon=True)
+            self.searching.start()
+
+    def search_sessions(self, rows: tuple[str, ...]) -> None:
+        """Find the sessions rows name, off the drawing thread."""
+        self.found_tracking = (rows, find_sessions(rows=rows))
+
+    def is_checked(self, session: dict) -> bool:
+        """Whether a found session is tracked: as checked by hand, else whenever it holds demixing results."""
+        return session["demixing"] and self.checked_tracking.get(session["path"], True)
+
+    def sessions_tracked(self) -> Optional[list[str]]:
+        """The checked sessions' results files in session order; None while the rows are not searched yet."""
+        rows, sessions = self.found_tracking
+        if rows != tuple(self.results_given(target=self.paths_tracking)):
+            return None
+        return [s["path"] for s in sessions if self.is_checked(session=s)]
+
+    def outside_out(self) -> list[str]:
+        """
+        The checked sessions not inside the output folder. The manifest saved there names each session by its path
+        from there, so with every session inside, the folder moves to another place or machine as a whole.
+        """
+        out = self.paths_tracking["out"].strip()
+        if out == "":
+            return []
+        folder = Path(out).expanduser().absolute()
+        return [p for p in self.sessions_tracked() or [] if not Path(p).absolute().is_relative_to(folder)]
+
+    def fill_out(self) -> None:
+        """Make the output folder the checked sessions' common folder while it is empty or still the one filled in."""
+        tracked = self.sessions_tracked()
+        if tracked and self.paths_tracking["out"].strip() in ("", self.out_filled):
+            self.out_filled = str(common_folder(paths=tracked))
+            self.paths_tracking["out"] = self.out_filled
+
+    def load_run(self, source: str) -> Optional[str]:
+        """
+        Fill Run pipeline with a run's parameters from the config.json beside it, the run starting from the movie.
+
+        Parameters
+        ----------
+        source : str
+            A run folder, a results file in one, or the config.json itself.
+
+        Returns
+        -------
+        str | None
+            Why nothing was loaded, or None once the pipeline, its configs, the inputs and the output folder are set.
+        """
+        path = Path(source).expanduser()
+        folder = path if path.is_dir() else path.parent
+        filepath = path if path.name == "config.json" else folder / "config.json"
+        if not filepath.is_file():
+            return f"no config.json in {folder}"
+        try:
+            loaded = cli.config_record(loaded=json.loads(filepath.read_text()))
+        except (OSError, ValueError) as error:
+            return f"could not read {filepath.name}: {error}"
+        name_class = None if loaded is None else loaded.get("pipeline")
+        slug = next((s for s, cls in scraper.pipeline_registry().items() if cls.__name__ == name_class), None)
+        if slug is None:
+            return f"{filepath.name} names no masknmf pipeline"
+        configs = loaded["configs"]
+        self.select_pipeline(index=self.slugs.index(slug))
+        try:
+            for section in self.spec.sections:
+                if section.argument in configs:
+                    passes, value = cli.section_value(section=section, kind=None, value_file=configs[section.argument])
+                    if passes:
+                        self.values[section.argument] = value
+        except SystemExit:
+            self.select_pipeline(index=self.index_pipeline)
+            return f"{filepath.name} does not fit {slug}"
+        for param in (*self.spec.run_scalars, *self.spec.scalars):
+            # a None the parameter does not take was recorded before it existed; where to start is chosen anew
+            if param.field not in configs or param.field == "resume_from":
+                continue
+            if configs[param.field] is None and param.default is not None:
+                continue
+            self.texts[param.name] = text_value(value=configs[param.field])
+        self.values_loaded = copy.deepcopy(self.values)
+        inputs = loaded.get("inputs", {})
+        for param in (*self.spec.movie_params, *self.spec.array_params):
+            if param.field in inputs:
+                self.paths[param.field] = inputs[param.field].get("path", "")
+                if "dataset" in inputs[param.field]:
+                    self.dataset = inputs[param.field]["dataset"]
+        self.loaded_run = str(folder)
+        return None
+
+    def starts_available(self) -> list[str]:
+        """
+        Where a run of the loaded pipeline can start besides the movie: the loaded run's registration, and its
+        compression, when its results.hdf5 holds them and the pipeline can resume from them.
+
+        Returns
+        -------
+        list[str]
+            "registration" and "compression", as available.
+        """
+        filepath = None if self.loaded_run is None else Path(self.loaded_run) / "results.hdf5"
+        if filepath is None or not filepath.is_file() or not any(p.field == "resume_from" for p in self.spec.run_scalars):
+            return []
+        names = cli.groups_present(filepath_results=str(filepath))
+        starts = ["registration"] if any(n in names for n in group_names_registration()) else []
+        compress = next((s for s in self.spec.sections if s.argument == "compress_config"), None)
+        if group_name_compression() in names and compress is not None and compress.allows_skip:
+            starts.append("compression")
+        return starts
+
+    def select_start(self, start: str) -> None:
+        """
+        Start the run from the movie, or reuse the loaded run's registration or compression: resume from its
+        results.hdf5, the compression reused by its compress config "skip".
+
+        Parameters
+        ----------
+        start : str
+            "movie", "registration" or "compression".
+        """
+        self.start_from = start
+        resume = next(p for p in self.spec.run_scalars if p.field == "resume_from")
+        self.texts[resume.name] = "" if start == "movie" else str(Path(self.loaded_run) / "results.hdf5")
+        compress = next((s for s in self.spec.sections if s.argument == "compress_config"), None)
+        if compress is None:
+            return
+        if start == "compression":
+            self.select_kind(section=compress, kind="skip")
+        elif isinstance(self.values[compress.argument], str):
+            self.values[compress.argument] = copy.deepcopy(self.values_loaded.get(compress.argument, compress.default))
+            self.forget(path=compress.argument)
+
+    def inspect(self) -> None:
+        """Read what the Open results path holds, once per change of the path."""
+        source = self.paths_open["source"].strip()
+        if source == self.inspected:
+            return
+        self.inspected = source
+        stages = {"registration": False, "compression": False, "demixing": False, "curated": False}
+        self.found = {"kind": "", "detail": "", "stages": stages, "files": []}
+        if source == "":
+            return
+        path = Path(source).expanduser()
+        folder = path if path.is_dir() else path.parent
+        # the raw movie the run read, from the config.json beside its results, serves the registration and
+        # compression views
+        if (folder / "config.json").is_file() and self.paths_open["raw"].strip() == "":
+            try:
+                inputs = json.loads((folder / "config.json").read_text()).get("inputs", {})
+            except (OSError, ValueError):
+                inputs = {}
+            movie = next((v for v in inputs.values() if isinstance(v, dict) and not str(v.get("path", "")).lower().endswith(".npy")), None)
+            if movie is not None and Path(movie["path"]).expanduser().exists():
+                self.paths_open["raw"] = movie["path"]
+                self.dataset_raw = movie.get("dataset", "")
+        try:
+            tracking = cli.find_tracking(entry=source)
+            if tracking is not None:
+                self.found.update(kind="tracking", detail=tracking.name)
+                return
+            if path.is_dir():
+                pattern = str(Path(glob.escape(source)) / "*results*.hdf5")
+                # expand_results exits the process on an empty glob, as the command line wants
+                files = cli.expand_results(entries=[pattern]) if len(glob.glob(pattern)) > 0 else []
+                self.found.update(kind="folder", files=files)
+                if len(files) != 1:
+                    return
+                path = Path(files[0])
+            elif not path.is_file() or not is_hdf5(filepath=source):
+                kind = "missing" if not path.exists() else "other"
+                detail = "not found on this machine" if kind == "missing" else "not a results file, run folder or tracking run"
+                self.found.update(kind=kind, detail=detail)
+                return
+            names = cli.groups_present(filepath_results=str(path))
+            stages["registration"] = any(n in names for n in group_names_registration())
+            stages["compression"] = group_name_compression() in names
+            stages["demixing"] = group_name_demixing() in names
+            stages["curated"] = ".curated." in path.name
+            if self.found["kind"] == "":
+                self.found.update(kind="results", detail=path.name)
+        except (Exception, SystemExit) as error:
+            self.found.update(kind="other", detail=f"could not read it: {error}")
+
+    def available(self, key: str) -> bool:
+        """Whether a viewer applies to what the Open results path holds."""
+        kind, stages, files = self.found["kind"], self.found["stages"], self.found["files"]
+        raw = self.paths_open["raw"].strip() != ""
+        single = kind == "results" or (kind == "folder" and len(files) == 1)
+        if key == "demixing":
+            return single and (stages["demixing"] or stages["compression"] or (stages["registration"] and raw))
+        if key == "classification":
+            return (single and stages["demixing"]) or (kind == "folder" and len(files) > 1)
+        return key == "multisession" and kind == "tracking"
+
+    def compression_checkable(self) -> bool:
+        """Whether the demixing viewer can add the lag-1 autocorrelation stills: a compression and the raw movie."""
+        return self.available(key="demixing") and self.found["stages"]["compression"] and self.paths_open["raw"].strip() != ""
+
+    def viewer_current(self) -> str:
+        """The chosen viewer while it applies, else the first that does, else nothing."""
+        if self.viewer != "" and self.available(key=self.viewer):
+            return self.viewer
+        return next((key for key, *_ in VIEWERS if self.available(key=key)), "")
+
+    def problems(self) -> list[str]:
+        """Everything that has to be fixed before the page's action can go."""
+        if self.page == "track":
+            rows = self.results_given(target=self.paths_tracking)
+            problems = [] if len(rows) > 0 else ["choose the sessions' results files or a folder of runs"]
+            problems += [f"not found: {p}" for p in rows if not any(c in p for c in "*?[") and not Path(p).expanduser().exists()]
+            tracked = self.sessions_tracked()
+            if len(rows) > 0 and tracked is None:
+                problems.append("looking for the sessions' results files")
+            elif len(rows) > 0 and len(tracked) < 2:
+                problems.append(f"tracking needs at least two sessions checked, {len(tracked)} are")
+            if self.paths_tracking["out"].strip() == "":
+                problems.append("choose the folder the tracking is saved in")
+            elif len(self.outside_out()) > 0:
+                problems.append(f"{len(self.outside_out())} checked sessions are outside the output folder; it has to hold "
+                                f"them all, e.g. {common_folder(paths=self.sessions_tracked())}")
+            return problems
+        if self.page == "classify":
+            rows = self.results_given(target=self.paths_classify)
+            problems = [] if len(rows) > 0 else ["choose the sessions' results files"]
+            problems += [f"not found: {p}" for p in rows if not any(c in p for c in "*?[") and not Path(p).expanduser().exists()]
+            return problems
+        if self.page == "open":
+            if self.paths_open["source"].strip() == "":
+                return ["choose a results file, a run folder or a tracking run"]
+            if self.found["kind"] in ("missing", "other"):
+                return [self.found["detail"]]
+            if self.found["kind"] == "folder" and len(self.found["files"]) == 0:
+                return ["no results files in this folder"]
+            if self.viewer_current() == "":
+                return ["nothing here a viewer opens; a registration alone needs the raw movie"]
+            raw = self.paths_open["raw"].strip()
+            return [f"not found: {raw}"] if raw != "" and not Path(raw).expanduser().exists() else []
+        if self.page != "run":
+            return []
+        problems = []
+        movies = self.movies_given()
+        if len(movies) == 0:
+            problems.append("choose a movie")
+        problems += [f"not found: {p}" for p in movies if not Path(p).expanduser().exists()]
+        if any(is_hdf5(filepath=p) for p in movies) and self.dataset.strip() == "":
+            problems.append("name the dataset holding the movie in the hdf5 file")
+        for param in self.spec.array_params:
+            path = self.paths[param.field].strip()
+            if path == "" and param.required:
+                problems.append(f"{param.field} needs a .npy file")
+            elif path != "" and not Path(path).expanduser().exists():
+                problems.append(f"not found: {path}")
+        # the one run argument that names a file
+        for param in self.spec.run_scalars:
+            path = self.texts[param.name].strip()
+            if param.field == "resume_from" and path != "" and not Path(path).expanduser().exists():
+                problems.append(f"not found: {path}")
+        params = [*self.spec.run_scalars, *self.spec.scalars]
+        problems += [e for e in (self.error_for(param=p) for p in params) if e is not None]
+        problems += list(self.errors.values())
+        return problems
+
+    def modified(self) -> list[tuple[str, str, str]]:
+        """Every value that differs from its default: name, current value, default."""
+        rows = []
+        for param in (*self.spec.run_scalars, *self.spec.scalars):
+            if self.is_modified(param=param):
+                rows.append((param.field, self.texts[param.name], text_default(param=param) or "none"))
+        for section in self.spec.sections:
+            diff_config(current=self.values[section.argument], default=section.default, path=section.argument, rows=rows)
+        return rows
+
+    def build_argv(self) -> Optional[list[str]]:
+        """The `masknmf` arguments the page amounts to; None on the Overview."""
+        if self.page == "run":
+            return self.argv_run()
+        if self.page == "open":
+            return self.argv_open()
+        if self.page == "track":
+            return self.argv_track()
+        if self.page == "classify":
+            return self.argv_classify()
+        return None
+
+    def argv_run(self) -> list[str]:
+        """The `masknmf run` arguments Run pipeline amounts to, writing changed configs to a json file."""
+        spec = self.spec
+        argv = ["run", "--pipeline", spec.slug]
+        for param in spec.movie_params:
+            path = self.paths[param.field].strip()
+            if path == "":
+                continue
+            argv += [path] if len(spec.movie_params) == 1 else [param.flag, path]
+        if any(is_hdf5(filepath=p) for p in self.movies_given()):
+            argv += ["--dataset", self.dataset.strip()]
+        for param in spec.array_params:
+            path = self.paths[param.field].strip()
+            if path != "":
+                argv += [param.flag, path]
+        for param in spec.run_scalars:
+            if param.required or self.is_changed(param=param):
+                argv += [param.flag, self.texts[param.name]]
+        for param in spec.scalars:
+            if self.is_changed(param=param):
+                argv += [param.flag, self.texts[param.name]]
+        sections = self.sections_changed()
+        if len(sections) > 0:
+            configs = {section.argument: self.values[section.argument] for section in sections}
+            FILEPATH_RUN_CONFIGS.write_text(
+                json.dumps({"pipeline": spec.cls.__name__, "configs": configs}, indent=2, default=scraper.config_json_value)
+            )
+            argv += ["--config", str(FILEPATH_RUN_CONFIGS)]
+        return argv
+
+    def argv_open(self) -> Optional[list[str]]:
+        """The `masknmf view` arguments Open results amounts to; None while nothing opens."""
+        key = self.viewer_current()
+        if key == "":
+            return None
+        raw = self.paths_open["raw"].strip()
+        argv = ["view", self.paths_open["source"].strip()]
+        if raw != "" and key == "demixing":
+            argv += ["--raw", raw]
+            if is_hdf5(filepath=raw) and self.dataset_raw.strip() != "":
+                argv += ["--dataset", self.dataset_raw.strip()]
+        if key == "demixing" and self.compression_check and self.compression_checkable():
+            argv.append("--compression")
+        if key == "classification":
+            argv.append("--classify")
+        return argv
+
+    def argv_track(self) -> list[str]:
+        """The `masknmf track` arguments Track sessions amounts to: the checked sessions' files, as the preview lists them."""
+        return ["track", *(self.sessions_tracked() or []), "--out", self.paths_tracking["out"].strip(), "--um-per-pixel", f"{self.um_per_pixel:.6g}"]
+
+    def argv_classify(self) -> list[str]:
+        """The `masknmf view --classify` arguments Classify ROIs amounts to."""
+        argv = ["view", *self.results_given(target=self.paths_classify), "--classify"]
+        if self.labels.strip() != "":
+            argv += ["--labels", self.labels.strip()]
+        if self.paths_classify["classifier"].strip() != "":
+            argv += ["--classifier", self.paths_classify["classifier"].strip()]
+        return argv
+
+    def label_primary(self) -> Optional[str]:
+        """The footer's action for the page; None on the Overview."""
+        if self.page == "run":
+            return f"{fa.ICON_FA_PLAY}  Run {self.spec.slug}"
+        if self.page == "open":
+            key = self.viewer_current()
+            name = next((name for k, _, name, _ in VIEWERS if k == key), "a viewer")
+            return f"{fa.ICON_FA_EYE}  Open in {name}"
+        if self.page in ("track", "classify"):
+            if self.page == "track":
+                rows = self.sessions_tracked() or []
+            else:
+                rows = self.results_given(target=self.paths_classify)
+            verb = "Track" if self.page == "track" else "Classify"
+            icon = fa.ICON_FA_DIAGRAM_PROJECT if self.page == "track" else fa.ICON_FA_TAGS
+            return f"{icon}  {verb} {len(rows)} session{'' if len(rows) == 1 else 's'}"
+        return None
+
+    def quit(self) -> None:
+        """Close the window once the current frame is done; an action sets argv first, while Esc and Quit leave it None."""
+        if self.canvas is not None:
+            self.loop.call_soon(self.canvas.close)
+
+    def attach(self, canvas, loop) -> None:
+        """
+        Draw the launcher into a rendercanvas the way fastplotlib draws its imgui figures.
+
+        Closing and resizing are handed to the loop, because doing either while a frame is being drawn
+        destroys the texture the frame is drawn into.
+
+        Args:
+            canvas (BaseRenderCanvas): The canvas; its logical size is kept at least SIZE_MIN
+            loop (BaseLoop): The loop running the canvas
+        """
+        self.canvas = canvas
+        self.loop = loop
+        self.dialog = idl.FileDialog(self.config)
+        renderer = ImguiRenderer(wgpu.utils.get_default_device(), canvas)
+        self.font = load_fonts()
+        apply_theme()
+        renderer.set_gui(self.draw_window)
+        canvas.add_event_handler(self.keep_minimum_size, "resize")
+        canvas.request_draw(renderer.render)
+
+    def keep_minimum_size(self, event: dict) -> None:
+        """Resize the canvas back up to SIZE_MIN when it is made smaller."""
+        width, height = event["width"], event["height"]
+        if width < SIZE_MIN[0] or height < SIZE_MIN[1]:
+            self.loop.call_soon(self.canvas.set_logical_size, max(width, SIZE_MIN[0]), max(height, SIZE_MIN[1]))
+
+    def draw_window(self) -> None:
+        """One frame: the dialog in a borderless imgui window covering the canvas."""
+        viewport = imgui.get_main_viewport()
+        imgui.push_font(self.font, self.font.legacy_size)
+        imgui.set_next_window_pos(viewport.pos)
+        imgui.set_next_window_size(viewport.size)
+        imgui.push_style_color(imgui.Col_.window_bg, idl.to_vec4(self.dialog.theme.bg))
+        flags = imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.no_move | imgui.WindowFlags_.no_saved_settings
+        imgui.begin("##masknmf_launcher", None, flags)
+        imgui.pop_style_color()
+        self.dialog.render()
+        imgui.end()
+        imgui.pop_font()
+
+    def open_picker(self, target: dict, key: str, filetypes: Optional[list] = None) -> None:
+        """Open a native picker whose choice lands in target[key]; a folder picker without filetypes."""
+        if self.picker is not None:
+            return
+        start = self.store.default_dir() or str(Path.home())
+        if filetypes is None:
+            self.picker = pfd.select_folder("Select folder", start)
+        else:
+            self.picker = pfd.open_file("Select file", start, idl.flatten_filters(filetypes), pfd.opt.none)
+        self.target_picker = (target, key)
+
+    def poll_picker(self) -> None:
+        """Land a finished picker's choice and remember its folder for the next picker."""
+        if self.picker is None or not self.picker.ready():
+            return
+        chosen = self.picker.result()
+        if isinstance(chosen, list):
+            chosen = chosen[0] if len(chosen) > 0 else ""
+        if chosen:
+            target, key = self.target_picker
+            target[key] = chosen
+            self.store.record_selection(idl.DialogResult(paths=[chosen]))
+        self.picker = None
+        self.target_picker = None
+
+    def draw_header(self) -> None:
+        """The name and version, then what masknmf does."""
+        em = imgui.get_font_size()
+        imgui.dummy(imgui.ImVec2(0, 0.2 * em))
+        imgui.push_font(None, 1.5 * em)
+        imgui.text_colored(COLOR_SUBSECTION, "masknmf")
+        imgui.pop_font()
+        imgui.same_line(0, 0.6 * em)
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 0.45 * em)
+        imgui.text_disabled(f"v{masknmf.__version__}")
+        imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
+        imgui.text_colored(COLOR_DIM, "Motion correction, compression and demixing of functional imaging data, and the viewers over their results")
+        imgui.pop_text_wrap_pos()
+
+    def draw_body(self) -> None:
+        """The rail and the page side by side, filling the room above the footer; Esc goes to the Overview, then quits."""
+        if imgui.is_key_pressed(imgui.Key.escape) and not imgui.is_any_item_active() and not imgui.is_popup_open("", imgui.PopupFlags_.any_popup_id):
+            if self.page == "home":
+                self.quit()
+            else:
+                self.page = "home"
+        em = imgui.get_font_size()
+        avail = imgui.get_content_region_avail()
+        dl = imgui.get_window_draw_list()
+        p = imgui.get_cursor_screen_pos()
+        with imgui_ctx.begin_child("##rail", imgui.ImVec2(WIDTH_RAIL_EM * em, avail.y), 0, imgui.WindowFlags_.no_scrollbar):
+            self.draw_rail()
+        x = p.x + WIDTH_RAIL_EM * em + 0.4 * em
+        dl.add_line(imgui.ImVec2(x, p.y), imgui.ImVec2(x, p.y + avail.y), guide.u32(guide.EDGE, 0.8), 1.0)
+        imgui.same_line(0, 0.8 * em)
+        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(1.2 * em, 0.6 * em))
+        with imgui_ctx.begin_child("##content", imgui.ImVec2(0, avail.y), imgui.ChildFlags_.always_use_window_padding):
+            self.draw_content()
+        imgui.pop_style_var()
+        self.poll_picker()
+
+    def draw_rail(self) -> None:
+        """One button per page, the current one lit, then the recent paths."""
+        em = imgui.get_font_size()
+        width = imgui.get_content_region_avail().x
+        imgui.push_style_var(imgui.StyleVar_.button_text_align, imgui.ImVec2(0.0, 0.5))
+        imgui.push_style_var(imgui.StyleVar_.frame_rounding, 5.0)
+        for key, icon, name, hint in PAGES:
+            lit = key == self.page
+            imgui.push_style_color(imgui.Col_.button, COLOR_LIT if lit else imgui.ImVec4(0, 0, 0, 0))
+            imgui.push_style_color(imgui.Col_.button_hovered, COLOR_LIT if lit else guide.CARD_HOVER)
+            imgui.push_style_color(imgui.Col_.button_active, COLOR_LIT)
+            imgui.push_style_color(imgui.Col_.text, COLOR_SUBSECTION if lit else guide.TEXT)
+            if imgui.button(f"{icon}   {name}##rail_{key}", imgui.ImVec2(width, 2.2 * em)):
+                self.page = key
+            imgui.pop_style_color(4)
+            if imgui.is_item_hovered():
+                idl.wrapped_tooltip(f"{name}: {hint}")
+        recent = [p for p in self.store.recent() if p][:6]
+        if len(recent) > 0:
+            imgui.dummy(imgui.ImVec2(0, 0.8 * em))
+            imgui.text_disabled("RECENT")
+            imgui.separator()
+            imgui.push_style_color(imgui.Col_.button, imgui.ImVec4(0, 0, 0, 0))
+            imgui.push_style_color(imgui.Col_.button_hovered, guide.CARD_HOVER)
+            imgui.push_style_color(imgui.Col_.button_active, COLOR_LIT)
+            imgui.push_style_color(imgui.Col_.text, COLOR_DIM)
+            for i, path in enumerate(recent):
+                if imgui.button(f"{fa.ICON_FA_CLOCK_ROTATE_LEFT}  {Path(path).name or path}##recent_{i}", imgui.ImVec2(width, 1.7 * em)):
+                    self.page = "open"
+                    self.paths_open["source"] = path
+                if imgui.is_item_hovered():
+                    idl.wrapped_tooltip(f"Open results: {path}")
+            imgui.pop_style_color(4)
+        imgui.pop_style_var(2)
+
+    def draw_content(self) -> None:
+        """The page's title and line, then the page."""
+        em = imgui.get_font_size()
+        key, icon, name, hint = next(page for page in PAGES if page[0] == self.page)
+        imgui.push_font(None, 1.35 * em)
+        imgui.text_colored(COLOR_SUBSECTION, f"{icon}  {name}")
+        imgui.pop_font()
+        imgui.text_colored(COLOR_DIM, hint)
+        imgui.separator()
+        imgui.dummy(imgui.ImVec2(0, 0.4 * em))
+        if key == "home":
+            self.draw_home()
+        elif key == "run":
+            self.draw_run()
+        elif key == "open":
+            self.draw_open()
+        elif key == "track":
+            self.draw_track()
+        else:
+            self.draw_classify()
+
+    def step(self, n: int, title: str, hint: str) -> None:
+        """A numbered step heading with a (?) hint."""
+        em = imgui.get_font_size()
+        dl = imgui.get_window_draw_list()
+        p = imgui.get_cursor_screen_pos()
+        r = 0.75 * em
+        center = imgui.ImVec2(p.x + r, p.y + r)
+        dl.add_circle_filled(center, r, guide.u32(COLOR_SUBSECTION, 0.22))
+        dl.add_circle(center, r, guide.u32(COLOR_SUBSECTION), 0, 1.0)
+        size = imgui.calc_text_size(str(n))
+        dl.add_text(imgui.ImVec2(center.x - size.x / 2, center.y - size.y / 2), guide.u32(COLOR_SUBSECTION), str(n))
+        imgui.dummy(imgui.ImVec2(2 * r, 2 * r))
+        imgui.same_line(0, 0.6 * em)
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 0.25 * em)
+        imgui.text_colored(COLOR_SUBSECTION, title)
+        draw_hint(text=hint)
+        imgui.dummy(imgui.ImVec2(0, 0.1 * em))
+
+    def begin_form(self, name: str) -> bool:
+        """Begin a two column table: dim captions in a fixed column, widgets filling the rest; end it with end_table."""
+        if not imgui.begin_table(f"##form_{name}", 2, imgui.TableFlags_.sizing_stretch_prop):
+            return False
+        imgui.table_setup_column("##caption", imgui.TableColumnFlags_.width_fixed, WIDTH_CAPTION_EM * imgui.get_font_size())
+        imgui.table_setup_column("##widget", imgui.TableColumnFlags_.width_stretch)
+        return True
+
+    def row(self, caption: str, color: Optional[imgui.ImVec4] = None) -> None:
+        """Start a form row: the caption, dim unless colored, then the cursor in the widget column."""
+        imgui.table_next_row()
+        imgui.table_next_column()
+        imgui.align_text_to_frame_padding()
+        if color is None:
+            imgui.text_disabled(caption)
+        else:
+            imgui.text_colored(color, caption)
+        imgui.table_next_column()
+
+    def draw_results_rows(self, target: dict, folders: bool) -> None:
+        """One results file, path or glob, or with folders a folder too, per form row; a new row opens as the last one fills."""
+        keys = [k for k in target if k.startswith("results_")]
+        for i, key in enumerate(keys):
+            name = "source" if folders else "session"
+            self.row(caption="add" if i > 0 and i == len(keys) - 1 and target[key].strip() == "" else f"{name} {i + 1}")
+            self.draw_path(target=target, key=key, filetypes=FILETYPES_RESULTS, folders=folders,
+                           hint="a folder of runs, a file, or a glob" if folders else "path or glob, e.g. sessions/*/results.hdf5")
+        if target[keys[-1]].strip() != "":
+            target[f"results_{len(keys)}"] = ""
+
+    def draw_home(self) -> None:
+        """The guide: the functions as step cards, the pipeline as a flow of stages each checked, the I/O, the commands."""
+        em = imgui.get_font_size()
+        dl = imgui.get_window_draw_list()
+        w = imgui.get_content_region_avail().x
+
+        gap = 1.4 * em
+        card_w = (w - 4 * gap) / 5
+        card_h = 6.8 * em
+        for i, (page, icon, name, hint) in enumerate(STEPS):
+            if i:
+                right = imgui.get_item_rect_max()
+                mid = imgui.get_item_rect_min().y + card_h / 2
+                guide.arrow(dl, right.x + 0.25 * em, right.x + gap - 0.25 * em, mid)
+                imgui.same_line(0, gap)
+            clicked, a = guide.card_button(dl, f"step{i}", imgui.ImVec2(card_w, card_h))
+            imgui.push_font(None, 1.8 * em)
+            size = imgui.calc_text_size(icon)
+            dl.add_text(imgui.get_font(), 1.8 * em, imgui.ImVec2(a.x + (card_w - size.x) / 2, a.y + 0.6 * em), guide.u32(COLOR_SUBSECTION), icon)
+            imgui.pop_font()
+            number = str(i + 1)
+            wn, wname = imgui.calc_text_size(number).x, imgui.calc_text_size(name).x
+            x, y = a.x + (card_w - wn - 0.5 * em - wname) / 2, a.y + 3.1 * em
+            dl.add_text(imgui.ImVec2(x, y), guide.u32(COLOR_DIM), number)
+            dl.add_text(imgui.ImVec2(x + wn + 0.5 * em, y), guide.u32(COLOR_TITLE), name)
+            dl.add_text(imgui.get_font(), em, imgui.ImVec2(a.x + 0.5 * em, y + 1.5 * em), guide.u32(COLOR_DIM), hint, None, card_w - em)
+            if clicked:
+                self.page = page
+        draw_wrapped(text="the functions on the left, in the order a dataset goes through them; a card opens its page", color=COLOR_DIM)
+
+        guide.heading(fa.ICON_FA_GEARS, "Pipeline")
+        draw_wrapped(
+            color=COLOR_DIM,
+            text="A pipeline is a pre-configured profile of the standard stages and their configs. Motion correction "
+            "estimates the shifts on the raw movie; compression applies them while it compresses, so no registered "
+            "movie is ever written. Run a stage, open its results and check it before trusting the next: one demixing viewer "
+            "opens a single session's results at any of the three stages.",
+        )
+        imgui.dummy(imgui.ImVec2(0, 0.4 * em))
+        # the stages in a row, each with its check under it
+        p = imgui.get_cursor_screen_pos()
+        bh = 1.9 * em
+        col_w = w / len(FLOW)
+        y_check = p.y + bh + 1.7 * em
+        for i, (stage, check, _does, _what) in enumerate(FLOW):
+            cx = p.x + (i + 0.5) * col_w
+            bw = imgui.calc_text_size(stage).x + 1.6 * em
+            cw = imgui.calc_text_size(check).x + 1.6 * em
+            guide.box(dl, cx - bw / 2, p.y, bw, bh, stage, COLOR_SUBSECTION, 0.18)
+            guide.arrow_down(dl, cx, p.y + bh + 0.25 * em, y_check - 0.25 * em)
+            guide.box(dl, cx - cw / 2, y_check, cw, bh, check, COLOR_TITLE, 0.12)
+            if i < len(FLOW) - 1:
+                bw_next = imgui.calc_text_size(FLOW[i + 1][0]).x + 1.6 * em
+                guide.arrow(dl, cx + bw / 2 + 0.3 * em, cx + col_w - bw_next / 2 - 0.3 * em, p.y + bh / 2)
+        imgui.dummy(imgui.ImVec2(w, y_check + bh - p.y))
+        imgui.dummy(imgui.ImVec2(0, 0.3 * em))
+        flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.borders_inner_h
+        if imgui.begin_table("##flow", 3, flags, imgui.ImVec2(w, 0)):
+            imgui.table_setup_column("stage", imgui.TableColumnFlags_.width_fixed, 7.5 * em)
+            imgui.table_setup_column("description", imgui.TableColumnFlags_.width_stretch, 1.2)
+            imgui.table_setup_column("check", imgui.TableColumnFlags_.width_stretch, 1.0)
+            imgui.table_next_row()
+            for heading in ("stage", "description", "check"):
+                imgui.table_next_column()
+                imgui.text_colored(COLOR_DIM, heading)
+            for stage, _check, does, what in FLOW:
+                imgui.table_next_row()
+                imgui.table_next_column()
+                imgui.text_colored(COLOR_TITLE, stage)
+                imgui.table_next_column()
+                imgui.text_wrapped(does)
+                imgui.table_next_column()
+                imgui.text_wrapped(what)
+            imgui.end_table()
+
+        guide.heading(fa.ICON_FA_FILE, "I/O")
+        p = imgui.get_cursor_screen_pos()
+        widths = [imgui.calc_text_size(label).x + 1.6 * em for label, _ in IO_BOXES]
+        x = p.x + (w - sum(widths) - 2.2 * em * (len(IO_BOXES) - 1)) / 2
+        for (label, color), bw in zip(IO_BOXES, widths):
+            guide.box(dl, x, p.y, bw, bh, label, color, 0.18)
+            x += bw
+            if label != IO_BOXES[-1][0]:
+                guide.arrow(dl, x + 0.3 * em, x + 1.9 * em, p.y + bh / 2)
+                x += 2.2 * em
+        imgui.dummy(imgui.ImVec2(w, bh))
+        imgui.dummy(imgui.ImVec2(0, 0.3 * em))
+        if imgui.begin_table("##io", 2, flags, imgui.ImVec2(w, 0)):
+            imgui.table_setup_column("file", imgui.TableColumnFlags_.width_fixed, 15 * em)
+            imgui.table_setup_column("holds", imgui.TableColumnFlags_.width_stretch)
+            for name, text in IO_FILES:
+                imgui.table_next_row()
+                imgui.table_next_column()
+                imgui.text_colored(COLOR_TITLE, name)
+                imgui.table_next_column()
+                imgui.text_wrapped(text)
+            imgui.end_table()
+
+        guide.heading(fa.ICON_FA_TERMINAL, "Command line")
+        draw_wrapped(
+            color=COLOR_DIM,
+            text="every action here is a masknmf command: the line it amounts to shows at the bottom before it runs, "
+            "so a run can be repeated or scripted from a shell",
+        )
+        imgui.dummy(imgui.ImVec2(0, 0.2 * em))
+        for command, does in COMMANDS:
+            imgui.text_colored(COLOR_TITLE, f"masknmf {command}")
+            imgui.indent(1.5 * em)
+            draw_wrapped(text=does, color=COLOR_DIM)
+            imgui.unindent(1.5 * em)
+
+    def draw_run(self) -> None:
+        """Pick a pipeline, give it its inputs, and only then, behind a header, its parameters."""
+        em = imgui.get_font_size()
+        dl = imgui.get_window_draw_list()
+        w = imgui.get_content_region_avail().x
+
+        self.step(1, "Pipeline", "which pipeline runs; switching keeps the movie paths and resets the rest")
+        gap = 1.0 * em
+        card_w = (w - gap) / 2
+        # each stage's chip names the config it runs: the selected pipeline's as set, the others' defaults
+        chips = {}
+        for i, slug in enumerate(self.slugs):
+            rows, line, x = [], [], 0.0
+            for section in cli.spec_for(slug=slug).sections:
+                kind = kind_or_none(value=self.values[section.argument]) if i == self.index_pipeline else section.default_kind
+                cw = imgui.calc_text_size(f"{section.name}  {kind}").x + 0.8 * em
+                if x + cw > card_w - 1.4 * em and len(line) > 0:
+                    rows.append(line)
+                    line, x = [], 0.0
+                line.append((section.name, kind, cw))
+                x += cw + 0.4 * em
+            rows.append(line)
+            chips[slug] = rows
+        card_h = 5.4 * em + max(len(rows) for rows in chips.values()) * 1.5 * em
+        for i, slug in enumerate(self.slugs):
+            if i % 2:
+                imgui.same_line(0, gap)
+            selected = i == self.index_pipeline
+            clicked, a = guide.card_button(dl, f"pipeline_{slug}", imgui.ImVec2(card_w, card_h), selected)
+            dl.add_text(imgui.ImVec2(a.x + 0.7 * em, a.y + 0.6 * em), guide.u32(COLOR_TITLE if selected else guide.TEXT), slug)
+            dl.add_text(imgui.get_font(), em, imgui.ImVec2(a.x + 0.7 * em, a.y + 2.0 * em), guide.u32(COLOR_DIM), DESCRIPTIONS.get(slug, ""), None, card_w - 1.4 * em)
+            y = a.y + card_h - 0.7 * em - len(chips[slug]) * 1.5 * em + 0.2 * em
+            for line in chips[slug]:
+                x = a.x + 0.7 * em
+                for name, kind, cw in line:
+                    dl.add_rect_filled(imgui.ImVec2(x, y), imgui.ImVec2(x + cw, y + 1.3 * em), guide.u32(COLOR_SUBSECTION, 0.15), 3.0)
+                    dl.add_rect(imgui.ImVec2(x, y), imgui.ImVec2(x + cw, y + 1.3 * em), guide.u32(COLOR_SUBSECTION, 0.5), 3.0)
+                    dl.add_text(imgui.ImVec2(x + 0.4 * em, y + 0.15 * em), guide.u32(COLOR_DIM), name)
+                    dl.add_text(imgui.ImVec2(x + 0.4 * em + imgui.calc_text_size(f"{name}  ").x, y + 0.15 * em),
+                                guide.u32(COLOR_DIM if kind == "skip" else COLOR_TITLE), kind)
+                    x += cw + 0.4 * em
+                y += 1.5 * em
+            if clicked and not selected:
+                self.select_pipeline(index=i)
+        imgui.dummy(imgui.ImVec2(0, 0.3 * em))
+        if self.begin_form(name="load_config"):
+            self.row(caption="load config")
+            if imgui.button(f"{fa.ICON_FA_FILE_LINES}  Load##load_run"):
+                self.message_load = self.load_run(source=self.paths_load["run"]) or ""
+                if self.message_load == "":
+                    self.store.record_selection(idl.DialogResult(paths=[self.paths_load["run"].strip()]))
+            if imgui.is_item_hovered():
+                idl.wrapped_tooltip("Load config: the pipeline, every parameter, the movie and the output folder an earlier run "
+                                    "recorded in its config.json; untouched, Run reproduces that run")
+            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+            self.draw_path(target=self.paths_load, key="run", filetypes=FILETYPES_RUN, folders=True,
+                           hint="a config.json, its run folder, or a results file beside it")
+            starts = self.starts_available()
+            if len(starts) > 0:
+                self.row(caption="start from")
+                for start, label in (("movie", "the movie"), ("registration", "its registration"), ("compression", "its compression")):
+                    if start != "movie" and start not in starts:
+                        continue
+                    if imgui.radio_button(f"{label}##start_{start}", self.start_from == start) and self.start_from != start:
+                        self.select_start(start=start)
+                    imgui.same_line(0, hello_imgui.em_size(1.2))
+                imgui.new_line()
+                if imgui.is_item_hovered():
+                    idl.wrapped_tooltip("Start from: run every stage on the movie, or copy the loaded run's registration (applied to "
+                                        "the movie) or its compression into the new run folder and continue from there")
+            imgui.end_table()
+        if self.message_load != "":
+            draw_wrapped(text=f"{fa.ICON_FA_CIRCLE_INFO}  {self.message_load}", color=COLOR_WARN)
+        elif self.loaded_run is not None:
+            recorded = any(self.paths[p.field].strip() != "" for p in self.spec.movie_params)
+            draw_wrapped(text=f"{fa.ICON_FA_FILE_LINES}  the parameters of {self.loaded_run}"
+                              + ("" if recorded else "; its movie was not recorded, choose one"), color=COLOR_DIM)
+
+        imgui.dummy(imgui.ImVec2(0, 0.6 * em))
+        # read after the cards: a click on one switched the pipeline
+        spec = self.spec
+        self.step(2, "Input", "the movie, where the run folder goes, and what the recording is; nothing else is needed")
+        if self.begin_form(name="run"):
+            for param in spec.movie_params:
+                self.row(caption=param.field.replace("_", " ") if len(spec.movie_params) > 1 else "movie")
+                self.draw_path(target=self.paths, key=param.field, filetypes=FILETYPES_MOVIE, folders=True,
+                               hint="a .tif/.tiff file, a folder of tiffs, or an .h5/.hdf5 file")
+            if any(is_hdf5(filepath=p) for p in self.movies_given()):
+                self.row(caption="hdf5 dataset", color=COLOR_ERROR if self.dataset.strip() == "" else None)
+                imgui.set_next_item_width(max(self.width_frame(text=self.dataset), hello_imgui.em_size(WIDTH_INPUT_EM)))
+                _, self.dataset = imgui.input_text_with_hint("##dataset", "required", self.dataset)
+            for param in spec.array_params:
+                self.row(caption=f"{param.field.replace('_', ' ')} (.npy)")
+                self.draw_path(target=self.paths, key=param.field, filetypes=FILETYPES_ARRAY, folders=False,
+                               hint="required" if param.required else "optional")
+            for param in self.params_folder():
+                self.row(caption="output folder")
+                self.draw_path(target=self.texts, key=param.name, filetypes=None, folders=True, hint="beside the movie")
+            for param in spec.run_scalars:
+                # set by start from, under load config
+                if param.field == "resume_from":
+                    continue
+                color = COLOR_ERROR if self.error_for(param=param) is not None else COLOR_MODIFIED if self.is_modified(param=param) else None
+                self.row(caption=param.field.replace("_", " "), color=color)
+                self.draw_param(param=param, named=False)
+            imgui.end_table()
+
+        imgui.dummy(imgui.ImVec2(0, 0.6 * em))
+        rows = self.modified()
+        self.step(3, "Parameters", "every stage's config and its fields, the runtime, and what differs from the pipeline's "
+                                   "defaults; a run needs none of them changed")
+        if imgui.collapsing_header(f"{fa.ICON_FA_SLIDERS}  Stage configs###parameters"):
+            with (
+                imgui_ctx.push_style_var(imgui.StyleVar_.item_spacing, hello_imgui.em_to_vec2(0.55, 0.3)),
+                imgui_ctx.push_style_var(imgui.StyleVar_.frame_padding, hello_imgui.em_to_vec2(0.35, 0.18)),
+            ):
+                imgui.indent(em)
+                imgui.spacing()
+                with button_colors(COLORS_DEFAULTS[0], COLORS_DEFAULTS[1]):
+                    imgui.begin_disabled(len(rows) == 0)
+                    if imgui.button(f"{fa.ICON_FA_ARROW_ROTATE_LEFT}  Defaults"):
+                        self.reset_all()
+                    imgui.end_disabled()
+                tooltip("Every value is at its default" if len(rows) == 0 else
+                        "Reset every stage, run and runtime value to its default; movies, paths and required values stay")
+                draw_divider()
+                self.draw_stages()
+                draw_divider()
+                self.draw_runtime()
+                draw_divider()
+                self.draw_modified()
+                imgui.unindent(em)
+
+    def draw_open(self) -> None:
+        """A path, what it holds, and the viewer that opens it."""
+        em = imgui.get_font_size()
+        self.step(1, "Source", "a results .hdf5, a run folder, a tracking folder or its manifest; a folder means the results "
+                               "files in it, each replaced by its newest curated file")
+        if self.begin_form(name="open"):
+            self.row(caption="path")
+            self.draw_path(target=self.paths_open, key="source", filetypes=FILETYPES_RESULTS, folders=True,
+                           hint="results.hdf5, a run folder, or a tracking run")
+            self.row(caption="raw movie")
+            self.draw_path(target=self.paths_open, key="raw", filetypes=FILETYPES_MOVIE, folders=True,
+                           hint="optional: the movie the run registered, for the registration and compression views")
+            if is_hdf5(filepath=self.paths_open["raw"].strip()):
+                self.row(caption="hdf5 dataset")
+                imgui.set_next_item_width(max(self.width_frame(text=self.dataset_raw), hello_imgui.em_size(WIDTH_INPUT_EM)))
+                _, self.dataset_raw = imgui.input_text_with_hint("##dataset_raw", "the dataset holding the movie", self.dataset_raw)
+            imgui.end_table()
+        self.inspect()
+
+        imgui.dummy(imgui.ImVec2(0, 0.6 * em))
+        self.step(2, "Found", "what the path holds, read whenever it changes")
+        flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_use_window_padding
+        imgui.push_style_color(imgui.Col_.child_bg, guide.CARD)
+        imgui.push_style_var(imgui.StyleVar_.child_rounding, 5.0)
+        with imgui_ctx.begin_child("##found", imgui.ImVec2(0, 0), flags):
+            kind, detail, stages, files = self.found["kind"], self.found["detail"], self.found["stages"], self.found["files"]
+            if kind == "":
+                imgui.text_colored(COLOR_DIM, "type or browse a path to see what it holds")
+            elif kind in ("missing", "other"):
+                imgui.text_colored(COLOR_WARN, f"{fa.ICON_FA_CIRCLE_INFO}  {detail}")
+            elif kind == "tracking":
+                imgui.text_colored(COLOR_OK, fa.ICON_FA_CIRCLE_CHECK)
+                imgui.same_line(0, 0.5 * em)
+                imgui.text_colored(COLOR_TITLE, "tracking run")
+                imgui.same_line(0, 0.6 * em)
+                imgui.text_colored(COLOR_DIM, detail)
+            else:
+                if kind == "folder":
+                    imgui.text_colored(COLOR_TITLE, f"{len(files)} results file{'' if len(files) == 1 else 's'}")
+                    for filepath in files[:6]:
+                        imgui.bullet()
+                        imgui.text_colored(COLOR_DIM, Path(filepath).name)
+                    if len(files) > 6:
+                        imgui.text_colored(COLOR_DIM, f"... and {len(files) - 6} more")
+                else:
+                    imgui.text_colored(COLOR_TITLE, detail)
+                if kind == "results" or len(files) == 1:
+                    for stage, present in stages.items():
+                        imgui.text_colored(COLOR_OK if present else COLOR_DIM, fa.ICON_FA_CIRCLE_CHECK if present else fa.ICON_FA_CIRCLE)
+                        imgui.same_line(0, 0.5 * em)
+                        imgui.text_colored(guide.TEXT if present else COLOR_DIM, stage)
+                        imgui.same_line(0, 0.6 * em)
+                        imgui.text_colored(COLOR_DIM, STAGE_NOTES[stage])
+        imgui.pop_style_var()
+        imgui.pop_style_color()
+
+        imgui.dummy(imgui.ImVec2(0, 0.6 * em))
+        self.step(3, "Viewer", "the viewer the stages call for is picked; another can be chosen when what it needs is there")
+        current = self.viewer_current()
+        for key, icon, name, why in VIEWERS:
+            imgui.begin_disabled(not self.available(key=key))
+            if imgui.radio_button(f"{icon}  {name}##viewer_{key}", key == current):
+                self.viewer = key
+            imgui.end_disabled()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                idl.wrapped_tooltip(f"{name}: {why}")
+            if key == "demixing":
+                imgui.indent(hello_imgui.em_size(1.8))
+                imgui.begin_disabled(not self.compression_checkable())
+                _, self.compression_check = imgui.checkbox("lag-1 autocorrelation stills##compression", self.compression_check)
+                imgui.end_disabled()
+                if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                    idl.wrapped_tooltip("Compression check: also computes the lag-1 autocorrelation images of the raw, compressed and "
+                                        "residual movies into Static images; needs the raw movie and a compression")
+                imgui.unindent(hello_imgui.em_size(1.8))
+
+    def draw_track(self) -> None:
+        """The sessions' results files, where the tracking goes, and the resolution."""
+        em = imgui.get_font_size()
+        self.step(1, "Sessions", f"one masknmf results .hdf5 per session. Per row a folder, searched for {PATTERN_RESULTS} up to "
+                                 f"{DEPTH_SEARCH} folders down, a file, or a glob; a new row opens as the last one fills. The files "
+                                 "found are listed below in session order, row by row and in path order within a row; uncheck any not to track")
+        self.update_sessions()
+        self.fill_out()
+        if self.begin_form(name="track"):
+            self.draw_results_rows(target=self.paths_tracking, folders=True)
+            imgui.end_table()
+        self.draw_sessions_found()
+        imgui.dummy(imgui.ImVec2(0, 0.6 * em))
+        self.step(2, "Output", "where the tracking run and its manifest are saved, a folder holding every session so it moves as a "
+                               "whole; it starts as the sessions' common folder. Then the imaging resolution, the same for every session")
+        if self.begin_form(name="track_out"):
+            self.row(caption="folder")
+            self.draw_path(target=self.paths_tracking, key="out", filetypes=None, folders=True, hint="required")
+            self.row(caption="um per pixel")
+            imgui.set_next_item_width(hello_imgui.em_size(WIDTH_INPUT_EM))
+            _, self.um_per_pixel = imgui.input_float("##um_per_pixel", self.um_per_pixel, 0.0, 0.0, "%.6g")
+            imgui.end_table()
+
+    def draw_sessions_found(self) -> None:
+        """The files Track sessions' rows found: a check, the session number, the file, its folder under their common folder, a note."""
+        if len(self.results_given(target=self.paths_tracking)) == 0:
+            return
+        searching = self.sessions_tracked() is None
+        sessions = self.found_tracking[1]
+        if searching:
+            draw_wrapped(text="looking for results files ...", color=COLOR_DIM)
+        elif len(sessions) == 0:
+            draw_wrapped(text="no results files found", color=COLOR_WARN)
+        if len(sessions) == 0:
+            return
+        root = common_folder(paths=[s["path"] for s in sessions])
+        outside = self.outside_out()
+        tracked = sum(self.is_checked(session=s) for s in sessions)
+        draw_wrapped(text=f"{tracked} of {len(sessions)} found are tracked, under {root}", color=COLOR_DIM)
+        flags = (imgui.TableFlags_.row_bg | imgui.TableFlags_.borders_inner_h | imgui.TableFlags_.sizing_stretch_prop
+                 | imgui.TableFlags_.scroll_y)
+        # at most ROWS_FOUND rows show, the rest scroll, so the output form stays in view
+        height_row = imgui.get_frame_height() + 2 * imgui.get_style().cell_padding.y
+        height = (min(len(sessions), ROWS_FOUND) + 1) * height_row
+        if not imgui.begin_table("##sessions_found", 5, flags, imgui.ImVec2(0, height)):
+            return
+        imgui.table_setup_scroll_freeze(0, 1)
+        imgui.table_setup_column("##check", imgui.TableColumnFlags_.width_fixed)
+        imgui.table_setup_column("session", imgui.TableColumnFlags_.width_fixed)
+        imgui.table_setup_column("file", imgui.TableColumnFlags_.width_stretch, 2)
+        imgui.table_setup_column("folder", imgui.TableColumnFlags_.width_stretch, 3)
+        imgui.table_setup_column("note", imgui.TableColumnFlags_.width_stretch, 2)
+        imgui.table_headers_row()
+        number = 0
+        for i, session in enumerate(sessions):
+            path = Path(session["path"])
+            checked = self.is_checked(session=session)
+            imgui.table_next_row()
+            imgui.table_next_column()
+            imgui.begin_disabled(searching or not session["demixing"])
+            edited, value = imgui.checkbox(f"##tracked_{i}", checked)
+            imgui.end_disabled()
+            if edited:
+                self.checked_tracking[session["path"]] = value
+            imgui.table_next_column()
+            if checked:
+                number += 1
+                imgui.text(str(number))
+                imgui.table_next_column()
+                imgui.text(path.name)
+            else:
+                imgui.text_disabled("-")
+                imgui.table_next_column()
+                imgui.text_disabled(path.name)
+            if imgui.is_item_hovered():
+                idl.wrapped_tooltip(str(path) if session["movie"] is None else f"{path}\nmovie: {session['movie']}")
+            imgui.table_next_column()
+            folder = path.parent.relative_to(root) if root in path.parents else path.parent
+            imgui.text_disabled(str(folder))
+            imgui.table_next_column()
+            if checked and session["path"] in outside:
+                imgui.text_colored(COLOR_ERROR, "outside the output folder")
+            elif session["note"] != "":
+                imgui.text_colored(COLOR_WARN if session["demixing"] else COLOR_ERROR, session["note"])
+        imgui.end_table()
+
+    def draw_classify(self) -> None:
+        """The sessions' results files, the class names, and the classifier file."""
+        em = imgui.get_font_size()
+        self.step(1, "Sessions", "one masknmf results .hdf5 per session, a path or a glob per row; labels are saved beside each")
+        if self.begin_form(name="classify"):
+            self.draw_results_rows(target=self.paths_classify, folders=False)
+            imgui.end_table()
+        imgui.dummy(imgui.ImVec2(0, 0.6 * em))
+        self.step(2, "Classifier", "the class names, and the .roicat_classifier file: train saves there, an existing one is selected for classify")
+        if self.begin_form(name="classify_out"):
+            self.row(caption="class names")
+            imgui.set_next_item_width(max(imgui.get_content_region_avail().x, hello_imgui.em_size(12)))
+            _, self.labels = imgui.input_text_with_hint("##labels", "optional, comma separated, e.g. soma,dendrite,junk", self.labels)
+            self.row(caption="classifier")
+            self.draw_path(target=self.paths_classify, key="classifier", filetypes=FILETYPES_CLASSIFIER, folders=False,
+                           hint="optional: a .roicat_classifier file")
+            imgui.end_table()
+
+    def draw_stages(self) -> None:
+        """One bordered box per pipeline stage."""
+        draw_subsection(
+            text="Pipeline stages",
+            hint="Every config a stage accepts is listed; the pipeline's own is selected and shows the values it "
+            "runs with. Changed values show orange and are listed under Modified parameters.",
+        )
+        imgui.spacing()
+        if self.spec.cls.demixing_configs is not BasePipeline.demixing_configs:
+            changed_on, self.uniform_min_brightness_on = imgui.checkbox("uniform min brightness", self.uniform_min_brightness_on)
+            if imgui.is_item_hovered():
+                idl.wrapped_tooltip(
+                    "Uniform min brightness: while checked, this value is set in every demixing pass, and again each "
+                    "time it changes. A pass edited afterwards keeps its own value; the passes' values are what runs."
+                )
+            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+            imgui.begin_disabled(not self.uniform_min_brightness_on)
+            imgui.set_next_item_width(hello_imgui.em_size(12))
+            changed_slider, self.uniform_min_brightness = imgui.slider_float(
+                "##uniform_min_brightness", self.uniform_min_brightness, 0.0, 5.0, "%.2f"
+            )
+            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+            imgui.set_next_item_width(hello_imgui.em_size(WIDTH_INPUT_EM))
+            changed_box, value = imgui.input_float("##uniform_min_brightness_box", self.uniform_min_brightness, 0.0, 0.0, "%.6g")
+            imgui.end_disabled()
+            # the min_brightness setter refuses negative values
+            changed_box = changed_box and value >= 0
+            if changed_box:
+                self.uniform_min_brightness = value
+            if self.uniform_min_brightness_on and (changed_on or changed_slider or changed_box):
+                pipeline = self.spec.cls(**{section.argument: self.values[section.argument] for section in self.spec.sections})
+                pipeline.min_brightness = self.uniform_min_brightness
+            imgui.spacing()
+        for section in self.spec.sections:
+            self.draw_stage(section=section)
+
+    def draw_stage(self, section: scraper.Section) -> None:
+        """A stage's box: which config it takes, a reset once it differs from the default, then the config's fields."""
+        flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_use_window_padding
+        with imgui_ctx.begin_child(f"##stage_{section.name}", imgui.ImVec2(0, 0), flags):
+            imgui.text_colored(COLOR_TITLE, title_of(section=section))
+            if not same(self.values[section.argument], section.default):
+                same_line_if_fits(width=self.width_frame(text="Reset stage"))
+                if imgui.small_button(f"Reset stage##{section.name}"):
+                    self.reset_section(section=section)
+                if imgui.is_item_hovered():
+                    idl.wrapped_tooltip(f"Back to {label_of(kind=section.default_kind, section=section)} with the pipeline's values")
+            kinds = section.kinds_buildable
+            value = self.values[section.argument]
+            kind = scraper.kind_of(value=value)
+            labels = [label_of(kind=k, section=section) for k in kinds]
+            changed_kind = kind != section.default_kind
+            if changed_kind:
+                imgui.push_style_color(imgui.Col_.text, COLOR_MODIFIED)
+            imgui.set_next_item_width(max(self.width_combo(items=labels), hello_imgui.em_size(WIDTH_INPUT_EM)))
+            edited, index = imgui.combo(f"##kind_{section.name}", kinds.index(kind), labels)
+            if changed_kind:
+                imgui.pop_style_color()
+            if edited:
+                self.select_kind(section=section, kind=kinds[index])
+            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+            draw_wrapped(text="config", color=COLOR_MODIFIED if changed_kind else None)
+            imgui.separator()
+            value = self.values[section.argument]
+            if isinstance(value, str):
+                draw_wrapped(text="Skipped.", color=COLOR_DIM)
+                return
+            default = section.default if type(section.default) is type(value) else NO_DEFAULT
+            self.draw_config(config=value, default=default, path=section.argument)
+
+    def draw_config(self, config: Any, default: Any, path: str) -> None:
+        """
+        A config's fields: nested configs under their name, lists of configs one box per item, editable
+        values with a widget, and values only Python can set shown read-only when they are set.
+
+        Args:
+            config (Any): The config dataclass being edited
+            default (Any): The pipeline's default at the same place, or NO_DEFAULT when it has none
+            path (str): Where config sits, naming its fields' widgets and errors
+        """
+        hints = scraper.resolve_hints(cls=type(config))
+        params = {param.field: param for param in scraper.scrape_dataclass(cls_config=type(config), name_section=path)}
+        for field in dataclasses.fields(config):
+            if not field.init:
+                continue
+            annotation = hints.get(field.name, field.type)
+            current = getattr(config, field.name)
+            default_field = NO_DEFAULT if default is NO_DEFAULT else getattr(default, field.name)
+            path_field = f"{path}.{field.name}"
+            members, allows_none = scraper.annotation_members(annotation=annotation)
+            configs = [m for m in members if dataclasses.is_dataclass(m)]
+            classes_item = [scraper.item_dataclass_of(annotation=m) for m in members]
+            classes_item = [c for c in classes_item if c is not None]
+            if len(configs) > 0 or dataclasses.is_dataclass(current):
+                self.draw_nested(config=config, name=field.name, configs=configs, allows_none=allows_none,
+                                 default=default_field, path=path_field)
+            elif len(classes_item) > 0:
+                self.draw_items(config=config, name=field.name, cls_item=classes_item[0], default=default_field, path=path_field)
+            elif params[field.name].settable:
+                self.draw_field(config=config, param=params[field.name], default=default_field, path=path_field)
+            elif current is not None:
+                draw_wrapped(text=f"{field.name}: {text_of(value=current)} (set from Python)", color=COLOR_DIM)
+
+    def draw_nested(self, config: Any, name: str, configs: list, allows_none: bool, default: Any, path: str) -> None:
+        """
+        A nested config field: a dropdown when it can hold more than one config or None, then the held config's fields.
+
+        Args:
+            config (Any): The config holding the field
+            name (str): The field
+            configs (list): The config classes its annotation allows
+            allows_none (bool): Whether its annotation allows None
+            default (Any): The pipeline's default for the field, or NO_DEFAULT
+            path (str): Where the field sits
+        """
+        current = getattr(config, name)
+        kinds = ["none"] if allows_none else []
+        for cls_config in configs:
+            try:
+                scraper.build_default(cls_config=cls_config)
+            except ValueError:
+                continue
+            kinds.append(scraper.config_kind(cls_config=cls_config))
+        kind = kind_or_none(value=current)
+        if kind not in kinds:
+            kinds.append(kind)
+        modified = default is not NO_DEFAULT and kind != kind_or_none(value=default)
+        imgui.spacing()
+        if len(kinds) > 1:
+            labels = [f"{k} (default)" if default is not NO_DEFAULT and k == kind_or_none(value=default) else k for k in kinds]
+            if modified:
+                imgui.push_style_color(imgui.Col_.text, COLOR_MODIFIED)
+            imgui.set_next_item_width(max(self.width_combo(items=labels), hello_imgui.em_size(WIDTH_INPUT_EM)))
+            edited, index = imgui.combo(f"##{path}", kinds.index(kind), labels)
+            if modified:
+                imgui.pop_style_color()
+            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+            draw_wrapped(text=name, color=COLOR_MODIFIED if modified else COLOR_SUBSECTION)
+            if edited:
+                self.select_nested(config=config, name=name, kind=kinds[index], default=default, path=path)
+            if modified and self.draw_reset(path=path, text_default=kind_or_none(value=default)):
+                self.reset_field(config=config, name=name, default=default, path=path)
+        else:
+            imgui.text_colored(COLOR_SUBSECTION, name)
+        current = getattr(config, name)
+        if dataclasses.is_dataclass(current):
+            imgui.indent(hello_imgui.em_size(0.8))
+            matches = default is not NO_DEFAULT and type(default) is type(current)
+            self.draw_config(config=current, default=default if matches else NO_DEFAULT, path=path)
+            imgui.unindent(hello_imgui.em_size(0.8))
+
+    def draw_items(self, config: Any, name: str, cls_item: type, default: Any, path: str) -> None:
+        """
+        A list of configs, such as a multipass config's passes: a box per item with a remove button,
+        then a button adding a copy of the last item, or a fresh one when the list is empty or None.
+
+        Args:
+            config (Any): The config holding the list
+            name (str): The list's field
+            cls_item (type): The config class the list holds
+            default (Any): The pipeline's default list, or NO_DEFAULT
+            path (str): Where the list sits
+        """
+        items = getattr(config, name)
+        defaults = default if isinstance(default, list) else []
+        flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_use_window_padding
+        if items is None or len(items) == 0:
+            draw_wrapped(text=f"{name}: none" if items is None else f"{name}: no passes", color=COLOR_DIM)
+        removed = None
+        for i, item in enumerate(items or []):
+            with imgui_ctx.begin_child(f"##{path}[{i}]", imgui.ImVec2(0, 0), flags):
+                added = i >= len(defaults)
+                imgui.text_colored(COLOR_MODIFIED if added else COLOR_SUBSECTION, f"Pass {i + 1}{' (added)' if added else ''}")
+                if len(items) > 1:
+                    same_line_if_fits(width=self.width_frame(text="Remove"))
+                    if imgui.small_button(f"Remove##{path}[{i}]"):
+                        removed = i
+                self.draw_config(config=item, default=NO_DEFAULT if added else defaults[i], path=f"{path}[{i}]")
+        if removed is not None:
+            del items[removed]
+            self.forget(path=path)
+        if imgui.button(f"{fa.ICON_FA_PLUS}  Add pass##{path}"):
+            fresh = copy.deepcopy(items[-1]) if items else scraper.build_default(cls_config=cls_item)
+            setattr(config, name, [*(items or []), fresh])
+        if imgui.is_item_hovered():
+            idl.wrapped_tooltip("Adds a pass copying the last one")
+
+    def draw_field(self, config: Any, param: scraper.Param, default: Any, path: str) -> None:
+        """
+        A widget for one config field chosen by the value it holds, its name to the right, and once it
+        differs from the pipeline's default an orange tint, a reset button and the default beside it.
+        """
+        name = param.field
+        current = getattr(config, name)
+        modified = default is not NO_DEFAULT and not same(current, default)
+        widget = widget_for_field(param=param, value=current)
+        width = hello_imgui.em_size(WIDTH_INPUT_EM)
+        if modified:
+            imgui.push_style_color(imgui.Col_.text, COLOR_MODIFIED)
+        if widget == "bool":
+            edited, value = imgui.checkbox(f"##{path}", current)
+            if edited:
+                setattr(config, name, value)
+        elif widget == "choice":
+            items = [str(choice) for choice in param.choices]
+            imgui.set_next_item_width(max(width, self.width_combo(items=items)))
+            edited, index = imgui.combo(f"##{path}", list(param.choices).index(current), items)
+            if edited:
+                setattr(config, name, param.choices[index])
+        elif widget == "int":
+            imgui.set_next_item_width(max(width, self.width_stepped(text=str(current))))
+            edited, value = imgui.input_int(f"##{path}", int(current))
+            if edited:
+                setattr(config, name, value)
+        elif widget == "float":
+            imgui.set_next_item_width(max(width, self.width_frame(text=text_of(value=float(current))) + hello_imgui.em_size(1)))
+            edited, value = imgui.input_float(f"##{path}", float(current), 0.0, 0.0, "%.6g")
+            if edited:
+                setattr(config, name, float(f"{value:.6g}"))
+        elif widget in ("int2", "float2"):
+            widest = max(self.width_frame(text=text_of(value=v)) for v in current)
+            imgui.set_next_item_width(max(width, 2 * (widest + hello_imgui.em_size(1)) + imgui.get_style().item_inner_spacing.x))
+            if widget == "int2":
+                edited, values = imgui.input_int2(f"##{path}", list(current))
+            else:
+                edited, values = imgui.input_float2(f"##{path}", [float(v) for v in current], "%.6g")
+                values = [float(f"{v:.6g}") for v in values]
+            if edited:
+                setattr(config, name, type(current)(values))
+        else:
+            self.draw_field_text(config=config, param=param, path=path, wrap=widget == "sequence")
+        if modified:
+            imgui.pop_style_color()
+
+        imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+        error = self.errors.get(path)
+        if error is not None:
+            draw_wrapped(text=name, color=COLOR_ERROR)
+        elif modified:
+            draw_wrapped(text=name, color=COLOR_MODIFIED)
+        else:
+            draw_wrapped(text=name)
+        if imgui.is_item_hovered():
+            idl.wrapped_tooltip(error or name if default is NO_DEFAULT else error or f"pipeline default: {text_of(value=default) or 'none'}")
+        if modified and self.draw_reset(path=path, text_default=text_of(value=default) or "none"):
+            self.reset_field(config=config, name=name, default=default, path=path)
+
+    def draw_reset(self, path: str, text_default: str) -> bool:
+        """A reset button after a changed value, then its default in dim text; True when the button was clicked."""
+        imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+        clicked = imgui.small_button(f"{fa.ICON_FA_ARROW_ROTATE_LEFT}##reset_{path}")
+        if imgui.is_item_hovered():
+            idl.wrapped_tooltip(f"Reset to {text_default}")
+        same_line_if_fits(width=imgui.calc_text_size(f"default {text_default}").x)
+        draw_wrapped(text=f"default {text_default}", color=COLOR_DIM)
+        return clicked
+
+    def draw_field_text(self, config: Any, param: scraper.Param, path: str, wrap: bool) -> None:
+        """
+        A text box for a field no numeric widget fits, such as an optional value or a long list,
+        keeping what was typed until it parses.
+
+        Args:
+            config (Any): The config holding the field
+            param (Param): The field
+            path (str): Where the field sits
+            wrap (bool): Whether to wrap the text over lines filling the row, for long lists
+        """
+        name = param.field
+        current = getattr(config, name)
+        text = self.buffers.get(path, text_of(value=current))
+        if wrap:
+            padding = imgui.get_style().frame_padding
+            width = max(imgui.get_content_region_avail().x - hello_imgui.em_size(12), hello_imgui.em_size(WIDTH_INPUT_EM))
+            width_wrap = width - 2 * padding.x - imgui.get_style().scrollbar_size
+            height = imgui.calc_text_size(text or " ", wrap_width=width_wrap).y + 2 * padding.y
+            edited, text = imgui.input_text_multiline(
+                f"##{path}", text, imgui.ImVec2(width, height), imgui.InputTextFlags_.word_wrap
+            )
+            text = text.replace("\n", "").replace("\r", "")
+        else:
+            imgui.set_next_item_width(max(hello_imgui.em_size(WIDTH_INPUT_EM), self.width_frame(text=text)))
+            edited, text = imgui.input_text_with_hint(f"##{path}", "none", text)
+        if not edited:
+            return
+        self.buffers[path] = text
+        try:
+            value = scraper.coerce(param=param, text=text)
+        except ValueError as error:
+            self.errors[path] = f"{path}: {error}"
+            return
+        self.errors.pop(path, None)
+        setattr(config, name, list(value) if isinstance(current, list) and isinstance(value, tuple) else value)
+
+    def draw_runtime(self) -> None:
+        """The constructor arguments that are neither configs nor folders."""
+        draw_subsection(text="Runtime", hint="Where and how the pipeline computes.")
+        imgui.spacing()
+        for param in self.params_runtime():
+            self.draw_param(param=param)
+
+    def draw_modified(self) -> None:
+        """Every changed value beside its default."""
+        rows = self.modified()
+        imgui.text(f"Modified parameters ({len(rows)})")
+        if len(rows) == 0:
+            imgui.text_disabled("All parameters at defaults")
+            return
+        flags = (
+            imgui.TableFlags_.row_bg
+            | imgui.TableFlags_.borders_inner_h
+            | imgui.TableFlags_.borders_outer
+            | imgui.TableFlags_.sizing_stretch_prop
+        )
+        if not imgui.begin_table("##modified", 3, flags):
+            return
+        for heading, weight in (("Parameter", 4.0), ("Current", 2.5), ("Default", 2.5)):
+            imgui.table_setup_column(heading, imgui.TableColumnFlags_.width_stretch, weight)
+        imgui.table_headers_row()
+        for name, current, default in rows:
+            imgui.table_next_row()
+            imgui.table_next_column()
+            draw_wrapped(text=name, color=COLOR_MODIFIED)
+            imgui.table_next_column()
+            draw_wrapped(text=current)
+            imgui.table_next_column()
+            draw_wrapped(text=default, color=COLOR_DIM)
+        imgui.end_table()
+
+    def width_frame(self, text: str) -> float:
+        """The width of a framed widget showing text, padding included."""
+        return imgui.calc_text_size(text).x + 2 * imgui.get_style().frame_padding.x
+
+    def width_stepped(self, text: str) -> float:
+        """An integer field wide enough for its digits beside its - and + buttons."""
+        style = imgui.get_style()
+        return self.width_frame(text=text) + hello_imgui.em_size(1) + 2 * (imgui.get_frame_height() + style.item_inner_spacing.x)
+
+    def width_combo(self, items: list[str]) -> float:
+        """A combo wide enough for its longest item and its arrow."""
+        return max(self.width_frame(text=item) for item in items) + imgui.get_frame_height()
+
+    def draw_path(self, target: dict, key: str, filetypes: Optional[list], folders: bool, hint: str = "type or browse") -> None:
+        """
+        Browse buttons, then a path field filling the row that wraps a long path onto more lines.
+
+        Args:
+            target (dict): Holds the path
+            key (str): The path's key in target
+            filetypes (list | None): Filters for a file button; None for no file button
+            folders (bool): Whether to show a folder button
+            hint (str): Shown while the field is empty
+        """
+        inner = imgui.get_style().item_inner_spacing.x
+        if filetypes is not None:
+            if imgui.button(f"{fa.ICON_FA_FILE}##file_{key}"):
+                self.open_picker(target=target, key=key, filetypes=filetypes)
+            if imgui.is_item_hovered():
+                idl.wrapped_tooltip("Browse for a file")
+            imgui.same_line(0, inner)
+        if folders:
+            if imgui.button(f"{fa.ICON_FA_FOLDER_OPEN}##folder_{key}"):
+                self.open_picker(target=target, key=key, filetypes=None)
+            if imgui.is_item_hovered():
+                idl.wrapped_tooltip("Browse for a folder")
+            imgui.same_line(0, inner)
+
+        padding = imgui.get_style().frame_padding
+        width = max(imgui.get_content_region_avail().x, hello_imgui.em_size(12))
+        width_wrap = width - 2 * padding.x - imgui.get_style().scrollbar_size
+        height = imgui.calc_text_size(target[key] or " ", wrap_width=width_wrap).y + 2 * padding.y
+        _, text = imgui.input_text_multiline(
+            f"##path_{key}", target[key], imgui.ImVec2(width, height), imgui.InputTextFlags_.word_wrap
+        )
+        # windows' copy as path wraps the path in quotes
+        target[key] = text.replace("\n", "").replace("\r", "").replace('"', "")
+        if target[key] == "":
+            corner = imgui.get_item_rect_min()
+            imgui.get_window_draw_list().add_text(
+                imgui.ImVec2(corner.x + padding.x, corner.y + padding.y),
+                imgui.get_color_u32(imgui.Col_.text_disabled),
+                hint,
+            )
+        path = target[key].strip()
+        if path != "" and not any(c in path for c in "*?[") and not Path(path).expanduser().exists():
+            imgui.text_colored(COLOR_ERROR, "not found on this machine")
+
+    def draw_param(self, param: scraper.Param, named: bool = True) -> None:
+        """A fixed width widget for one parameter, its name to the right unless a form caption names it, orange once changed."""
+        key = param.name
+        changed_before = self.is_modified(param=param)
+        error = self.error_for(param=param)
+        widget = widget_for(param=param)
+        width = hello_imgui.em_size(WIDTH_INPUT_EM)
+        if changed_before:
+            imgui.push_style_color(imgui.Col_.text, COLOR_MODIFIED)
+        if widget == "bool":
+            edited, value = imgui.checkbox(f"##{key}", self.value_of(param=param) is True)
+            if edited:
+                self.texts[key] = "true" if value else "false"
+        elif widget == "choice":
+            items = [str(choice) for choice in param.choices]
+            index = items.index(self.texts[key]) if self.texts[key] in items else -1
+            imgui.set_next_item_width(max(width, self.width_combo(items=items)))
+            edited, index = imgui.combo(f"##{key}", index, items)
+            if edited:
+                self.texts[key] = items[index]
+        elif widget == "int":
+            imgui.set_next_item_width(max(width, self.width_stepped(text=self.texts[key])))
+            edited, value = imgui.input_int(f"##{key}", int(self.value_of(param=param)))
+            if edited:
+                self.texts[key] = str(value)
+        elif widget == "float":
+            imgui.set_next_item_width(max(width, self.width_frame(text=self.texts[key]) + hello_imgui.em_size(1)))
+            edited, value = imgui.input_float(f"##{key}", float(self.value_of(param=param)), 0.0, 0.0, "%.6g")
+            if edited:
+                self.texts[key] = f"{value:.6g}"
+        elif widget == "int2":
+            widest = max(self.width_frame(text=piece) for piece in self.texts[key].split(","))
+            imgui.set_next_item_width(max(width, 2 * (widest + hello_imgui.em_size(1)) + imgui.get_style().item_inner_spacing.x))
+            edited, values = imgui.input_int2(f"##{key}", list(self.value_of(param=param)))
+            if edited:
+                self.texts[key] = f"{values[0]},{values[1]}"
+        else:
+            hint = "required" if param.required else "none"
+            imgui.set_next_item_width(max(width, self.width_frame(text=self.texts[key]), self.width_frame(text=hint)))
+            _, self.texts[key] = imgui.input_text_with_hint(f"##{key}", hint, self.texts[key])
+        if changed_before:
+            imgui.pop_style_color()
+
+        if named:
+            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+            if error is not None:
+                draw_wrapped(text=param.field, color=COLOR_ERROR)
+            elif self.is_modified(param=param):
+                draw_wrapped(text=param.field, color=COLOR_MODIFIED)
+            else:
+                draw_wrapped(text=param.field)
+        if imgui.is_item_hovered():
+            idl.wrapped_tooltip(error or param.description)
+        if self.is_modified(param=param) and self.draw_reset(path=key, text_default=text_default(param=param) or "none"):
+            self.texts[key] = text_default(param=param)
+
+    def draw_footer(self, dialog: idl.FileDialog) -> None:
+        """What blocks the page's action or the command it amounts to on the left, Quit and the action on the right."""
+        em = imgui.get_font_size()
+        imgui.separator()
+        imgui.spacing()
+        problems = self.problems()
+        argv = self.build_argv()
+        label = self.label_primary()
+        spacing = imgui.get_style().item_spacing.x
+        padding = 2 * imgui.get_style().frame_padding.x
+        width_quit = imgui.calc_text_size("Quit").x + padding + 1.5 * em
+        width_primary = imgui.calc_text_size(label).x + padding + 1.5 * em if label is not None else 0.0
+        width_buttons = width_quit + (spacing + width_primary if label is not None else 0.0)
+        height = 1.7 * em
+        if not imgui.begin_table("##footer", 2, imgui.TableFlags_.sizing_stretch_prop):
+            return
+        imgui.table_setup_column("##status", imgui.TableColumnFlags_.width_stretch)
+        imgui.table_setup_column("##buttons", imgui.TableColumnFlags_.width_fixed, width_buttons)
+        imgui.table_next_row()
+        imgui.table_next_column()
+        if len(problems) > 0 and label is not None:
+            for problem in problems[:3]:
+                idl.text_wrapped_colored(COLOR_WARN, f"{fa.ICON_FA_CIRCLE_INFO}  {problem}")
+        elif argv is not None:
+            # a long command, e.g. tracking dozens of sessions, is cut short; the whole of it shows on hover
+            command = f"masknmf {cli.format_command(argv=argv)}"
+            shown = command if len(command) <= LENGTH_COMMAND else f"{command[:LENGTH_COMMAND]} ..."
+            idl.text_wrapped_colored(COLOR_DIM, f"{fa.ICON_FA_TERMINAL}  {shown}")
+            if shown != command and imgui.is_item_hovered():
+                idl.wrapped_tooltip(command)
+        else:
+            idl.text_wrapped_colored(COLOR_DIM, "pick a function on the left; the command it amounts to shows here before it runs")
+        imgui.table_next_column()
+        idl.push_button_style(dialog.theme, primary=False)
+        if imgui.button("Quit", imgui.ImVec2(width_quit, height)):
+            dialog.cancel()
+        idl.pop_button_style()
+        if label is not None:
+            imgui.same_line()
+            with button_colors(COLORS_RUN[0], COLORS_RUN[1]):
+                imgui.begin_disabled(len(problems) > 0)
+                if imgui.button(label, imgui.ImVec2(width_primary, height)):
+                    if self.page == "open":
+                        self.store.record_selection(idl.DialogResult(paths=[self.paths_open["source"].strip()]))
+                    self.argv = argv
+                    self.quit()
+                imgui.end_disabled()
+        imgui.end_table()
+
+
+def run_launcher() -> Optional[list[str]]:
+    """
+    Open the launcher in a glfw canvas and block until the user acts or quits.
+
+    Returns:
+        list[str] | None: The `masknmf` arguments to run, or None when the user quit
+    """
+    # qt hands ctrl+letter over as a control character, so imgui text fields never see ctrl+v, ctrl+c or ctrl+a
+    from rendercanvas.glfw import RenderCanvas, loop
+
+    DIR_CONFIG.mkdir(parents=True, exist_ok=True)
+    window = Launcher()
+    window.attach(canvas=RenderCanvas(title="masknmf", size=SIZE_WINDOW, update_mode="continuous", max_fps=60), loop=loop)
+    print("\r\033[K", end="", file=sys.stderr, flush=True)
+    loop.run()
+    return window.argv

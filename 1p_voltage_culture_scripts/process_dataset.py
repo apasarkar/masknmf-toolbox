@@ -80,7 +80,7 @@ def _train_network(mov: np.ndarray,
     pass
 
 def _compress_data(mov: np.ndarray,
-                   network: torch.nn.Module) -> masknmf.PMDArray:
+                   network: torch.nn.Module) -> masknmf.CompressionArray:
     pass
 
 def _load_data(cfg: DictConfig) -> np.ndarray:
@@ -135,7 +135,7 @@ def train_denoiser(my_data: np.ndarray,
 
 def compress_and_denoise_data(my_data: np.ndarray,
                               denoiser: torch.nn.Module,
-                              cfg: DictConfig) -> masknmf.PMDArray:
+                              cfg: DictConfig) -> masknmf.CompressionArray:
 
     block_sizes = [cfg.block_size_dim1, cfg.block_size_dim2]
 
@@ -170,7 +170,7 @@ def _demix_video(pmd_obj: np.ndarray,
                                                             cfg.frame_rate)
     
     pmd_obj.to('cpu')
-    threshold_pmd = masknmf.PMDArray(
+    threshold_pmd = masknmf.CompressionArray(
             pmd_obj.shape,
             pmd_obj.u,
             torch.from_numpy(new_v),
