@@ -534,26 +534,48 @@ class BasePipeline(ABC):
     def demixing_configs(self) -> None | MultipassDemixingConfig | list[SinglepassDemixingConfig | MultipassDemixingConfig]:
         return None
 
-    def set_uniform_min_brightness(self, new_min_brightness: float):
-        """
-        This function iterates over all demixing configs and updates the min brightness
-        """
-        if new_min_brightness <= 0.0:
-            raise ValueError("The min brightness needs to be positive")
-        curr_demixing_configs = self.demixing_configs
-        if curr_demixing_configs is None:
-            return
+    def demixing_passes(self) -> list[SinglepassDemixingConfig]:
+        """Every single demixing pass of demixing_configs, in order; "skip" entries are left out."""
+        configs = self.demixing_configs
+        if configs is None:
+            raise NotImplementedError(f"{type(self).__name__} does not list its demixing configs")
+        if isinstance(configs, (SinglepassDemixingConfig, MultipassDemixingConfig)):
+            configs = [configs]
+        passes = []
+        for config in configs:
+            if isinstance(config, SinglepassDemixingConfig):
+                passes.append(config)
+            elif isinstance(config, MultipassDemixingConfig):
+                passes.extend(config.DemixingConfigs)
+        return passes
 
-        if isinstance(curr_demixing_configs, (SinglepassDemixingConfig, MultipassDemixingConfig)):
-            curr_demixing_configs = [curr_demixing_configs]
+    @property
+    def min_brightness(self) -> float | list[float | None] | None:
+        """The min brightness every demixing pass uses, or each pass's in the order they run when they differ."""
+        values = [p.NMFConfig.min_brightness for p in self.demixing_passes()]
+        return values[0] if len(set(values)) == 1 else values
 
-        if isinstance(curr_demixing_configs, list):
-            for cfg in curr_demixing_configs:
-                if isinstance(cfg, SinglepassDemixingConfig):
-                    cfg.NMFConfig.min_brightness = new_min_brightness
-                if isinstance(cfg, MultipassDemixingConfig):
-                    for elt in cfg.DemixingConfigs:
-                        elt.NMFConfig.min_brightness = new_min_brightness
+    @min_brightness.setter
+    def min_brightness(self, value: float | tuple[float, ...] | None):
+        """
+        Set the min brightness of the demixing passes: one value for every pass, or one per pass in the order they
+        run (a list in Python, comma separated on the command line). 0 or None turns the check off.
+        """
+        passes = self.demixing_passes()
+        values = list(value) if isinstance(value, (list, tuple)) else [value]
+        if len(values) == 1:
+            values = values * len(passes)
+        if len(values) != len(passes):
+            raise ValueError(f"{len(values)} min brightness values for {len(passes)} demixing passes")
+        if any(v is not None and v < 0 for v in values):
+            raise ValueError("min_brightness cannot be negative")
+        for p, v in zip(passes, values):
+            p.NMFConfig.min_brightness = v
+        # a resumed run replaces every config not in configs_given with the earlier run's; mark the ones changed here
+        configs_changed = self.demixing_configs if isinstance(self.demixing_configs, list) else [self.demixing_configs]
+        for name in self.default_configs():
+            if any(getattr(self, name) is config for config in configs_changed if not isinstance(config, str)):
+                self.configs_given.add(name)
 
 
 

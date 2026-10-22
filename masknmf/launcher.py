@@ -33,6 +33,7 @@ from masknmf import cli
 from masknmf.demixing.curation import latest_results
 from masknmf.io import group_name_compression, group_name_demixing, group_names_registration, stage_groups
 from masknmf.pipelines import scraper
+from masknmf.pipelines._base import BasePipeline
 from masknmf.visualization.imgui import guide
 from masknmf.visualization.imgui.theme import button_colors, tooltip
 
@@ -588,6 +589,9 @@ class Launcher:
         self.loaded_run = None
         self.message_load = ""
         self.start_from = "movie"
+        # the uniform min brightness control: while checked, every change of its value is set in every demixing pass
+        self.uniform_min_brightness_on = False
+        self.uniform_min_brightness = 1.0
         for param in (*self.spec.movie_params, *self.spec.array_params):
             self.paths.setdefault(param.field, "")
 
@@ -1709,6 +1713,31 @@ class Launcher:
             "runs with. Changed values show orange and are listed under Modified parameters.",
         )
         imgui.spacing()
+        if self.spec.cls.demixing_configs is not BasePipeline.demixing_configs:
+            changed_on, self.uniform_min_brightness_on = imgui.checkbox("uniform min brightness", self.uniform_min_brightness_on)
+            if imgui.is_item_hovered():
+                idl.wrapped_tooltip(
+                    "Uniform min brightness: while checked, this value is set in every demixing pass, and again each "
+                    "time it changes. A pass edited afterwards keeps its own value; the passes' values are what runs."
+                )
+            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+            imgui.begin_disabled(not self.uniform_min_brightness_on)
+            imgui.set_next_item_width(hello_imgui.em_size(12))
+            changed_slider, self.uniform_min_brightness = imgui.slider_float(
+                "##uniform_min_brightness", self.uniform_min_brightness, 0.0, 5.0, "%.2f"
+            )
+            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+            imgui.set_next_item_width(hello_imgui.em_size(WIDTH_INPUT_EM))
+            changed_box, value = imgui.input_float("##uniform_min_brightness_box", self.uniform_min_brightness, 0.0, 0.0, "%.6g")
+            imgui.end_disabled()
+            # the min_brightness setter refuses negative values
+            changed_box = changed_box and value >= 0
+            if changed_box:
+                self.uniform_min_brightness = value
+            if self.uniform_min_brightness_on and (changed_on or changed_slider or changed_box):
+                pipeline = self.spec.cls(**{section.argument: self.values[section.argument] for section in self.spec.sections})
+                pipeline.min_brightness = self.uniform_min_brightness
+            imgui.spacing()
         for section in self.spec.sections:
             self.draw_stage(section=section)
 
