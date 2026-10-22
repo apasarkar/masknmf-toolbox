@@ -373,7 +373,8 @@ def add_pipeline_options(parser: argparse.ArgumentParser, spec: scraper.Pipeline
             param.flag,
             default=None,
             metavar="VALUE",
-            help=f"set in every config that has it, over the configs given; {param.description}",
+            # the setter's docstring says what setting it does; it is applied over the configs given
+            help=f"{' '.join(getattr(spec.cls, param.field).fset.__doc__.split())} {param.description}",
         )
 
     for section in spec.sections:
@@ -448,9 +449,10 @@ def command_params(args: argparse.Namespace) -> None:
     for param in spec.scalars:
         print(f"  {param.field:28} {param.description}")
 
-    print("\nmeta parameters, set in every config that has them")
+    print("\nmeta parameters, set over the configs")
     for param in spec.properties:
         print(f"  {param.field:28} {param.description}")
+        print(f"  {'':28} {' '.join(getattr(spec.cls, param.field).fset.__doc__.split())}")
 
     for section in spec.sections:
         print(f"\n[{section.name}] --{section.name}-kind {' | '.join(section.kinds_buildable)}")

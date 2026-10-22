@@ -550,18 +550,27 @@ class BasePipeline(ABC):
         return passes
 
     @property
-    def min_brightness(self) -> float | None:
-        """The min brightness every demixing pass uses, or None when the passes differ."""
-        values = {p.NMFConfig.min_brightness for p in self.demixing_passes()}
-        return values.pop() if len(values) == 1 else None
+    def min_brightness(self) -> float | list[float | None] | None:
+        """The min brightness every demixing pass uses, or each pass's in the order they run when they differ."""
+        values = [p.NMFConfig.min_brightness for p in self.demixing_passes()]
+        return values[0] if len(set(values)) == 1 else values
 
     @min_brightness.setter
-    def min_brightness(self, value: float | None):
-        """Set the min brightness of every demixing pass; 0 or None turns the check off."""
-        if value is not None and value < 0:
+    def min_brightness(self, value: float | tuple[float, ...] | None):
+        """
+        Set the min brightness of the demixing passes: one value for every pass, or one per pass in the order they
+        run (a list in Python, comma separated on the command line). 0 or None turns the check off.
+        """
+        passes = self.demixing_passes()
+        values = list(value) if isinstance(value, (list, tuple)) else [value]
+        if len(values) == 1:
+            values = values * len(passes)
+        if len(values) != len(passes):
+            raise ValueError(f"{len(values)} min brightness values for {len(passes)} demixing passes")
+        if any(v is not None and v < 0 for v in values):
             raise ValueError("min_brightness cannot be negative")
-        for p in self.demixing_passes():
-            p.NMFConfig.min_brightness = value
+        for p, v in zip(passes, values):
+            p.NMFConfig.min_brightness = v
         # a resumed run replaces every config not in configs_given with the earlier run's; mark the ones changed here
         configs_changed = self.demixing_configs if isinstance(self.demixing_configs, list) else [self.demixing_configs]
         for name in self.default_configs():
