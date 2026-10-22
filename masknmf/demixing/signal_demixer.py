@@ -3419,8 +3419,10 @@ class DemixingState(SignalProcessingState):
         if denoise:
             pass
 
-        # Delete bad components
-        temp = torch.squeeze(torch.sum(self.c, dim=0) == 0).long()
+        # Delete signals whose trace is identically zero. Not torch.sum(c) == 0: with c_nonneg=False a trace can be
+        # mean-zero (e.g. fit to all frames of a compression centered over all frames, with b = 0), and its float
+        # sum then lands on exactly 0.0 often enough to delete good signals
+        temp = torch.squeeze(torch.all(self.c == 0, dim=0)).long()
         if torch.sum(temp):
             (
                 self.a,
