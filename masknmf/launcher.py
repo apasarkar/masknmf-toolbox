@@ -2,7 +2,7 @@
 The window `masknmf` opens when it is run with no arguments.
 
 A rail of functions on the left and one page each on the right: an Overview of what a run does, Run pipeline,
-Open results, Track sessions and Classify ROIs. Every value on a page becomes an argument of a `masknmf`
+View results, Track sessions and Classify ROIs. Every value on a page becomes an argument of a `masknmf`
 command, so whatever is started here is a command line run, and the equivalent command is printed before it
 starts. Stage configs that differ from the pipeline's defaults are written to a json file passed as --config.
 """
@@ -110,45 +110,57 @@ ROWS_FOUND = 12
 # the footer's command is cut after this many characters
 LENGTH_COMMAND = 300
 
-# the rail: a page key, its icon, its name, and the line under the name on its page
+# the rail: a page key, its icon, its name, and its tooltip
 PAGES = (
     ("home", fa.ICON_FA_HOUSE, "Overview", "what a run does, stage by stage, and which function here takes it on"),
     ("run", fa.ICON_FA_PLAY, "Run pipeline", "a pipeline over a movie: registration, compression and demixing into a run folder"),
-    ("open", fa.ICON_FA_FOLDER_OPEN, "Open results", "a results file, run folder or tracking run, in the viewer its stages call for"),
+    ("open", fa.ICON_FA_FOLDER_OPEN, "View results", "a results file, run folder or tracking run, in the viewer its stages call for"),
     ("track", fa.ICON_FA_DIAGRAM_PROJECT, "Track sessions", "match ROIs across sessions' results files with ROICaT"),
     ("classify", fa.ICON_FA_TAGS, "Classify ROIs", "label ROIs, train a classifier, classify new sessions"),
 )
-# the Overview's step cards: the page a click opens, icon, name, hint
+# the Overview's step cards: the page a click opens, icon, name
 STEPS = (
-    ("run", fa.ICON_FA_PLAY, "Run", "a pipeline over a movie"),
-    ("open", fa.ICON_FA_FOLDER_OPEN, "Open", "results at any stage"),
-    ("open", fa.ICON_FA_DRAW_POLYGON, "Curate", "in the demixing viewer"),
-    ("track", fa.ICON_FA_DIAGRAM_PROJECT, "Track", "ROIs across sessions"),
-    ("classify", fa.ICON_FA_TAGS, "Classify", "label, train, classify"),
+    ("run", fa.ICON_FA_PLAY, "Run"),
+    ("open", fa.ICON_FA_FOLDER_OPEN, "View"),
+    ("open", fa.ICON_FA_DRAW_POLYGON, "Curate"),
+    ("track", fa.ICON_FA_DIAGRAM_PROJECT, "Track"),
+    ("classify", fa.ICON_FA_TAGS, "Classify"),
 )
-# the pipeline's flow: a stage, the check that follows it, what the stage does, and what to check
+# the pipeline's flow: a stage, the check that follows it, what the stage does, what it saves, and what to check
 FLOW = (
     (
         "motion correct",
         "check the shifts",
-        "estimates a shift per frame on the raw movie, rigid or piecewise-rigid, against a template; only the shifts "
-        "and the template are kept, no registered movie is written",
-        "in the demixing viewer: the shift traces, and raw beside registered once the raw movie is given",
+        "aligns every frame to a template, rigid or piecewise-rigid",
+        "a shift per frame and the template",
+        "shift traces have no sudden jumps; the registered movie shows no motion beside the raw one",
     ),
     (
         "compress",
         "check the compression",
-        "applies the shifts while compressing the movie into PMD factors, with its mean and noise variance images",
-        "in the demixing viewer: compressed beside raw, the residual, the mean and noise stills; lag-1 autocorrelation "
-        "stills once the raw movie is given",
+        "denoises and compresses the registered movie with PMD",
+        "PMD factors, the mean image and the noise variance image",
+        "the residual shows no cell shapes; the compressed movie shows the activity in the raw one",
     ),
     (
         "demix",
         "check the demixing",
-        "fits footprints, traces and a background to the compressed movie",
-        "in the demixing viewer's Curation: masks over the movie and the traces; delete wrong signals, draw missed cells, "
-        "Demix again",
+        "finds each signal's footprint and trace, and the background",
+        "footprints, traces and the background",
+        "masks sit on cells; in Curation delete wrong signals, draw missed cells, Demix again",
     ),
+)
+# the run folder's name, split into its parts: text, the label under it, color
+RUN_FOLDER_PARTS = (
+    ("2026", "year", guide.ACCENT),
+    ("10", "month", guide.ACCENT),
+    ("21", "day", guide.ACCENT),
+    ("T", None, guide.DIM),
+    ("14", "hour", guide.KEY),
+    ("30", "min", guide.KEY),
+    ("52", "sec", guide.KEY),
+    ("_", None, guide.DIM),
+    ("two-photon-calcium", "pipeline", guide.TEXT),
 )
 # the I/O diagram: a box label and its color
 IO_BOXES = (("movie", guide.TEXT), ("run folder", guide.ACCENT), ("results.hdf5", guide.KEY))
@@ -156,7 +168,7 @@ IO_BOXES = (("movie", guide.TEXT), ("run folder", guide.ACCENT), ("results.hdf5"
 IO_FILES = (
     ("movie", "a .tif/.tiff file, a folder of tiffs read in name order, or an .h5/.hdf5 file with the name of its dataset"),
     ("output folder", "each run makes a timestamped folder here; empty puts it beside the movie"),
-    ("results.hdf5", "one file per run holding every stage it reached; Open results reads it at any stage"),
+    ("results.hdf5", "one file per run holding every stage it reached; View results reads it at any stage"),
     ("config.json", "the values the run used, which masknmf run --config reads back"),
     ("<results>.<time>.curated.hdf5", "a Demix from the viewer, beside the original, which is never changed; the newest opens in its place"),
     ("<results>.labels.hdf5", "the labels Classify ROIs saves beside a results file"),
@@ -1152,7 +1164,7 @@ class Launcher:
         imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 0.45 * em)
         imgui.text_disabled(f"v{masknmf.__version__}")
         imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
-        imgui.text_colored(COLOR_DIM, "Motion correction, compression and demixing of functional imaging data, and the viewers over their results")
+        imgui.text_colored(COLOR_DIM, "Motion correction, compression and demixing of functional imaging data")
         imgui.pop_text_wrap_pos()
 
     def draw_body(self) -> None:
@@ -1208,18 +1220,17 @@ class Launcher:
                     self.page = "open"
                     self.paths_open["source"] = path
                 if imgui.is_item_hovered():
-                    idl.wrapped_tooltip(f"Open results: {path}")
+                    idl.wrapped_tooltip(f"View results: {path}")
             imgui.pop_style_color(4)
         imgui.pop_style_var(2)
 
     def draw_content(self) -> None:
-        """The page's title and line, then the page."""
+        """The page's title, then the page."""
         em = imgui.get_font_size()
-        key, icon, name, hint = next(page for page in PAGES if page[0] == self.page)
+        key, icon, name, _hint = next(page for page in PAGES if page[0] == self.page)
         imgui.push_font(None, 1.35 * em)
         imgui.text_colored(COLOR_SUBSECTION, f"{icon}  {name}")
         imgui.pop_font()
-        imgui.text_colored(COLOR_DIM, hint)
         imgui.separator()
         imgui.dummy(imgui.ImVec2(0, 0.4 * em))
         if key == "home":
@@ -1289,8 +1300,8 @@ class Launcher:
 
         gap = 1.4 * em
         card_w = (w - 4 * gap) / 5
-        card_h = 6.8 * em
-        for i, (page, icon, name, hint) in enumerate(STEPS):
+        card_h = 4.8 * em
+        for i, (page, icon, name) in enumerate(STEPS):
             if i:
                 right = imgui.get_item_rect_max()
                 mid = imgui.get_item_rect_min().y + card_h / 2
@@ -1306,10 +1317,9 @@ class Launcher:
             x, y = a.x + (card_w - wn - 0.5 * em - wname) / 2, a.y + 3.1 * em
             dl.add_text(imgui.ImVec2(x, y), guide.u32(COLOR_DIM), number)
             dl.add_text(imgui.ImVec2(x + wn + 0.5 * em, y), guide.u32(COLOR_TITLE), name)
-            dl.add_text(imgui.get_font(), em, imgui.ImVec2(a.x + 0.5 * em, y + 1.5 * em), guide.u32(COLOR_DIM), hint, None, card_w - em)
             if clicked:
                 self.page = page
-        draw_wrapped(text="the functions on the left, in the order a dataset goes through them; a card opens its page", color=COLOR_DIM)
+        imgui.dummy(imgui.ImVec2(0, imgui.get_text_line_height()))
 
         guide.heading(fa.ICON_FA_GEARS, "Pipeline")
         draw_wrapped(
@@ -1325,7 +1335,7 @@ class Launcher:
         bh = 1.9 * em
         col_w = w / len(FLOW)
         y_check = p.y + bh + 1.7 * em
-        for i, (stage, check, _does, _what) in enumerate(FLOW):
+        for i, (stage, check, *_) in enumerate(FLOW):
             cx = p.x + (i + 0.5) * col_w
             bw = imgui.calc_text_size(stage).x + 1.6 * em
             cw = imgui.calc_text_size(check).x + 1.6 * em
@@ -1338,22 +1348,22 @@ class Launcher:
         imgui.dummy(imgui.ImVec2(w, y_check + bh - p.y))
         imgui.dummy(imgui.ImVec2(0, 0.3 * em))
         flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.borders_inner_h
-        if imgui.begin_table("##flow", 3, flags, imgui.ImVec2(w, 0)):
+        if imgui.begin_table("##flow", 4, flags, imgui.ImVec2(w, 0)):
             imgui.table_setup_column("stage", imgui.TableColumnFlags_.width_fixed, 7.5 * em)
-            imgui.table_setup_column("description", imgui.TableColumnFlags_.width_stretch, 1.2)
-            imgui.table_setup_column("check", imgui.TableColumnFlags_.width_stretch, 1.0)
+            imgui.table_setup_column("description", imgui.TableColumnFlags_.width_stretch, 1.0)
+            imgui.table_setup_column("saved", imgui.TableColumnFlags_.width_stretch, 0.9)
+            imgui.table_setup_column("check", imgui.TableColumnFlags_.width_stretch, 1.2)
             imgui.table_next_row()
-            for heading in ("stage", "description", "check"):
+            for heading in ("stage", "description", "saved", "check"):
                 imgui.table_next_column()
                 imgui.text_colored(COLOR_DIM, heading)
-            for stage, _check, does, what in FLOW:
+            for stage, _check, description, saved, check in FLOW:
                 imgui.table_next_row()
                 imgui.table_next_column()
                 imgui.text_colored(COLOR_TITLE, stage)
-                imgui.table_next_column()
-                imgui.text_wrapped(does)
-                imgui.table_next_column()
-                imgui.text_wrapped(what)
+                for text in (description, saved, check):
+                    imgui.table_next_column()
+                    imgui.text_wrapped(text)
             imgui.end_table()
 
         guide.heading(fa.ICON_FA_FILE, "I/O")
@@ -1378,6 +1388,27 @@ class Launcher:
                 imgui.table_next_column()
                 imgui.text_wrapped(text)
             imgui.end_table()
+
+        imgui.dummy(imgui.ImVec2(0, 0.6 * em))
+        draw_wrapped(text="a run folder is named by when the run started and its pipeline; a second run in the same "
+                     "second gets _1, _2, ... appended", color=COLOR_DIM)
+        imgui.dummy(imgui.ImVec2(0, 0.4 * em))
+        size = 1.4 * em
+        imgui.push_font(None, size)
+        widths = [imgui.calc_text_size(text).x for text, _, _ in RUN_FOLDER_PARTS]
+        imgui.pop_font()
+        slots = [max(tw, 0.0 if label is None else imgui.calc_text_size(label).x) for (_, label, _), tw in zip(RUN_FOLDER_PARTS, widths)]
+        p = imgui.get_cursor_screen_pos()
+        x = p.x + (w - sum(slots) - 0.4 * em * (len(slots) - 1)) / 2
+        y_line = p.y + size + 0.35 * em
+        for (text, label, color), tw, slot in zip(RUN_FOLDER_PARTS, widths, slots):
+            dl.add_text(imgui.get_font(), size, imgui.ImVec2(x + (slot - tw) / 2, p.y), guide.u32(color), text)
+            if label is not None:
+                dl.add_line(imgui.ImVec2(x, y_line), imgui.ImVec2(x + slot, y_line), guide.u32(color, 0.7), 2.0)
+                lw = imgui.calc_text_size(label).x
+                dl.add_text(imgui.ImVec2(x + (slot - lw) / 2, y_line + 0.3 * em), guide.u32(COLOR_DIM), label)
+            x += slot + 0.4 * em
+        imgui.dummy(imgui.ImVec2(w, size + 2.0 * em))
 
         guide.heading(fa.ICON_FA_TERMINAL, "Command line")
         draw_wrapped(
