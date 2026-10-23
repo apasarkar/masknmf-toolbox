@@ -1,1 +1,2 @@
 from masknmf.demixing._adapters._suite2p_adapter import Suite2pResults
+from masknmf.demixing._adapters._caiman_adapter import CaimanResults, load_caiman_memmap 
