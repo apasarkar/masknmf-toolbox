@@ -165,6 +165,7 @@ class ClassificationVis:
             canvas_kwargs={"title": "Classification Widget", "max_fps": 60.0, "vsync": True},
         )
         self._summary = SummaryImageViewer(self._figure)
+        self._summary.on_click = self._click_fov
         self._bg = None
         self._fg = None
         self.set_roi_images(roi_images, class_labels)
@@ -613,7 +614,7 @@ class ClassificationVis:
         del self._label_undo[:-50]
         self._class_labels[roi_ids] = label_index
         self._autosave()
-        if self._filter_label != -2:
+        if self._filter_label != -2 or self._hidden_classes:
             self._rebuild_order()
         self._show_current()
 
@@ -742,6 +743,9 @@ class ClassificationVis:
         mask = (self._area >= self._area_range[0]) & (self._area <= self._area_range[1])
         if self._filter_label >= -1:
             mask &= self._class_labels == self._filter_label
+        hidden = [i for i, name in enumerate(self._label_names) if name in self._hidden_classes]
+        hidden += [-1] if _UNLABELED in self._hidden_classes else []
+        mask &= ~np.isin(self._class_labels, hidden)
         idx = np.flatnonzero(mask)
         if self._sort_column:
             session = self._session_of if self._session_of is not None else np.zeros_like(self._area)
@@ -773,6 +777,25 @@ class ClassificationVis:
         if 0 <= label_index < len(self._label_colors):
             return self._label_colors[label_index]
         return _LABEL_COLORS[label_index % len(_LABEL_COLORS)]
+
+    def _click_fov(self, row: int, col: int):
+        """A click on the full FOV makes the shown ROI with the strongest mask at that pixel current"""
+        if self.current is None or self._fov_images is None:
+            return
+        sess = int(self._session_of[self.current]) if self._session_of is not None else 0
+        start = int(self._session_starts[sess]) if self._session_starts is not None else 0
+        sizes = self._session_sizes or (len(self._roi_images),)
+        h, w = self._roi_images.shape[1:]
+        best, best_value = None, 0.0
+        for roi in np.intersect1d(self._order, np.arange(start, start + int(sizes[sess]))):
+            top, left = self._crop_origin(int(roi))
+            if top <= row < top + h and left <= col < left + w:
+                # the class overlay draws the stronger mask on top, relative to each ROI's peak
+                value = float(self._roi_images[roi][row - top, col - left]) / (self._peak[roi] or 1.0)
+                if value > best_value:
+                    best, best_value = int(roi), value
+        if best is not None:
+            self.goto(best)
 
     def _crop_origin(self, roi: int) -> tuple[int, int]:
         """FOV coordinate of the ROI crop's top-left corner (roicat's convention)"""
@@ -1041,12 +1064,16 @@ class ClassificationVis:
             self._step_group(-1)
         if pressed(CLASSIFICATION["group_next"]):
             self._step_group(1)
+        # b and m act on the full FOV too, which follows the ROI view's new state
         if pressed(CLASSIFICATION["background"]):
             self._show_bg = not self._show_bg
+            self._summary.hide_image = not self._show_bg
             self._apply_overlay()
         if pressed(CLASSIFICATION["masks"]):
             self._show_mask = not self._show_mask
+            self._show_class_masks = self._show_mask
             self._apply_overlay()
+            self._show_current()
         if pressed(CLASSIFICATION["class_masks"]):
             self._show_class_masks = not self._show_class_masks
             self._show_current()
@@ -1429,9 +1456,9 @@ class ClassificationVis:
             hidden = name in self._hidden_classes
             if imgui.small_button(fa.ICON_FA_EYE_SLASH if hidden else fa.ICON_FA_EYE):
                 self._hidden_classes.symmetric_difference_update((name,))
-                self._show_current()
+                self._rebuild_order()
             if imgui.is_item_hovered():
-                imgui.set_tooltip(f"show or hide '{name}' on the full FOV")
+                imgui.set_tooltip(f"show or hide '{name}' in the ROI table and on the full FOV")
             imgui.table_next_column()
             if imgui.color_button(
                 "##swatch",
@@ -1466,9 +1493,9 @@ class ClassificationVis:
         hidden = _UNLABELED in self._hidden_classes
         if imgui.small_button(f"{fa.ICON_FA_EYE_SLASH if hidden else fa.ICON_FA_EYE}##eye-none"):
             self._hidden_classes.symmetric_difference_update((_UNLABELED,))
-            self._show_current()
+            self._rebuild_order()
         if imgui.is_item_hovered():
-            imgui.set_tooltip("show or hide the unlabeled ROIs on the full FOV")
+            imgui.set_tooltip("show or hide the unlabeled ROIs in the ROI table and on the full FOV")
         imgui.table_next_column()
         imgui.color_button(
             "##swatch-none",

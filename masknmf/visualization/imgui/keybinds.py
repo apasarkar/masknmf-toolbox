@@ -103,7 +103,7 @@ CLASSIFICATION: Mapping[str, Bind] = {
     "clear_delete": Bind("delete", "clear the label", imgui.Key.delete),
     "unlabeled": Bind("u", "jump to the next unlabeled ROI", imgui.Key.u),
     "masks": MASKS,
-    "background": Bind("b", "toggle the background image", imgui.Key.b),
+    "background": Bind("b", "toggle the background image, here and on the full FOV", imgui.Key.b),
     "class_masks": Bind("c", "toggle every ROI's class mask on the full FOV", imgui.Key.c),
     "fov": Bind("f", "open the full FOV window on the current ROI", imgui.Key.f),
     "undo": Bind("ctrl + z", "undo the last label change", imgui.Key.z, ctrl=True),

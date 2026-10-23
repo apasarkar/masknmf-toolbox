@@ -322,6 +322,9 @@ class MultiSessionDemixingVis:
             self._nd_image_graphics.append(graphic)
             self._bind_panel(k)
         self._ndw.figure.set_imgui_right_click(SourceRightClickMenu(self._panel_choices, self._set_source))
+        # wgpu's imgui renderer drops keys missing from its KEY_MAP, which leaves out [ and ] (page back / next)
+        renderer = self._ndw.figure.imgui_renderer
+        renderer.KEY_MAP = {**renderer.KEY_MAP, "[": imgui.Key.left_bracket, "]": imgui.Key.right_bracket}
 
         for subplot in self._ndw.figure:
             subplot.tooltip.enabled = False
