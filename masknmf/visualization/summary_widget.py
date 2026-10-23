@@ -14,6 +14,7 @@ from imgui_bundle import imgui
 
 from masknmf.visualization.imgui.layout import is_notebook_canvas
 from masknmf.visualization.imgui.movie_player import MoviePlayer
+from masknmf.visualization.imgui.picking import CLICK_SLOP
 from masknmf.visualization.imgui.options import OPTIONS
 from masknmf.visualization.imgui.theme import opaque_popups
 
@@ -191,6 +192,9 @@ class SummaryImageViewer:
         self._show_pixel_values = False
         self._highlight: Optional[tuple] = None  # (y0, x0, h, w) in image coords
         self._overlay: Optional[np.ndarray] = None  # float (H, W, 4) drawn over the image
+        self.hide_image = False  # draw the image at the colormap's floor, so only the overlay shows
+        self._blank: Optional[np.ndarray] = None  # the floor image hide_image draws, kept so it uploads once
+        self.on_click: Optional[Callable[[int, int], None]] = None  # called with (row, col) when the image is clicked
         self._index: Optional[int] = None  # which plane of a stacked image to show
         self._planes: dict = {}  # (stack, index, plane) last read for each source
         self._auto_cache: dict = {}
@@ -319,6 +323,11 @@ class SummaryImageViewer:
             return None
         cmap = _CMAPS[self._cmap_idx]
         lo, hi = self._get_range(key, arr, column)
+        if self.hide_image:
+            if self._blank is None or self._blank.shape != arr.shape[:2]:
+                # -inf clips to the floor of any contrast range
+                self._blank = np.full(arr.shape[:2], -np.inf, dtype=np.float32)
+            arr = self._blank
         gpu = self._gpu.get((key, column))
         if gpu is None:
             gpu = _GpuImage(backend, arr, cmap, lo, hi, self._overlay)
@@ -613,6 +622,15 @@ class SummaryImageViewer:
                 arr = image
                 px = int((io.mouse_pos.x - img_min.x) / max(self._zoom, 1e-6))
                 py = int((io.mouse_pos.y - img_min.y) / max(self._zoom, 1e-6))
+                # a press and release that barely moved is a click; a drag pans
+                if (
+                    self.on_click is not None
+                    and 0 <= px < w
+                    and 0 <= py < h
+                    and imgui.is_mouse_released(imgui.MouseButton_.left)
+                    and io.mouse_drag_max_distance_sqr[0] <= CLICK_SLOP**2
+                ):
+                    self.on_click(py, px)
                 if 0 <= px < w and 0 <= py < h:
                     readout = f"{caption}  px ({py}, {px}) = ".lstrip() + ", ".join(f"{v:.4g}" for v in np.atleast_1d(arr[py, px]))
         imgui.end_child()
