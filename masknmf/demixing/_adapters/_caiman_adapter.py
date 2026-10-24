@@ -195,17 +195,28 @@ class _ChunkedFrames(LazyFrameLoader):
 
 
 class CaimanBackgroundArray(_ChunkedFrames):
-    """caiman's fluctuating (ring-model) background as a lazy (frames, height, width) array, in masknmf's pixel order"""
+    """caiman's fluctuating (ring-model) background in masknmf's pixel order"""
 
-    def __init__(self, ring_model: _CaimanRingModel):
+    def __init__(self, ring_model: _CaimanRingModel, mean_zero: bool = False):
+        """mean_zero: subtract each pixel's average over all frames """
         self._ring = ring_model
+        self._mean_zero = mean_zero
+        self._mean_frame = None
 
     @property
     def shape(self) -> tuple[int, int, int]:
         return (self._ring._num_frames, *self._ring._fov_shape)
 
     def _frames(self, frame_ids):
-        return self._ring.background_frames(frame_ids)
+        frames = self._ring.background_frames(frame_ids)
+        if not self._mean_zero:
+            return frames
+        if self._mean_frame is None:                       # average over all frames, a chunk at a time
+            total = np.zeros(self.shape[1:], np.float64)
+            for start in range(0, self.shape[0], self.chunk_size):
+                total += self._ring.background_frames(np.arange(start, min(start + self.chunk_size, self.shape[0]))).sum(0)
+            self._mean_frame = (total / self.shape[0]).astype(np.float32)
+        return frames - self._mean_frame
 
 
 class CaimanResidualArray(_ChunkedFrames):
@@ -245,7 +256,8 @@ class CaimanResults(BaseResults):
                  accepted_only: bool = True,
                  include_residual_traces: bool = True,
                  movie: ArrayLike | np.ndarray | None = None,
-                 residual_components: str = "all"):
+                 residual_components: str = "all",
+                 background_mean_zero: bool = False):
         """
         Args:
             results_file (str | os.PathLike): the hdf5 file written by caiman's cnmf.save
@@ -253,6 +265,7 @@ class CaimanResults(BaseResults):
             accepted_only (bool): keep only the components caiman accepted (estimates/idx_components, set by evaluate_components). 
             movie (ArrayLike | np.ndarray | None): the movie caiman was fit on (its motion corrected, memory mapped movie), shaped (frames, height, width)
             residual_components (str): which components the residual subtracts, "all" or "accepted". "all" (the default)
+            background_mean_zero (bool): subtract each pixel's average over all frames from the fluctuating background,
             include_residual_traces (bool): if estimates/YrA was saved, expose C + YrA (caiman's raw trace of each
                 component, i.e. its denoised trace plus the residual projected onto its footprint) as
                 temporal_demixed_raw
@@ -318,11 +331,12 @@ class CaimanResults(BaseResults):
         self._A_f_residual, self._C_residual = ((A_f_all, C_all) if residual_components == "all"
                                                 else (A_f_accepted, C))
         self._roi_averages_cache = None
+        self._background_mean_zero = bool(background_mean_zero)
         if movie is not None:
             if W is None or b0 is None or np.size(b0) == 0:
                 raise ValueError("a movie was given, but the file has no ring-model background ")
             self._ring_model = _CaimanRingModel(movie, W, b0, A_f_all, C_all, self._fov_shape)
-            self._background_array = CaimanBackgroundArray(self._ring_model)
+            self._background_array = CaimanBackgroundArray(self._ring_model, self._background_mean_zero)
             self._residual_array = CaimanResidualArray(self._ring_model, self._A_f_residual, self._C_residual)
 
         self._device = torch.device("cpu")
@@ -409,7 +423,10 @@ class CaimanResults(BaseResults):
     def fluctuating_background_roi_averages(self) -> torch.Tensor | None:
         if self._ring_model is None:
             return None
-        return torch.from_numpy(self._compute_roi_averages()["background"]).to(self._device)
+        average = self._compute_roi_averages()["background"]
+        if self._background_mean_zero:
+            average = average - average.mean(axis=1, keepdims=True)
+        return torch.from_numpy(average).to(self._device)
 
     @property
     def residual_roi_averages(self) -> torch.Tensor | None:
