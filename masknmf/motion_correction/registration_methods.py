@@ -1006,8 +1006,7 @@ def register_frames_pwrigid(
 
 
 def compute_pwrigid_patch_midpoints(field_dimensions: tuple[int, int],
-                                    fov_height: int,
-                                    fov_width: int) -> torch.Tensor:
+                                    fov_shape: tuple[int, int]) -> torch.Tensor:
     """
     Piecewise rigid registration estimates a low-rank vector field of dimensions (k1, k2), interpolates this to
     a full FOV image of dimensions (height, width), and applies the shifts. This routine specifies for where vector

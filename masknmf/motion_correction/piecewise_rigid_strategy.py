@@ -284,12 +284,19 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
     def __init__(self,
                  input_movie: ArrayLike,
                  shifts: torch.Tensor,
-                 strategy: PiecewiseRigidMotionCorrector,
-                 output_device: str | torch.device = 'cpu'):
+                 output_device: str | torch.device = 'cpu',
+                 strategy: PiecewiseRigidMotionCorrector | None = None,
+                 batch_size: int = 200,
+                 compute_device: str | torch.device = "auto"):
         self._input_movie = input_movie
         self._shifts = shifts
         self._strategy = strategy
-        self._device = self.strategy.device
+        if self.strategy is not None:
+            self._batch_size = self.strategy.batch_size
+            self._device = torch.device(self.strategy.device)
+        else:
+            self._batch_size = batch_size
+            self._device = torch.device(torch_select_device(compute_device))
         self.output_device = output_device
         self._compute_block_centers()
 
@@ -304,6 +311,22 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
     @property
     def dtype(self) -> torch.dtype:
         return torch.float32
+
+    @property
+    def batch_size(self) -> int:
+        return self._batch_size
+
+    @batch_size.setter
+    def batch_size(self, new_batch_size: int):
+        self._batch_size = new_batch_size
+
+    @property
+    def compute_device(self):
+        return self._device
+
+    @compute_device.setter
+    def compute_device(self, new_compute_device: str | torch.device):
+        self._device = torch.device(new_compute_device)
 
     @property
     def nbytes(self) -> int:
@@ -326,7 +349,7 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
         return self._shifts
 
     @property
-    def strategy(self) -> PiecewiseRigidMotionCorrector:
+    def strategy(self) -> PiecewiseRigidMotionCorrector | None:
         return self._strategy
 
     def _corrected_roi(self,
@@ -340,7 +363,7 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
         row_extent = max(1, row_indices[1] - row_indices[0])
         col_extent = max(1, col_indices[1] - col_indices[0])
 
-        batch_size = math.floor(self.shape[1] * self.shape[2] * self.strategy.batch_size / (row_extent * col_extent))
+        batch_size = math.floor(self.shape[1] * self.shape[2] * self.batch_size / (row_extent * col_extent))
         batch_size = max(batch_size, 1)
         num_batches = math.ceil(frames.shape[0] / batch_size)
         outputs = []
