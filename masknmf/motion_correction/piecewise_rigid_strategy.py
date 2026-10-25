@@ -293,10 +293,10 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
         self._strategy = strategy
         if self.strategy is not None:
             self._batch_size = self.strategy.batch_size
-            self._device = torch.device(self.strategy.device)
+            self.compute_device = self.strategy.device
         else:
             self._batch_size = batch_size
-            self._device = torch.device(torch_select_device(compute_device))
+            self.compute_device = torch_select_device(compute_device)
         self.output_device = output_device
         self._compute_block_centers()
 
@@ -319,14 +319,6 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
     @batch_size.setter
     def batch_size(self, new_batch_size: int):
         self._batch_size = new_batch_size
-
-    @property
-    def compute_device(self):
-        return self._device
-
-    @compute_device.setter
-    def compute_device(self, new_compute_device: str | torch.device):
-        self._device = torch.device(new_compute_device)
 
     @property
     def nbytes(self) -> int:

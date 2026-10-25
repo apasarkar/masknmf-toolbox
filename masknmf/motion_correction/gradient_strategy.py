@@ -329,10 +329,11 @@ class GradientRegistrationArray(BaseRegistrationArray):
         self._input_movie = input_movie
         self._strategy = strategy
         self.output_device = output_device
+        self.compute_device = self.strategy.device
         self._gradient_steps_mean = None
-        self._gradient = self.strategy.gradient.reshape(self.shape[1], self.shape[2], 2).to(self.strategy.device).to(self.dtype)
+        self._gradient = self.strategy.gradient.reshape(self.shape[1], self.shape[2], 2).to(self._device).to(self.dtype)
         self._shifts = shifts
-        self._gradient_steps = gradient_steps.to(self.strategy.device).to(self.dtype)
+        self._gradient_steps = gradient_steps.to(self._device).to(self.dtype)
         self._gradient_steps_mean = torch.mean(self._gradient_steps, dim=0)
         self._include_mean = True
 
@@ -413,7 +414,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
         else:
             gradient_crop = self.gradient
 
-        grad_movie = gradient_crop @ gradient_step_used.T
+        grad_movie = gradient_crop.to(self._device) @ gradient_step_used.T.to(self._device)
         grad_movie = grad_movie.movedim(-1, 0).to(self.output_device)
 
         return data_subset - grad_movie

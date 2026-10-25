@@ -272,10 +272,10 @@ class RigidRegistrationArray(BaseRegistrationArray):
 
         if self.strategy is not None:
             self._batch_size = self.strategy.batch_size
-            self._device = torch.device(self.strategy.device)
+            self.compute_device = self.strategy.device
         else:
             self._batch_size = batch_size
-            self._device = torch.device(torch_select_device(compute_device))
+            self.compute_device = torch_select_device(compute_device)
         self.output_device = output_device
 
         if shifts.ndim != 2 or shifts.shape[1] != 2:
@@ -340,14 +340,6 @@ class RigidRegistrationArray(BaseRegistrationArray):
     @batch_size.setter
     def batch_size(self, new_batch_size: int):
         self._batch_size = new_batch_size
-
-    @property
-    def compute_device(self):
-        return self._device
-
-    @compute_device.setter
-    def compute_device(self, new_compute_device: str | torch.device):
-        self._device = torch.device(new_compute_device)
 
     @property
     def strategy(self) -> MotionCorrectionStrategy | None:
@@ -446,7 +438,7 @@ class RigidRegistrationArray(BaseRegistrationArray):
             ## If output_device is cpu, this should immediately move things off the GPU
             window = apply_rigid_shifts(
                 window,
-                self.shifts[torch.as_tensor(frame_chunk, device=self._device)],
+                self.shifts[torch.as_tensor(frame_chunk, device=self.shifts.device)].to(self._device),
             ).to(self.output_device)
 
             chunks.append(
@@ -538,7 +530,7 @@ def roi_consistency_error(
     if full.ndim == 2:
         full = full[None, ...]
     reference = apply_rigid_shifts(
-        full, array.shifts[torch.as_tensor(frame_idx, device=array.compute_device)]
+        full, array.shifts[torch.as_tensor(frame_idx, device=array.shifts.device)].to(array.compute_device)
     )
     reference = reference[:, rows, cols]
 

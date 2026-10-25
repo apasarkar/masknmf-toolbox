@@ -39,6 +39,14 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
     def output_device(self, value: str | torch.device):
         self._output_device = torch.device(value)
 
+    @property
+    def compute_device(self) -> torch.device:
+        return self._device
+
+    @compute_device.setter
+    def compute_device(self, new_compute_device: str | torch.device):
+        self._device = torch.device(new_compute_device)
+
     @abstractmethod
     def __getitem__(self, idx) -> torch.Tensor:
         """
