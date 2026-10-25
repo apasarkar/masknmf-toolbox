@@ -28,6 +28,10 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
     def input_movie(self): ...
 
     @property
+    def shape(self) -> tuple[int, int, int]:
+        return self.input_movie.shape
+
+    @property
     @abstractmethod
     def strategy(self) -> Serializer: ...
 

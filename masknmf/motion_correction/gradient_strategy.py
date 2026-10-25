@@ -338,10 +338,6 @@ class GradientRegistrationArray(BaseRegistrationArray):
         self._include_mean = True
 
     @property
-    def shape(self) -> tuple[int, int, int]:
-        return self.input_movie.shape
-
-    @property
     def dtype(self) -> torch.dtype:
         return self.strategy.dtype
 

@@ -300,14 +300,6 @@ class RigidRegistrationArray(BaseRegistrationArray):
         )
 
     @property
-    def ndim(self) -> int:
-        return len(self.shape)
-
-    @property
-    def shape(self) -> tuple[int, int, int]:
-        return self.input_movie.shape
-
-    @property
     def dtype(self) -> torch.dtype:
         return torch.float32
 
