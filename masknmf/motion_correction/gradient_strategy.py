@@ -288,9 +288,10 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
 
         gradient_steps, shifts = self._extract_all_shifts(reference_movie)
         return GradientRegistrationArray(reference_movie,
-                                         copy.deepcopy(self),
                                          gradient_steps,
-                                         shifts)
+                                         self.gradient.clone(),
+                                         shifts,
+                                         copy.deepcopy(self))
 
 
 
@@ -307,10 +308,12 @@ class GradientRegistrationArray(BaseRegistrationArray):
 
     def __init__(self,
                  input_movie: OphysArray,
-                 strategy: GradientMotionCorrector,
                  gradient_steps: torch.Tensor,
-                 shifts: torch.Tensor,
-                 output_device: str | torch.device = "cpu"):
+                 gradients: torch.Tensor,
+                 shifts: torch.Tensor | None = None,
+                 strategy: GradientMotionCorrector | None = None,
+                 output_device: str | torch.device = "cpu",
+                 compute_device: str | torch.device = "auto"):
         """
         Args:
             input_movie (OphysArray): Shape (num_frames, fov_height, fov_width). num_frames is the number of frames that are
@@ -319,30 +322,40 @@ class GradientRegistrationArray(BaseRegistrationArray):
                 for motion correcting a single frame of data
             gradient_steps (torch.Tensor): Shape (num_frames, 2). The per-frame gradient steps required to motion correct
                 the input movie.
-            shift (torch.Tensor): Shape (num_frames, 2). A version of gradient steps which accounts for brightness
+            gradients (torch.Tensor): Shape (num_pixels, 2). The gradients in both spatial dimensions. Each gradient
+                image is raveled in "C" order
+            shifts (torch.Tensor | None): Shape (num_frames, 2). An (optional) version of gradient steps which accounts for brightness
                 differences (for e.g. due to photobleaching). Reveals the relative shift magnitude across frames in arbitrary
-                units. This property is primarily useful for visualization, so one can just pass in the same values as gradient_steps
-                here without any issue.
-            output_device (str | torch.device): The device on which data is provided during calls to __getitem__
+                units. If this is none, gradient_steps is used here
+            strategy (GradientMotionCorrector | None): The strategy used to compute the shifts and gradient data provided to this registration array
+            output_device (str | torch.device): The device on which data is returned following a call to __getitem__
+            compute_device (str | torch.device): The device on which computations are performed
         """
 
         self._input_movie = input_movie
         self._strategy = strategy
-        self.output_device = output_device
-        self._gradient_steps_mean = None
-        self._gradient = self.strategy.gradient.reshape(self.shape[1], self.shape[2], 2).to(self.strategy.device).to(self.dtype)
-        self._shifts = shifts
-        self._gradient_steps = gradient_steps.to(self.strategy.device).to(self.dtype)
+        if self.strategy is not None:
+            compute_device = self.strategy.device
+        else:
+            compute_device = torch_select_device(compute_device)
+            output_device = torch_select_device(output_device)
+
+        super().__init__(output_device=output_device,
+                         compute_device=compute_device)
+
+        self._gradient = gradients.to(self.compute_device).to(self.dtype)
+        self._gradient_steps = gradient_steps.to(self.compute_device).to(self.dtype)
+
+        if shifts is None:
+            self._shifts = self._gradient_steps
+        else:
+            self._shifts = shifts.to(self.compute_device).to(self.dtype)
         self._gradient_steps_mean = torch.mean(self._gradient_steps, dim=0)
         self._include_mean = True
 
     @property
-    def shape(self) -> tuple[int, int, int]:
-        return self.input_movie.shape
-
-    @property
     def dtype(self) -> torch.dtype:
-        return self.strategy.dtype
+        return self.strategy.dtype if self.strategy is not None else torch.float32
 
     @property
     def nbytes(self) -> int:
@@ -361,7 +374,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
         self._include_mean = new_flag
 
     @property
-    def strategy(self) -> GradientMotionCorrector:
+    def strategy(self) -> GradientMotionCorrector | None:
         return self._strategy
 
     @property
@@ -413,7 +426,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
         else:
             gradient_crop = self.gradient
 
-        grad_movie = gradient_crop @ gradient_step_used.T
+        grad_movie = gradient_crop.to(self._device) @ gradient_step_used.T.to(self._device)
         grad_movie = grad_movie.movedim(-1, 0).to(self.output_device)
 
         return data_subset - grad_movie

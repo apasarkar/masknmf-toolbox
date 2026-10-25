@@ -241,9 +241,9 @@ class MiniALIResults(BaseResults):
 
             saved_background = _optional(f, "Background")
 
-        if traces.shape != (self._num_sources, self.num_frames_analyzed):
-            raise ValueError(f"cell_traces has shape {traces.shape}; {len(footprints)} footprints and "
-                             f"{num_frames} shifts need ({len(footprints)}, {num_frames})")
+        if traces.shape != (self.num_sources, self.num_frames_analyzed):
+            raise ValueError(f"cell_traces has shape {traces.shape}; {traces.shape[0]} footprints and "
+                             f"{traces.shape[1]} shifts need ({self.num_sources}, {self.num_frames_analyzed})")
         if self._gradient.shape[:2] != self.fov_shape:
             raise ValueError(f"dfdx has shape {self._gradient.shape[:2]}, reference_image {self.fov_shape}")
 
@@ -286,20 +286,17 @@ class MiniALIResults(BaseResults):
         self._residual_array = None
         self._registered_roi_averages = None
 
-        self._gradient_strategy = GradientMotionCorrector()
-        #This is a required field for creating the registration array
-        self._gradient_strategy._gradient = self._gradient.reshape(-1, 2) #(pixels, 2)
 
         """
-        Gradient Registration Array takes two inputs, shifts and gradient steps.
-        The gradient steps are actually applied to the gradient image to produce the correction
-        The steps are a photobleaching-normalized version of the gradient steps that gives the user a sense for 
+        Gradient Registration Array has (among others) these inputs: shifts and gradient steps.
+        The gradient steps are actually applied to the gradient image to produce the per-frame motion correction
+        The ``steps`` are a photobleaching-normalized version of the gradient steps that gives the user a sense for 
         the size of shifts in each frame (in arbitrary units). miniALI does not generate this, so we just 
-        provide the regular shifts in both cases.
+        provide the regular gradient steps in place of the gradient shifts.
         """
         self._registered_array = GradientRegistrationArray(self.raw_array,
-                                                           self._gradient_strategy,
                                                            self._shifts,
+                                                           self._gradient.reshape(-1, 2),
                                                            self._shifts)
         self._signals_array = SignalsArray.from_tensors(self.fov_shape, self._spatial_demixed, self._temporal_demixed)
         self._background_array = StaticMovie(self._background, self.shape[0])

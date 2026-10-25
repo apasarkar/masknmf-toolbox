@@ -15,6 +15,12 @@ from masknmf.utils._serialization import save_dict, load_dict
 class BaseRegistrationArray(ArrayLike, Serializer, ABC):
     _strategy_cls: type = None
 
+    def __init__(self,
+                 output_device: str | torch.device,
+                 compute_device: str | torch.device):
+        self._output_device = torch.device(output_device)
+        self._compute_device = torch.device(compute_device)
+
     @property
     @abstractmethod
     def shifts(self): ...
@@ -28,6 +34,10 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
     def input_movie(self): ...
 
     @property
+    def shape(self) -> tuple[int, int, int]:
+        return self.input_movie.shape
+
+    @property
     @abstractmethod
     def strategy(self) -> Serializer: ...
 
@@ -38,6 +48,14 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
     @output_device.setter
     def output_device(self, value: str | torch.device):
         self._output_device = torch.device(value)
+
+    @property
+    def compute_device(self) -> torch.device:
+        return self._device
+
+    @compute_device.setter
+    def compute_device(self, new_compute_device: str | torch.device):
+        self._device = torch.device(new_compute_device)
 
     @abstractmethod
     def __getitem__(self, idx) -> torch.Tensor:
