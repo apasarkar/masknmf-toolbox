@@ -272,11 +272,14 @@ class RigidRegistrationArray(BaseRegistrationArray):
 
         if self.strategy is not None:
             self._batch_size = self.strategy.batch_size
-            self.compute_device = self.strategy.device
+            compute_device = self.strategy.device
         else:
             self._batch_size = batch_size
-            self.compute_device = torch_select_device(compute_device)
-        self.output_device = output_device
+            compute_device = torch_select_device(compute_device)
+        output_device = output_device
+
+        super().__init__(output_device=output_device,
+                         compute_device=compute_device)
 
         if shifts.ndim != 2 or shifts.shape[1] != 2:
             raise ValueError(
@@ -286,7 +289,7 @@ class RigidRegistrationArray(BaseRegistrationArray):
             raise ValueError(
                 f"Got {shifts.shape[0]} shifts for {self.shape[0]} frames"
             )
-        self._shifts = torch.as_tensor(shifts, device=self._device, dtype=self.dtype)
+        self._shifts = torch.as_tensor(shifts, device=self.compute_device, dtype=self.dtype)
 
 
 
@@ -380,7 +383,7 @@ class RigidRegistrationArray(BaseRegistrationArray):
         read_c0, read_c1 = max(0, col_start), min(width, col_stop)
 
         block = self.input_movie[frame_key, read_r0:read_r1, read_c0:read_c1]
-        block = torch.as_tensor(block, device=self._device, dtype=self.dtype)
+        block = torch.as_tensor(block, device=self.compute_device, dtype=self.dtype)
         if block.ndim == 2:
             block = block[None, ...]
 
@@ -388,9 +391,9 @@ class RigidRegistrationArray(BaseRegistrationArray):
         cols = np.clip(np.arange(col_start, col_stop), 0, width - 1) - read_c0
 
         if not (_is_contiguous_run(rows) and rows.size == block.shape[1]):
-            block = block[:, torch.as_tensor(rows, device=self._device), :]
+            block = block[:, torch.as_tensor(rows, device=self.compute_device), :]
         if not (_is_contiguous_run(cols) and cols.size == block.shape[2]):
-            block = block[:, :, torch.as_tensor(cols, device=self._device)]
+            block = block[:, :, torch.as_tensor(cols, device=self.compute_device)]
         return block
 
     def _corrected_roi(
@@ -430,7 +433,7 @@ class RigidRegistrationArray(BaseRegistrationArray):
             ## If output_device is cpu, this should immediately move things off the GPU
             window = apply_rigid_shifts(
                 window,
-                self.shifts[torch.as_tensor(frame_chunk, device=self.shifts.device)].to(self._device),
+                self.shifts[torch.as_tensor(frame_chunk, device=self.shifts.device)].to(self.compute_device),
             ).to(self.output_device)
 
             chunks.append(

@@ -293,11 +293,13 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
         self._strategy = strategy
         if self.strategy is not None:
             self._batch_size = self.strategy.batch_size
-            self.compute_device = self.strategy.device
+            compute_device = self.strategy.device
         else:
             self._batch_size = batch_size
-            self.compute_device = torch_select_device(compute_device)
-        self.output_device = output_device
+            compute_device = torch_select_device(compute_device)
+        output_device = output_device
+        super().__init__(output_device=output_device,
+                         compute_device=compute_device)
         self._compute_block_centers()
 
     @property
@@ -361,7 +363,7 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
                                          row_slice,
                                          col_slice,
                                          temporal_indices=_frame_key(frames[start:end]),
-                                         device=self._device).to(self.output_device)
+                                         device=self.compute_device).to(self.output_device)
             outputs.append(block)
 
         return torch.concatenate(outputs, dim=0) if num_batches > 1 else outputs[0]

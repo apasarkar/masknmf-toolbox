@@ -15,6 +15,12 @@ from masknmf.utils._serialization import save_dict, load_dict
 class BaseRegistrationArray(ArrayLike, Serializer, ABC):
     _strategy_cls: type = None
 
+    def __init__(self,
+                 output_device: str | torch.device,
+                 compute_device: str | torch.device):
+        self._output_device = torch.device(output_device)
+        self._compute_device = torch.device(compute_device)
+
     @property
     @abstractmethod
     def shifts(self): ...
