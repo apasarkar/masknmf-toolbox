@@ -311,6 +311,20 @@ class GradientRegistrationArray(BaseRegistrationArray):
                  gradient_steps: torch.Tensor,
                  shifts: torch.Tensor,
                  output_device: str | torch.device = "cpu"):
+        """
+        Args:
+            input_movie (OphysArray): Shape (num_frames, fov_height, fov_width). num_frames is the number of frames that are
+                actually analyzed (specified by good_frame_indicator in the OPhysArray constructor).
+            strategy (GradientMotionCorrector): The gradient motion correction strategy class which encapsulates the algorithm
+                for motion correcting a single frame of data
+            gradient_steps (torch.Tensor): Shape (num_frames, 2). The per-frame gradient steps required to motion correct
+                the input movie.
+            shift (torch.Tensor): Shape (num_frames, 2). A version of gradient steps which accounts for brightness
+                differences (for e.g. due to photobleaching). Reveals the relative shift magnitude across frames in arbitrary
+                units. This property is primarily useful for visualization, so one can just pass in the same values as gradient_steps
+                here without any issue.
+            output_device (str | torch.device): The device on which data is provided during calls to __getitem__
+        """
 
         self._input_movie = input_movie
         self._strategy = strategy

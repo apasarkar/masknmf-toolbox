@@ -3,7 +3,7 @@ from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector, GradientMotionCorrector, GradientRegistrationArray
 from masknmf.utils import display
 from masknmf.utils._serialization import save_dict
-from dataclasses import replace
+from dataclasses import asdict, replace
 import torch
 import math
 from tqdm import tqdm
@@ -19,81 +19,6 @@ from masknmf.pipelines.configs.demixing_configs import NMFConfig, CustomInitConf
 from typing import *
 import numpy as np
 from pathlib import Path
-
-
-
-def _hals_on_a_trend(blocks: list[torch.Tensor],
-                     spatial_trend: torch.Tensor,
-                     temporal_trend: torch.Tensor,
-                     a: SparseCSRTensor,
-                     c: torch.Tensor,
-                     nonneg: bool = False):
-    """
-    This is a fast routine to do HALS on some frames of raw data. This routine assumes you've subtracted of all the stuff you don't want (background, etc.) from the movie tensor,
-    so all that's left to do is run the HALS regression.
-
-    Args:
-        blocks (list[torch.Tensor]): A list of tensors. The indices in a single tensor describe neurons that can be updated in parallel
-        spatial_trend (torch.Tensor): Shape (num_pixels, trend_rank)
-        temporal_trend (torch.Tensor): Shape (trend_rank, num_frames)
-        a (torch.sparse_coo_tensor): Shape (num_pixels, num_signals). A sparse tensor where each column describes the spatial footprints of the cells
-        c (torch.Tensor): Shape (num_frames, num_signals). A tensor describing the temporal profiles of all signals
-    """
-    atac = torch.sparse.mm(a.t(), a) @ c.T  # Shape (num_signals, num_frames)
-    a_sq_norm = masknmf.demixing.regression_update._fast_a_squared_norm(a)  # (num_signals)
-
-    for block in blocks:
-        a_subset = csr_index_select_cols(a, block).t()
-        projection = torch.sparse.mm(a_subset, spatial_trend) @ temporal_trend - atac[
-            block]  # Numerator for the regression
-        projection /= a_sq_norm[block][:, None]
-
-        c[:, block] += projection.T
-        if nonneg:
-            c.clamp_(min=0)
-    return c
-
-
-def hals_multi_iter_trend(block: list[torch.Tensor],
-                          spatial_trend_basis: torch.Tensor,
-                          temporal_trend_basis: torch.Tensor,
-                          a: SparseCSRTensor,
-                          c: torch.Tensor,
-                          nonneg: bool = False,
-                          num_iters=10):
-    for k in range(num_iters):
-        c = _hals_on_a_trend(block,
-                             spatial_trend_basis,
-                             temporal_trend_basis,
-                             a,
-                             c,
-                             nonneg=nonneg)
-
-    return c
-
-
-def hals_on_trend(a: SparseCSRTensor,
-                  c: torch.Tensor,
-                  spatial_trend_basis: torch.Tensor,
-                  temporal_trend_basis: torch.Tensor,
-                  batch_size: int = 200,
-                  num_iters: int = 10):
-    """
-    Here we want to run hierarchical alternating least squares (unconstrained) to update the temporal components of each signal w.r.t. the raw data
-    """
-    device = a.device
-    blocks = masknmf.demixing.signal_demixer._compute_hals_schedule(a,
-                                                                    device,
-                                                                    frame_batch_size=batch_size)
-    c_new = c.clone()
-    c_new = hals_multi_iter_trend(blocks,
-                                  spatial_trend_basis,
-                                  temporal_trend_basis,
-                                  a,
-                                  c_new,
-                                  nonneg=False)
-    return c_new
-
 
 
 
@@ -345,6 +270,7 @@ class OnePhotonCulturePipeline(BasePipeline):
 
         device = self.torch_device
         reuse_compression = isinstance(self.compress_config, str)
+        moco_array = None ## By default this is None
         if reuse_compression and self.compress_config.lower() != "skip":
             raise ValueError(f"If compress_config is a string, it can only be `skip`")
         if reuse_compression and (stop_after != "demixing" or isinstance(self.demixing_config, str)):
@@ -458,31 +384,53 @@ class OnePhotonCulturePipeline(BasePipeline):
         pmd_denoise.to(device)
         curr_demix_results.to(device)
 
-        ## Expand to all frames that were compressed (the good frame indices)
-        c_all_frames = expand_traces_to_all_frames(curr_demix_results.temporal_demixed,
-                                                   active_in_good)
+        with self.step("demix all frames"):
+            c_all_frames = expand_traces_to_all_frames(curr_demix_results.temporal_demixed,
+                                                       active_in_good)
 
-        with self.step("raw scale estimates"):
+            full_demixer = masknmf.demixing.signal_demixer.SignalDemixer(pmd_denoise,
+                                                          device=device,
+                                                          frame_batch_size=self.frame_batch_size)
 
-            a_rawdata_scale, full_c_estimate_denoised = compute_final_denoised_c_estimates(pmd_denoise,
-                                                                                     curr_demix_results,
-                                                                                     c_all_frames)
+            full_demixer.initialize_signals(is_custom=True,
+                                            spatial_footprints=curr_demix_results.spatial_demixed,
+                                            temporal_footprints=c_all_frames,
+                                            c_nonneg=False)
 
-            c_regressed_on_raw = hals_on_rawdata(moco_array,
-                                                 a_rawdata_scale.to_sparse_csr(),
-                                                 full_c_estimate_denoised)
+            net_iters = 15
+            custom_NMF_config = NMFConfig(maxiter=net_iters,
+                                          update_frequency=net_iters + 1,
+                                          min_brightness = 0.0,
+                                          ring_model_start_pt = net_iters + 1,
+                                          c_nonneg = False,
+                                          sign = "unconstrained")
+
+            full_demixer.demix(**asdict(custom_NMF_config))
+            curr_demix_results = full_demixer.results
+
+        with self.step("trend re-incorporation"):
+            curr_demix_results.temporal_demixed_trend = masknmf.demixing.estimate_temporal_demixed_trend(curr_demix_results.spatial_demixed.to_sparse_csr(),
+                                                                                                         curr_demix_results.temporal_demixed,
+                                                                                                         curr_demix_results.noise_variance_image,
+                                                                                                         curr_demix_results.spatial_trend_basis,
+                                                                                                         curr_demix_results.temporal_trend_basis,
+                                                                                                         batch_size=self.frame_batch_size,
+                                                                                                         c_nonneg=False)
+
+
+        with self.step("raw traces"):
+            curr_demix_results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
+                curr_demix_results, moco_array, device=self.torch_device, nonneg=True,
+                frame_batch_size=self.frame_batch_size)
 
         if good_frame_indicator is not None:
-            full_c_estimate_denoised = masknmf.utils.infill_bad_timepoints(full_c_estimate_denoised.T, good, device=device).T
-            c_regressed_on_raw = masknmf.utils.infill_bad_timepoints(c_regressed_on_raw.T, good, device=device).T
 
-        if good_frame_indicator is not None:
+            #This expands from good frames to all frames
             curr_demix_results = masknmf.DemixingResults.infill_bad_frames(curr_demix_results,
-                                                                  good_frame_indicator=demixed_frames)
+                                                                           good_frame_indicator=demixed_frames)
+
 
         curr_demix_results.export(results_path)
-        save_dict({"a": a_rawdata_scale, "c_denoised": full_c_estimate_denoised, "c_raw": c_regressed_on_raw},
-                  filename=results_path, group="RawScaleEstimates", exists_ok=True)
         if remove_intermediates:
             self.drop_compression(results_path)
 

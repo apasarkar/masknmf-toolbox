@@ -6,6 +6,8 @@ from masknmf.demixing.demixing_results import DemixingResults
 from masknmf.demixing.regression_update import _fast_a_squared_norm
 from masknmf.demixing.signal_demixer import _compute_hals_schedule
 from masknmf.demixing.demixing_utils import csr_index_select_rows, csr_index_select_cols
+from masknmf.utils import SparseCSRTensor
+
 
 
 def hals_multi_iter_raw(block: list[torch.Tensor],
@@ -52,6 +54,8 @@ def _hals_on_raw(blocks: list[torch.Tensor],
         c[:, block] = clip(c[:, block] + projection.T)
     return c
 
+
+
 def estimate_temporal_demixed_raw(results: DemixingResults,
                                   movie: np.ndarray | ArrayLike | None,
                                   device: torch.device | str,
@@ -97,4 +101,83 @@ def estimate_temporal_demixed_raw(results: DemixingResults,
                                                     c_new[start_pt:end_pt, :],
                                                     nonneg=nonneg)
 
+    return c_new
+
+
+
+def _hals_on_a_trend(blocks: list[torch.Tensor],
+                     spatial_trend: torch.Tensor,
+                     temporal_trend: torch.Tensor,
+                     a: SparseCSRTensor,
+                     c: torch.Tensor,
+                     nonneg: bool = False):
+    """
+    This is a fast routine to do HALS on some frames of raw data. This routine assumes you've subtracted of all the stuff you don't want (background, etc.) from the movie tensor,
+    so all that's left to do is run the HALS regression.
+
+    Args:
+        blocks (list[torch.Tensor]): A list of tensors. The indices in a single tensor describe neurons that can be updated in parallel
+        spatial_trend (torch.Tensor): Shape (num_pixels, trend_rank)
+        temporal_trend (torch.Tensor): Shape (trend_rank, num_frames)
+        a (torch.sparse_coo_tensor): Shape (num_pixels, num_signals). A sparse tensor where each column describes the spatial footprints of the cells
+        c (torch.Tensor): Shape (num_frames, num_signals). A tensor describing the temporal profiles of all signals
+    """
+    atac = torch.sparse.mm(a.t(), a) @ c.T  # Shape (num_signals, num_frames)
+    a_sq_norm = _fast_a_squared_norm(a)  # (num_signals)
+
+    for block in blocks:
+        a_subset = csr_index_select_cols(a, block).t()
+        projection = torch.sparse.mm(a_subset, spatial_trend) @ temporal_trend - atac[
+            block]  # Numerator for the regression
+        projection /= a_sq_norm[block][:, None]
+
+        c[:, block] += projection.T
+        if nonneg:
+            c.clamp_(min=0)
+    return c
+
+
+def hals_multi_iter_trend(block: list[torch.Tensor],
+                          spatial_trend_basis: torch.Tensor,
+                          temporal_trend_basis: torch.Tensor,
+                          a: SparseCSRTensor,
+                          c: torch.Tensor,
+                          nonneg: bool = False,
+                          num_iters=10):
+    for k in range(num_iters):
+        c = _hals_on_a_trend(block,
+                             spatial_trend_basis,
+                             temporal_trend_basis,
+                             a,
+                             c,
+                             nonneg=nonneg)
+
+    return c
+
+
+def estimate_temporal_demixed_trend(a: SparseCSRTensor,
+                  c: torch.Tensor,
+                  pixelwise_normalizer: torch.Tensor,
+                  spatial_trend_basis: torch.Tensor,
+                  temporal_trend_basis: torch.Tensor,
+                  batch_size: int = 200,
+                  c_nonneg = False):
+    """
+    In very limited cases, we might want to specifically regress the per-pixel trends back onto the signals.
+    This is a general utility function for demixing overlapping signals on the estimated trend of a movie.
+
+    No background model here
+    """
+    device = a.device
+    blocks = _compute_hals_schedule(a,
+                                    device,
+                                    frame_batch_size=batch_size)
+    c_new = c.clone()
+    spatial_trend_basis = torch.nan_to_num(spatial_trend_basis / pixelwise_normalizer.reshape(-1, 1), nan = 0.0, posinf=0.0, neginf=0.0)
+    c_new = hals_multi_iter_trend(blocks,
+                                  spatial_trend_basis,
+                                  temporal_trend_basis,
+                                  a,
+                                  c_new,
+                                  nonneg=c_nonneg)
     return c_new

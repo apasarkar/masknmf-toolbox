@@ -112,6 +112,7 @@ class DemixingResults(Serializer, BaseResults):
         "multiunit_basis_term1",
         "multiunit_basis_term2",
         "temporal_demixed_raw",
+        "temporal_demixed_trend",
     }
 
     """
@@ -157,6 +158,7 @@ class DemixingResults(Serializer, BaseResults):
             multiunit_basis_term1: torch.Tensor | None = None,
             multiunit_basis_term2: torch.Tensor | None = None,
             temporal_demixed_raw: torch.Tensor | None = None,
+            temporal_demixed_trend: torch.Tensor | None = None,
             device: torch.device | str ="cpu",
             **kwargs
     ):
@@ -195,6 +197,7 @@ class DemixingResults(Serializer, BaseResults):
             global_resid_correlation_image (torch.Tensor): The global correlation image of the residual. Shape (FOV dim 1, FOV dim 2).
             temporal_demixed_raw (torch.Tensor | None): shape (number of frames, number of neural signals). temporal_demixed
                 re-estimated from the registered raw movie, with no compression or denoising
+            temporal_demixed_trend (torch.Tensor | None): shape (number of frames, number of neural signals).
             device (str): 'cpu' or 'cuda'. used to manage where the tensors reside
             good_frame_indicator (torch.Tensor | None): A 1D boolean indicator, describing which timepoints from the raw data
                 were processed (good frames) and which were ignored.
@@ -287,6 +290,7 @@ class DemixingResults(Serializer, BaseResults):
             self.flyweight.multiunit_basis_term2 = multiunit_basis_term2.to(self._device)
 
         self.temporal_demixed_raw = temporal_demixed_raw
+        self.temporal_demixed_trend = temporal_demixed_trend
 
         self._signals_array = None
         self._colorful_signals_array = None
@@ -374,6 +378,7 @@ class DemixingResults(Serializer, BaseResults):
                                    multiunit_basis_term1 = demix_results.multiunit_basis_term1,
                                    multiunit_basis_term2 = infill_bad_timepoints(demix_results.multiunit_basis_term2, good_frame_indicator, device=device),
                                    temporal_demixed_raw = None if demix_results.temporal_demixed_raw is None else infill_bad_timepoints(demix_results.temporal_demixed_raw.T, good_frame_indicator, device=device).T,
+                                   temporal_demixed_trend = None if demix_results.temporal_demixed_trend is None else infill_bad_timepoints(demix_results.temporal_demixed_trend.T, good_frame_indicator, device=device).T,
                                    device=device)
         return new_demixing_results
 
@@ -455,6 +460,17 @@ class DemixingResults(Serializer, BaseResults):
         if value is not None and tuple(value.shape) != tuple(self.temporal_demixed.shape):
             raise ValueError(f"temporal_demixed_raw has shape {tuple(value.shape)}, temporal_demixed {tuple(self.temporal_demixed.shape)}")
         self.flyweight.temporal_demixed_raw = None if value is None else value.to(self._device).float()
+
+    @property
+    def temporal_demixed_trend(self) -> None | torch.Tensor:
+        return self.flyweight.temporal_demixed_trend
+
+    @temporal_demixed_trend.setter
+    def temporal_demixed_trend(self, value: torch.Tensor | None):
+        if value is not None and tuple(value.shape) != tuple(self.temporal_demixed.shape):
+            raise ValueError(
+                f"temporal_demixed_raw has shape {tuple(value.shape)}, temporal_demixed {tuple(self.temporal_demixed.shape)}")
+        self.flyweight.temporal_demixed_trend = None if value is None else value.to(self._device).float()
 
 
     @property
