@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 from masknmf import ArrayLike, LazyFrameLoader
-from masknmf.utils import Serializer, display
+from masknmf.utils import Serializer, display, torch_select_device
 from masknmf.motion_correction.strategies import MotionCorrectionStrategy
 from masknmf.motion_correction.registration_arrays import BaseRegistrationArray
 from masknmf.motion_correction.registration_methods import (
@@ -245,15 +245,18 @@ class RigidRegistrationArray(BaseRegistrationArray):
         self,
         input_movie: ArrayLike,
         shifts: torch.Tensor,
-        strategy: RigidMotionCorrector,
+        strategy: RigidMotionCorrector | None = None,
         sinc_margin: int = 12,
         output_device: str | torch.device = "cpu",
+        batch_size: int = 200,
+        compute_device: str | torch.device = "auto",
     ):
         """
         Args:
             input_movie: Stack the shifts were estimated from.
             shifts (torch.Tensor): Shape (n_frames, 2). Precomputed per-frame shifts.
-            strategy (RigidMotionCorrector): Snapshot of the RigidMotionCorrector strategy that produced ``shifts`` (params + template).
+            strategy (RigidMotionCorrector | None): Snapshot of the RigidMotionCorrector strategy that produced ``shifts`` (params + template).
+                None when the shifts came from elsewhere; batch_size and compute_device are then used instead.
             target_movie (LazyFrameLoader | ArrayLike): The stack to which shifts are applied. If ``None``, it is assumed that
                 the reference_movie is the target_movie. Must match ``reference_movie``
                 in frame count (but not necessarily FOV)
@@ -261,11 +264,18 @@ class RigidRegistrationArray(BaseRegistrationArray):
                 truncated sinc kernel room to decay. Added to, not maxed with, the wrap
                 requirement.
             output_device: Device of the returned tensor.
+            batch_size: Frames per batch when applying shifts, used when strategy is None.
+            compute_device: Device the shifts are applied on, used when strategy is None.
         """
         self._input_movie = input_movie
         self._strategy = strategy
 
-        self._device = strategy.device
+        if self.strategy is not None:
+            self._batch_size = self.strategy.batch_size
+            self._device = torch.device(self.strategy.device)
+        else:
+            self._batch_size = batch_size
+            self._device = torch.device(torch_select_device(compute_device))
         self.output_device = output_device
 
         if shifts.ndim != 2 or shifts.shape[1] != 2:
@@ -324,7 +334,23 @@ class RigidRegistrationArray(BaseRegistrationArray):
         return self._sinc_margin
 
     @property
-    def strategy(self) -> MotionCorrectionStrategy:
+    def batch_size(self) -> int:
+        return self._batch_size
+
+    @batch_size.setter
+    def batch_size(self, new_batch_size: int):
+        self._batch_size = new_batch_size
+
+    @property
+    def compute_device(self):
+        return self._device
+
+    @compute_device.setter
+    def compute_device(self, new_compute_device: str | torch.device):
+        self._device = torch.device(new_compute_device)
+
+    @property
+    def strategy(self) -> MotionCorrectionStrategy | None:
         return self._strategy
 
     # -- windowing ---------------------------------------------------------------------
@@ -408,7 +434,7 @@ class RigidRegistrationArray(BaseRegistrationArray):
         col_extent = col_hi - col_lo + 1
 
         ## Greedy batch size computation -- this logic allows us to load more data for smaller spatial crops
-        batch = math.floor(self.shape[1] * self.shape[2] * self._strategy.batch_size / ((row_stop - row_start) * (col_stop - col_start)))
+        batch = math.floor(self.shape[1] * self.shape[2] * self.batch_size /((row_stop - row_start) * (col_stop - col_start)))
         batch = max(batch, 1)
         chunks = []
         for start in range(0, frames.size, batch):
@@ -506,13 +532,13 @@ def roi_consistency_error(
 
     full = torch.as_tensor(
         array.input_movie[_read_key(frame_idx)],
-        device=array.strategy.device,
+        device=array.compute_device,
         dtype=array.dtype,
     )
     if full.ndim == 2:
         full = full[None, ...]
     reference = apply_rigid_shifts(
-        full, array.shifts[torch.as_tensor(frame_idx, device=array.strategy.device)]
+        full, array.shifts[torch.as_tensor(frame_idx, device=array.compute_device)]
     )
     reference = reference[:, rows, cols]
 
