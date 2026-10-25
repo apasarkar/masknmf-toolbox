@@ -241,7 +241,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             good_frame_indicator: torch.Tensor | np.ndarray | list | None = None,
             remove_intermediates: bool = False,
             stop_after: Literal["registration", "compression", "demixing"] = "demixing",
-            resume_from: str | Path | None = None) -> Path:
+            resume: str | Path | None = None) -> Path:
         """
                 Uses the API to run rigid motion correction, compression (with denoising), and demixing.
 
@@ -259,7 +259,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                         results carry the pmd)
                     stop_after: the last stage to run: "registration" writes the shifts and template and ends,
                         "compression" ends once the compression is written, "demixing" runs everything
-                    resume_from: an earlier results file copied into the new run folder: its registration is applied to
+                    resume: an earlier results file copied into the new run folder: its registration is applied to
                         data instead of estimating one, and with compress_config "skip" its compression is reused too.
                         The settings not given, all but stop_after, are that run's, from the config.json beside it.
                         The earlier file is left as it is
@@ -277,7 +277,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             raise ValueError('compress_config "skip" reuses a compression for its demixing; stop_after leaves nothing to run')
         if isinstance(self.motion_correct_config, str) and self.motion_correct_config.lower() != "skip":
             raise ValueError("Invalid MotionCorrectionConfig input")
-        if stop_after == "registration" and isinstance(self.motion_correct_config, str) and resume_from is None:
+        if stop_after == "registration" and isinstance(self.motion_correct_config, str) and resume is None:
             raise ValueError('stop_after "registration" with motion_correct_config "skip" has nothing to write')
 
         if active_frames is None:
@@ -296,12 +296,12 @@ class OnePhotonCulturePipeline(BasePipeline):
         else:
             active_in_good, demixed_frames = active, active
 
-        resume_from, base = self.resume_source(resume_from, reuse_compression)
+        resume, base = self.resume_source(resume, reuse_compression)
         self.run_config = {"frame_rate": frame_rate, "indicator_polarity": indicator_polarity,
                            "remove_intermediates": remove_intermediates, "stop_after": stop_after,
-                           "resume_from": None if resume_from is None else str(resume_from)}
+                           "resume": None if resume is None else str(resume)}
         results_path = self.results_path(base)
-        stored = None if resume_from is None else self.resume(resume_from, results_path, reuse_compression)
+        stored = None if resume is None else self.resume(resume, results_path, reuse_compression)
 
         ## Decide whether to motion correct data or not. You must have access to raw data
         if self.load_into_ram:

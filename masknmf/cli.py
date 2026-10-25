@@ -484,9 +484,9 @@ def command_run(args: argparse.Namespace) -> None:
 
     # a run folder's config.json records the files its run read; a movie or array not given comes from there
     inputs_file = loaded.get("inputs", {})
-    resume_from = getattr(args, "resume_from", None)
-    if resume_from is not None and len(inputs_file) == 0:
-        filepath_config_resumed = Path(resume_from).expanduser().resolve().parent / "config.json"
+    resume = getattr(args, "resume", None)
+    if resume is not None and len(inputs_file) == 0:
+        filepath_config_resumed = Path(resume).expanduser().resolve().parent / "config.json"
         if filepath_config_resumed.is_file():
             inputs_file = read_config_file(filepath=str(filepath_config_resumed)).get("inputs", {})
     for param in (*spec.movie_params, *spec.array_params):
@@ -503,7 +503,7 @@ def command_run(args: argparse.Namespace) -> None:
     if len(spec.movie_params) == 1 and not getattr(args, spec.movie_params[0].field):
         _, allows_none = scraper.annotation_members(annotation=spec.movie_params[0].annotation)
         if not allows_none:
-            fail(f"{spec.slug} needs a movie: pass one, or a --config or --resume-from from a run that recorded it")
+            fail(f"{spec.slug} needs a movie: pass one, or a --config or --resume from a run that recorded it")
 
     kwargs_init = {}
     for param in spec.scalars:
@@ -580,7 +580,7 @@ def command_run(args: argparse.Namespace) -> None:
 
         for param in spec.run_scalars:
             # where to start is chosen anew
-            if param.field in values_file and param.field != "resume_from":
+            if param.field in values_file and param.field != "resume":
                 kwargs_run[param.field] = values_file[param.field]
             text = getattr(args, param.field, None)
             if param.field == "stop_after" and text is None and values_file.get(param.field, "demixing") != "demixing":
@@ -588,7 +588,7 @@ def command_run(args: argparse.Namespace) -> None:
                       f"--stop-after demixing runs every stage")
             if text is None:
                 # a resumed run takes what it is not given from the earlier run's config.json
-                if param.required and param.field not in values_file and resume_from is None:
+                if param.required and param.field not in values_file and resume is None:
                     fail(f"{param.flag} is required for {spec.slug}")
                 continue
             try:
