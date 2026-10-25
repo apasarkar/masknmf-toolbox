@@ -314,15 +314,11 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
         return self._input_movie
 
     def _compute_block_centers(self):
-        self._block_centers = compute_pwrigid_patch_midpoints(
-            minimum_patch_sizes=self.strategy.minimum_patch_sizes,
-            overlaps=self.strategy.overlaps,
-            fov_height=self.input_movie.shape[1],
-            fov_width=self.input_movie.shape[2]
-        )
+        self._block_centers = compute_pwrigid_patch_midpoints(self.shifts.shape[1:3],
+                                                              self.input_movie.shape[1:3])
 
     @property
-    def block_centers(self):
+    def block_centers(self) -> torch.Tensor:
         return self._block_centers
 
     @property

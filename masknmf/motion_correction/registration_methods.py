@@ -1005,30 +1005,25 @@ def register_frames_pwrigid(
     return corrected_data, lowrank_patchwise_rigid_shifts
 
 
-def compute_pwrigid_patch_midpoints(minimum_patch_sizes: tuple[int, int],
-                                    overlaps: tuple[int, int],
+def compute_pwrigid_patch_midpoints(field_dimensions: tuple[int, int],
                                     fov_height: int,
                                     fov_width: int) -> torch.Tensor:
     """
-    Computes the midpoints of all pwrigid patches.
+    Piecewise rigid registration estimates a low-rank vector field of dimensions (k1, k2), interpolates this to
+    a full FOV image of dimensions (height, width), and applies the shifts. This routine specifies for where vector
+    from the low-rank field where its midpoint is
+
     Args:
-        minimum_patch_sizes (tuple[int, int]): The lower bound (height,width) patch size dimensions used to estimate
-            piecewise rigid shifts over the entire field of view.
-        overlaps (tuple[int, int]): The number of pixels of overlap between adjacent blocks (in each spatial dimension)
-        fov_height (int): The fov height
-        fov_width (int): The fov width
+        field_dimensions (tuple[int, int]): The height, width dimensions of the lowrank motion vector field.
+        fov_shape (tuple[int, int]): The height, width dimensions of the imaging field of view
     Returns:
         midpoints (torch.Tensor): Shape (num_blocks_height, num_blocks_width, 2). Gives the height/width dimensions for the height and width
             midpoints respectively
     """
-    strides, dim1_start_pts, dim2_start_pts = compute_stride_routine(
-        (1, fov_height, fov_width), minimum_patch_sizes, overlaps
-    )
-    patch_h = strides[0] + overlaps[0]
-    patch_w = strides[1] + overlaps[1]
 
-    dim1_midpoints = dim1_start_pts + (patch_h - 1) / 2
-    dim2_midpoints = dim2_start_pts + (patch_w - 1) / 2
+
+    dim1_midpoints = torch.round(torch.linspace(0, fov_height, int(field_dimensions.shape[0] + 2)))[1:-1]
+    dim2_midpoints = torch.round(torch.linspace(0, fov_width, int(field_dimensions.shape[1] + 2)))[1:-1]
 
     dim1_coords, dim2_coords = torch.meshgrid(dim1_midpoints, dim2_midpoints, indexing="ij")
     return torch.stack([dim1_coords, dim2_coords], dim=-1)
