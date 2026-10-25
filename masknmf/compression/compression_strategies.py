@@ -218,6 +218,7 @@ class CompressDenoiseStrategy(CompressStrategy):
                                               device=self.device)
 
         temporal_compressed_no_denoiser = compression_no_denoiser.temporal_compressed.cpu()
+        masknmf.utils.display(f"training the temporal denoiser on {temporal_compressed_no_denoiser.shape[0]} components")
         trained_model, _ = masknmf.compression.denoising.train_total_variance_denoiser(temporal_compressed_no_denoiser,
                                                                                        max_epochs=self.num_epochs,
                                                                                        batch_size=128,

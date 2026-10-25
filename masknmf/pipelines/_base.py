@@ -468,6 +468,9 @@ class BasePipeline(ABC):
                          knot_seconds: float,
                          sigma_seconds: float) -> MaximinSplineDetrend:
         """A maximin spline detrender with its rolling window, knot spacing and smoothing given in seconds."""
+        if int(window_seconds * frame_rate) < 3:
+            raise ValueError(f"at {frame_rate} fps this pipeline's {window_seconds} s detrending window is under 3 frames; "
+                             f"it needs at least {3 / window_seconds:g} fps")
         return MaximinSplineDetrend(num_frames=num_frames,
                                     num_knots=max(4, int(num_frames / frame_rate / knot_seconds)),
                                     window=int(window_seconds * frame_rate),

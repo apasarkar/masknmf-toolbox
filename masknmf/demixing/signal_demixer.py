@@ -995,7 +995,8 @@ def get_local_correlation_structure(
     ref_mat = torch.arange(np.prod(dims[:-1]), device=device)
     ref_mat = ref_mat.reshape(dims[0], dims[1])
 
-    tilesize = math.floor(math.sqrt(batch_size))
+    # a tile of 1 pixel would make the tile step below (tilesize - 1) zero
+    tilesize = max(2, math.floor(math.sqrt(batch_size)))
 
     iters_x = math.ceil((dims[0] / (tilesize - 1)))
     iters_y = math.ceil((dims[1] / (tilesize - 1)))
