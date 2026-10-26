@@ -742,7 +742,8 @@ class DemixingResults(Serializer, BaseResults):
 
         if self._static_background_array is None:
             self._static_background_array = StaticBackgroundArray.from_flyweight(self.flyweight,
-                                                                             rescale = self.rescale)
+                                                                                 self.num_frames,
+                                                                                 rescale = self.rescale)
         return self._static_background_array
 
     @property
