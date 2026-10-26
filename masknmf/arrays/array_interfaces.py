@@ -135,7 +135,7 @@ class ArrayLike(ABC):
     @abstractmethod
     def __getitem__(
         self,
-        item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
+        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
     ):
         # Step 1: index the frames (dimension 0)
         pass
