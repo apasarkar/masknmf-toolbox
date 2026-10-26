@@ -7,51 +7,6 @@ from masknmf.arrays.array_utils import test_spatial_crop_effect, normalize_spati
 import torch
 import numpy as np
 
-def test_slice_effect(my_slice: slice, spatial_dim: int) -> bool:
-    """
-    Returns True if slice will actually have an effect
-    """
-
-    if not (
-        (isinstance(my_slice.start, int) and my_slice.start == 0)
-        or my_slice.start is None
-    ):
-        return True
-    elif not (
-        (isinstance(my_slice.stop, int) and my_slice.stop >= spatial_dim)
-        or my_slice.stop is None
-    ):
-        return True
-    elif not (
-        my_slice.step is None or (isinstance(my_slice.step, int) and my_slice.step == 1)
-    ):
-        return True
-    return False
-
-
-def test_range_effect(my_range: range, spatial_dim: int) -> bool:
-    """
-    Returns True if the range will actually have an effect.
-
-    Parameters:
-    my_range (range): The range object to test.
-    spatial_dim (int): The size of the dimension that the range is applied to.
-
-    Returns:
-    bool: True if the range will affect the selection; False otherwise.
-    """
-    # Check if the range starts from the beginning
-    if my_range.start != 0:
-        return True
-    # Check if the range stops at the end of the dimension
-    elif my_range.stop != spatial_dim:
-        return True
-    # Check if the range step is not 1
-    elif my_range.step != 1:
-        return True
-    return False
-
-
 class CompressionArray(ArrayLike, Serializer):
     """
     Factorized demixing array interface for the compressed representation of the video

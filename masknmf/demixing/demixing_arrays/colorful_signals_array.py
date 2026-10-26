@@ -2,7 +2,7 @@ import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
 from masknmf.utils import SparseCOOTensor, is_cpu
-from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
+from masknmf.arrays.array_utils import normalize_spatial_indexer, test_spatial_crop_effect
 
 class ColorfulSignalsArray(ArrayLike):
     """
@@ -175,10 +175,9 @@ class ColorfulSignalsArray(ArrayLike):
         temporal_demixed_crop = temporal_demixed_crop.T
 
         # Step 4: Deal with remaining indices after lazy computing the frame(s)
-        if isinstance(item, tuple) and check_spatial_crop_effect(
-            item[1:3], self.shape[1:3]
-        ):
-            pixel_space_crop = self._pixel_mat[item[1:3]]
+        spatial = normalize_spatial_indexer(item, self.shape[1:3])
+        if test_spatial_crop_effect(spatial, self.shape[1:3]):
+            pixel_space_crop = self._pixel_mat[spatial]
             spatial_demixed_indices = pixel_space_crop.flatten()
             spatial_demixed_crop = torch.index_select(self.spatial_demixed, 0, spatial_demixed_indices)
             implied_fov = pixel_space_crop.shape

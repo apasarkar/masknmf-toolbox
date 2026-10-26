@@ -3,7 +3,7 @@ import numpy as np
 from masknmf.utils import SparseCOOTensor, is_cpu
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
-from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
+from masknmf.arrays.array_utils import test_spatial_crop_effect, normalize_spatial_indexer
 
 class ResidCorrMode(Enum):
     DEFAULT = 0
@@ -221,11 +221,9 @@ class ResidualCorrelationImages(ArrayLike):
             self.residual_correlation_image_support_values, 1, selected_neurons
         ).coalesce()
 
-        # Step 4: Deal with remaining indices after lazy computing the frame(s)
-        if isinstance(item, tuple) and check_spatial_crop_effect(
-            item[1:], self.shape[1:]
-        ):
-            pixel_space_crop = self._pixel_mat[item[1:]]
+        spatial = normalize_spatial_indexer(item, self.shape[1:])
+        if test_spatial_crop_effect(spatial, self.shape[1:]):
+            pixel_space_crop = self._pixel_mat[spatial]
             u_indices = pixel_space_crop.flatten()
             u_crop = torch.index_select(self.spatial_compressed, 0, u_indices)
             a_crop = torch.index_select(self.spatial_demixed, 0, u_indices)

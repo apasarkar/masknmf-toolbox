@@ -7,6 +7,7 @@ import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
+from masknmf.arrays.array_utils import test_spatial_crop_effect, normalize_spatial_indexer
 
 class SignalsArray(ArrayLike):
     """
@@ -275,10 +276,11 @@ class SignalsArray(ArrayLike):
         temporal_demixed_crop = temporal_demixed_crop * self.mask[None, :]
 
         # Step 4: First do spatial subselection before multiplying by c
-        if isinstance(item, tuple) and check_spatial_crop_effect(item[1:3], self.shape[1:3]):
+        spatial = normalize_spatial_indexer(item, self.shape[1:])
+        if test_spatial_crop_effect(spatial, self.shape[1:]):
 
-            pixel_space_crop = self._pixel_mat[item[1:3]]
-            normalizer_crop = self.normalizer[item[1:3]][None, ...]
+            pixel_space_crop = self._pixel_mat[spatial]
+            normalizer_crop = self.normalizer[spatial][None, ...]
             spatial_demixed_indices = pixel_space_crop.flatten()
             spatial_demixed_crop = torch.index_select(self.spatial_demixed, 0, spatial_demixed_indices)
             implied_fov = pixel_space_crop.shape

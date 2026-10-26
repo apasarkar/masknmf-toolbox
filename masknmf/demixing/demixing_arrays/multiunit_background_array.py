@@ -2,7 +2,6 @@ import numpy as np
 from masknmf.utils import SparseCOOTensor, is_cpu
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
-from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
 from masknmf.arrays.array_utils import normalize_spatial_indexer, test_spatial_crop_effect
 class MultiunitBackgroundArray(ArrayLike):
     """
