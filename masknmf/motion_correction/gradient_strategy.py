@@ -14,9 +14,6 @@ from masknmf.arrays.ophys_array import OphysArray
 import copy
 from masknmf.arrays.array_utils import normalize_spatial_indexer, test_spatial_crop_effect
 
-from masknmf.utils._serialization import load_dict, save_dict
-
-
 class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
     """
     This is a motion corrector designed to correct small (<2 pixel) jitter. Primarily for culture imaging data
