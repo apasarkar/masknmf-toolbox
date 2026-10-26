@@ -16,7 +16,35 @@ def is_arraylike(obj):
 
 class ArrayLike(ABC):
     """
-    The most general class capturing the minimum functionality a general array needs to support
+    Base class for lazily-evaluated imaging arrays of shape (frames, height, width[, channels]).
+
+    Indexing
+    --------
+    Indexing is a subset of numpy indexing with one deliberate difference: **no axis is ever
+    dropped by an integer index.** Results are always (frames, height, width[, channels]), so
+    they can be uploaded to graphics buffers, broadcast against one another, and passed to
+    downstream code without shape special-casing.
+
+    Supported per axis:
+        int            selects one element, *keeps the axis* (length 1)
+        slice / range  as in numpy (negative and out-of-range bounds follow slice semantics)
+        list / 1-D int array, 1-D bool mask, 1-D torch tensor
+                       selects those elements in the given order, duplicates allowed
+
+    Differences from numpy:
+        data[5]           -> (1, H, W)          numpy: (H, W)
+        data[:, 5, :]     -> (T, 1, W)          numpy: (T, W)
+        data[3, 5, 7]     -> (1, 1, 1)          numpy: scalar
+
+    Not supported (raises IndexError):
+        - More than one axis indexed by a list/array in the same call, e.g.
+          data[[0, 2], [5, 6], :] or data[:, [1, 2], [3, 4]]. numpy pairs these up pointwise;
+          index in two steps instead: data[[0, 2]][:, [5, 6], :]
+        - Multi-dimensional index arrays
+        - Ellipsis anywhere but the last position, and np.newaxis / None
+        - Empty selections on spatial axes
+
+    Indexing with only slices returns the same shape as the equivalent numpy indexing.
     """
     def __array__(self, dtype=None, copy=None):
         # required for minimal xarray compatability
@@ -65,6 +93,15 @@ class ArrayLike(ABC):
         """
         return np.prod(self.shape + (np.dtype(self.dtype).itemsize,), dtype=np.int64)
 
+    @staticmethod
+    def _is_advanced(term) -> bool:
+        """List / array / bool-mask / tensor indexers; 0-d arrays count as ints."""
+        if isinstance(term, torch.Tensor):
+            return term.ndim > 0
+        if isinstance(term, np.ndarray):
+            return term.ndim > 0
+        return isinstance(term, (list, tuple))
+
     def _parse_indices(self, item: list | int | np.ndarray | tuple[int, np.ndarray | slice | range]):
         # Step 1: index the frames (dimension 0)
 
@@ -78,6 +115,13 @@ class ArrayLike(ABC):
                     f"Cannot index more dimensions than exist in the array. "
                     f"You have tried to index with <{len(item)}> dimensions, "
                     f"only <{len(self.shape)}> dimensions exist in the array"
+                )
+            advanced = [k for k, t in enumerate(item) if self._is_advanced(t)]
+            if len(advanced) > 1:
+                raise IndexError(
+                    f"Only one axis may be indexed with a list/array per call (got axes {advanced}). "
+                    f"numpy would pair these up pointwise, which is not supported. "
+                    f"Index in two steps instead, e.g. data[frames][:, rows, :]."
                 )
             frame_indexer = item[0]
         else:

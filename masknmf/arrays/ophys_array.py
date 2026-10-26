@@ -231,22 +231,7 @@ class OphysArray(ArrayLike):
             frame_indexer = self._to_raw(frame_indexer)
             item = (frame_indexer,) + item[1:] if isinstance(item, tuple) else frame_indexer
         spatial = normalize_spatial_indexer(item, self.shape[1:])
-        frame_is_array = isinstance(frame_indexer, (list, np.ndarray))
-        array_axis = next((k for k, t in enumerate(spatial) if isinstance(t, np.ndarray)), None)
-
-        if frame_is_array and array_axis is not None:
-            # Two advanced indices would mean pointwise selection in numpy/h5py.
-            # Read the bounding rectangle with slices, then pick the rows/cols in memory.
-            idx = spatial[array_axis]
-            lo, hi = int(idx.min()), int(idx.max()) + 1
-            read = list(spatial)
-            read[array_axis] = slice(lo, hi)
-            data = self._dataset[(frame_indexer, *read)]
-            data = np.take(np.asarray(data), idx - lo, axis=1 + array_axis)
-        else:
-            data = self._dataset[(frame_indexer, *spatial)]
-
-        data_subset = torch.as_tensor(data).to(self.device).to(self.dtype)
+        data_subset = torch.as_tensor(self._dataset[(frame_indexer, *spatial)]).to(self.device).to(self.dtype) #Ensures consistent indexing scheme
 
         if not self.negative_indicator and include_mean:
             return data_subset  # already the positive view with its baseline: no mean needed
