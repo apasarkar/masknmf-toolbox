@@ -324,7 +324,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
                 actually analyzed (specified by good_frame_indicator in the OPhysArray constructor).
             gradient_steps (torch.Tensor): Shape (num_frames, 2). The per-frame gradient steps required to motion correct
                 the input movie.
-            gradient (torch.Tensor): Shape (num_pixels, 2). The gradients in both spatial dimensions. Each gradient
+            gradient (torch.Tensor): Shape (num_pixels, 2) or (height, width, 2). The gradients in both spatial dimensions. If flattened, the gradient
                 image is raveled in "C" order
             shifts (torch.Tensor | None): Shape (num_frames, 2). An (optional) version of gradient steps which accounts for brightness
                 differences (for e.g. due to photobleaching). Reveals the relative shift magnitude across frames in arbitrary

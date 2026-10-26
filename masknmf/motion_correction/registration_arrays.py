@@ -4,7 +4,6 @@ import h5py
 import numpy as np
 
 import torch
-import masknmf
 from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
 from masknmf.utils import Serializer
 from pathlib import Path
@@ -66,7 +65,7 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
         return torch.float32
 
     @property
-    def strategy(self) -> MotionCorrectionStrategy:
+    def strategy(self) -> MotionCorrectionStrategy | None:
         return self._strategy
 
     @property
@@ -138,7 +137,7 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
         else:
             strat = None
             if device is not None:
-                kwargs["compute_device"] = device ##Tricky: above, strategy has a settable device property, for registration array it is compute_device
+                kwargs.setdefault("compute_device", device) ##Tricky: above, strategy has a settable device property, for registration array it is compute_device
         reg_arr_dict = load_dict(path, cls.__name__)
         return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict, **kwargs)
 
