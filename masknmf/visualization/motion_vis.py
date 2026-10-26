@@ -157,7 +157,7 @@ class MotionCorrectionVis:
                                     self.registration_array.shape[2],
                                     device=self.registration_array.output_device,
                                     dtype=self.registration_array.dtype)
-        batch_size = self.registration_array.strategy.batch_size
+        batch_size = self.registration_array.batch_size
         num_iters = math.ceil(num_frames_used / batch_size)
         for k in tqdm(range(num_iters)):
             start = k * batch_size

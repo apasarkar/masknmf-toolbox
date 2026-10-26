@@ -11,6 +11,7 @@ from masknmf.utils import Serializer
 from pathlib import Path
 from abc import ABC, abstractmethod
 from masknmf.utils._serialization import save_dict, load_dict
+from masknmf.utils import torch_select_device
 
 
 class BaseRegistrationArray(ArrayLike, Serializer, ABC):
@@ -36,6 +37,14 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
         return default
 
     @property
+    def batch_size(self) -> int:
+        return self._batch_size
+
+    @batch_size.setter
+    def batch_size(self, new_batch_size: int):
+        self._batch_size = new_batch_size
+
+    @property
     @abstractmethod
     def shifts(self): ...
 
@@ -56,8 +65,8 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
         return torch.float32
 
     @property
-    @abstractmethod
-    def strategy(self) -> MotionCorrectionStrategy: ...
+    def strategy(self):
+        return self._strategy
 
     @property
     def output_device(self) -> torch.device:
@@ -127,6 +136,8 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
             strat = cls._strategy_cls(**kwargs_strategy)
         else:
             strat = None
+            if device is not None:
+                kwargs["device"] = device
         reg_arr_dict = load_dict(path, cls.__name__)
         return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict, **kwargs)
 

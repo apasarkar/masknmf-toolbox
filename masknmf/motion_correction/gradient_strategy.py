@@ -303,7 +303,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
     so we can adaptively compute frames/pixels of this movie very quickly if we just store the low-rank info
     """
 
-    _serialized = {"gradient_steps", "gradients", "shifts"}
+    _serialized = {"gradient_steps", "gradient", "shifts"}
     _strategy_cls = GradientMotionCorrector
 
     def __init__(self,
@@ -313,7 +313,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
                  shifts: torch.Tensor | None = None,
                  strategy: GradientMotionCorrector | None = None,
                  output_device: str | torch.device = "cpu",
-                 compute_device: str | torch.device = "auto"):
+                 compute_device: str | torch.device | None = None):
         """
         Args:
             input_movie (OphysArray): Shape (num_frames, fov_height, fov_width). num_frames is the number of frames that are
@@ -339,7 +339,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
                          compute_device=compute_device,
                          output_device=output_device)
 
-        self._gradient = gradients.to(self.compute_device).to(self.dtype).reshape(self.shape[1:], 2)
+        self._gradient = gradients.to(self.compute_device).to(self.dtype).reshape(*self.shape[1:], 2)
         self._gradient_steps = gradient_steps.to(self.compute_device).to(self.dtype)
 
         if shifts is None:
@@ -361,22 +361,9 @@ class GradientRegistrationArray(BaseRegistrationArray):
     def include_mean(self) -> bool:
         return self._include_mean
 
-    @property
-    def batch_size(self) -> int:
-        """
-        Gradient registration is just dynamically computing a rank-2 outer product, so the batch size is
-        trivially the number of frames.
-        :return:
-        """
-        return int(self.shape[0])
-
     @include_mean.setter
     def include_mean(self, new_flag: bool):
         self._include_mean = new_flag
-
-    @property
-    def strategy(self) -> GradientMotionCorrector | None:
-        return self._strategy
 
     @property
     def shifts(self) -> torch.Tensor:

@@ -286,8 +286,8 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
                  shifts: torch.Tensor,
                  output_device: str | torch.device = 'cpu',
                  strategy: PiecewiseRigidMotionCorrector | None = None,
-                 batch_size: int = 200,
-                 compute_device: str | torch.device = "auto"):
+                 batch_size: int | None = None,
+                 compute_device: str | torch.device | None = None):
         self._input_movie = input_movie
         self._shifts = shifts
         super().__init__(strategy=strategy,
@@ -296,14 +296,6 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
                          output_device=output_device)
 
         self._compute_block_centers()
-
-    @property
-    def batch_size(self) -> int:
-        return self._batch_size
-
-    @batch_size.setter
-    def batch_size(self, new_batch_size: int):
-        self._batch_size = new_batch_size
 
     @property
     def nbytes(self) -> int:
@@ -324,10 +316,6 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
     @property
     def shifts(self) -> torch.Tensor:
         return self._shifts
-
-    @property
-    def strategy(self) -> PiecewiseRigidMotionCorrector | None:
-        return self._strategy
 
     def _corrected_roi(self,
                        frames,

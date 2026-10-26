@@ -248,8 +248,8 @@ class RigidRegistrationArray(BaseRegistrationArray):
         strategy: RigidMotionCorrector | None = None,
         sinc_margin: int = 12,
         output_device: str | torch.device = "cpu",
-        batch_size: int = 200,
-        compute_device: str | torch.device = "auto",
+        batch_size: int | None = None,
+        compute_device: str | torch.device | None = None,
     ):
         """
         Args:
@@ -293,7 +293,7 @@ class RigidRegistrationArray(BaseRegistrationArray):
             int(wrap[0]) + self._sinc_margin,
             int(wrap[1]) + self._sinc_margin,
         )
-        
+
     @property
     def nbytes(self) -> int:
         return math.prod(self.shape) * self.dtype.itemsize
@@ -315,18 +315,6 @@ class RigidRegistrationArray(BaseRegistrationArray):
     @property
     def sinc_margin(self) -> int:
         return self._sinc_margin
-
-    @property
-    def batch_size(self) -> int:
-        return self._batch_size
-
-    @batch_size.setter
-    def batch_size(self, new_batch_size: int):
-        self._batch_size = new_batch_size
-
-    @property
-    def strategy(self) -> MotionCorrectionStrategy | None:
-        return self._strategy
 
     # -- windowing ---------------------------------------------------------------------
 
