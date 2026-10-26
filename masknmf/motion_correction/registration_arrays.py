@@ -5,13 +5,13 @@ import numpy as np
 
 import torch
 import masknmf
-from masknmf import MotionCorrectionStrategy
 from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
 from masknmf.utils import Serializer
 from pathlib import Path
 from abc import ABC, abstractmethod
 from masknmf.utils._serialization import save_dict, load_dict
 from masknmf.utils import torch_select_device
+from masknmf.motion_correction.strategies import MotionCorrectionStrategy
 
 
 class BaseRegistrationArray(ArrayLike, Serializer, ABC):
@@ -66,7 +66,7 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
         return torch.float32
 
     @property
-    def strategy(self):
+    def strategy(self) -> MotionCorrectionStrategy:
         return self._strategy
 
     @property
@@ -138,7 +138,7 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
         else:
             strat = None
             if device is not None:
-                kwargs["device"] = device
+                kwargs["compute_device"] = device ##Tricky: above, strategy has a settable device property, for registration array it is compute_device
         reg_arr_dict = load_dict(path, cls.__name__)
         return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict, **kwargs)
 

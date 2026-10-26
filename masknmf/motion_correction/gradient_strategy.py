@@ -310,7 +310,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
             self,
             input_movie: OphysArray,
             gradient_steps: torch.Tensor,
-            gradients: torch.Tensor,
+            gradient: torch.Tensor,
             *,
             shifts: torch.Tensor | None = None,
             strategy: GradientMotionCorrector | None = None,
@@ -322,18 +322,17 @@ class GradientRegistrationArray(BaseRegistrationArray):
         Args:
             input_movie (OphysArray): Shape (num_frames, fov_height, fov_width). num_frames is the number of frames that are
                 actually analyzed (specified by good_frame_indicator in the OPhysArray constructor).
-            strategy (GradientMotionCorrector): The gradient motion correction strategy class which encapsulates the algorithm
-                for motion correcting a single frame of data
             gradient_steps (torch.Tensor): Shape (num_frames, 2). The per-frame gradient steps required to motion correct
                 the input movie.
-            gradients (torch.Tensor): Shape (num_pixels, 2). The gradients in both spatial dimensions. Each gradient
+            gradient (torch.Tensor): Shape (num_pixels, 2). The gradients in both spatial dimensions. Each gradient
                 image is raveled in "C" order
             shifts (torch.Tensor | None): Shape (num_frames, 2). An (optional) version of gradient steps which accounts for brightness
                 differences (for e.g. due to photobleaching). Reveals the relative shift magnitude across frames in arbitrary
                 units. If this is none, gradient_steps is used here
             strategy (GradientMotionCorrector | None): The strategy used to compute the shifts and gradient data provided to this registration array
-            output_device (str | torch.device): The device on which data is returned following a call to __getitem__
+            batch_size (int | None): The batch size computing motion corrected chunks of data
             compute_device (str | torch.device): The device on which computations are performed
+            output_device (str | torch.device): The device on which data is returned following a call to __getitem__
         """
 
         self._input_movie = input_movie
@@ -344,7 +343,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
                          compute_device=compute_device,
                          output_device=output_device)
 
-        self._gradient = gradients.to(self.compute_device).to(self.dtype).reshape(*self.shape[1:], 2)
+        self._gradient = gradient.to(self.compute_device).to(self.dtype).reshape(*self.shape[1:], 2)
         self._gradient_steps = gradient_steps.to(self.compute_device).to(self.dtype)
 
         if shifts is None:

@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 from masknmf import ArrayLike, LazyFrameLoader
-from masknmf.utils import Serializer, display, torch_select_device
+from masknmf.utils import Serializer, display
 from masknmf.motion_correction.strategies import MotionCorrectionStrategy
 from masknmf.motion_correction.registration_arrays import BaseRegistrationArray
 from masknmf.motion_correction.registration_methods import (
