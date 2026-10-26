@@ -287,17 +287,9 @@ class MiniALIResults(BaseResults):
         self._registered_roi_averages = None
 
 
-        """
-        Gradient Registration Array has (among others) these inputs: shifts and gradient steps.
-        The gradient steps are actually applied to the gradient image to produce the per-frame motion correction
-        The ``steps`` are a photobleaching-normalized version of the gradient steps that gives the user a sense for 
-        the size of shifts in each frame (in arbitrary units). miniALI does not generate this, so we just 
-        provide the regular gradient steps in place of the gradient shifts.
-        """
         self._registered_array = GradientRegistrationArray(self.raw_array,
                                                            self._shifts,
-                                                           self._gradient.reshape(-1, 2),
-                                                           self._shifts)
+                                                           self._gradient.reshape(-1, 2))
         self._signals_array = SignalsArray.from_tensors(self.fov_shape, self._spatial_demixed, self._temporal_demixed)
         self._background_array = StaticMovie(self._background, self.shape[0])
 

@@ -281,13 +281,16 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
     _serialized = {'shifts'}
     _strategy_cls = PiecewiseRigidMotionCorrector
 
-    def __init__(self,
-                 input_movie: ArrayLike,
-                 shifts: torch.Tensor,
-                 output_device: str | torch.device = 'cpu',
-                 strategy: PiecewiseRigidMotionCorrector | None = None,
-                 batch_size: int | None = None,
-                 compute_device: str | torch.device | None = None):
+    def __init__(
+            self,
+            input_movie: ArrayLike,
+            shifts: torch.Tensor,
+            *,
+            strategy: PiecewiseRigidMotionCorrector | None = None,
+            batch_size: int | None = None,
+            compute_device: str | torch.device | None = None,
+            output_device: str | torch.device = "cpu",
+    ):
         self._input_movie = input_movie
         self._shifts = shifts
         super().__init__(strategy=strategy,

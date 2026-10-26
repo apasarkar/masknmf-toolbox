@@ -242,14 +242,15 @@ class RigidRegistrationArray(BaseRegistrationArray):
     _strategy_cls = RigidMotionCorrector
 
     def __init__(
-        self,
-        input_movie: ArrayLike,
-        shifts: torch.Tensor,
-        strategy: RigidMotionCorrector | None = None,
-        sinc_margin: int = 12,
-        output_device: str | torch.device = "cpu",
-        batch_size: int | None = None,
-        compute_device: str | torch.device | None = None,
+            self,
+            input_movie: ArrayLike,
+            shifts: torch.Tensor,
+            *,
+            strategy: RigidMotionCorrector | None = None,
+            sinc_margin: int = 12,
+            batch_size: int | None = None,
+            compute_device: str | torch.device | None = None,
+            output_device: str | torch.device = "cpu",
     ):
         """
         Args:

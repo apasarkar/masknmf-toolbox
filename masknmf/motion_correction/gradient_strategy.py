@@ -290,8 +290,8 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
         return GradientRegistrationArray(reference_movie,
                                          gradient_steps,
                                          self.gradient.clone(),
-                                         shifts,
-                                         copy.deepcopy(self))
+                                         shifts=shifts,
+                                         strategy=copy.deepcopy(self))
 
 
 
@@ -306,14 +306,18 @@ class GradientRegistrationArray(BaseRegistrationArray):
     _serialized = {"gradient_steps", "gradient", "shifts"}
     _strategy_cls = GradientMotionCorrector
 
-    def __init__(self,
-                 input_movie: OphysArray,
-                 gradient_steps: torch.Tensor,
-                 gradients: torch.Tensor,
-                 shifts: torch.Tensor | None = None,
-                 strategy: GradientMotionCorrector | None = None,
-                 output_device: str | torch.device = "cpu",
-                 compute_device: str | torch.device | None = None):
+    def __init__(
+            self,
+            input_movie: OphysArray,
+            gradient_steps: torch.Tensor,
+            gradients: torch.Tensor,
+            *,
+            shifts: torch.Tensor | None = None,
+            strategy: GradientMotionCorrector | None = None,
+            batch_size: int | None = None,
+            compute_device: str | torch.device | None = None,
+            output_device: str | torch.device = "cpu",
+    ):
         """
         Args:
             input_movie (OphysArray): Shape (num_frames, fov_height, fov_width). num_frames is the number of frames that are
@@ -336,6 +340,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
 
         ##No need to use batch size here
         super().__init__(strategy=strategy,
+                         batch_size=batch_size,
                          compute_device=compute_device,
                          output_device=output_device)
 

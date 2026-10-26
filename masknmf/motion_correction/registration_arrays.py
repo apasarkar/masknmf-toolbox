@@ -19,7 +19,8 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
     _default_batch_size: int = 200
 
     def __init__(self,
-                 strategy: Serializer | None = None,
+                 *,
+                 strategy: MotionCorrectionStrategy | None = None,
                  batch_size: int | None = None,
                  compute_device: str | torch.device | None = None,
                  output_device: str | torch.device = "cpu"):
