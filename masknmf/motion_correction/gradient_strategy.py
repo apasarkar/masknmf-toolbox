@@ -261,8 +261,8 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
         self._gradient = torch.stack([dfdx_orig.flatten(), dfdy_orig.flatten()], dim=1).to(self.dtype).to(self.device) ## The design matrix doesn't change
         self._gradient_projector = A_projector.to(self.dtype).to(self.device) ## The projector can be orthogonalized w.r.t. f0
 
-    def _extract_all_shifts(self,
-                            reference_movie: OphysArray):
+    def _compute_all_shifts(self,
+                            reference_movie: OphysArray) -> tuple[torch.Tensor, torch.Tensor]:
         num_frames, height, width = reference_movie.shape
         batch_size = self.batch_size
         num_iters = math.ceil(num_frames / batch_size)
@@ -286,7 +286,7 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
     def motion_correct(self,
                        reference_movie: OphysArray) -> ArrayLike:
 
-        gradient_steps, shifts = self._extract_all_shifts(reference_movie)
+        gradient_steps, shifts = self._compute_all_shifts(reference_movie)
         return GradientRegistrationArray(reference_movie,
                                          gradient_steps,
                                          self.gradient.clone(),
@@ -343,13 +343,13 @@ class GradientRegistrationArray(BaseRegistrationArray):
                          compute_device=compute_device,
                          output_device=output_device)
 
-        self._gradient = gradient.to(self.compute_device).to(self.dtype).reshape(*self.shape[1:], 2)
-        self._gradient_steps = gradient_steps.to(self.compute_device).to(self.dtype)
+        self._gradient = torch.as_tensor(gradient, device=self.compute_device, dtype=(self.dtype)).reshape(*self.shape[1:], 2)
+        self._gradient_steps = torch.as_tensor(gradient_steps, device=self.compute_device, dtype=self.dtype)
 
         if shifts is None:
             self._shifts = self._gradient_steps
         else:
-            self._shifts = shifts.to(self.compute_device).to(self.dtype)
+            self._shifts = torch.as_tensor(shifts, device=self.compute_device, dtype=self.dtype)
         self._gradient_steps_mean = torch.mean(self._gradient_steps, dim=0)
         self._include_mean = True
 

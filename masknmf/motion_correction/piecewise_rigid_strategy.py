@@ -292,12 +292,11 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
             output_device: str | torch.device = "cpu",
     ):
         self._input_movie = input_movie
-        self._shifts = shifts
         super().__init__(strategy=strategy,
                          batch_size=batch_size,
                          compute_device=compute_device,
                          output_device=output_device)
-
+        self._shifts = torch.as_tensor(shifts, device=self.compute_device, dtype=self.dtype)
         self._compute_block_centers()
 
     @property

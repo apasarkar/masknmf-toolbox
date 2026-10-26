@@ -162,7 +162,7 @@ class RigidMotionCorrector(MotionCorrectionStrategy, Serializer):
         )
         return outputs[0].cpu().numpy(), outputs[1].cpu().numpy()
 
-    def _compute_all_shifts(self, reference_movie: ArrayLike) -> np.ndarray:
+    def _compute_all_shifts(self, reference_movie: ArrayLike) -> torch.Tensor:
         """
         Estimate the (n_frames, 2) shift field in a single streaming pass.
 
