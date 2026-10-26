@@ -2,8 +2,7 @@ import numpy as np
 from masknmf.utils import SparseCOOTensor, is_cpu
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
-from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
-
+from masknmf.arrays.array_utils import normalize_spatial_indexer, test_spatial_crop_effect
 class MultiunitBackgroundArray(ArrayLike):
     """
     Factorized video for the spatial and temporal extracted sources from the data
@@ -152,32 +151,10 @@ class MultiunitBackgroundArray(ArrayLike):
         if multiunit_basis_term2_crop.ndim < self.multiunit_basis_term2.ndim:
             multiunit_basis_term2_crop = multiunit_basis_term2_crop.unsqueeze(1)
 
-        # Step 4: Deal with remaining indices after lazy computing the frame(s)
-        if isinstance(item, tuple) and check_spatial_crop_effect(
-            item[1:], self.shape[1:]
-        ):
-            if isinstance(item[1], np.ndarray) and len(item[1]) == 1:
-                term_1 = slice(int(item[1]), int(item[1]) + 1)
-            elif isinstance(item[1], np.integer):
-                term_1 = slice(int(item[1]), int(item[1]) + 1)
-            elif isinstance(item[1], int):
-                term_1 = slice(item[1], item[1] + 1)
-            else:
-                term_1 = item[1]
-
-            if isinstance(item[2], np.ndarray) and len(item[2]) == 1:
-                term_2 = slice(int(item[2]), int(item[2]) + 1)
-            elif isinstance(item[2], np.integer):
-                term_2 = slice(int(item[2]), int(item[2]) + 1)
-            elif isinstance(item[2], int):
-                term_2 = slice(item[2], item[2] + 1)
-            else:
-                term_2 = item[2]
-
-            spatial_crop_terms = (term_1, term_2)
-
-            pixel_space_crop = self._pixel_mat[spatial_crop_terms]
-            normalizer_crop = self.normalizer[spatial_crop_terms][None, ...]
+        spatial = normalize_spatial_indexer(item, self.shape[1:])
+        if test_spatial_crop_effect(spatial, self.shape[1:]):
+            pixel_space_crop = self._pixel_mat[spatial]
+            normalizer_crop = self.normalizer[spatial][None, ...]
             u_indices = pixel_space_crop.flatten()
             u_crop = torch.index_select(self.spatial_compressed, 0, u_indices)
             implied_fov = pixel_space_crop.shape

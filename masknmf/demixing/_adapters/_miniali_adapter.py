@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 from masknmf.arrays.array_interfaces import ArrayLike
 from masknmf.arrays import OphysArray
+from masknmf.arrays import StaticArray
 from masknmf.motion_correction import GradientRegistrationArray, GradientMotionCorrector
 from masknmf.compression.compression_strategies import CompressStrategy
 from masknmf.demixing._base_results import BaseResults
@@ -112,36 +113,10 @@ def _as_numpy(frames) -> np.ndarray:
         return frames.detach().cpu().numpy()
     return np.asarray(frames)
 
-class StaticMovie(ArrayLike):
-    """One image repeated over every frame, e.g. miniALI's static background."""
-
-    def __init__(self, image: np.ndarray, num_frames: int):
-        self._image = np.asarray(image, np.float32)
-        self._shape = (int(num_frames), *self._image.shape)
-
-    @property
-    def dtype(self):
-        return np.float32
-
-    @property
-    def shape(self) -> tuple[int, int, int]:
-        return self._shape
-
-    @property
-    def image(self) -> np.ndarray:
-        return self._image
-
-    def __getitem__(self, item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range]) -> np.ndarray:
-        frame_indexer, item = self._parse_indices(item)
-        num_frames = np.arange(self._shape[0])[frame_indexer].size
-        image = self._image[item[1:]] if isinstance(item, tuple) else self._image
-        return np.broadcast_to(image, (num_frames, *image.shape)).copy()
-
-
 class MiniALIResidualArray(ArrayLike):
     """registered - background - signals: what miniALI's model leaves unexplained."""
 
-    def __init__(self, registered: ArrayLike, background: StaticMovie, signals: SignalsArray):
+    def __init__(self, registered: ArrayLike, background: StaticArray, signals: SignalsArray):
         self._registered = registered
         self._background = background
         self._signals = signals
@@ -291,7 +266,7 @@ class MiniALIResults(BaseResults):
                                                            self._shifts,
                                                            self._gradient.reshape(-1, 2))
         self._signals_array = SignalsArray.from_tensors(self.fov_shape, self._spatial_demixed, self._temporal_demixed)
-        self._background_array = StaticMovie(self._background, self.shape[0])
+        self._background_array = StaticArray(self._background, self.shape[0])
 
         residual = MiniALIResidualArray(self._registered_array, self._background_array, self._signals_array)
         if residual_compress:
@@ -420,7 +395,7 @@ class MiniALIResults(BaseResults):
         return self._signals_array
 
     @property
-    def fluctuating_background_array(self) -> StaticMovie:
+    def fluctuating_background_array(self) -> StaticArray:
         """miniALI's background is static: background_image on every frame."""
         return self._background_array
 

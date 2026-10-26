@@ -6,6 +6,7 @@ import torch
 from tqdm import tqdm
 
 from masknmf.arrays.array_interfaces import ArrayLike
+from masknmf.arrays.array_utils import normalize_spatial_indexer, test_spatial_crop_effect
 
 class OphysArray(ArrayLike):
     """
@@ -229,15 +230,21 @@ class OphysArray(ArrayLike):
             # Translate the (already normalized) temporal index from the cropped movie to the underlying dataset
             frame_indexer = self._to_raw(frame_indexer)
             item = (frame_indexer,) + item[1:] if isinstance(item, tuple) else frame_indexer
-
-        data_subset = torch.as_tensor(self._dataset[item]).to(self.device).to(self.dtype) ## Parse indices first to ensure consistent output
+        if isinstance(frame_indexer, int):
+            i = frame_indexer % self._dataset.shape[0]
+            frame_indexer = slice(i, i + 1)
+        spatial = normalize_spatial_indexer(item, self.shape[1:])
+        data_subset = torch.as_tensor(self._dataset[(frame_indexer, *spatial)]).to(self.device).to(self.dtype) #Ensures consistent indexing scheme
 
         if not self.negative_indicator and include_mean:
             return data_subset  # already the positive view with its baseline: no mean needed
 
         # Check if spatial cropping occurred, deal with mean image accordingly
         mean_image = self._get_mean()
-        mean_crop = mean_image[item[1:]] if isinstance(item, tuple) else mean_image
+        if test_spatial_crop_effect(spatial, self.shape[1:]):
+            mean_crop = mean_image[spatial]
+        else:
+            mean_crop = mean_image
 
         if data_subset.ndim > mean_crop.ndim: #This means that there is a temporal dimension, which means we need to broadcast
             mean_crop = mean_crop[None, ...]

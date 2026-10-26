@@ -12,9 +12,7 @@ from tqdm import tqdm
 from masknmf.motion_correction.registration_arrays import BaseRegistrationArray
 from masknmf.arrays.ophys_array import OphysArray
 import copy
-
-from masknmf.utils._serialization import load_dict, save_dict
-
+from masknmf.arrays.array_utils import normalize_spatial_indexer, test_spatial_crop_effect
 
 class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
     """
@@ -413,8 +411,9 @@ class GradientRegistrationArray(BaseRegistrationArray):
             gradient_step_used = gradient_step_used - grad_sub
 
         # Check if spatial cropping occurred, deal with factorized tensors appropriately
-        if isinstance(item, tuple):
-            gradient_crop = self.gradient[item[1:]]
+        spatial = normalize_spatial_indexer(item, self.shape[1:])
+        if test_spatial_crop_effect(spatial, self.shape[1:]):
+            gradient_crop = self.gradient[spatial]
         else:
             gradient_crop = self.gradient
 
