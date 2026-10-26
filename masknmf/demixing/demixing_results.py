@@ -5,7 +5,7 @@ import numpy as np
 from masknmf import display
 from masknmf.arrays.linear_combination_array import LinearCombinationArray
 from masknmf.compression import CompressionArray, TrendArray
-from masknmf.demixing.demixing_arrays import SignalsArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulSignalsArray, StaticBackgroundArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode, MultiunitBackgroundArray
+from masknmf.demixing.demixing_arrays import SignalsArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulSignalsArray, StaticBackgroundArray, FluctuatingBackgroundArray, ResidCorrMode, MultiunitBackgroundArray
 import torch
 from masknmf.utils import Serializer, SparseCOOTensor
 from masknmf.utils._serialization import save_dict, load_dict
@@ -677,7 +677,7 @@ class DemixingResults(Serializer, BaseResults):
         return self._static_background_array
 
     @property
-    def residual_array(self) -> ResidualArray:
+    def residual_array(self) -> LinearCombinationArray:
         if self._residual_array is None:
             data_list = [self.compression_array,
                          self.fluctuating_background_array,
