@@ -213,6 +213,7 @@ class ColorfulSignalsArray(ArrayLike):
             if isinstance(c, (int, np.integer)):
                 c = int(c) % product.shape[-1]
                 c = slice(c, c + 1)
+            product = product[..., c]
         return product
 
     def __getitem__(
