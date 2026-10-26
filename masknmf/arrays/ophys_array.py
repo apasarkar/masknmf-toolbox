@@ -6,6 +6,7 @@ import torch
 from tqdm import tqdm
 
 from masknmf.arrays.array_interfaces import ArrayLike
+from masknmf.arrays.array_utils import normalize_spatial_indexer, test_spatial_crop_effect
 
 class OphysArray(ArrayLike):
     """
@@ -237,7 +238,9 @@ class OphysArray(ArrayLike):
 
         # Check if spatial cropping occurred, deal with mean image accordingly
         mean_image = self._get_mean()
-        mean_crop = mean_image[item[1:]] if isinstance(item, tuple) else mean_image
+        spatial = normalize_spatial_indexer(item, self.shape[1:])
+        if test_spatial_crop_effect(spatial, self.shape[1:]):
+            mean_crop = mean_image[spatial] if isinstance(item, tuple) else mean_image
 
         if data_subset.ndim > mean_crop.ndim: #This means that there is a temporal dimension, which means we need to broadcast
             mean_crop = mean_crop[None, ...]

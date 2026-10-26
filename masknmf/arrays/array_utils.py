@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 def _as_index_array(term, n: int) -> np.ndarray:
     """Lists, tuples, numpy arrays and torch tensors -> 1-D int64 indices into an axis of length n."""
     if isinstance(term, torch.Tensor):
@@ -58,6 +59,6 @@ def test_spatial_crop_effect(spatial, spatial_shape) -> bool:
         if isinstance(term, slice):
             if term.indices(n) != (0, n, 1):
                 return True
-        elif not np.array_equal(term, np.arange(n)):
+        elif term.size != n or not np.array_equal(term, np.arange(n)):
             return True
     return False

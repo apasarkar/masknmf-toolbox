@@ -133,9 +133,9 @@ class StaticBackgroundArray(ArrayLike):
         spatial = normalize_spatial_indexer(item, self.shape[1:])
 
         if self.rescale:
-            final_image = self._normalizer_baseline[spatial] if len(spatial) > 0 else self._normalizer_baseline
+            final_image = self._normalizer_baseline[spatial]
         else:
-            final_image = self.baseline_image[spatial] if len(spatial) > 0 else self.baseline_image
+            final_image = self.baseline_image[spatial]
 
         if drop_frames:
             return final_image

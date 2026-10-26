@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from masknmf.arrays import normalize_spatial_indexer
+from masknmf.arrays.array_utils import normalize_spatial_indexer
 from masknmf.arrays.array_interfaces import ArrayLike
 
 
@@ -65,7 +65,7 @@ class StaticArray(ArrayLike):
         num_frames, drop_frames = self._count_frames(frame_indexer)
 
         spatial = normalize_spatial_indexer(item, self.shape[1:])
-        image = self._image[spatial] if len(spatial) > 0 else self._image
+        image = self._image[spatial]
 
         if drop_frames:
             return image
