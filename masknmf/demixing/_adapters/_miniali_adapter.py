@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 from masknmf.arrays.array_interfaces import ArrayLike
 from masknmf.arrays import OphysArray
+from masknmf.arrays import StaticArray
 from masknmf.motion_correction import GradientRegistrationArray, GradientMotionCorrector
 from masknmf.compression.compression_strategies import CompressStrategy
 from masknmf.demixing._base_results import BaseResults
@@ -111,32 +112,6 @@ def _as_numpy(frames) -> np.ndarray:
     if isinstance(frames, torch.Tensor):
         return frames.detach().cpu().numpy()
     return np.asarray(frames)
-
-class StaticMovie(ArrayLike):
-    """One image repeated over every frame, e.g. miniALI's static background."""
-
-    def __init__(self, image: np.ndarray, num_frames: int):
-        self._image = np.asarray(image, np.float32)
-        self._shape = (int(num_frames), *self._image.shape)
-
-    @property
-    def dtype(self):
-        return np.float32
-
-    @property
-    def shape(self) -> tuple[int, int, int]:
-        return self._shape
-
-    @property
-    def image(self) -> np.ndarray:
-        return self._image
-
-    def __getitem__(self, item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range]) -> np.ndarray:
-        frame_indexer, item = self._parse_indices(item)
-        num_frames = np.arange(self._shape[0])[frame_indexer].size
-        image = self._image[item[1:]] if isinstance(item, tuple) else self._image
-        return np.broadcast_to(image, (num_frames, *image.shape)).copy()
-
 
 class MiniALIResidualArray(ArrayLike):
     """registered - background - signals: what miniALI's model leaves unexplained."""
