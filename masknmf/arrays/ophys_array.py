@@ -230,6 +230,9 @@ class OphysArray(ArrayLike):
             # Translate the (already normalized) temporal index from the cropped movie to the underlying dataset
             frame_indexer = self._to_raw(frame_indexer)
             item = (frame_indexer,) + item[1:] if isinstance(item, tuple) else frame_indexer
+        if isinstance(frame_indexer, int):
+            i = frame_indexer % self._dataset.shape[0]
+            frame_indexer = slice(i, i + 1)
         spatial = normalize_spatial_indexer(item, self.shape[1:])
         data_subset = torch.as_tensor(self._dataset[(frame_indexer, *spatial)]).to(self.device).to(self.dtype) #Ensures consistent indexing scheme
 

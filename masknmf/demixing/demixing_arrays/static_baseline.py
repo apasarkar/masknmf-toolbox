@@ -138,7 +138,7 @@ class StaticBackgroundArray(ArrayLike):
             final_image = self.baseline_image[spatial]
 
         if drop_frames:
-            return final_image
+            return final_image.unsqueeze(0)
         elif num_frames == 1:
             return final_image.unsqueeze(0)
         else:

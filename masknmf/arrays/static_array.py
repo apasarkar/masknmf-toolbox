@@ -68,7 +68,7 @@ class StaticArray(ArrayLike):
         image = self._image[spatial]
 
         if drop_frames:
-            return image
+            return image.unsqueeze(0)
         elif num_frames == 1:
             return image.unsqueeze(0)      # stride-0 size-1 view would alias self._image
         else:
