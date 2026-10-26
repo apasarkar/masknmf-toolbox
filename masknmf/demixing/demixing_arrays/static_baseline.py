@@ -3,6 +3,8 @@ import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
 from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
+from masknmf.arrays.array_utils import normalize_spatial_indexer, test_spatial_crop_effect
+
 
 class StaticBackgroundArray(ArrayLike):
     """
@@ -131,7 +133,8 @@ class StaticBackgroundArray(ArrayLike):
         frame_indexer, item = self._parse_indices(item)
         num_frames, drop_frames = self._count_frames(frame_indexer)
 
-        spatial = item[1:] if isinstance(item, tuple) else ()
+        spatial = normalize_spatial_indexer(item, self.shape[1:])
+
         if self.rescale:
             final_image = self._normalizer_baseline[spatial] if len(spatial) > 0 else self._normalizer_baseline
         else:
