@@ -4,7 +4,6 @@ from masknmf.demixing.demixing_arrays.residual_correlation_images import Residua
 from masknmf.demixing.demixing_arrays.fluctuating_background_array import FluctuatingBackgroundArray
 from masknmf.demixing.demixing_arrays.static_baseline import StaticBackgroundArray
 from masknmf.demixing.demixing_arrays.colorful_signals_array import ColorfulSignalsArray
-from masknmf.demixing.demixing_arrays.residual_array import ResidualArray
 from masknmf.demixing.demixing_arrays.multiunit_background_array import MultiunitBackgroundArray
 
 __all__ = [
@@ -15,6 +14,5 @@ __all__ = [
     "FluctuatingBackgroundArray",
     "StaticBackgroundArray",
     "ColorfulSignalsArray",
-    "ResidualArray",
     "MultiunitBackgroundArray"
 ]

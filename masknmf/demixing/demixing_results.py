@@ -3,6 +3,7 @@ from typing import *
 import h5py
 import numpy as np
 from masknmf import display
+from masknmf.arrays.linear_combination_array import LinearCombinationArray
 from masknmf.compression import CompressionArray, TrendArray
 from masknmf.demixing.demixing_arrays import SignalsArray, ResidualCorrelationImages, StandardCorrelationImages, ColorfulSignalsArray, StaticBackgroundArray, FluctuatingBackgroundArray, ResidualArray, ResidCorrMode, MultiunitBackgroundArray
 import torch
@@ -678,11 +679,12 @@ class DemixingResults(Serializer, BaseResults):
     @property
     def residual_array(self) -> ResidualArray:
         if self._residual_array is None:
-            self._residual_array = ResidualArray(self.compression_array,
-                                                 self.signals_array,
-                                                 self.fluctuating_background_array,
-                                                 self.static_background_array,
-                                                 )
+            data_list = [self.compression_array,
+                         self.fluctuating_background_array,
+                         self.signals_array,
+                         self.static_background_array]
+            self._residual_array = LinearCombinationArray(data_list,
+                                                          alphas=[1, -1, -1, -1])
         return self._residual_array
 
     @property
