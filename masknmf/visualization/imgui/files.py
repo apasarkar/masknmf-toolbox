@@ -9,14 +9,19 @@ the two GUIs behave the same way on the same machine.
 """
 
 import os
+import select
 import shutil
 import socket
+import subprocess
 import sys
 from typing import Optional, Sequence
 
 from imgui_bundle import imgui, portable_file_dialogs as pfd
 
 from masknmf.visualization.imgui.theme import em, popup, tooltip
+
+# the helpers portable-file-dialogs shells out to on linux, in the order it prefers them
+HELPERS_LINUX = ("zenity", "matedialog", "qarma", "kdialog")
 
 
 def native_dialogs_available() -> bool:
@@ -25,10 +30,79 @@ def native_dialogs_available() -> bool:
         return True
     if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
         return False
-    return any(shutil.which(name) for name in ("zenity", "matedialog", "qarma", "kdialog"))
+    return any(shutil.which(name) for name in HELPERS_LINUX)
 
 
 NATIVE_DIALOGS = native_dialogs_available()
+
+
+class Picker:
+    """
+    A native dialog for one file or one folder, polled like a portable-file-dialogs dialog: ready, result, kill.
+
+    On linux portable-file-dialogs runs zenity or kdialog and hands over the pick only once that process has
+    exited. A zenity with a thread hung on an unresponsive network mount (a dropped sshfs, nfs) prints the pick
+    and never finishes exiting, so the pick never arrives and the dialog's destructor blocks the process at exit.
+    Here the helper's output is read as it comes, the pick lands at its newline, and kill does not wait on the
+    helper. Windows and macos keep portable-file-dialogs.
+
+    Args:
+        title (str): The dialog's title
+        start (str): The folder it opens in
+        filters (Sequence[str] | None): portable-file-dialogs name / pattern pairs; None picks a folder
+    """
+
+    def __init__(self, title: str, start: str, filters: Optional[Sequence[str]] = None):
+        self.dialog = None
+        self.process = None
+        self.output = b""
+        self.closed = False
+        if sys.platform in ("win32", "darwin"):
+            if filters is None:
+                self.dialog = pfd.select_folder(title, start)
+            else:
+                self.dialog = pfd.open_file(title, start, list(filters), pfd.opt.none)
+            return
+        helper = next(name for name in HELPERS_LINUX if shutil.which(name))
+        pairs = list(zip(filters[::2], filters[1::2])) if filters is not None else []
+        if helper == "kdialog":
+            command = [helper, "--getexistingdirectory" if filters is None else "--getopenfilename", start]
+            if filters is not None:
+                command.append(" | ".join(f"{name}({patterns})" for name, patterns in pairs))
+            command += ["--title", title]
+        else:
+            # zenity opens a file dialog in the folder's parent unless the folder ends in a separator
+            if filters is not None and not start.endswith("/") and os.path.isdir(start):
+                start += "/"
+            command = [helper, "--file-selection", f"--filename={start}", "--title", title]
+            command += [f"--file-filter={name}|{patterns}" for name, patterns in pairs]
+            if filters is None:
+                command.append("--directory")
+        self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    def ready(self) -> bool:
+        """Whether the dialog closed: the pick printed, or the helper's output ended without one."""
+        if self.dialog is not None:
+            return self.dialog.ready(0)
+        fd = self.process.stdout.fileno()
+        while not self.closed and len(select.select([fd], [], [], 0)[0]) > 0:
+            chunk = os.read(fd, 65536)
+            self.output += chunk
+            self.closed = len(chunk) == 0 or b"\n" in self.output
+        return self.closed
+
+    def result(self):
+        """The pick, "" when the dialog was cancelled; a list from portable-file-dialogs' open_file."""
+        if self.dialog is not None:
+            return self.dialog.result()
+        return os.fsdecode(self.output.split(b"\n")[0])
+
+    def kill(self) -> None:
+        """Close the dialog without waiting on a helper that will not exit."""
+        if self.dialog is not None:
+            self.dialog.kill()
+        elif self.process.poll() is None:
+            self.process.kill()
 
 
 class PathPrompt:

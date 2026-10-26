@@ -25,7 +25,6 @@ import numpy as np
 import wgpu
 from imgui_bundle import hello_imgui, imgui, imgui_ctx
 from imgui_bundle import icons_fontawesome_6 as fa
-from imgui_bundle import portable_file_dialogs as pfd
 from wgpu.utils.imgui import ImguiRenderer
 
 import masknmf
@@ -35,6 +34,7 @@ from masknmf.io import group_name_compression, group_name_demixing, group_names_
 from masknmf.pipelines import scraper
 from masknmf.pipelines._base import BasePipeline
 from masknmf.visualization.imgui import guide
+from masknmf.visualization.imgui.files import NATIVE_DIALOGS, Picker
 from masknmf.visualization.imgui.theme import button_colors, tooltip
 
 
@@ -1122,9 +1122,9 @@ class Launcher:
             return
         start = self.store.default_dir() or str(Path.home())
         if filetypes is None:
-            self.picker = pfd.select_folder("Select folder", start)
+            self.picker = Picker(title="Select folder", start=start)
         else:
-            self.picker = pfd.open_file("Select file", start, idl.flatten_filters(filetypes), pfd.opt.none)
+            self.picker = Picker(title="Select file", start=start, filters=idl.flatten_filters(filetypes))
         self.target_picker = (target, key)
 
     def poll_picker(self) -> None:
@@ -2059,17 +2059,22 @@ class Launcher:
             hint (str): Shown while the field is empty
         """
         inner = imgui.get_style().item_inner_spacing.x
+        no_dialog = "no file dialog on this machine; type the path instead"
         if filetypes is not None:
+            imgui.begin_disabled(not NATIVE_DIALOGS)
             if imgui.button(f"{fa.ICON_FA_FILE}##file_{key}"):
                 self.open_picker(target=target, key=key, filetypes=filetypes)
-            if imgui.is_item_hovered():
-                idl.wrapped_tooltip("Browse for a file")
+            imgui.end_disabled()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                idl.wrapped_tooltip("Browse for a file" if NATIVE_DIALOGS else no_dialog)
             imgui.same_line(0, inner)
         if folders:
+            imgui.begin_disabled(not NATIVE_DIALOGS)
             if imgui.button(f"{fa.ICON_FA_FOLDER_OPEN}##folder_{key}"):
                 self.open_picker(target=target, key=key, filetypes=None)
-            if imgui.is_item_hovered():
-                idl.wrapped_tooltip("Browse for a folder")
+            imgui.end_disabled()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                idl.wrapped_tooltip("Browse for a folder" if NATIVE_DIALOGS else no_dialog)
             imgui.same_line(0, inner)
 
         padding = imgui.get_style().frame_padding
@@ -2213,4 +2218,7 @@ def run_launcher() -> Optional[list[str]]:
     window.attach(canvas=RenderCanvas(title="masknmf", size=SIZE_WINDOW, update_mode="continuous", max_fps=60), loop=loop)
     print("\r\033[K", end="", file=sys.stderr, flush=True)
     loop.run()
+    # a dialog still open would outlive the window, and portable-file-dialogs' destructor waits for it to close
+    if window.picker is not None:
+        window.picker.kill()
     return window.argv
