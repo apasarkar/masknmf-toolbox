@@ -20,13 +20,13 @@ class StaticBackgroundArray(ArrayLike):
             raise ValueError(f"The number of frames must be positive, provided {num_frames}")
         self._flyweight=flyweight
         self.flyweight.validate_attributes(["baseline_image"])
-        self._shape = (num_frames, *self.flyweight.baseline_image.shape)
+        self._shape = (int(num_frames), *self.flyweight.baseline_image.shape)
         self._rescale=rescale
 
         self._default_normalizer = torch.ones_like(self.baseline_image, device=self.device).float()
-        if hasattr(self.flyweight, "normalizer"):
-            if self.flyweight.normalizer.shape[0] != self.shape[1] or self.flyweight.normalizer.shape[2] != self.shape[
-                1]:
+        if hasattr(self.flyweight, "normalizer") and getattr(self.flyweight, "normalizer", None) is not None:
+            if self.flyweight.normalizer.shape[0] != self.shape[1] or self.flyweight.normalizer.shape[1] != self.shape[
+                2]:
                 raise ValueError("Normalizer from flyweight had dimensions not equal to the fov dimensions")
 
         self._normalizer_baseline = self.normalizer * self.baseline_image
@@ -39,14 +39,14 @@ class StaticBackgroundArray(ArrayLike):
     def from_tensors(cls,
                      baseline_image: torch.Tensor,
                      num_frames: int,
-                     normalizer: Optional[torch.Tensor] = None,
+                     normalizer: torch.Tensor | None = None,
                      rescale: bool=False):
         """
         Constructor for static baseline class
         Args:
             baseline_image (torch.Tensor): Shape (height, width)
             num_frames (int): The number of frames in this static movie
-            normalizer (Optional[torch.Tensor]): Shape (height, width)
+            normalizer (torch.Tensor | None): Shape (height, width)
         """
 
         flyweight = TensorFlyWeight(baseline_image=baseline_image, normalizer=normalizer)
@@ -89,9 +89,10 @@ class StaticBackgroundArray(ArrayLike):
 
     @property
     def normalizer(self) -> torch.Tensor:
-        if not hasattr(self.flyweight, "normalizer"):
+        if hasattr(self.flyweight, "normalizer") and getattr(self.flyweight, "None", None) is not None:
+            return self.flyweight.normalizer
+        else:
             return self._default_normalizer
-        return self.flyweight.normalizer
 
     @property
     def rescale(self):
@@ -104,17 +105,6 @@ class StaticBackgroundArray(ArrayLike):
     @property
     def baseline_image(self) -> torch.Tensor:
         return self.flyweight.baseline_image
-
-    def getitem_tensor(
-            self,
-            item: Union[int, list, np.ndarray, Tuple[Union[int, np.ndarray, slice, range]]],
-    ):
-        cropped_baseline = self.baseline_image[item]
-        if self.rescale:
-            cropped_normalizer = self.normalizer[item]
-            return cropped_baseline * cropped_normalizer
-
-        return cropped_baseline
 
     def _count_frames(self, indexer) -> tuple[int, bool]:
         """Number of frames selected, and whether the frame axis is dropped. O(1) for ints and slices."""
@@ -137,7 +127,7 @@ class StaticBackgroundArray(ArrayLike):
     def __getitem__(
         self,
         item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
-    ) -> np.ndarray:
+    ) -> torch.Tensor:
         frame_indexer, item = self._parse_indices(item)
         num_frames, drop_frames = self._count_frames(frame_indexer)
 
@@ -152,4 +142,4 @@ class StaticBackgroundArray(ArrayLike):
         elif num_frames == 1:
             return final_image.unsqueeze(0)
         else:
-            return final_image.expand(num_frames, *self.baseline_image.shape)
+            return final_image.expand(num_frames, *self.final_image.shape)
