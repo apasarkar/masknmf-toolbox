@@ -1,12 +1,9 @@
 from __future__ import annotations
 from typing import Optional
-import numpy as np
-import torch
 from masknmf.utils import SparseCOOTensor, is_cpu
 import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
-from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
 from masknmf.arrays.array_utils import test_spatial_crop_effect, normalize_spatial_indexer
 
 class SignalsArray(ArrayLike):

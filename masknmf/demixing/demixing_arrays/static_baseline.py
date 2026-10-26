@@ -2,7 +2,6 @@ from typing import *
 import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
-from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
 from masknmf.arrays.array_utils import normalize_spatial_indexer, test_spatial_crop_effect
 
 
@@ -91,10 +90,8 @@ class StaticBackgroundArray(ArrayLike):
 
     @property
     def normalizer(self) -> torch.Tensor:
-        if hasattr(self.flyweight, "normalizer") and getattr(self.flyweight, "None", None) is not None:
-            return self.flyweight.normalizer
-        else:
-            return self._default_normalizer
+        normalizer = getattr(self.flyweight, "normalizer", None)
+        return normalizer if normalizer is not None else self._default_normalizer
 
     @property
     def rescale(self):
@@ -145,4 +142,4 @@ class StaticBackgroundArray(ArrayLike):
         elif num_frames == 1:
             return final_image.unsqueeze(0)
         else:
-            return final_image.expand(num_frames, *self.final_image.shape)
+            return final_image.expand(num_frames, *final_image.shape)

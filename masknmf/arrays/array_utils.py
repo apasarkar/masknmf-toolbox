@@ -1,88 +1,63 @@
 import numpy as np
-def normalize_spatial_indexer(item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
-                              spatial_shape: tuple[int, int]):
-    """Return (row, col) indexers that never drop a spatial dim: ints become length-1 slices, missing dims become slice(None).
-    Assumes that the first 3 entries of item if they exist correspond to frames, fov_height, fov_width"""
-    spatial = list(item[1:min(len(item), 3)]) if isinstance(item, tuple) else []
+def _as_index_array(term, n: int) -> np.ndarray:
+    """Lists, tuples, numpy arrays and torch tensors -> 1-D int64 indices into an axis of length n."""
+    if isinstance(term, torch.Tensor):
+        term = term.detach().cpu().numpy()
+    idx = np.asarray(term)
+    if idx.dtype == bool:
+        if idx.shape != (n,):
+            raise IndexError(f"boolean mask has shape {idx.shape}, expected ({n},)")
+        idx = np.flatnonzero(idx)
+    elif idx.ndim != 1 or not np.issubdtype(idx.dtype, np.integer):
+        raise IndexError(f"spatial index arrays must be 1-D integer or boolean, got shape {idx.shape}, dtype {idx.dtype}")
+    if idx.size and (idx.min() < -n or idx.max() >= n):
+        raise IndexError(f"spatial indices out of bounds for size {n}")
+    return idx.astype(np.int64) % n
+
+
+def normalize_spatial_indexer(item, spatial_shape: tuple[int, int]) -> tuple[slice | np.ndarray, ...]:
+    """
+    Normalize the spatial part of `item` (entries 1 and 2) for rectangular cropping.
+
+    Every returned term is a slice or a 1-D int64 array, so no spatial dim is dropped:
+    ints become length-1 slices, missing dims become slice(None), ranges become slices,
+    and lists / bool masks / tensors become int arrays.
+    Only one spatial axis may be an index array: two arrays would mean pointwise
+    (non-rectangular) selection in numpy, which is not supported.
+    """
+    spatial = list(item[1:3]) if isinstance(item, tuple) else []
     spatial += [slice(None)] * (len(spatial_shape) - len(spatial))
+
     out = []
     for term, n in zip(spatial, spatial_shape):
         if isinstance(term, (int, np.integer)) or (isinstance(term, np.ndarray) and term.ndim == 0):
             i = int(term)
             if not -n <= i < n:
                 raise IndexError(f"spatial index {i} out of bounds for size {n}")
-            i %= n # handle negatives before building the slice
+            i %= n
             term = slice(i, i + 1)
         elif isinstance(term, range):
             term = slice(term.start, term.stop, term.step)
+        elif not isinstance(term, slice):
+            term = _as_index_array(term, n)
+        if len(range(*term.indices(n))) == 0 if isinstance(term, slice) else term.size == 0:
+            raise IndexError("empty spatial selection")
         out.append(term)
+
+    if sum(isinstance(t, np.ndarray) for t in out) > 1:
+        raise IndexError(
+            "Only rectangular spatial indexing is supported: at most one spatial axis may be "
+            "indexed with a list/array. Use a slice on the other axis, or index in two steps."
+        )
     return tuple(out)
 
-def test_slice_effect(my_slice: slice, spatial_dim: int) -> bool:
-    """
-    Returns True if slice will actually have an effect
-    """
 
-    if not (
-        (isinstance(my_slice.start, int) and my_slice.start == 0)
-        or my_slice.start is None
-    ):
-        return True
-    elif not (
-        (isinstance(my_slice.stop, int) and my_slice.stop >= spatial_dim)
-        or my_slice.stop is None
-    ):
-        return True
-    elif not (
-        my_slice.step is None or (isinstance(my_slice.step, int) and my_slice.step == 1)
-    ):
-        return True
-    return False
-
-
-def test_range_effect(my_range: range, spatial_dim: int) -> bool:
-    """
-    Returns True if the range will actually have an effect.
-
-    Parameters:
-    my_range (range): The range object to test.
-    spatial_dim (int): The size of the dimension that the range is applied to.
-
-    Returns:
-    bool: True if the range will affect the selection; False otherwise.
-    """
-    # Check if the range starts from the beginning
-    if my_range.start != 0:
-        return True
-    # Check if the range stops at the end of the dimension
-    elif my_range.stop != spatial_dim:
-        return True
-    # Check if the range step is not 1
-    elif my_range.step != 1:
-        return True
-    return False
-
-
-def test_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
-    """
-    Returns true if the tuple used for spatial cropping actually has an effect on the underlying data. Otherwise
-    cropping can be an expensive and avoidable operation.
-    """
-    for k in range(len(my_tuple)):
-        if isinstance(my_tuple[k], np.ndarray):
-            if my_tuple[k].shape[0] < spatial_dims[k]:
+def test_spatial_crop_effect(spatial, spatial_shape) -> bool:
+    """Expects the output of normalize_spatial_indexer. True if the crop selects anything other than the full FOV."""
+    for term, n in zip(spatial, spatial_shape):
+        if isinstance(term, slice):
+            if term.indices(n) != (0, n, 1):
                 return True
-
-        if isinstance(my_tuple[k], np.integer):
+        elif not np.array_equal(term, np.arange(n)):
             return True
-
-        if isinstance(my_tuple[k], int):
-            return True
-
-        if isinstance(my_tuple[k], slice):
-            if test_slice_effect(my_tuple[k], spatial_dims[k]):
-                return True
-        if isinstance(my_tuple[k], range):
-            if test_range_effect(my_tuple[k], spatial_dims[k]):
-                return True
     return False
