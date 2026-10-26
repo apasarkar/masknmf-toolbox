@@ -303,7 +303,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
     so we can adaptively compute frames/pixels of this movie very quickly if we just store the low-rank info
     """
 
-    _serialized = {"shifts", "gradient_steps"}
+    _serialized = {"gradient_steps", "gradients", "shifts"}
     _strategy_cls = GradientMotionCorrector
 
     def __init__(self,
@@ -333,17 +333,13 @@ class GradientRegistrationArray(BaseRegistrationArray):
         """
 
         self._input_movie = input_movie
-        self._strategy = strategy
-        if self.strategy is not None:
-            compute_device = self.strategy.device
-        else:
-            compute_device = torch_select_device(compute_device)
-            output_device = torch_select_device(output_device)
 
-        super().__init__(output_device=output_device,
-                         compute_device=compute_device)
+        ##No need to use batch size here
+        super().__init__(strategy=strategy,
+                         compute_device=compute_device,
+                         output_device=output_device)
 
-        self._gradient = gradients.to(self.compute_device).to(self.dtype)
+        self._gradient = gradients.to(self.compute_device).to(self.dtype).reshape(self.shape[1:], 2)
         self._gradient_steps = gradient_steps.to(self.compute_device).to(self.dtype)
 
         if shifts is None:
@@ -352,10 +348,6 @@ class GradientRegistrationArray(BaseRegistrationArray):
             self._shifts = shifts.to(self.compute_device).to(self.dtype)
         self._gradient_steps_mean = torch.mean(self._gradient_steps, dim=0)
         self._include_mean = True
-
-    @property
-    def dtype(self) -> torch.dtype:
-        return self.strategy.dtype if self.strategy is not None else torch.float32
 
     @property
     def nbytes(self) -> int:
@@ -368,6 +360,15 @@ class GradientRegistrationArray(BaseRegistrationArray):
     @property
     def include_mean(self) -> bool:
         return self._include_mean
+
+    @property
+    def batch_size(self) -> int:
+        """
+        Gradient registration is just dynamically computing a rank-2 outer product, so the batch size is
+        trivially the number of frames.
+        :return:
+        """
+        return int(self.shape[0])
 
     @include_mean.setter
     def include_mean(self, new_flag: bool):
@@ -426,7 +427,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
         else:
             gradient_crop = self.gradient
 
-        grad_movie = gradient_crop.to(self._device) @ gradient_step_used.T.to(self._device)
+        grad_movie = gradient_crop.to(self.compute_device) @ gradient_step_used.T.to(self.compute_device)
         grad_movie = grad_movie.movedim(-1, 0).to(self.output_device)
 
         return data_subset - grad_movie

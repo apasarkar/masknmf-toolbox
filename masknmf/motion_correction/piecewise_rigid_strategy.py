@@ -290,21 +290,12 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
                  compute_device: str | torch.device = "auto"):
         self._input_movie = input_movie
         self._shifts = shifts
-        self._strategy = strategy
-        if self.strategy is not None:
-            self._batch_size = self.strategy.batch_size
-            compute_device = self.strategy.device
-        else:
-            self._batch_size = batch_size
-            compute_device = torch_select_device(compute_device)
-        output_device = output_device
-        super().__init__(output_device=output_device,
-                         compute_device=compute_device)
-        self._compute_block_centers()
+        super().__init__(strategy=strategy,
+                         batch_size=batch_size,
+                         compute_device=compute_device,
+                         output_device=output_device)
 
-    @property
-    def dtype(self) -> torch.dtype:
-        return torch.float32
+        self._compute_block_centers()
 
     @property
     def batch_size(self) -> int:

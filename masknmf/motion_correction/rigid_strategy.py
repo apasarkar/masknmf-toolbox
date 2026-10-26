@@ -268,18 +268,10 @@ class RigidRegistrationArray(BaseRegistrationArray):
             compute_device: Device the shifts are applied on, used when strategy is None.
         """
         self._input_movie = input_movie
-        self._strategy = strategy
-
-        if self.strategy is not None:
-            self._batch_size = self.strategy.batch_size
-            compute_device = self.strategy.device
-        else:
-            self._batch_size = batch_size
-            compute_device = torch_select_device(compute_device)
-        output_device = output_device
-
-        super().__init__(output_device=output_device,
-                         compute_device=compute_device)
+        super().__init__(strategy=strategy,
+                         batch_size=batch_size,
+                         compute_device=compute_device,
+                         output_device=output_device)
 
         if shifts.ndim != 2 or shifts.shape[1] != 2:
             raise ValueError(
@@ -301,11 +293,7 @@ class RigidRegistrationArray(BaseRegistrationArray):
             int(wrap[0]) + self._sinc_margin,
             int(wrap[1]) + self._sinc_margin,
         )
-
-    @property
-    def dtype(self) -> torch.dtype:
-        return torch.float32
-
+        
     @property
     def nbytes(self) -> int:
         return math.prod(self.shape) * self.dtype.itemsize

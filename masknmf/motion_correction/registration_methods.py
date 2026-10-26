@@ -1020,9 +1020,9 @@ def compute_pwrigid_patch_midpoints(field_dimensions: tuple[int, int],
             midpoints respectively
     """
 
-
-    dim1_midpoints = torch.round(torch.linspace(0, fov_height, int(field_dimensions.shape[0] + 2)))[1:-1]
-    dim2_midpoints = torch.round(torch.linspace(0, fov_width, int(field_dimensions.shape[1] + 2)))[1:-1]
+    fov_height, fov_width = fov_shape
+    dim1_midpoints = torch.round(torch.linspace(0, fov_height, int(field_dimensions[0] + 2)))[1:-1]
+    dim2_midpoints = torch.round(torch.linspace(0, fov_width, int(field_dimensions[1] + 2)))[1:-1]
 
     dim1_coords, dim2_coords = torch.meshgrid(dim1_midpoints, dim2_midpoints, indexing="ij")
     return torch.stack([dim1_coords, dim2_coords], dim=-1)
