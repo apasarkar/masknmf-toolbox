@@ -116,7 +116,7 @@ def _as_numpy(frames) -> np.ndarray:
 class MiniALIResidualArray(ArrayLike):
     """registered - background - signals: what miniALI's model leaves unexplained."""
 
-    def __init__(self, registered: ArrayLike, background: StaticMovie, signals: SignalsArray):
+    def __init__(self, registered: ArrayLike, background: StaticArray, signals: SignalsArray):
         self._registered = registered
         self._background = background
         self._signals = signals
@@ -266,7 +266,7 @@ class MiniALIResults(BaseResults):
                                                            self._shifts,
                                                            self._gradient.reshape(-1, 2))
         self._signals_array = SignalsArray.from_tensors(self.fov_shape, self._spatial_demixed, self._temporal_demixed)
-        self._background_array = StaticMovie(self._background, self.shape[0])
+        self._background_array = StaticArray(self._background, self.shape[0])
 
         residual = MiniALIResidualArray(self._registered_array, self._background_array, self._signals_array)
         if residual_compress:
@@ -395,7 +395,7 @@ class MiniALIResults(BaseResults):
         return self._signals_array
 
     @property
-    def fluctuating_background_array(self) -> StaticMovie:
+    def fluctuating_background_array(self) -> StaticArray:
         """miniALI's background is static: background_image on every frame."""
         return self._background_array
 
