@@ -209,10 +209,10 @@ class ColorfulSignalsArray(ArrayLike):
             product = torch.stack(product_list, dim=3)
 
         if isinstance(item, tuple) and len(item) == 4:
-            if isinstance(item[3], int):
-                product = product[..., slice(item[3], item[3]+1)] ##Apply the last crop
-            else:
-                product = product[..., item[3]]
+            c = item[3]
+            if isinstance(c, (int, np.integer)):
+                c = int(c) % product.shape[-1]
+                c = slice(c, c + 1)
         return product
 
     def __getitem__(

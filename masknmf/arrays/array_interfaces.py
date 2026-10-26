@@ -27,8 +27,8 @@ class ArrayLike(ABC):
 
     Supported per axis:
         int            selects one element, *keeps the axis* (length 1)
-        slice / range  as in numpy (negative and out-of-range bounds follow slice semantics)
-        list / 1-D int array, 1-D bool mask, 1-D torch tensor
+        slice / range  as in numpy, except frame slice bounds must lie within [0, n_frames]
+        list / 1-D int array, 1-D bool mask (1-D torch tensor on spatial axes only)
                        selects those elements in the given order, duplicates allowed
 
     Differences from numpy:
@@ -130,7 +130,8 @@ class ArrayLike(ABC):
         # Step 2: Do some basic error handling for frame_indexer before using it to slice
 
         if isinstance(frame_indexer, np.ndarray):
-            pass
+            if frame_indexer.ndim > 1:
+                raise IndexError(f"frame index arrays must be 1-D, got shape {frame_indexer.shape}")
 
         elif isinstance(frame_indexer, list):
             pass
