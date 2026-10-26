@@ -17,6 +17,7 @@ here enumerates a parameter by hand:
     masknmf view results.hdf5 --raw movie.tif
     masknmf view run_folder
     masknmf view results.hdf5 --raw movie.tif --compression
+    masknmf view "sessions/*/results.hdf5" --fs 30
     masknmf view results.hdf5 --classify --labels soma,dendrite,junk
     masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
     masknmf view tracking_folder
@@ -36,7 +37,9 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import warnings
 from datetime import datetime, timedelta
@@ -737,6 +740,68 @@ def view_tracking(args: argparse.Namespace, source: Path) -> None:
     fpl.loop.run()
 
 
+def launch_viewer(argv: list[str], filepath_log: Path) -> subprocess.Popen:
+    """
+    Run ``masknmf <argv>`` in a process of its own, detached from this terminal, its output going to a log.
+
+    Args:
+        argv (list[str]): The arguments, without the program name
+        filepath_log (Path): Where the process writes its output
+    Returns:
+        subprocess.Popen: The process
+    """
+    python = sys.executable
+    if sys.platform == "win32" and python.endswith("python.exe"):
+        # no console window beside the viewer's
+        pythonw = python[: -len("python.exe")] + "pythonw.exe"
+        if Path(pythonw).exists():
+            python = pythonw
+    # its own session or process group, so closing this terminal or ctrl+c here leaves the window open
+    detach = (
+        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {"start_new_session": True}
+    )
+    # unbuffered, so an error lands in the log after the output before it
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    with filepath_log.open("a", encoding="utf-8") as out:
+        return subprocess.Popen(
+            [python, "-m", "masknmf.cli", *argv], stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, env=env, **detach
+        )
+
+
+def view_each(args: argparse.Namespace, files: list[str]) -> None:
+    """
+    Open one demixing viewer per results file, each in its own process, so the windows never share a GPU context and
+    one crashing leaves the rest open. Waits for them and reports any that fail; ctrl+c stops waiting, not the windows.
+    """
+    options = ["--device", args.device]
+    if args.fs is not None:
+        options += ["--fs", str(args.fs)]
+    if args.prefix:
+        options += ["--prefix", args.prefix]
+    folder_logs = Path(tempfile.gettempdir()) / "masknmf-view"
+    folder_logs.mkdir(exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    viewers = []
+    for index, filepath in enumerate(files):
+        filepath_log = folder_logs / f"{stamp}_{index}_{Path(filepath).stem}.log"
+        process = launch_viewer(argv=["view", filepath, *options], filepath_log=filepath_log)
+        print(f"opened {filepath}  (pid {process.pid}, log {filepath_log})", flush=True)
+        viewers.append((filepath, process, filepath_log))
+
+    try:
+        while len(viewers) > 0:
+            time.sleep(1.0)
+            for viewer in [v for v in viewers if v[1].poll() is not None]:
+                viewers.remove(viewer)
+                filepath, process, filepath_log = viewer
+                if process.returncode != 0:
+                    lines = [line for line in filepath_log.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+                    print(f"{filepath} failed: {lines[-1] if lines else f'exit code {process.returncode}'} (log {filepath_log})",
+                          file=sys.stderr)
+    except KeyboardInterrupt:
+        print(f"\nstopped waiting; {len(viewers)} viewers stay open", file=sys.stderr)
+
+
 def command_view(args: argparse.Namespace) -> None:
     """
     Open the viewers for whatever stages the results files hold; --classify opens only the classification viewer.
@@ -780,7 +845,10 @@ def command_view(args: argparse.Namespace) -> None:
         return
 
     if len(files) > 1:
-        fail(f"the demixing viewer opens one results file, got {len(files)}; --classify opens several")
+        if args.raw is not None or args.compression:
+            fail("--raw and --compression name one movie; open its results file on its own")
+        view_each(args=args, files=files)
+        return
     filepath_results = files[0]
     names_present = present[filepath_results]
     if len(names_present) == 0:
@@ -922,9 +990,9 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
         add_pipeline_options(parser=parser_run, spec=spec)
     parser_run.set_defaults(handler=command_run)
 
-    parser_view = subparsers.add_parser("view", help="open the viewers for a results file")
+    parser_view = subparsers.add_parser("view", help="open the viewers for results files")
     parser_view.add_argument(
-        "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several need --classify. "
+        "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several open one viewer each, or one classification viewer with --classify. "
         "Or a tracking folder (its newest run) or one run's *-manifest.json; a tracking folder without a manifest is followed by its results files in session order. "
         "Any other folder means the *results*.hdf5 files in it, each replaced by its newest curated file",
     )
