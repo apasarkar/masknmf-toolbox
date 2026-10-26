@@ -281,29 +281,23 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
     _serialized = {'shifts'}
     _strategy_cls = PiecewiseRigidMotionCorrector
 
-    def __init__(self,
-                 input_movie: ArrayLike,
-                 shifts: torch.Tensor,
-                 strategy: PiecewiseRigidMotionCorrector,
-                 output_device: str | torch.device = 'cpu'):
+    def __init__(
+            self,
+            input_movie: ArrayLike,
+            shifts: torch.Tensor,
+            *,
+            strategy: PiecewiseRigidMotionCorrector | None = None,
+            batch_size: int | None = None,
+            compute_device: str | torch.device | None = None,
+            output_device: str | torch.device = "cpu",
+    ):
         self._input_movie = input_movie
-        self._shifts = shifts
-        self._strategy = strategy
-        self._device = self.strategy.device
-        self.output_device = output_device
+        super().__init__(strategy=strategy,
+                         batch_size=batch_size,
+                         compute_device=compute_device,
+                         output_device=output_device)
+        self._shifts = torch.as_tensor(shifts, device=self.compute_device, dtype=self.dtype)
         self._compute_block_centers()
-
-    @property
-    def ndim(self) -> int:
-        return len(self.shape)
-
-    @property
-    def shape(self) -> tuple[int, int, int]:
-        return self._input_movie.shape
-
-    @property
-    def dtype(self) -> torch.dtype:
-        return torch.float32
 
     @property
     def nbytes(self) -> int:
@@ -314,24 +308,16 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
         return self._input_movie
 
     def _compute_block_centers(self):
-        self._block_centers = compute_pwrigid_patch_midpoints(
-            minimum_patch_sizes=self.strategy.minimum_patch_sizes,
-            overlaps=self.strategy.overlaps,
-            fov_height=self.input_movie.shape[1],
-            fov_width=self.input_movie.shape[2]
-        )
+        self._block_centers = compute_pwrigid_patch_midpoints(self.shifts.shape[1:3],
+                                                              self.input_movie.shape[1:3])
 
     @property
-    def block_centers(self):
+    def block_centers(self) -> torch.Tensor:
         return self._block_centers
 
     @property
     def shifts(self) -> torch.Tensor:
         return self._shifts
-
-    @property
-    def strategy(self) -> PiecewiseRigidMotionCorrector:
-        return self._strategy
 
     def _corrected_roi(self,
                        frames,
@@ -344,7 +330,7 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
         row_extent = max(1, row_indices[1] - row_indices[0])
         col_extent = max(1, col_indices[1] - col_indices[0])
 
-        batch_size = math.floor(self.shape[1] * self.shape[2] * self.strategy.batch_size / (row_extent * col_extent))
+        batch_size = math.floor(self.shape[1] * self.shape[2] * self.batch_size / (row_extent * col_extent))
         batch_size = max(batch_size, 1)
         num_batches = math.ceil(frames.shape[0] / batch_size)
         outputs = []
@@ -358,7 +344,7 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
                                          row_slice,
                                          col_slice,
                                          temporal_indices=_frame_key(frames[start:end]),
-                                         device=self._device).to(self.output_device)
+                                         device=self.compute_device).to(self.output_device)
             outputs.append(block)
 
         return torch.concatenate(outputs, dim=0) if num_batches > 1 else outputs[0]

@@ -368,7 +368,10 @@ class OpenedResults:
         if is_registration:
             template = results.strategy.template
         elif isinstance(registered, BaseRegistrationArray):
-            template = registered.strategy.template
+            if registered.strategy is not None:
+                template = registered.strategy.template
+            else:
+                template = None
         else:
             template = None
         if shifts_source is not None:
