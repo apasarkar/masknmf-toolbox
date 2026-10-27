@@ -258,7 +258,7 @@ class SignalsArray(ArrayLike):
         """
         return len(self.shape)
 
-    def getitem_tensor(
+    def __getitem__(
         self,
         item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ) -> torch.Tensor:
@@ -299,14 +299,6 @@ class SignalsArray(ArrayLike):
         if self.rescale:
             product *= normalizer_crop
 
-        return product
-
-    def __getitem__(
-        self,
-        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
         return product
 
 

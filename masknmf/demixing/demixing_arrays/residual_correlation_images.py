@@ -201,7 +201,7 @@ class ResidualCorrelationImages(ArrayLike):
     def dtype(self) -> type:
         return np.float32
 
-    def getitem_tensor(
+    def __getitem__(
         self,
         item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
     ) -> torch.Tensor:
@@ -273,11 +273,3 @@ class ResidualCorrelationImages(ArrayLike):
         product = product.permute(2, 0, 1)
 
         return torch.nan_to_num(product, nan=0.0, posinf=0.0, neginf=0.0)
-
-    def __getitem__(
-        self,
-        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
-        return product

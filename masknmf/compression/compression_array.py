@@ -319,7 +319,7 @@ class CompressionArray(ArrayLike, Serializer):
         projection = torch.sparse.mm(self.spatial_compressed_local_projector.T, frames)
         return projection.to(orig_device)
 
-    def getitem_tensor(
+    def __getitem__(
         self,
         item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ) -> torch.Tensor:
@@ -367,14 +367,6 @@ class CompressionArray(ArrayLike, Serializer):
         product = product.reshape((implied_fov[0], implied_fov[1], -1))
         product = product.permute(2, 0, 1)
 
-        return product
-
-    def __getitem__(
-        self,
-        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
         return product
 
 
@@ -543,7 +535,7 @@ class TrendArray(ArrayLike):
         """(num_frames, fov_height, fov_width)"""
         return self._shape
 
-    def getitem_tensor(
+    def __getitem__(
             self,
             item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ) -> torch.Tensor:
@@ -570,12 +562,4 @@ class TrendArray(ArrayLike):
         product = product.reshape((implied_fov[0], implied_fov[1], -1))
         product = product.permute(2, 0, 1)
 
-        return product
-
-    def __getitem__(
-            self,
-            item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
         return product
