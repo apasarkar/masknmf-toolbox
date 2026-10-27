@@ -150,6 +150,29 @@ def test_resume_source_refuses_a_file_without_what_is_reused(tmp_path):
         pipeline.resume_source(tmp_path / "missing.hdf5", reuse_compression=False)
 
 
+class StubResults:
+    """Writes the group write_curated expects of demixing results, without demixing anything."""
+
+    def export(self, path):
+        with h5py.File(path, "a") as file:
+            file.create_group(masknmf.DemixingResults.__name__)
+
+
+def test_a_curated_file_keeps_the_registration_and_compression_so_a_run_resumes_from_it(tmp_path):
+    names = {"RigidMotionCorrector", "RigidRegistrationArray", masknmf.CompressionArray.__name__,
+             masknmf.DemixingResults.__name__}
+    with h5py.File(tmp_path / "results.hdf5", "w") as file:
+        for name in names:
+            file.create_group(name)
+        file[masknmf.CompressionArray.__name__]["temporal_compressed"] = np.arange(6.0).reshape(2, 3)
+    curated = masknmf.demixing.write_curated(str(tmp_path / "results.hdf5"), StubResults(), drop=[0])
+    with h5py.File(curated) as file:
+        assert set(file) == names
+        assert np.array_equal(file[masknmf.CompressionArray.__name__]["temporal_compressed"][()], np.arange(6.0).reshape(2, 3))
+    pipeline = scraper.pipeline_registry()[SLUGS[0]](output_folder=str(tmp_path))
+    assert pipeline.resume_source(curated, reuse_compression=True)[0] == Path(curated).resolve()
+
+
 def test_a_run_that_breaks_from_python_records_that_it_failed_and_why(tmp_path):
     pipeline = BrokenPipeline(output_folder=str(tmp_path))
     with pytest.raises(RuntimeError):
