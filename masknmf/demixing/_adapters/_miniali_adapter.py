@@ -116,8 +116,9 @@ def _as_numpy(frames) -> np.ndarray:
 class MiniALIResidualArray(ArrayLike):
     """registered - background - signals: what miniALI's model leaves unexplained."""
 
-    def __init__(self, registered: ArrayLike, background: StaticArray, signals: SignalsArray):
+    def __init__(self, registered: GradientRegistrationArray, background: StaticArray, signals: SignalsArray):
         self._registered = registered
+        self._registered.output_device = background.device
         self._background = background
         self._signals = signals
 
