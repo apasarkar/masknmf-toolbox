@@ -426,13 +426,16 @@ class SingleSessionDemixingVis:
         if self._summary_img is not None and tuple(self._summary_img.shape[-2:]) != tuple(self._shape[1:3]):
             self._summary_img = None
         movies = self._movies()
+        self._stills = self._static_images()
+        # a panel shows any movie or any still: the stills play as one image on every frame
+        sources = OrderedDict(movies, **self._stills)
         order = [self._panel_names.get(name, name) for name in _DEFAULT_ORDER]
         order = [name for name in order if name in movies]
         if first:
             # one panel per movie, up to three, each switchable to any of them; they open in _DEFAULT_ORDER
             self._panels = OrderedDict()
             for i, name in enumerate(order[:3], start=1):
-                self._panels[str(i)] = SwitchableArray(movies, self._shape)
+                self._panels[str(i)] = SwitchableArray(sources, self._shape)
                 self._panels[str(i)].current = name
             n = len(self._panels)
             self._video_extents = {name: (i / n, (i + 1) / n, 0.0, 1.0) for i, name in enumerate(self._panels)}
@@ -464,14 +467,13 @@ class SingleSessionDemixingVis:
             same = set(movies) == self._movie_names
             for i, (name, panel) in enumerate(self._panels.items()):
                 keep = panel.current
-                self._panels[name] = SwitchableArray(movies, self._shape)
+                self._panels[name] = SwitchableArray(sources, self._shape)
                 self._panels[name].current = keep if same else order[min(i, len(order) - 1)]
                 self._panel_graphics[name].data = self._panels[name]
                 if frames_changed:
                     self._panel_graphics[name].slider_maps = {"time": frame_timings}
                 self._ndw_fov.figure[name].title = self._panels[name].current
         self._movie_names = set(movies)
-        self._stills = self._static_images()
         if not first and self._summary.is_open:
             self._summary.set_images(self._stills)
 
@@ -2199,6 +2201,8 @@ class SingleSessionDemixingVis:
         name = "raw" if self._registered is None else "registered"
         self._lag1 = {f"{name} lag-1 acf": raw, "compressed lag-1 acf": compressed, "residual lag-1 acf": residual}
         self._stills = self._static_images()
+        for panel in self._panels.values():
+            panel.sources.update(self._lag1)
         if self._summary.is_open:
             self._summary.set_images(self._stills)
 
