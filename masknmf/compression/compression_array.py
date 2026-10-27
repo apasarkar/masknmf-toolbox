@@ -237,11 +237,11 @@ class CompressionArray(ArrayLike, Serializer):
         return self.spatial_compressed.shape[1]
 
     @property
-    def dtype(self) -> type:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
-        return np.float32
+        return torch.float32
 
     @property
     def pixel_index_image(self) -> torch.Tensor:
@@ -426,7 +426,7 @@ class CompressionResidualArray(ArrayLike):
             self,
             item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ):
-        output = torch.as_tensor(self.raw_array[item], device=self.compression_array.device, dtype=self.compression_array.type) - self.compression_array[item]
+        output = torch.as_tensor(self.raw_array[item], device=self.compression_array.device, dtype=self.compression_array.dtype) - self.compression_array[item]
         return output
 
 class TrendArray(ArrayLike):
@@ -489,7 +489,7 @@ class TrendArray(ArrayLike):
     @property
     def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
         return torch.float32
 

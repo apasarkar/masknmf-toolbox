@@ -129,7 +129,7 @@ class MiniALIResidualArray(ArrayLike):
     def shape(self) -> tuple[int, int, int]:
         return self._signals.shape
 
-    def __getitem__(self, item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range]) -> np.ndarray:
+    def __getitem__(self, item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range]) -> torch.Tensor:
         explained = self._background[item] + self._signals[item]
         output = torch.as_tensor(self._registered[item], dtype=explained.dtype, device=explained.device) - explained
         return output.to(self.dtype)

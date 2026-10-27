@@ -5,7 +5,6 @@ from masknmf.compression import CompressionArray
 from typing import *
 import math
 from tqdm import tqdm
-from masknmf.utils import to_numpy
 
 def compute_general_spatial_correlation_map(
         stack: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
