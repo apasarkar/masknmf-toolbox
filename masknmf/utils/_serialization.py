@@ -66,6 +66,8 @@ def _dicts_to_group(h5file, path, d, raise_meta_fail):
         if isinstance(item, torch.Tensor):
             if item.layout is torch.sparse_coo:
                 # store this in a new group
+                if not item.is_coalesced():
+                    item = item.coalesce()
                 sparse_dict = {
                     "indices": item.indices(),
                     "values": item.values(),
