@@ -3,6 +3,10 @@ The launcher hosted in a rendercanvas, as run_launcher opens it, on an offscreen
 keeps its minimum size, and closes on Quit and Run.
 """
 
+import os
+import sys
+import time
+
 import numpy as np
 import pytest
 from rendercanvas.offscreen import RenderCanvas
@@ -70,3 +74,25 @@ def test_quit_closes_the_window_after_the_frame_without_arguments(window):
     window.loop.run_pending()
     assert window.canvas.get_closed()
     assert window.argv is None
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="linux dialogs run a helper like zenity")
+def test_a_pick_lands_though_the_dialog_helper_never_exits(window, tmp_path, monkeypatch):
+    # a zenity hung on a dropped network mount prints the pick and never finishes exiting
+    filepath_results = tmp_path / "results.hdf5"
+    filepath_zenity = tmp_path / "zenity"
+    filepath_zenity.write_text(f"#!/bin/sh\necho '{filepath_results}'\nexec sleep 30\n")
+    filepath_zenity.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    window.store.path = tmp_path / "recent.json"
+    window.page = "open"
+
+    window.open_picker(target=window.paths_open, key="source", filetypes=launcher.FILETYPES_RESULTS)
+    picker = window.picker
+    for _ in range(100):
+        draw(window=window, frames=1)
+        if window.picker is None:
+            break
+        time.sleep(0.02)
+    picker.kill()
+    assert window.paths_open["source"] == str(filepath_results)

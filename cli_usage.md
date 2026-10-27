@@ -239,7 +239,7 @@ masknmf run --pipeline widefield-singlechannel wf.tif --motion-correct-kind skip
 
 - `RESULTS`: one or more `.h5`/`.hdf5` files or quoted globs; `**` recurses
 - globs skip `.zarr` stores, `.labels.hdf5` sidecars, and results files replaced by a newer curated file ([curated results files](#curated-results-files))
-- the demixing viewer opens one file; several need `--classify`
+- several files open one demixing viewer each, in its own process; `--raw` and `--compression` take one file
 
 A folder opens by the first match:
 

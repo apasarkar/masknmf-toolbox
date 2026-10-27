@@ -223,8 +223,8 @@ def test_view_opens_several_results_only_to_classify_them(tmp_path, capsys):
     pattern = str(tmp_path / "*" / "results.hdf5")
 
     with pytest.raises(SystemExit):
-        cli.main(["view", pattern])
-    assert "the demixing viewer opens one results file, got 2" in capsys.readouterr().err
+        cli.main(["view", pattern, "--raw", "movie.tif"])
+    assert "--raw and --compression name one movie" in capsys.readouterr().err
 
     with pytest.raises(SystemExit):
         cli.main(["view", pattern, "--classify"])
