@@ -142,8 +142,8 @@ class StandardCorrelationImages(ArrayLike):
         return len(self.shape)
 
     @property
-    def dtype(self) -> np.dtype:
-        return np.float32
+    def dtype(self) -> torch.dtype:
+        return torch.float32
 
     def __getitem__(
         self,
@@ -191,4 +191,4 @@ class StandardCorrelationImages(ArrayLike):
         product.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
 
         product = product.reshape((implied_fov[0], implied_fov[1], -1))
-        return product.permute(2, 0, 1)
+        return product.permute(2, 0, 1).to(self.dtype)

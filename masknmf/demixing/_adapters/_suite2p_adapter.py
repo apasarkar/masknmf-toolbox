@@ -88,10 +88,9 @@ class Suite2pResidualArray(ArrayLike):
     def __getitem__(
             self,
             item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
-    ):
-        intermediate = self.ac_array.getitem_tensor(item) + self.fluctuating_background_array.getitem_tensor(item)
-        intermediate = intermediate.cpu().numpy()
-        final = np.asarray(self.motion_corrected_data[item], dtype=intermediate.dtype) - intermediate
+    ) -> torch.Tensor:
+        intermediate = self.ac_array[item] + self.fluctuating_background_array[item]
+        final = torch.as_tensor(self.motion_corrected_data[item], dtype=intermediate.dtype, device=intermediate.device) - intermediate
         return final
 
 

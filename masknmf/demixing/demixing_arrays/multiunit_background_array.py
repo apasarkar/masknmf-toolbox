@@ -111,11 +111,11 @@ class MultiunitBackgroundArray(ArrayLike):
         self._default_normalizer = self._default_normalizer.to(new_device)
 
     @property
-    def dtype(self) -> str:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
-        return np.float32
+        return torch.float32
 
     @property
     def shape(self) -> tuple[int, int, int]:

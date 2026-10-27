@@ -198,8 +198,8 @@ class ResidualCorrelationImages(ArrayLike):
         return len(self.shape)
 
     @property
-    def dtype(self) -> type:
-        return np.float32
+    def dtype(self) -> torch.dtype:
+        return torch.float32
 
     def __getitem__(
         self,
@@ -272,4 +272,4 @@ class ResidualCorrelationImages(ArrayLike):
         product = product.reshape((implied_fov[0], implied_fov[1], -1))
         product = product.permute(2, 0, 1)
 
-        return torch.nan_to_num(product, nan=0.0, posinf=0.0, neginf=0.0)
+        return torch.nan_to_num(product, nan=0.0, posinf=0.0, neginf=0.0).to(self.dtype)

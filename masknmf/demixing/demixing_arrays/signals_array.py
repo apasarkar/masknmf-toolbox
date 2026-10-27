@@ -238,11 +238,11 @@ class SignalsArray(ArrayLike):
         return self.temporal_demixed.cpu().numpy()
 
     @property
-    def dtype(self) -> type:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
-        return np.float32
+        return torch.float32
 
     @property
     def shape(self) -> tuple[int, int, int]:

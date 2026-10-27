@@ -426,7 +426,7 @@ class CompressionResidualArray(ArrayLike):
             self,
             item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ):
-        output = self.raw_array[item].astype(self.dtype) - self.compression_array[item].astype(self.dtype)
+        output = torch.as_tensor(self.raw_array[item], device=self.compression_array.device, dtype=compression_array.type) - self.compression_array[item]
         return output
 
 class TrendArray(ArrayLike):
