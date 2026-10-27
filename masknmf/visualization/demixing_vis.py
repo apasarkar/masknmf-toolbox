@@ -668,7 +668,7 @@ class SingleSessionDemixingVis:
         # results without a compression, background or residual (suite2p) show the lines they have
         lines = []
         if self._pmd_array is not None:
-            lines.append(("compressed", np.mean(self._pmd_array[:, row_start:row_stop, col_start:col_stop], axis=(1, 2)), _BASE_LINE_COLORS[0]))
+            lines.append(("compressed", self._pmd_array[:, row_start:row_stop, col_start:col_stop].mean(dim=(1, 2)).cpu().numpy(), _BASE_LINE_COLORS[0]))
         if separated_ac_signals is not None:
             # each source in its mask's color, so the split reads against the panels and the table
             lines += [
@@ -676,9 +676,9 @@ class SingleSessionDemixingVis:
                 for k, trace in zip(unique_signals, separated_ac_signals)
             ]
         if self._fluctuating_background_array is not None:
-            lines.append(("background", np.mean(self._fluctuating_background_array[:, row_start:row_stop, col_start:col_stop], axis=(1, 2)), _BASE_LINE_COLORS[2]))
+            lines.append(("background", self._fluctuating_background_array[:, row_start:row_stop, col_start:col_stop].mean(dim=(1,2)).cpu().numpy(), _BASE_LINE_COLORS[2]))
         if self._residual_array is not None:
-            lines.append(("residual", np.mean(self._residual_array[:, row_start:row_stop, col_start:col_stop], axis=(1, 2)), _BASE_LINE_COLORS[3]))
+            lines.append(("residual", self._residual_array[:, row_start:row_stop, col_start:col_stop].mean(dim=(1,2)).cpu().numpy(), _BASE_LINE_COLORS[3]))
         self._traces.set("traces", lines)
         self._set_trace_mode("source")
         self._status = f"sources over the {row_stop - row_start}x{col_stop - col_start} square at ({row}, {col})"

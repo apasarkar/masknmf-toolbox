@@ -830,7 +830,7 @@ class ClassificationVis:
                 return
             try:
                 plane = np.asarray(
-                    imgs[int(roi - self._session_starts[sess])], dtype=np.float32
+                    imgs[int(roi - self._session_starts[sess])].cpu().numpy(), dtype=np.float32
                 ).reshape(imgs.shape[1:])
             except Exception:  # a source that cannot be read is simply not cached
                 return
@@ -864,7 +864,7 @@ class ClassificationVis:
             else:
                 window = imgs[y0:y1, x0:x1]
             crop[y0 - top : y1 - top, x0 - left : x1 - left] = np.asarray(
-                window, dtype=np.float32
+                window.cpu().numpy(), dtype=np.float32
             ).reshape(y1 - y0, x1 - x0)
         return crop
 

@@ -118,7 +118,7 @@ def pixel_crop_stack(array, p1, p2):
         data_2d = selected_pixels[:, :, None][:, p1 - np.amin(p1), np.zeros_like(p1)]
     else:
         data_2d = selected_pixels[:, p1 - np.amin(p1), p2 - np.amin(p2)]
-    return data_2d
+    return data_2d.cpu().numpy()
 
 # For every signal, need to look at the temporal trace and the PMD average, superimposed
 def get_roi_avg(array, p1, p2, normalize=True):
@@ -182,7 +182,7 @@ def plot_ith_roi(
 
     # Spatial Footprint
     residual_data = results.residual_array[:, lb_dim1:ub_dim1, lb_dim2:ub_dim2]
-    residual_img = np.std(residual_data, axis=0)
+    residual_img = residual_data.std(dim=0).cpu().numpy()
 
     mean_pmd_img = np.std(
         results.compression_array[:, lb_dim1:ub_dim1, lb_dim2:ub_dim2], axis=0
@@ -194,15 +194,15 @@ def plot_ith_roi(
         results.residual_correlation_image.mode = residual_mode
     resid_corr_img = results.residual_correlation_image[
         i, lb_dim1:ub_dim1, lb_dim2:ub_dim2
-    ]
+    ].cpu().numpy()
 
     std_corr_img = results.standard_correlation_image[
         i, lb_dim1:ub_dim1, lb_dim2:ub_dim2
-    ]
+    ].cpu().numpy()
 
     curr_background_to_signal_corr = background_to_signal_corr_image[
         i, lb_dim1:ub_dim1, lb_dim2:ub_dim2
-    ]
+    ].cpu().numpy()
 
     # Create x and y axes that match the p1 and p2 coordinates
     x_ticks = np.arange(lb_dim2, ub_dim2)

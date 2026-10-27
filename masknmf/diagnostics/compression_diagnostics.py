@@ -297,10 +297,10 @@ def pmd_autocovariance_diagnostics(raw_movie: Union[masknmf.ArrayLike, masknmf.L
 
     pmd_autocov = torch.zeros(fov_dim1, fov_dim2, device=device, dtype=torch.float32)
     left_pmd_mean = pmd_movie.mean_image * (num_frames / (num_frames - 1)) - (
-            pmd_movie.getitem_tensor([num_frames - 1]).float().to(device) / (
+            pmd_movie[num_frames - 1].float().to(device) / (
             num_frames - 1))
     right_pmd_mean = pmd_movie.mean_image * (num_frames / (num_frames - 1)) - (
-            pmd_movie.getitem_tensor([0]).float().to(device) / (
+            pmd_movie[0].float().to(device) / (
             num_frames - 1))
 
     resid_autocov = torch.zeros(fov_dim1, fov_dim2, device=device, dtype=torch.float32)

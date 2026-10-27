@@ -90,10 +90,6 @@ def hals_on_rawdata(moco_data: np.ndarray,
         end_pt = min(moco_data.shape[0], start_pt + batch_size)
         data = torch.as_tensor(moco_data[start_pt:end_pt, :, :], device=device,
                                dtype=torch.float32)  # frames, height, width
-        # data -= mean_image[None, ...]
-        # data /= noise_variance_image[None, ...]
-        # data -= fluctuating_background_array.getitem_tensor(slice(start_pt, end_pt))
-        # data -= baseline[None, ...]
 
         c_new[start_pt:end_pt, :] = hals_multi_iter_raw(blocks,
                                                         data.reshape(data.shape[0], height * width),
