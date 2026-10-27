@@ -191,8 +191,11 @@ class OnePhotonCalciumPipeline(BasePipeline):
 
         if not reuse_compression:
             compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
-            compress_strategy.detrender = self.spline_detrender(data.shape[0], frame_rate, window_seconds=40,
-                                                                knot_seconds=25, sigma_seconds=0.3)
+            compress_strategy.detrender = self.spline_detrender(data.shape[0], frame_rate, window_seconds=15,
+                                                                knot_seconds=10,
+                                                                sigma_seconds=0.3,
+                                                                edge_mode="line")
+
             with self.step("compression"):
                 compressed_results = compress_strategy.compress(moco_data)
                 compressed_results.export(results_path)
@@ -215,9 +218,9 @@ class OnePhotonCalciumPipeline(BasePipeline):
 
         filtered_demixer = masknmf.demixing.signal_demixer.SignalDemixer(filtered_pmd, device=device,
                                                                          frame_batch_size=self.frame_batch_size)
+        detrender = self.spline_detrender(pmd_denoise.shape[0], frame_rate, window_seconds=15, knot_seconds=10,
+                                          sigma_seconds=0.3, geometric_first_seconds=0.5, edge_mode="line")
 
-        detrender = self.spline_detrender(pmd_denoise.shape[0], frame_rate, window_seconds=20, knot_seconds=20,
-                                          sigma_seconds=0.3)
         filtered_config_used = self.with_detrender(self.filtered_demixing_config, detrender)
         unfiltered_config_used = self.with_detrender(self.unfiltered_demixing_config, detrender)
 
