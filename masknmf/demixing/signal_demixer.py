@@ -3732,6 +3732,7 @@ class DemixingState(SignalProcessingState):
             denoise (list | bool): Indicates whether to run a denoiser at each HALS iteration on the temporal traces.
             plot_en (bool): Indicates whether plotting is enabled; this is only used for debugging purposes.
         """
+        display("running c nonneg")
         # Key: precompute_quantities is a setup function which must be run first in this routine
         # self.background_rank = None #Always estimate the background rank each time
         self.detrender = detrender
@@ -3800,7 +3801,9 @@ class DemixingState(SignalProcessingState):
 
             denoise_flag = denoise[iters]
             self.temporal_update(
-                denoise=denoise_flag, plot_en=plot_en, c_nonneg=c_nonneg
+                denoise=denoise_flag,
+                plot_en=plot_en,
+                c_nonneg=c_nonneg if iters < maxiter - 1 else False ##Unconstrained updates
             )
 
             if update_frequency and ((iters + 1) % update_frequency == 0):
