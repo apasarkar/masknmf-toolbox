@@ -98,7 +98,7 @@ SIZE_MIN = (62 * FONT_SIZE, 44 * FONT_SIZE)
 
 WIDTH_INPUT_EM = 7.5
 WIDTH_RAIL_EM = 13
-WIDTH_CAPTION_EM = 9
+WIDTH_CAPTION_EM = 12.5
 
 NO_DEFAULT = object()
 
@@ -191,16 +191,15 @@ VIEWERS = (
         "demixing",
         fa.ICON_FA_LAYER_GROUP,
         "Demixing viewer",
-        "one session at any stage: registration (raw beside registered with the shifts, given the raw movie), compression "
-        "and denoising (compressed beside raw, the residual, the stills), demixing (Curation and Signals, Demix)",
+        "One session's results at any stage: registration, compression, demixing and curation",
     ),
     (
         "classification",
         fa.ICON_FA_TAGS,
         "Classification viewer",
-        "label this session's ROIs, train and classify; a folder of results files opens every session",
+        "Label ROIs, train a classifier and classify; a folder opens every session",
     ),
-    ("multisession", fa.ICON_FA_DIAGRAM_PROJECT, "Multisession viewer", "the ROIs tracked across a tracking run's sessions"),
+    ("multisession", fa.ICON_FA_DIAGRAM_PROJECT, "Multisession viewer", "ROIs tracked across a tracking run's sessions"),
 )
 
 
@@ -1192,8 +1191,6 @@ class Launcher:
             if imgui.button(f"{icon}   {name}##rail_{key}", imgui.ImVec2(width, 2.2 * em)):
                 self.page = key
             imgui.pop_style_color(4)
-            if imgui.is_item_hovered():
-                idl.wrapped_tooltip(f"{name}: {hint}")
         recent = [p for p in self.store.recent() if p][:6]
         if len(recent) > 0:
             imgui.dummy(imgui.ImVec2(0, 0.8 * em))
@@ -1208,7 +1205,7 @@ class Launcher:
                     self.page = "open"
                     self.paths_open["source"] = path
                 if imgui.is_item_hovered():
-                    idl.wrapped_tooltip(f"Open results: {path}")
+                    idl.wrapped_tooltip(path)
             imgui.pop_style_color(4)
         imgui.pop_style_var(2)
 
@@ -1259,8 +1256,8 @@ class Launcher:
         imgui.table_setup_column("##widget", imgui.TableColumnFlags_.width_stretch)
         return True
 
-    def row(self, caption: str, color: Optional[imgui.ImVec4] = None) -> None:
-        """Start a form row: the caption, dim unless colored, then the cursor in the widget column."""
+    def row(self, caption: str, color: Optional[imgui.ImVec4] = None, hint: Optional[str] = None) -> None:
+        """Start a form row: the caption, dim unless colored, a (?) with hint, then the cursor in the widget column."""
         imgui.table_next_row()
         imgui.table_next_column()
         imgui.align_text_to_frame_padding()
@@ -1268,6 +1265,8 @@ class Launcher:
             imgui.text_disabled(caption)
         else:
             imgui.text_colored(color, caption)
+        if hint is not None:
+            draw_hint(text=hint)
         imgui.table_next_column()
 
     def draw_results_rows(self, target: dict, folders: bool) -> None:
@@ -1398,7 +1397,7 @@ class Launcher:
         dl = imgui.get_window_draw_list()
         w = imgui.get_content_region_avail().x
 
-        self.step(1, "Pipeline", "which pipeline runs; switching keeps the movie paths and resets the rest")
+        self.step(1, "Pipeline", "Switching keeps the movie paths and resets the rest")
         gap = 1.0 * em
         card_w = (w - gap) / 2
         # each stage's chip names the config it runs: the selected pipeline's as set, the others' defaults
@@ -1438,30 +1437,31 @@ class Launcher:
                 self.select_pipeline(index=i)
         imgui.dummy(imgui.ImVec2(0, 0.3 * em))
         if self.begin_form(name="load_config"):
-            self.row(caption="load config")
+            self.row(caption="load config", hint="Fill in the pipeline, parameters, movie and output folder of an earlier run")
             if imgui.button(f"{fa.ICON_FA_FILE_LINES}  Load##load_run"):
                 self.message_load = self.load_run(source=self.paths_load["run"]) or ""
                 if self.message_load == "":
                     self.store.record_selection(idl.DialogResult(paths=[self.paths_load["run"].strip()]))
-            if imgui.is_item_hovered():
-                idl.wrapped_tooltip("Load config: the pipeline, every parameter, the movie and the output folder an earlier run "
-                                    "recorded in its config.json; untouched, Run reproduces that run")
             imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
             self.draw_path(target=self.paths_load, key="run", filetypes=FILETYPES_RUN, folders=True,
                            hint="a config.json, its run folder, or a results file beside it")
             starts = self.starts_available()
             if len(starts) > 0:
-                self.row(caption="start from")
-                for start, label in (("movie", "the movie"), ("registration", "its registration"), ("compression", "its compression")):
+                self.row(caption="start from", hint="Run every stage on the movie, or copy the loaded run's registration (applied "
+                                                    "to the movie) or its compression into the new run folder and continue from there")
+                for start, label, hint in (
+                    ("movie", "Raw", "Ignore previous results and start from the input movie"),
+                    ("registration", "Registered", "Keep the registration shifts only"),
+                    ("compression", "Compressed", "Keep registration and compression, rerun demixing"),
+                ):
                     if start != "movie" and start not in starts:
                         continue
                     if imgui.radio_button(f"{label}##start_{start}", self.start_from == start) and self.start_from != start:
                         self.select_start(start=start)
+                    if imgui.is_item_hovered():
+                        idl.wrapped_tooltip(hint)
                     imgui.same_line(0, hello_imgui.em_size(1.2))
                 imgui.new_line()
-                if imgui.is_item_hovered():
-                    idl.wrapped_tooltip("Start from: run every stage on the movie, or copy the loaded run's registration (applied to "
-                                        "the movie) or its compression into the new run folder and continue from there")
             imgui.end_table()
         if self.message_load != "":
             draw_wrapped(text=f"{fa.ICON_FA_CIRCLE_INFO}  {self.message_load}", color=COLOR_WARN)
@@ -1473,7 +1473,7 @@ class Launcher:
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
         # read after the cards: a click on one switched the pipeline
         spec = self.spec
-        self.step(2, "Input", "the movie, where the run folder goes, and what the recording is; nothing else is needed")
+        self.step(2, "Input", "The movie, where the run folder goes, and the recording's settings")
         if self.begin_form(name="run"):
             for param in spec.movie_params:
                 self.row(caption=param.field.replace("_", " ") if len(spec.movie_params) > 1 else "movie")
@@ -1501,8 +1501,7 @@ class Launcher:
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
         rows = self.modified()
-        self.step(3, "Parameters", "every stage's config and its fields, the runtime, and what differs from the pipeline's "
-                                   "defaults; a run needs none of them changed")
+        self.step(3, "Parameters", "Optional: every stage's settings and the runtime")
         if imgui.collapsing_header(f"{fa.ICON_FA_SLIDERS}  Stage configs###parameters"):
             with (
                 imgui_ctx.push_style_var(imgui.StyleVar_.item_spacing, hello_imgui.em_to_vec2(0.55, 0.3)),
@@ -1515,8 +1514,7 @@ class Launcher:
                     if imgui.button(f"{fa.ICON_FA_ARROW_ROTATE_LEFT}  Defaults"):
                         self.reset_all()
                     imgui.end_disabled()
-                tooltip("Every value is at its default" if len(rows) == 0 else
-                        "Reset every stage, run and runtime value to its default; movies, paths and required values stay")
+                tooltip("Every value is at its default" if len(rows) == 0 else "Reset every parameter; movies and paths stay")
                 draw_divider()
                 self.draw_stages()
                 draw_divider()
@@ -1528,8 +1526,7 @@ class Launcher:
     def draw_open(self) -> None:
         """A path, what it holds, and the viewer that opens it."""
         em = imgui.get_font_size()
-        self.step(1, "Source", "a results .hdf5, a run folder, a tracking folder or its manifest; a folder means the results "
-                               "files in it, each replaced by its newest curated file")
+        self.step(1, "Source", "A results .hdf5, a run folder or a tracking run; a curated file opens in place of its original")
         if self.begin_form(name="open"):
             self.row(caption="path")
             self.draw_path(target=self.paths_open, key="source", filetypes=FILETYPES_RESULTS, folders=True,
@@ -1545,7 +1542,7 @@ class Launcher:
         self.inspect()
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
-        self.step(2, "Found", "what the path holds, read whenever it changes")
+        self.step(2, "Found", "What the path holds")
         flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_use_window_padding
         imgui.push_style_color(imgui.Col_.child_bg, guide.CARD)
         imgui.push_style_var(imgui.StyleVar_.child_rounding, 5.0)
@@ -1582,7 +1579,7 @@ class Launcher:
         imgui.pop_style_color()
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
-        self.step(3, "Viewer", "the viewer the stages call for is picked; another can be chosen when what it needs is there")
+        self.step(3, "Viewer", "Picked from the stages found")
         current = self.viewer_current()
         for key, icon, name, why in VIEWERS:
             imgui.begin_disabled(not self.available(key=key))
@@ -1590,23 +1587,20 @@ class Launcher:
                 self.viewer = key
             imgui.end_disabled()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-                idl.wrapped_tooltip(f"{name}: {why}")
+                idl.wrapped_tooltip(why)
             if key == "demixing":
                 imgui.indent(hello_imgui.em_size(1.8))
                 imgui.begin_disabled(not self.compression_checkable())
                 _, self.compression_check = imgui.checkbox("lag-1 autocorrelation stills##compression", self.compression_check)
                 imgui.end_disabled()
                 if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-                    idl.wrapped_tooltip("Compression check: also computes the lag-1 autocorrelation images of the raw, compressed and "
-                                        "residual movies into Static images; needs the raw movie and a compression")
+                    idl.wrapped_tooltip("Adds lag-1 autocorrelation images of the raw, compressed and residual movies; needs the raw movie")
                 imgui.unindent(hello_imgui.em_size(1.8))
 
     def draw_track(self) -> None:
         """The sessions' results files, where the tracking goes, and the resolution."""
         em = imgui.get_font_size()
-        self.step(1, "Sessions", f"one masknmf results .hdf5 per session. Per row a folder, searched for {PATTERN_RESULTS} up to "
-                                 f"{DEPTH_SEARCH} folders down, a file, or a glob; a new row opens as the last one fills. The files "
-                                 "found are listed below in session order, row by row and in path order within a row; uncheck any not to track")
+        self.step(1, "Sessions", "One results .hdf5 per session: a folder, file or glob per row; uncheck any found not to track")
         self.update_sessions()
         self.fill_out()
         if self.begin_form(name="track"):
@@ -1614,8 +1608,7 @@ class Launcher:
             imgui.end_table()
         self.draw_sessions_found()
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
-        self.step(2, "Output", "where the tracking run and its manifest are saved, a folder holding every session so it moves as a "
-                               "whole; it starts as the sessions' common folder. Then the imaging resolution, the same for every session")
+        self.step(2, "Output", "Where the tracking run is saved, and the imaging resolution")
         if self.begin_form(name="track_out"):
             self.row(caption="folder")
             self.draw_path(target=self.paths_tracking, key="out", filetypes=None, folders=True, hint="required")
@@ -1690,12 +1683,12 @@ class Launcher:
     def draw_classify(self) -> None:
         """The sessions' results files, the class names, and the classifier file."""
         em = imgui.get_font_size()
-        self.step(1, "Sessions", "one masknmf results .hdf5 per session, a path or a glob per row; labels are saved beside each")
+        self.step(1, "Sessions", "One results .hdf5 per session, a path or glob per row; labels save beside each")
         if self.begin_form(name="classify"):
             self.draw_results_rows(target=self.paths_classify, folders=False)
             imgui.end_table()
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
-        self.step(2, "Classifier", "the class names, and the .roicat_classifier file: train saves there, an existing one is selected for classify")
+        self.step(2, "Classifier", "Training saves the classifier here; an existing one classifies")
         if self.begin_form(name="classify_out"):
             self.row(caption="class names")
             imgui.set_next_item_width(max(imgui.get_content_region_avail().x, hello_imgui.em_size(12)))
@@ -1709,17 +1702,13 @@ class Launcher:
         """One bordered box per pipeline stage."""
         draw_subsection(
             text="Pipeline stages",
-            hint="Every config a stage accepts is listed; the pipeline's own is selected and shows the values it "
-            "runs with. Changed values show orange and are listed under Modified parameters.",
+            hint="Each stage's config and its values; changes show orange",
         )
         imgui.spacing()
         if self.spec.cls.demixing_configs is not BasePipeline.demixing_configs:
             changed_on, self.uniform_min_brightness_on = imgui.checkbox("uniform min brightness", self.uniform_min_brightness_on)
             if imgui.is_item_hovered():
-                idl.wrapped_tooltip(
-                    "Uniform min brightness: while checked, this value is set in every demixing pass, and again each "
-                    "time it changes. A pass edited afterwards keeps its own value; the passes' values are what runs."
-                )
+                idl.wrapped_tooltip("Sets this value in every demixing pass; a pass edited afterwards keeps its own")
             imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
             imgui.begin_disabled(not self.uniform_min_brightness_on)
             imgui.set_next_item_width(hello_imgui.em_size(12))
