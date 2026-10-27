@@ -28,6 +28,8 @@ from masknmf.demixing.labels import (
     write_predictions,
 )
 
+from masknmf.utils import to_numpy
+
 _LABEL_COLORS = (
     (0.12, 0.47, 0.71), (1.00, 0.50, 0.05), (0.17, 0.63, 0.17),
     (0.84, 0.15, 0.16), (0.58, 0.40, 0.74), (0.55, 0.34, 0.29),
@@ -852,7 +854,7 @@ class ClassificationVis:
                 return
             try:
                 plane = np.asarray(
-                    imgs[int(roi - self._session_starts[sess])], dtype=np.float32
+                    to_numpy(imgs[int(roi - self._session_starts[sess])]), dtype=np.float32
                 ).reshape(imgs.shape[1:])
             except Exception:  # a source that cannot be read is simply not cached
                 return
@@ -886,7 +888,7 @@ class ClassificationVis:
             else:
                 window = imgs[y0:y1, x0:x1]
             crop[y0 - top : y1 - top, x0 - left : x1 - left] = np.asarray(
-                window, dtype=np.float32
+                to_numpy(window), dtype=np.float32
             ).reshape(y1 - y0, x1 - x0)
         return crop
 

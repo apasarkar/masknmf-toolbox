@@ -3,77 +3,9 @@ from masknmf.utils._serialization import load_dict
 from masknmf.utils import Serializer
 from masknmf.utils import SparseCOOTensor
 from masknmf.utils import is_cpu, infill_bad_timepoints
+from masknmf.arrays.array_utils import test_spatial_crop_effect, normalize_spatial_indexer
 import torch
 import numpy as np
-
-def test_slice_effect(my_slice: slice, spatial_dim: int) -> bool:
-    """
-    Returns True if slice will actually have an effect
-    """
-
-    if not (
-        (isinstance(my_slice.start, int) and my_slice.start == 0)
-        or my_slice.start is None
-    ):
-        return True
-    elif not (
-        (isinstance(my_slice.stop, int) and my_slice.stop >= spatial_dim)
-        or my_slice.stop is None
-    ):
-        return True
-    elif not (
-        my_slice.step is None or (isinstance(my_slice.step, int) and my_slice.step == 1)
-    ):
-        return True
-    return False
-
-
-def test_range_effect(my_range: range, spatial_dim: int) -> bool:
-    """
-    Returns True if the range will actually have an effect.
-
-    Parameters:
-    my_range (range): The range object to test.
-    spatial_dim (int): The size of the dimension that the range is applied to.
-
-    Returns:
-    bool: True if the range will affect the selection; False otherwise.
-    """
-    # Check if the range starts from the beginning
-    if my_range.start != 0:
-        return True
-    # Check if the range stops at the end of the dimension
-    elif my_range.stop != spatial_dim:
-        return True
-    # Check if the range step is not 1
-    elif my_range.step != 1:
-        return True
-    return False
-
-
-def test_spatial_crop_effect(my_tuple, spatial_dims) -> bool:
-    """
-    Returns true if the tuple used for spatial cropping actually has an effect on the underlying data. Otherwise
-    cropping can be an expensive and avoidable operation.
-    """
-    for k in range(len(my_tuple)):
-        if isinstance(my_tuple[k], np.ndarray):
-            if my_tuple[k].shape[0] < spatial_dims[k]:
-                return True
-
-        if isinstance(my_tuple[k], np.integer):
-            return True
-
-        if isinstance(my_tuple[k], int):
-            return True
-
-        if isinstance(my_tuple[k], slice):
-            if test_slice_effect(my_tuple[k], spatial_dims[k]):
-                return True
-        if isinstance(my_tuple[k], range):
-            if test_range_effect(my_tuple[k], spatial_dims[k]):
-                return True
-    return False
 
 class CompressionArray(ArrayLike, Serializer):
     """
@@ -305,11 +237,11 @@ class CompressionArray(ArrayLike, Serializer):
         return self.spatial_compressed.shape[1]
 
     @property
-    def dtype(self) -> type:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
-        return np.float32
+        return torch.float32
 
     @property
     def pixel_index_image(self) -> torch.Tensor:
@@ -387,7 +319,7 @@ class CompressionArray(ArrayLike, Serializer):
         projection = torch.sparse.mm(self.spatial_compressed_local_projector.T, frames)
         return projection.to(orig_device)
 
-    def getitem_tensor(
+    def __getitem__(
         self,
         item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ) -> torch.Tensor:
@@ -398,34 +330,11 @@ class CompressionArray(ArrayLike, Serializer):
         if temporal_compressed_crop.ndim < self.temporal_compressed.ndim:
             temporal_compressed_crop = temporal_compressed_crop.unsqueeze(1)
 
-
-        # Step 4: Deal with remaining indices after lazy computing the frame(s)
-        if isinstance(item, tuple) and test_spatial_crop_effect(
-            item[1:], self.shape[1:]
-        ):
-            if isinstance(item[1], np.ndarray) and len(item[1]) == 1:
-                term_1 = slice(int(item[1]), int(item[1]) + 1)
-            elif isinstance(item[1], np.integer):
-                term_1 = slice(int(item[1]), int(item[1]) + 1)
-            elif isinstance(item[1], int):
-                term_1 = slice(item[1], item[1] + 1)
-            else:
-                term_1 = item[1]
-
-            if isinstance(item[2], np.ndarray) and len(item[2]) == 1:
-                term_2 = slice(int(item[2]), int(item[2]) + 1)
-            elif isinstance(item[2], np.integer):
-                term_2 = slice(int(item[2]), int(item[2]) + 1)
-            elif isinstance(item[2], int):
-                term_2 = slice(item[2], item[2] + 1)
-            else:
-                term_2 = item[2]
-
-            spatial_crop_terms = (term_1, term_2)
-
-            pixel_space_crop = self.pixel_index_image[spatial_crop_terms]
-            mean_image_crop = self.mean_image[spatial_crop_terms].flatten()
-            noise_variance_image_crop = self.noise_variance_image[spatial_crop_terms].flatten()
+        spatial = normalize_spatial_indexer(item, self.shape[1:])
+        if test_spatial_crop_effect(spatial, self.shape[1:]):
+            pixel_space_crop = self.pixel_index_image[spatial]
+            mean_image_crop = self.mean_image[spatial].flatten()
+            noise_variance_image_crop = self.noise_variance_image[spatial].flatten()
             spatial_compressed_indices = pixel_space_crop.flatten()
             spatial_compressed_crop = torch.index_select(self.spatial_compressed, 0, spatial_compressed_indices)
             implied_fov = pixel_space_crop.shape
@@ -458,14 +367,6 @@ class CompressionArray(ArrayLike, Serializer):
         product = product.reshape((implied_fov[0], implied_fov[1], -1))
         product = product.permute(2, 0, 1)
 
-        return product
-
-    def __getitem__(
-        self,
-        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
         return product
 
 
@@ -501,9 +402,9 @@ class CompressionResidualArray(ArrayLike):
 
 
     @property
-    def dtype(self) -> type:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
         return self.compression_array.dtype
 
@@ -525,7 +426,7 @@ class CompressionResidualArray(ArrayLike):
             self,
             item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ):
-        output = self.raw_array[item].astype(self.dtype) - self.compression_array[item].astype(self.dtype)
+        output = torch.as_tensor(self.raw_array[item], device=self.compression_array.device, dtype=self.compression_array.dtype) - self.compression_array[item]
         return output
 
 class TrendArray(ArrayLike):
@@ -586,11 +487,11 @@ class TrendArray(ArrayLike):
         return self._flyweight
 
     @property
-    def dtype(self) -> type:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
-        return np.float32
+        return torch.float32
 
     @property
     def spatial_trend_basis(self) -> torch.Tensor:
@@ -634,7 +535,7 @@ class TrendArray(ArrayLike):
         """(num_frames, fov_height, fov_width)"""
         return self._shape
 
-    def getitem_tensor(
+    def __getitem__(
             self,
             item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ) -> torch.Tensor:
@@ -645,31 +546,9 @@ class TrendArray(ArrayLike):
         if temporal_crop.ndim < self.temporal_trend_basis.ndim:
             temporal_crop = temporal_crop.unsqueeze(1)
 
-        # Step 4: Deal with remaining indices after lazy computing the frame(s)
-        if isinstance(item, tuple) and test_spatial_crop_effect(
-                item[1:], self.shape[1:]
-        ):
-            if isinstance(item[1], np.ndarray) and len(item[1]) == 1:
-                term_1 = slice(int(item[1]), int(item[1]) + 1)
-            elif isinstance(item[1], np.integer):
-                term_1 = slice(int(item[1]), int(item[1]) + 1)
-            elif isinstance(item[1], int):
-                term_1 = slice(item[1], item[1] + 1)
-            else:
-                term_1 = item[1]
-
-            if isinstance(item[2], np.ndarray) and len(item[2]) == 1:
-                term_2 = slice(int(item[2]), int(item[2]) + 1)
-            elif isinstance(item[2], np.integer):
-                term_2 = slice(int(item[2]), int(item[2]) + 1)
-            elif isinstance(item[2], int):
-                term_2 = slice(item[2], item[2] + 1)
-            else:
-                term_2 = item[2]
-
-            spatial_crop_terms = (term_1, term_2)
-
-            pixel_space_crop = self.pixel_index_image[spatial_crop_terms]
+        spatial = normalize_spatial_indexer(item, self.shape[1:])
+        if test_spatial_crop_effect(spatial, self.shape[1:]):
+            pixel_space_crop = self.pixel_index_image[spatial]
             spatial_indices = pixel_space_crop.flatten()
             spatial_crop = torch.index_select(self.spatial_trend_basis, 0, spatial_indices)
             implied_fov = pixel_space_crop.shape
@@ -683,12 +562,4 @@ class TrendArray(ArrayLike):
         product = product.reshape((implied_fov[0], implied_fov[1], -1))
         product = product.permute(2, 0, 1)
 
-        return product
-
-    def __getitem__(
-            self,
-            item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
         return product

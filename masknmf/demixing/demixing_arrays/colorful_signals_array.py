@@ -2,7 +2,7 @@ import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
 from masknmf.utils import SparseCOOTensor, is_cpu
-from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
+from masknmf.arrays.array_utils import normalize_spatial_indexer, test_spatial_crop_effect
 
 class ColorfulSignalsArray(ArrayLike):
     """
@@ -128,11 +128,11 @@ class ColorfulSignalsArray(ArrayLike):
         self._colors = new_colors.to(self.device).to(self.temporal_demixed.dtype)
 
     @property
-    def dtype(self) -> str:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
-        return np.float32
+        return torch.float32
 
     @property
     def shape(self) -> tuple[int, int, int, int]:
@@ -158,7 +158,7 @@ class ColorfulSignalsArray(ArrayLike):
         return mip_image
 
 
-    def getitem_tensor(
+    def __getitem__(
         self,
         item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ) -> torch.tensor:
@@ -175,10 +175,9 @@ class ColorfulSignalsArray(ArrayLike):
         temporal_demixed_crop = temporal_demixed_crop.T
 
         # Step 4: Deal with remaining indices after lazy computing the frame(s)
-        if isinstance(item, tuple) and check_spatial_crop_effect(
-            item[1:3], self.shape[1:3]
-        ):
-            pixel_space_crop = self._pixel_mat[item[1:3]]
+        spatial = normalize_spatial_indexer(item, self.shape[1:3])
+        if test_spatial_crop_effect(spatial, self.shape[1:3]):
+            pixel_space_crop = self._pixel_mat[spatial]
             spatial_demixed_indices = pixel_space_crop.flatten()
             spatial_demixed_crop = torch.index_select(self.spatial_demixed, 0, spatial_demixed_indices)
             implied_fov = pixel_space_crop.shape
@@ -210,13 +209,9 @@ class ColorfulSignalsArray(ArrayLike):
             product = torch.stack(product_list, dim=3)
 
         if isinstance(item, tuple) and len(item) == 4:
-            product = product[..., item[3]] ##Apply the last crop
-        return product
-
-    def __getitem__(
-        self,
-        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy()
-        return product
+            c = item[3]
+            if isinstance(c, (int, np.integer)):
+                c = int(c) % product.shape[-1]
+                c = slice(c, c + 1)
+            product = product[..., c]
+        return product.to(self.dtype)

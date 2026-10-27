@@ -70,13 +70,13 @@ class CompressionVis:
         movie_index_mapping = {"time": frame_timings}
 
         # the mean is subtracted on each stack's own side: a registration array yields torch frames, which keep
-        # the tensor (on device, no host copy); PMDArray frames are numpy, so that panel gets a numpy mean
+        # the tensor (on device, no host copy)
         moco_mean_subtract = pmd_mean_subtract = None
         if mean_subtract:
             mean = self.pmd_stack.mean_image
             moco_mean = mean if isinstance(self.moco_stack[0], torch.Tensor) else mean.cpu().numpy()
             moco_mean_subtract = partial(compute_mean_subtract, moco_mean)
-            pmd_mean_subtract = partial(compute_mean_subtract, mean.cpu().numpy())
+            pmd_mean_subtract = partial(compute_mean_subtract, mean)
 
         self._video_names = [self._mcorr_name,
                              self._pmd_name,

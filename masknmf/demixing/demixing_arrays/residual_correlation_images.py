@@ -3,7 +3,7 @@ import numpy as np
 from masknmf.utils import SparseCOOTensor, is_cpu
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
-from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
+from masknmf.arrays.array_utils import test_spatial_crop_effect, normalize_spatial_indexer
 
 class ResidCorrMode(Enum):
     DEFAULT = 0
@@ -198,10 +198,10 @@ class ResidualCorrelationImages(ArrayLike):
         return len(self.shape)
 
     @property
-    def dtype(self) -> type:
-        return np.float32
+    def dtype(self) -> torch.dtype:
+        return torch.float32
 
-    def getitem_tensor(
+    def __getitem__(
         self,
         item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
     ) -> torch.Tensor:
@@ -221,11 +221,9 @@ class ResidualCorrelationImages(ArrayLike):
             self.residual_correlation_image_support_values, 1, selected_neurons
         ).coalesce()
 
-        # Step 4: Deal with remaining indices after lazy computing the frame(s)
-        if isinstance(item, tuple) and check_spatial_crop_effect(
-            item[1:], self.shape[1:]
-        ):
-            pixel_space_crop = self._pixel_mat[item[1:]]
+        spatial = normalize_spatial_indexer(item, self.shape[1:])
+        if test_spatial_crop_effect(spatial, self.shape[1:]):
+            pixel_space_crop = self._pixel_mat[spatial]
             u_indices = pixel_space_crop.flatten()
             u_crop = torch.index_select(self.spatial_compressed, 0, u_indices)
             a_crop = torch.index_select(self.spatial_demixed, 0, u_indices)
@@ -274,12 +272,4 @@ class ResidualCorrelationImages(ArrayLike):
         product = product.reshape((implied_fov[0], implied_fov[1], -1))
         product = product.permute(2, 0, 1)
 
-        return torch.nan_to_num(product, nan=0.0, posinf=0.0, neginf=0.0)
-
-    def __getitem__(
-        self,
-        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
-        return product
+        return torch.nan_to_num(product, nan=0.0, posinf=0.0, neginf=0.0).to(self.dtype)

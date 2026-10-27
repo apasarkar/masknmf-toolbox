@@ -61,7 +61,7 @@ def spatial_filter_compressed_array(compression_array: masknmf.CompressionArray,
     for k in tqdm(range(num_batches)):
         start = k * batch_size
         end = min(start + batch_size, compression_array.shape[0])
-        curr_frames = compression_array.getitem_tensor(slice(start, end))
+        curr_frames = compression_array[slice(start, end)]
         if curr_frames.ndim == 2:
             curr_frames = curr_frames[None, ...]
 

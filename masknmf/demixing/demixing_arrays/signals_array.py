@@ -1,12 +1,10 @@
 from __future__ import annotations
 from typing import Optional
-import numpy as np
-import torch
 from masknmf.utils import SparseCOOTensor, is_cpu
 import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, TensorFlyWeight
 import torch
-from masknmf.demixing.demixing_arrays.demixing_array_utils import check_spatial_crop_effect
+from masknmf.arrays.array_utils import test_spatial_crop_effect, normalize_spatial_indexer
 
 class SignalsArray(ArrayLike):
     """
@@ -240,11 +238,11 @@ class SignalsArray(ArrayLike):
         return self.temporal_demixed.cpu().numpy()
 
     @property
-    def dtype(self) -> type:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
-        return np.float32
+        return torch.float32
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -260,7 +258,7 @@ class SignalsArray(ArrayLike):
         """
         return len(self.shape)
 
-    def getitem_tensor(
+    def __getitem__(
         self,
         item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ) -> torch.Tensor:
@@ -275,10 +273,11 @@ class SignalsArray(ArrayLike):
         temporal_demixed_crop = temporal_demixed_crop * self.mask[None, :]
 
         # Step 4: First do spatial subselection before multiplying by c
-        if isinstance(item, tuple) and check_spatial_crop_effect(item[1:3], self.shape[1:3]):
+        spatial = normalize_spatial_indexer(item, self.shape[1:])
+        if test_spatial_crop_effect(spatial, self.shape[1:]):
 
-            pixel_space_crop = self._pixel_mat[item[1:3]]
-            normalizer_crop = self.normalizer[item[1:3]][None, ...]
+            pixel_space_crop = self._pixel_mat[spatial]
+            normalizer_crop = self.normalizer[spatial][None, ...]
             spatial_demixed_indices = pixel_space_crop.flatten()
             spatial_demixed_crop = torch.index_select(self.spatial_demixed, 0, spatial_demixed_indices)
             implied_fov = pixel_space_crop.shape
@@ -300,14 +299,6 @@ class SignalsArray(ArrayLike):
         if self.rescale:
             product *= normalizer_crop
 
-        return product
-
-    def __getitem__(
-        self,
-        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
         return product
 
 
