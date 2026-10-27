@@ -118,7 +118,6 @@ class MiniALIResidualArray(ArrayLike):
 
     def __init__(self, registered: GradientRegistrationArray, background: StaticArray, signals: SignalsArray):
         self._registered = registered
-        self._registered.output_device = background.device
         self._background = background
         self._signals = signals
 
