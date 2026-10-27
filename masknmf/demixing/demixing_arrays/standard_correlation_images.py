@@ -142,10 +142,10 @@ class StandardCorrelationImages(ArrayLike):
         return len(self.shape)
 
     @property
-    def dtype(self) -> np.dtype:
-        return np.float32
+    def dtype(self) -> torch.dtype:
+        return torch.float32
 
-    def getitem_tensor(
+    def __getitem__(
         self,
         item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
     ) -> torch.Tensor:
@@ -161,7 +161,6 @@ class StandardCorrelationImages(ArrayLike):
         c_crop.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0) #In-place
 
         vc_crop = self.temporal_compressed @ c_crop
-        # ones_crop = self._ones_frames @ c_crop
 
         spatial = normalize_spatial_indexer(item, self.shape[1:])
         if test_spatial_crop_effect(spatial, self.shape[1:]):
@@ -178,7 +177,6 @@ class StandardCorrelationImages(ArrayLike):
                 u_crop = self._spatial_compressed_csr
             else:
                 u_crop = self.spatial_compressed
-            # mean_crop = self.standard_correlation_image_mean
             movie_normalizer_crop = self.standard_correlation_image_normalizer
             implied_fov = self.shape[1], self.shape[2]
 
@@ -193,12 +191,4 @@ class StandardCorrelationImages(ArrayLike):
         product.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
 
         product = product.reshape((implied_fov[0], implied_fov[1], -1))
-        return product.permute(2, 0, 1)
-
-    def __getitem__(
-        self,
-        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype, copy=False)
-        return product
+        return product.permute(2, 0, 1).to(self.dtype)

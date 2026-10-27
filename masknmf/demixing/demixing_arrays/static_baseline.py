@@ -82,11 +82,11 @@ class StaticBackgroundArray(ArrayLike):
         return self._shape
 
     @property
-    def dtype(self) -> str:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
-        return np.float32
+        return torch.float32
 
     @property
     def normalizer(self) -> torch.Tensor:
@@ -138,8 +138,8 @@ class StaticBackgroundArray(ArrayLike):
             final_image = self.baseline_image[spatial]
 
         if drop_frames:
-            return final_image.unsqueeze(0)
+            return final_image.unsqueeze(0).to(self.dtype)
         elif num_frames == 1:
-            return final_image.unsqueeze(0)
+            return final_image.unsqueeze(0).to(self.dtype)
         else:
-            return final_image.expand(num_frames, *final_image.shape)
+            return final_image.expand(num_frames, *final_image.shape).to(self.dtype)

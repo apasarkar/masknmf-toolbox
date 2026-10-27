@@ -860,7 +860,7 @@ def _thresholded_corr_support(corr_img, threshold, neuron_batch_size):
     sig, pix = [], []
     for start in range(0, K, neuron_batch_size):
         end = min(start + neuron_batch_size, K)
-        imgs = corr_img.getitem_tensor(slice(start, end))
+        imgs = corr_img[slice(start, end)]
         # nonzero returns indices in row-major order, so this is sorted by (signal, pixel)
         b, p = torch.nonzero(imgs.reshape(end - start, -1) > threshold, as_tuple=True)
         del imgs
@@ -1365,7 +1365,7 @@ def delete_comp(
     pos_for_cpu = pos.cpu().numpy()
 
     if plot_en:
-        corr_values = standard_correlation_image[pos_for_cpu]
+        corr_values = standard_correlation_image[pos_for_cpu].cpu().numpy()
         if corr_values.ndim < standard_correlation_image.ndim:
             corr_values = np.expand_dims(corr_values, 0)
         a_used = spatial_components.cpu().to_dense().numpy()
@@ -2196,7 +2196,7 @@ def merge_components(
             if plot_en:
                 spatial_comp_plot(
                     a_merge.cpu().to_dense().numpy(),
-                    standard_correlation_image[comp],
+                    standard_correlation_image[comp].cpu().numpy(),
                     ini=False,
                 )
 

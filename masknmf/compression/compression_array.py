@@ -237,11 +237,11 @@ class CompressionArray(ArrayLike, Serializer):
         return self.spatial_compressed.shape[1]
 
     @property
-    def dtype(self) -> type:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
-        return np.float32
+        return torch.float32
 
     @property
     def pixel_index_image(self) -> torch.Tensor:
@@ -319,7 +319,7 @@ class CompressionArray(ArrayLike, Serializer):
         projection = torch.sparse.mm(self.spatial_compressed_local_projector.T, frames)
         return projection.to(orig_device)
 
-    def getitem_tensor(
+    def __getitem__(
         self,
         item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ) -> torch.Tensor:
@@ -369,14 +369,6 @@ class CompressionArray(ArrayLike, Serializer):
 
         return product
 
-    def __getitem__(
-        self,
-        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
-        return product
-
 
 class CompressionResidualArray(ArrayLike):
     """
@@ -410,9 +402,9 @@ class CompressionResidualArray(ArrayLike):
 
 
     @property
-    def dtype(self) -> type:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
         return self.compression_array.dtype
 
@@ -434,7 +426,7 @@ class CompressionResidualArray(ArrayLike):
             self,
             item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ):
-        output = self.raw_array[item].astype(self.dtype) - self.compression_array[item].astype(self.dtype)
+        output = torch.as_tensor(self.raw_array[item], device=self.compression_array.device, dtype=self.compression_array.dtype) - self.compression_array[item]
         return output
 
 class TrendArray(ArrayLike):
@@ -495,11 +487,11 @@ class TrendArray(ArrayLike):
         return self._flyweight
 
     @property
-    def dtype(self) -> type:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
-        return np.float32
+        return torch.float32
 
     @property
     def spatial_trend_basis(self) -> torch.Tensor:
@@ -543,7 +535,7 @@ class TrendArray(ArrayLike):
         """(num_frames, fov_height, fov_width)"""
         return self._shape
 
-    def getitem_tensor(
+    def __getitem__(
             self,
             item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ) -> torch.Tensor:
@@ -570,12 +562,4 @@ class TrendArray(ArrayLike):
         product = product.reshape((implied_fov[0], implied_fov[1], -1))
         product = product.permute(2, 0, 1)
 
-        return product
-
-    def __getitem__(
-            self,
-            item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
         return product

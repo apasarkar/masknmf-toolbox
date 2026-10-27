@@ -2,6 +2,7 @@ import time
 from typing import Optional
 import numpy as np
 from imgui_bundle import imgui
+from masknmf.utils import to_numpy
 
 
 class MoviePlayer:
@@ -47,7 +48,7 @@ class MoviePlayer:
         if self._movie is None:
             return None
         if region is None:
-            img = np.asarray(self._movie[self._t])
+            img = to_numpy(self._movie[self._t])
             return img.reshape(img.shape[-2:])
         top, left, h, w = region
         fov_h, fov_w = self._movie.shape[1:3]
@@ -55,7 +56,7 @@ class MoviePlayer:
         y0, y1 = max(top, 0), min(top + h, fov_h)
         x0, x1 = max(left, 0), min(left + w, fov_w)
         if y1 > y0 and x1 > x0:
-            img = np.asarray(self._movie[self._t, slice(y0, y1), slice(x0, x1)])
+            img = to_numpy(self._movie[self._t, slice(y0, y1), slice(x0, x1)])
             out[y0 - top : y1 - top, x0 - left : x1 - left] = img.reshape(
                 y1 - y0, x1 - x0
             )

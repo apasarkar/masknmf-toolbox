@@ -128,11 +128,11 @@ class ColorfulSignalsArray(ArrayLike):
         self._colors = new_colors.to(self.device).to(self.temporal_demixed.dtype)
 
     @property
-    def dtype(self) -> str:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
-        return np.float32
+        return torch.float32
 
     @property
     def shape(self) -> tuple[int, int, int, int]:
@@ -158,7 +158,7 @@ class ColorfulSignalsArray(ArrayLike):
         return mip_image
 
 
-    def getitem_tensor(
+    def __getitem__(
         self,
         item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ) -> torch.tensor:
@@ -214,12 +214,4 @@ class ColorfulSignalsArray(ArrayLike):
                 c = int(c) % product.shape[-1]
                 c = slice(c, c + 1)
             product = product[..., c]
-        return product
-
-    def __getitem__(
-        self,
-        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy()
-        return product
+        return product.to(self.dtype)

@@ -106,16 +106,16 @@ class FluctuatingBackgroundArray(ArrayLike):
             self._flyweight.to(new_device)
         self._move_local_tensors(new_device)
 
+    @property
+    def dtype(self) -> torch.dtype:
+        """
+        data type, default torch.float32
+        """
+        return torch.float32
+
     def _move_local_tensors(self, new_device: torch.device | str):
         self._pixel_mat = self._pixel_mat.to(new_device)
         self._default_normalizer = self._default_normalizer.to(new_device)
-
-    @property
-    def dtype(self) -> str:
-        """
-        data type, default np.float32
-        """
-        return np.float32
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -140,7 +140,7 @@ class FluctuatingBackgroundArray(ArrayLike):
     def rescale(self, new_value: bool):
         self._rescale = new_value
 
-    def getitem_tensor(
+    def __getitem__(
         self,
         item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
     ):
@@ -182,12 +182,4 @@ class FluctuatingBackgroundArray(ArrayLike):
         if self.rescale:
             product *= normalizer_crop
 
-        return product
-
-    def __getitem__(
-        self,
-        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
-        return product
+        return product.to(self.dtype)

@@ -111,11 +111,11 @@ class MultiunitBackgroundArray(ArrayLike):
         self._default_normalizer = self._default_normalizer.to(new_device)
 
     @property
-    def dtype(self) -> str:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
-        return np.float32
+        return torch.float32
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -140,7 +140,7 @@ class MultiunitBackgroundArray(ArrayLike):
     def rescale(self, new_value: bool):
         self._rescale = new_value
 
-    def getitem_tensor(
+    def __getitem__(
         self,
         item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
     ):
@@ -183,12 +183,4 @@ class MultiunitBackgroundArray(ArrayLike):
         if self.rescale:
             product *= normalizer_crop
 
-        return product
-
-    def __getitem__(
-        self,
-        item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range],
-    ) -> np.ndarray:
-        product = self.getitem_tensor(item)
-        product = product.cpu().numpy().astype(self.dtype)
         return product

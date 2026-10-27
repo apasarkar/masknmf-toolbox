@@ -87,11 +87,11 @@ class ArrayLike(ABC):
 
     @property
     def nbytes(self) -> int:
-        """
-        int
-            number of bytes for the array if it were fully computed
-        """
-        return np.prod(self.shape + (np.dtype(self.dtype).itemsize,), dtype=np.int64)
+        if isinstance(self.dtype, torch.dtype):
+            itemsize = torch.empty((), dtype=self.dtype).element_size()
+        else:
+            itemsize = np.dtype(self.dtype).itemsize
+        return int(np.prod(self.shape, dtype=np.int64)) * itemsize
 
     @staticmethod
     def _is_advanced(term) -> bool:

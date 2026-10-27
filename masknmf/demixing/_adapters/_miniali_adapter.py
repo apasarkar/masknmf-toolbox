@@ -116,22 +116,23 @@ def _as_numpy(frames) -> np.ndarray:
 class MiniALIResidualArray(ArrayLike):
     """registered - background - signals: what miniALI's model leaves unexplained."""
 
-    def __init__(self, registered: ArrayLike, background: StaticArray, signals: SignalsArray):
+    def __init__(self, registered: GradientRegistrationArray, background: StaticArray, signals: SignalsArray):
         self._registered = registered
         self._background = background
         self._signals = signals
 
     @property
-    def dtype(self):
-        return np.float32
+    def dtype(self) -> torch.dtype:
+        return torch.float32
 
     @property
     def shape(self) -> tuple[int, int, int]:
         return self._signals.shape
 
-    def __getitem__(self, item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range]) -> np.ndarray:
-        explained = self._background[item] + self._signals.getitem_tensor(item).cpu().numpy()
-        return np.asarray(self._registered[item], np.float32) - explained
+    def __getitem__(self, item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range]) -> torch.Tensor:
+        explained = self._background[item] + self._signals[item]
+        output = torch.as_tensor(self._registered[item], dtype=explained.dtype, device=explained.device) - explained
+        return output.to(self.dtype)
 
 
 class MiniALIResults(BaseResults):
@@ -284,6 +285,7 @@ class MiniALIResults(BaseResults):
         self._signal_roi_averages = self._signal_roi_averages.to(device)
         self._background_roi_averages = self._background_roi_averages.to(device)
         self._signals_array.to(device)
+        self._background_array.to(device)
         self._device = device
 
 
