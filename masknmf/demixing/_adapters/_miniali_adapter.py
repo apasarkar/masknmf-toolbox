@@ -122,8 +122,8 @@ class MiniALIResidualArray(ArrayLike):
         self._signals = signals
 
     @property
-    def dtype(self):
-        return np.float32
+    def dtype(self) -> torch.dtype:
+        return torch.float32
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -131,7 +131,8 @@ class MiniALIResidualArray(ArrayLike):
 
     def __getitem__(self, item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range]) -> np.ndarray:
         explained = self._background[item] + self._signals[item]
-        return torch.as_tensor(self._registered[item], dtype=explained.dtype, device=explained.device) - explained
+        output = torch.as_tensor(self._registered[item], dtype=explained.dtype, device=explained.device) - explained
+        return output.to(self.dtype)
 
 
 class MiniALIResults(BaseResults):
@@ -284,6 +285,7 @@ class MiniALIResults(BaseResults):
         self._signal_roi_averages = self._signal_roi_averages.to(device)
         self._background_roi_averages = self._background_roi_averages.to(device)
         self._signals_array.to(device)
+        self._background_array.to(device)
         self._device = device
 
 

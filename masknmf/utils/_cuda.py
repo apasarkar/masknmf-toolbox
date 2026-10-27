@@ -1,5 +1,8 @@
 import torch
 from warnings import warn
+import numpy as np
+import torch
+
 
 def torch_select_device(device: str | torch.device = "auto", log_warning: bool = True) -> str:
     if isinstance(device, torch.device):
@@ -33,9 +36,6 @@ def torch_select_device(device: str | torch.device = "auto", log_warning: bool =
 
 def is_cpu(device: torch.device | str | None) -> bool:
     return device is not None and torch.device(device).type == "cpu"
-
-import numpy as np
-import torch
 
 
 def to_numpy(x, dtype: np.dtype | type | str | None = None, copy: bool = False) -> np.ndarray:

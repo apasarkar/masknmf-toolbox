@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from masknmf.compression import CompressionArray
 from masknmf.arrays import ArrayLike, LazyFrameLoader
 from masknmf.demixing.demixing_arrays import ResidCorrMode
+from masknmf.utils import to_numpy
 
 # Custom sorting function to sort based on the numerical part after 'neuron_'
 
@@ -182,11 +183,9 @@ def plot_ith_roi(
 
     # Spatial Footprint
     residual_data = results.residual_array[:, lb_dim1:ub_dim1, lb_dim2:ub_dim2]
-    residual_img = residual_data.std(dim=0).cpu().numpy()
+    residual_img = to_numpy(residual_data.std(dim=0, correction=0))
 
-    mean_pmd_img = np.std(
-        results.compression_array[:, lb_dim1:ub_dim1, lb_dim2:ub_dim2], axis=0
-    )
+    mean_pmd_img = to_numpy(results.compression_array[:, lb_dim1:ub_dim1, lb_dim2:ub_dim2].std(dim=0, correction=0))
 
     if residual_mode is None:
         results.residual_correlation_image.mode = ResidCorrMode.DEFAULT

@@ -5,6 +5,7 @@ from masknmf.compression import CompressionArray
 from typing import *
 import math
 from tqdm import tqdm
+from masknmf.utils import to_numpy
 
 def compute_general_spatial_correlation_map(
         stack: Union[masknmf.ArrayLike, masknmf.LazyFrameLoader],
@@ -321,7 +322,7 @@ def pmd_autocovariance_diagnostics(raw_movie: Union[masknmf.ArrayLike, masknmf.L
         left_raw_sq_sum += torch.sum(raw_left * raw_left, dim=0)
         right_raw_sq_sum += torch.sum(raw_right * raw_right, dim=0)
 
-        pmd_subset = pmd_movie.getitem_tensor(slice(start, end)).float().to(device)
+        pmd_subset = pmd_movie[slice(start, end)].float().to(device)
         pmd_left = (pmd_subset[:-1] - left_pmd_mean)
         pmd_right = (pmd_subset[1:] - right_pmd_mean)
 

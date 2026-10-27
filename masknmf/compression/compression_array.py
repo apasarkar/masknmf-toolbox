@@ -402,9 +402,9 @@ class CompressionResidualArray(ArrayLike):
 
 
     @property
-    def dtype(self) -> type:
+    def dtype(self) -> torch.dtype:
         """
-        data type, default np.float32
+        data type, default torch.float32
         """
         return self.compression_array.dtype
 
@@ -426,7 +426,7 @@ class CompressionResidualArray(ArrayLike):
             self,
             item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range, ...],
     ):
-        output = torch.as_tensor(self.raw_array[item], device=self.compression_array.device, dtype=compression_array.type) - self.compression_array[item]
+        output = torch.as_tensor(self.raw_array[item], device=self.compression_array.device, dtype=self.compression_array.type) - self.compression_array[item]
         return output
 
 class TrendArray(ArrayLike):
@@ -487,11 +487,11 @@ class TrendArray(ArrayLike):
         return self._flyweight
 
     @property
-    def dtype(self) -> type:
+    def dtype(self) -> torch.dtype:
         """
         data type, default np.float32
         """
-        return np.float32
+        return torch.float32
 
     @property
     def spatial_trend_basis(self) -> torch.Tensor:
