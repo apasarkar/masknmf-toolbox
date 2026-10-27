@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 from masknmf import ArrayLike, LazyFrameLoader
-from masknmf.utils import Serializer, display, torch_select_device
+from masknmf.utils import Serializer, display
 from masknmf.motion_correction.strategies import MotionCorrectionStrategy
 from masknmf.motion_correction.registration_arrays import BaseRegistrationArray
 from masknmf.motion_correction.registration_methods import (
@@ -162,7 +162,7 @@ class RigidMotionCorrector(MotionCorrectionStrategy, Serializer):
         )
         return outputs[0].cpu().numpy(), outputs[1].cpu().numpy()
 
-    def _compute_all_shifts(self, reference_movie: ArrayLike) -> np.ndarray:
+    def _compute_all_shifts(self, reference_movie: ArrayLike) -> torch.Tensor:
         """
         Estimate the (n_frames, 2) shift field in a single streaming pass.
 
@@ -242,14 +242,15 @@ class RigidRegistrationArray(BaseRegistrationArray):
     _strategy_cls = RigidMotionCorrector
 
     def __init__(
-        self,
-        input_movie: ArrayLike,
-        shifts: torch.Tensor,
-        strategy: RigidMotionCorrector | None = None,
-        sinc_margin: int = 12,
-        output_device: str | torch.device = "cpu",
-        batch_size: int = 200,
-        compute_device: str | torch.device = "auto",
+            self,
+            input_movie: ArrayLike,
+            shifts: torch.Tensor,
+            *,
+            strategy: RigidMotionCorrector | None = None,
+            sinc_margin: int = 12,
+            batch_size: int | None = None,
+            compute_device: str | torch.device | None = None,
+            output_device: str | torch.device = "cpu",
     ):
         """
         Args:
@@ -268,18 +269,10 @@ class RigidRegistrationArray(BaseRegistrationArray):
             compute_device: Device the shifts are applied on, used when strategy is None.
         """
         self._input_movie = input_movie
-        self._strategy = strategy
-
-        if self.strategy is not None:
-            self._batch_size = self.strategy.batch_size
-            compute_device = self.strategy.device
-        else:
-            self._batch_size = batch_size
-            compute_device = torch_select_device(compute_device)
-        output_device = output_device
-
-        super().__init__(output_device=output_device,
-                         compute_device=compute_device)
+        super().__init__(strategy=strategy,
+                         batch_size=batch_size,
+                         compute_device=compute_device,
+                         output_device=output_device)
 
         if shifts.ndim != 2 or shifts.shape[1] != 2:
             raise ValueError(
@@ -303,10 +296,6 @@ class RigidRegistrationArray(BaseRegistrationArray):
         )
 
     @property
-    def dtype(self) -> torch.dtype:
-        return torch.float32
-
-    @property
     def nbytes(self) -> int:
         return math.prod(self.shape) * self.dtype.itemsize
 
@@ -327,18 +316,6 @@ class RigidRegistrationArray(BaseRegistrationArray):
     @property
     def sinc_margin(self) -> int:
         return self._sinc_margin
-
-    @property
-    def batch_size(self) -> int:
-        return self._batch_size
-
-    @batch_size.setter
-    def batch_size(self, new_batch_size: int):
-        self._batch_size = new_batch_size
-
-    @property
-    def strategy(self) -> MotionCorrectionStrategy | None:
-        return self._strategy
 
     # -- windowing ---------------------------------------------------------------------
 

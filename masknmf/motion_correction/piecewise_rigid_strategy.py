@@ -281,38 +281,23 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
     _serialized = {'shifts'}
     _strategy_cls = PiecewiseRigidMotionCorrector
 
-    def __init__(self,
-                 input_movie: ArrayLike,
-                 shifts: torch.Tensor,
-                 output_device: str | torch.device = 'cpu',
-                 strategy: PiecewiseRigidMotionCorrector | None = None,
-                 batch_size: int = 200,
-                 compute_device: str | torch.device = "auto"):
+    def __init__(
+            self,
+            input_movie: ArrayLike,
+            shifts: torch.Tensor,
+            *,
+            strategy: PiecewiseRigidMotionCorrector | None = None,
+            batch_size: int | None = None,
+            compute_device: str | torch.device | None = None,
+            output_device: str | torch.device = "cpu",
+    ):
         self._input_movie = input_movie
-        self._shifts = shifts
-        self._strategy = strategy
-        if self.strategy is not None:
-            self._batch_size = self.strategy.batch_size
-            compute_device = self.strategy.device
-        else:
-            self._batch_size = batch_size
-            compute_device = torch_select_device(compute_device)
-        output_device = output_device
-        super().__init__(output_device=output_device,
-                         compute_device=compute_device)
+        super().__init__(strategy=strategy,
+                         batch_size=batch_size,
+                         compute_device=compute_device,
+                         output_device=output_device)
+        self._shifts = torch.as_tensor(shifts, device=self.compute_device, dtype=self.dtype)
         self._compute_block_centers()
-
-    @property
-    def dtype(self) -> torch.dtype:
-        return torch.float32
-
-    @property
-    def batch_size(self) -> int:
-        return self._batch_size
-
-    @batch_size.setter
-    def batch_size(self, new_batch_size: int):
-        self._batch_size = new_batch_size
 
     @property
     def nbytes(self) -> int:
@@ -333,10 +318,6 @@ class PiecewiseRigidRegistrationArray(BaseRegistrationArray):
     @property
     def shifts(self) -> torch.Tensor:
         return self._shifts
-
-    @property
-    def strategy(self) -> PiecewiseRigidMotionCorrector | None:
-        return self._strategy
 
     def _corrected_roi(self,
                        frames,

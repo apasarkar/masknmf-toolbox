@@ -4,22 +4,45 @@ import h5py
 import numpy as np
 
 import torch
-import masknmf
 from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
 from masknmf.utils import Serializer
 from pathlib import Path
 from abc import ABC, abstractmethod
 from masknmf.utils._serialization import save_dict, load_dict
+from masknmf.utils import torch_select_device
+from masknmf.motion_correction.strategies import MotionCorrectionStrategy
 
 
 class BaseRegistrationArray(ArrayLike, Serializer, ABC):
     _strategy_cls: type = None
+    _default_batch_size: int = 200
 
     def __init__(self,
-                 output_device: str | torch.device,
-                 compute_device: str | torch.device):
-        self._output_device = torch.device(output_device)
-        self._compute_device = torch.device(compute_device)
+                 *,
+                 strategy: MotionCorrectionStrategy | None = None,
+                 batch_size: int | None = None,
+                 compute_device: str | torch.device | None = None,
+                 output_device: str | torch.device = "cpu"):
+        self._strategy = strategy
+        self._batch_size = self._resolve("batch_size", batch_size, self._default_batch_size)
+        self._compute_device = torch_select_device(self._resolve("device", compute_device, "auto"))
+        self._output_device = torch_select_device(output_device)
+
+
+    def _resolve(self, strategy_attr: str, explicit, default):
+        if explicit is not None:
+            return explicit
+        if self._strategy is not None and getattr(self._strategy, strategy_attr, None) is not None:
+            return getattr(self._strategy, strategy_attr)
+        return default
+
+    @property
+    def batch_size(self) -> int:
+        return self._batch_size
+
+    @batch_size.setter
+    def batch_size(self, new_batch_size: int):
+        self._batch_size = new_batch_size
 
     @property
     @abstractmethod
@@ -38,8 +61,12 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
         return self.input_movie.shape
 
     @property
-    @abstractmethod
-    def strategy(self) -> Serializer: ...
+    def dtype(self) -> torch.dtype:
+        return torch.float32
+
+    @property
+    def strategy(self) -> MotionCorrectionStrategy | None:
+        return self._strategy
 
     @property
     def output_device(self) -> torch.device:
@@ -51,11 +78,11 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
 
     @property
     def compute_device(self) -> torch.device:
-        return self._device
+        return self._compute_device
 
     @compute_device.setter
     def compute_device(self, new_compute_device: str | torch.device):
-        self._device = torch.device(new_compute_device)
+        self._compute_device = torch.device(new_compute_device)
 
     @abstractmethod
     def __getitem__(self, idx) -> torch.Tensor:
@@ -85,7 +112,8 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
                         if name in f:
                             del f[name]
         save_dict(self._to_dict(), filename=path, exists_ok=True, group=self.__class__.__name__)
-        save_dict(self.strategy._to_dict(), filename=path, exists_ok=True, group=self._strategy_cls.__name__)
+        if self.strategy is not None:
+            save_dict(self.strategy._to_dict(), filename=path, exists_ok=True, group=self._strategy_cls.__name__)
 
     @classmethod
     def from_hdf5(cls,
@@ -98,10 +126,18 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
             raise NotImplementedError(
                 f"{cls.__name__} must set `_strategy_cls` to enable from_hdf5"
             )
-        kwargs_strategy = load_dict(path, cls._strategy_cls.__name__)
-        if device is not None:
-            kwargs_strategy["device"] = device
-        strat = cls._strategy_cls(**kwargs_strategy)
+        with h5py.File(path, "r") as f:
+            has_strategy = cls._strategy_cls.__name__ in f
+        if has_strategy:
+            kwargs_strategy = load_dict(path, cls._strategy_cls.__name__)
+            if device is not None:
+                kwargs_strategy["device"] = device
+
+            strat = cls._strategy_cls(**kwargs_strategy)
+        else:
+            strat = None
+            if device is not None:
+                kwargs.setdefault("compute_device", device) ##Tricky: above, strategy has a settable device property, for registration array it is compute_device
         reg_arr_dict = load_dict(path, cls.__name__)
         return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict, **kwargs)
 
