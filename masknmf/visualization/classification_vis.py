@@ -13,6 +13,7 @@ from masknmf.visualization.imgui.files import PathPrompt, draw_path_prompt
 from masknmf.visualization.imgui.classification_help import draw_classification_help
 from masknmf.visualization.imgui.keybinds import CLASSIFICATION, LABEL_KEYS, pressed
 from masknmf.visualization.imgui.options import draw_options_menu, draw_options_popup
+from masknmf.visualization.imgui.scale import push_font_em, scale_figure
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.visualization.imgui.theme import THEME, to_vec4, em, card, section, popup, opaque_popups
 from masknmf.demixing.curation import latest_results
@@ -167,6 +168,7 @@ class ClassificationVis:
             canvas_kwargs={"title": "Classification Widget", "max_fps": 60.0, "vsync": True},
         )
         self._summary = SummaryImageViewer(self._figure)
+        self._summary.on_click = self._click_fov
         self._bg = None
         self._fg = None
         self.set_roi_images(roi_images, class_labels)
@@ -615,7 +617,7 @@ class ClassificationVis:
         del self._label_undo[:-50]
         self._class_labels[roi_ids] = label_index
         self._autosave()
-        if self._filter_label != -2:
+        if self._filter_label != -2 or self._hidden_classes:
             self._rebuild_order()
         self._show_current()
 
@@ -709,10 +711,8 @@ class ClassificationVis:
             self._error = None
         except OSError as e:
             self._error = f"save failed: {e}"
-        if self._classifier is not None and self.labels_complete:
-            self._classifier.labels = [
-                [self._label_names[i] for i in s] for s in self.class_labels_by_session
-            ]
+        if self._classifier is not None:
+            self._classifier.labels = self._labels_for_classifier()
 
     def wait(self, timeout: Optional[float] = None) -> bool:
         """
@@ -744,6 +744,9 @@ class ClassificationVis:
         mask = (self._area >= self._area_range[0]) & (self._area <= self._area_range[1])
         if self._filter_label >= -1:
             mask &= self._class_labels == self._filter_label
+        hidden = [i for i, name in enumerate(self._label_names) if name in self._hidden_classes]
+        hidden += [-1] if _UNLABELED in self._hidden_classes else []
+        mask &= ~np.isin(self._class_labels, hidden)
         idx = np.flatnonzero(mask)
         if self._sort_column:
             session = self._session_of if self._session_of is not None else np.zeros_like(self._area)
@@ -775,6 +778,25 @@ class ClassificationVis:
         if 0 <= label_index < len(self._label_colors):
             return self._label_colors[label_index]
         return _LABEL_COLORS[label_index % len(_LABEL_COLORS)]
+
+    def _click_fov(self, row: int, col: int):
+        """A click on the full FOV makes the shown ROI with the strongest mask at that pixel current"""
+        if self.current is None or self._fov_images is None:
+            return
+        sess = int(self._session_of[self.current]) if self._session_of is not None else 0
+        start = int(self._session_starts[sess]) if self._session_starts is not None else 0
+        sizes = self._session_sizes or (len(self._roi_images),)
+        h, w = self._roi_images.shape[1:]
+        best, best_value = None, 0.0
+        for roi in np.intersect1d(self._order, np.arange(start, start + int(sizes[sess]))):
+            top, left = self._crop_origin(int(roi))
+            if top <= row < top + h and left <= col < left + w:
+                # the class overlay draws the stronger mask on top, relative to each ROI's peak
+                value = float(self._roi_images[roi][row - top, col - left]) / (self._peak[roi] or 1.0)
+                if value > best_value:
+                    best, best_value = int(roi), value
+        if best is not None:
+            self.goto(best)
 
     def _crop_origin(self, roi: int) -> tuple[int, int]:
         """FOV coordinate of the ROI crop's top-left corner (roicat's convention)"""
@@ -1043,12 +1065,16 @@ class ClassificationVis:
             self._step_group(-1)
         if pressed(CLASSIFICATION["group_next"]):
             self._step_group(1)
+        # b and m act on the full FOV too, which follows the ROI view's new state
         if pressed(CLASSIFICATION["background"]):
             self._show_bg = not self._show_bg
+            self._summary.hide_image = not self._show_bg
             self._apply_overlay()
         if pressed(CLASSIFICATION["masks"]):
             self._show_mask = not self._show_mask
+            self._show_class_masks = self._show_mask
             self._apply_overlay()
+            self._show_current()
         if pressed(CLASSIFICATION["class_masks"]):
             self._show_class_masks = not self._show_class_masks
             self._show_current()
@@ -1127,6 +1153,31 @@ class ClassificationVis:
     def labels_complete(self) -> bool:
         return len(self._class_labels) > 0 and bool((self._class_labels >= 0).all())
 
+    def _labels_for_classifier(self) -> list[list]:
+        """One list per session of class names, -1 where the ROI is unlabeled (left out of training)"""
+        labels = []
+        for session in self.class_labels_by_session:
+            session_names = []
+            for index in session:
+                if index < 0:
+                    session_names.append(-1)
+                else:
+                    session_names.append(self._label_names[index])
+            labels.append(session_names)
+        return labels
+
+    def _training_problem(self) -> Optional[str]:
+        """Why the labels can't be trained on yet, or None when they can"""
+        labeled = self._class_labels[self._class_labels >= 0]
+        counts = np.bincount(labeled, minlength=len(self._label_names))
+        used = [i for i, c in enumerate(counts) if c > 0]
+        if len(used) < 2:
+            return "label ROIs from at least 2 classes"
+        rare = [self._label_names[i] for i in used if counts[i] < _MIN_PER_CLASS]
+        if rare:
+            return f"training needs at least {_MIN_PER_CLASS} ROIs per class, too few: {', '.join(rare)}"
+        return None
+
     def _default_classifier_path(self) -> str:
         base = os.path.dirname(self._save_files[0]) if self._save_files else os.getcwd()
         return os.path.join(base, "classifier")
@@ -1161,17 +1212,13 @@ class ClassificationVis:
         """
         Hand the labels to the RoicatClassifier, train it in a background thread
         and save the package to classifier_path (default: <first session dir>/classifier).
-        Every ROI must be labeled first, with at least 2 ROIs per class.
+        Only labeled ROIs are trained on; at least 2 classes with 2 ROIs each are needed.
         """
         if self._clf_busy:
             return
-        if not self.labels_complete:
-            self._error = "label every ROI before training"
-            return
-        counts = np.bincount(self._class_labels, minlength=len(self._label_names))
-        rare = [n for n, c in zip(self._label_names, counts) if 0 < c < _MIN_PER_CLASS]
-        if rare:
-            self._error = f"training needs at least {_MIN_PER_CLASS} ROIs per class, too few: {', '.join(rare)}"
+        problem = self._training_problem()
+        if problem:
+            self._error = problem
             return
         if self._adapter_missing():
             self._error = f"cannot train: {self._adapter_missing()}"
@@ -1181,7 +1228,7 @@ class ClassificationVis:
         if not self._classifier_path:
             self._classifier_path = self._default_classifier_path()
         path = self._classifier_path
-        names = [[self._label_names[i] for i in s] for s in self.class_labels_by_session]
+        names = self._labels_for_classifier()
         clf = self.classifier
 
         def work():
@@ -1201,8 +1248,9 @@ class ClassificationVis:
             None uses the selected source (the classifier trained here or the file
             picked with Select classifier); a path loads that file.
 
-        Predictions fill the pred column; ROIs still unlabeled take the prediction,
-        existing labels are kept.
+        Predictions fill the pred column only; labels are left as they are, so a
+        prediction never ends up in the training set. accept_predictions copies them
+        into the unlabeled ROIs.
         """
         if self._clf_busy:
             return
@@ -1236,8 +1284,8 @@ class ClassificationVis:
 
         self._run_clf("classifying...", work)
 
-    def _apply_predictions(self, names_by_session, probs_by_session) -> int:
-        """Store predictions, label the unlabeled ROIs with them; returns how many were labeled"""
+    def _apply_predictions(self, names_by_session, probs_by_session):
+        """Store predictions in the pred column; labels are not touched"""
         flat = [str(n) for s in names_by_session for n in s]
         if len(flat) != len(self._class_labels):
             raise ValueError(f"got {len(flat)} predictions for {len(self._class_labels)} ROIs")
@@ -1247,9 +1295,13 @@ class ClassificationVis:
         index = {n: i for i, n in enumerate(self._label_names)}
         self._pred = np.array([index[n] for n in flat], dtype=np.int64)
         self._probs = np.concatenate([p.max(axis=1) for p in probs_by_session]).astype(np.float32)
-        fill = np.flatnonzero(self._class_labels < 0)
-        self.label(fill, self._pred[fill])
         self._rebuild_order()
+
+    def accept_predictions(self) -> int:
+        """Give every unlabeled ROI its prediction (undo with ctrl+z); returns how many were labeled"""
+        fill = np.flatnonzero((self._class_labels < 0) & (self._pred >= 0))
+        if len(fill) > 0:
+            self.label(fill, self._pred[fill])
         return len(fill)
 
     def _poll_classifier(self):
@@ -1273,13 +1325,13 @@ class ClassificationVis:
             else:
                 self._classified_with = result[3]
                 try:
-                    n = self._apply_predictions(result[1], result[2])
+                    self._apply_predictions(result[1], result[2])
                 except ValueError as e:
                     self._error = f"classify failed: {e}"
                     return
                 self._clf_done = (
-                    f"predicted {len(self._pred)} ROIs, {n} unlabeled ones took the prediction "
-                    "(existing labels kept, see the pred column)"
+                    f"predicted {len(self._pred)} ROIs (pred column; labels unchanged, "
+                    "accept copies them into unlabeled ROIs)"
                 )
 
     def _draw_panel(self):
@@ -1431,9 +1483,9 @@ class ClassificationVis:
             hidden = name in self._hidden_classes
             if imgui.small_button(fa.ICON_FA_EYE_SLASH if hidden else fa.ICON_FA_EYE):
                 self._hidden_classes.symmetric_difference_update((name,))
-                self._show_current()
+                self._rebuild_order()
             if imgui.is_item_hovered():
-                imgui.set_tooltip(f"show or hide '{name}' on the full FOV")
+                imgui.set_tooltip(f"show or hide '{name}' in the ROI table and on the full FOV")
             imgui.table_next_column()
             if imgui.color_button(
                 "##swatch",
@@ -1468,9 +1520,9 @@ class ClassificationVis:
         hidden = _UNLABELED in self._hidden_classes
         if imgui.small_button(f"{fa.ICON_FA_EYE_SLASH if hidden else fa.ICON_FA_EYE}##eye-none"):
             self._hidden_classes.symmetric_difference_update((_UNLABELED,))
-            self._show_current()
+            self._rebuild_order()
         if imgui.is_item_hovered():
-            imgui.set_tooltip("show or hide the unlabeled ROIs on the full FOV")
+            imgui.set_tooltip("show or hide the unlabeled ROIs in the ROI table and on the full FOV")
         imgui.table_next_column()
         imgui.color_button(
             "##swatch-none",
@@ -1626,16 +1678,21 @@ class ClassificationVis:
             imgui.pop_text_wrap_pos()
 
             busy = self._clf_busy
-            can_train = self.labels_complete and self.classifier is not None and not busy
+            problem = self._training_problem()
+            can_train = problem is None and self.classifier is not None and not busy
+            # train | classify | accept share the row, so the card keeps its height
+            third = (row_w - 2 * em(0.6)) / 3
             imgui.begin_disabled(not can_train)
-            if imgui.button("train", imgui.ImVec2(w, 0)):
+            if imgui.button("train", imgui.ImVec2(third, 0)):
                 self.train()
             imgui.end_disabled()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                n_labeled = int((self._class_labels >= 0).sum())
                 imgui.set_tooltip(
-                    "train a ROICaT classifier on the labeled ROIs and save it to the path above"
-                    if can_train or busy
-                    else "label every ROI first (training needs complete labels)"
+                    f"train a ROICaT classifier on the {n_labeled} of {len(self._class_labels)} labeled ROIs "
+                    "and save it to the path above; unlabeled ROIs are left out"
+                    if problem is None or busy
+                    else problem
                 )
             imgui.same_line(0, em(0.6))
             source = self._clf_source
@@ -1646,13 +1703,25 @@ class ClassificationVis:
                 and (source[0] == "trained" or os.path.isfile(source[1]))
             )
             imgui.begin_disabled(not can_classify)
-            if imgui.button("classify", imgui.ImVec2(w, 0)):
+            if imgui.button("classify", imgui.ImVec2(third, 0)):
                 self.classify()
             imgui.end_disabled()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
                 imgui.set_tooltip(
-                    "predict every ROI with the selected classifier: unlabeled ROIs take the "
-                    "prediction, existing labels are kept"
+                    "predict every ROI with the selected classifier into the pred column; "
+                    "labels are left as they are"
+                )
+            imgui.same_line(0, em(0.6))
+            has_pred = bool((self._pred >= 0).any()) and not busy
+            imgui.begin_disabled(not has_pred)
+            if imgui.button("accept", imgui.ImVec2(third, 0)):
+                n = self.accept_predictions()
+                self._clf_done = f"{n} unlabeled ROIs took their prediction (ctrl+z undoes)"
+            imgui.end_disabled()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                imgui.set_tooltip(
+                    "accept predictions: copy them into the unlabeled ROIs; they then count as your "
+                    "labels and are trained on (ctrl+z undoes)"
                 )
             _, self._auto_classify = imgui.checkbox("classify on load", self._auto_classify)
             if imgui.is_item_hovered():
@@ -1719,7 +1788,7 @@ class ClassificationVis:
             imgui.same_line(0, em(0.6))
         color, text = self._status_message()
         imgui.align_text_to_frame_padding()
-        imgui.push_font(imgui.get_font(), em(0.85))
+        push_font_em(0.85)
         imgui.text_colored(to_vec4(color), text)
         imgui.pop_font()
 
@@ -1890,4 +1959,5 @@ class ClassificationVis:
         return self._figure
 
     def show(self):
+        scale_figure(self._figure)
         return self._figure.show()

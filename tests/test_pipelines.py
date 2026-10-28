@@ -1,5 +1,6 @@
 """The contract every pipeline keeps with BasePipeline."""
 
+import dataclasses
 import inspect
 import json
 import logging
@@ -96,7 +97,7 @@ def test_step_logs_its_start_and_how_long_it_took_or_that_it_failed(tmp_path):
         with pipeline.step("a broken step"):
             raise RuntimeError("broken")
     text = (folder / f"{folder.name}.log").read_text()
-    assert "INFO masknmf.pipelines._base: a quick step\n" in text
+    assert "INFO masknmf.pipelines._base: starting a quick step ----" in text
     assert "a quick step done in 0:00:00" in text
     assert "ERROR masknmf.pipelines._base: a broken step failed after 0:00:00" in text
     logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
@@ -117,13 +118,13 @@ def test_a_resumed_run_copies_what_it_reuses_into_a_new_folder_and_keeps_the_ear
                "timings": {"motion correction": {"seconds": 2.0}, "compression": {"seconds": 1.0}, "demixing": {}}}
     (earlier_folder / "config.json").write_text(json.dumps(earlier))
     pipeline = cls(output_folder=str(tmp_path))
-    resume_from, base = pipeline.resume_source(None, reuse_compression=False)
-    assert (resume_from, base) == (None, None)
+    resume, base = pipeline.resume_source(None, reuse_compression=False)
+    assert (resume, base) == (None, None)
     pipeline.output_folder = earlier_folder
-    resume_from, base = pipeline.resume_source(None, reuse_compression=True)
-    assert resume_from == (earlier_folder / "results.hdf5").resolve() and base == tmp_path.resolve()
+    resume, base = pipeline.resume_source(None, reuse_compression=True)
+    assert resume == (earlier_folder / "results.hdf5").resolve() and base == tmp_path.resolve()
     results_path = pipeline.results_path(base)
-    stored = pipeline.resume(resume_from, results_path, reuse_compression=True)
+    stored = pipeline.resume(resume, results_path, reuse_compression=True)
     assert stored is masknmf.RigidRegistrationArray
     folder = pipeline.run_folder
     assert folder.parent == tmp_path.resolve() and folder != earlier_folder
@@ -148,6 +149,29 @@ def test_resume_source_refuses_a_file_without_what_is_reused(tmp_path):
     assert pipeline.resume_source(tmp_path / "results.hdf5", reuse_compression=False)[0] == (tmp_path / "results.hdf5").resolve()
     with pytest.raises(FileNotFoundError):
         pipeline.resume_source(tmp_path / "missing.hdf5", reuse_compression=False)
+
+
+class StubResults:
+    """Writes the group write_curated expects of demixing results, without demixing anything."""
+
+    def export(self, path):
+        with h5py.File(path, "a") as file:
+            file.create_group(masknmf.DemixingResults.__name__)
+
+
+def test_a_curated_file_keeps_the_registration_and_compression_so_a_run_resumes_from_it(tmp_path):
+    names = {"RigidMotionCorrector", "RigidRegistrationArray", masknmf.CompressionArray.__name__,
+             masknmf.DemixingResults.__name__}
+    with h5py.File(tmp_path / "results.hdf5", "w") as file:
+        for name in names:
+            file.create_group(name)
+        file[masknmf.CompressionArray.__name__]["temporal_compressed"] = np.arange(6.0).reshape(2, 3)
+    curated = masknmf.demixing.write_curated(str(tmp_path / "results.hdf5"), StubResults(), drop=[0])
+    with h5py.File(curated) as file:
+        assert set(file) == names
+        assert np.array_equal(file[masknmf.CompressionArray.__name__]["temporal_compressed"][()], np.arange(6.0).reshape(2, 3))
+    pipeline = scraper.pipeline_registry()[SLUGS[0]](output_folder=str(tmp_path))
+    assert pipeline.resume_source(curated, reuse_compression=True)[0] == Path(curated).resolve()
 
 
 def test_a_run_that_breaks_from_python_records_that_it_failed_and_why(tmp_path):
@@ -200,7 +224,7 @@ def test_a_step_records_its_peak_cuda_memory_only_on_a_cuda_device(tmp_path):
         pipeline.log_handler.close()
 
 
-def test_stop_after_registration_writes_the_shifts_and_resume_from_applies_them(tmp_path):
+def test_stop_after_registration_writes_the_shifts_and_resume_applies_them(tmp_path):
     movie = shifted_blob()
     pipeline = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path), device="cpu")
     folder = pipeline.run(movie, frame_rate=30, stop_after="registration")
@@ -211,11 +235,11 @@ def test_stop_after_registration_writes_the_shifts_and_resume_from_applies_them(
     assert config["configs"]["stop_after"] == "registration" and config["run"]["status"] == "done"
     assert list(config["timings"]) == ["motion correction"]
 
-    resumed = pipeline.run(movie, frame_rate=30, stop_after="registration", resume_from=folder / "results.hdf5")
+    resumed = pipeline.run(movie, frame_rate=30, stop_after="registration", resume=folder / "results.hdf5")
     assert resumed != folder
     with h5py.File(resumed / "results.hdf5") as file:
         assert np.array_equal(file["RigidRegistrationArray/shifts"][()], shifts)
-    assert json.loads((resumed / "config.json").read_text())["configs"]["resume_from"] == str(folder / "results.hdf5")
+    assert json.loads((resumed / "config.json").read_text())["configs"]["resume"] == str(folder / "results.hdf5")
     close_log(pipeline)
 
 
@@ -229,7 +253,7 @@ def test_one_photon_saves_its_gradient_registration_and_applies_it_on_resume(tmp
         assert set(file) == {"GradientMotionCorrector", "GradientRegistrationArray"}
         steps = file["GradientRegistrationArray/gradient_steps"][()]
     resumed = pipeline.run(movie, frame_rate=30, indicator_polarity="positive", active_frames=active,
-                            stop_after="registration", resume_from=folder / "results.hdf5")
+                            stop_after="registration", resume=folder / "results.hdf5")
     with h5py.File(resumed / "results.hdf5") as file:
         assert np.array_equal(file["GradientRegistrationArray/gradient_steps"][()], steps)
     close_log(pipeline)
@@ -260,3 +284,16 @@ def test_from_config_builds_the_pipeline_a_config_json_describes(slug, tmp_path)
     other = next(c for s, c in scraper.pipeline_registry().items() if s != slug)
     with pytest.raises(ValueError):
         other.from_config(folder / "config.json")
+
+
+def test_a_curated_file_records_the_nmf_config_its_pass_ran_with(tmp_path):
+    with h5py.File(tmp_path / "results.hdf5", "w") as file:
+        file.create_group(masknmf.DemixingResults.__name__)
+    config = masknmf.NMFConfig(min_brightness=0.5, detrender=masknmf.compression.preprocessing.MaximinSplineDetrend(num_frames=100, num_knots=4, window=10, sigma=2.0, device="cpu"))
+    curated = masknmf.demixing.write_curated(str(tmp_path / "results.hdf5"), StubResults(), drop=[0], nmf_config=config)
+    recorded = masknmf.io.read_nmf_config(curated)
+    assert recorded["min_brightness"] == 0.5
+    assert recorded["detrender"] == "*"
+    restored = scraper.config_from_json(value=recorded, annotation=masknmf.NMFConfig)
+    assert restored == dataclasses.replace(config, detrender=None)
+    assert masknmf.io.read_nmf_config(tmp_path / "results.hdf5") is None

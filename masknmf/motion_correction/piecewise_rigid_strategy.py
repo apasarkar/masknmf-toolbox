@@ -10,7 +10,7 @@ from masknmf.motion_correction.registration_methods import register_frames_pwrig
 from masknmf.motion_correction.registration_arrays import BaseRegistrationArray
 from masknmf.utils import Serializer, display
 import math
-from tqdm import tqdm
+from masknmf.utils.display import progress
 import copy
 
 from masknmf.utils._serialization import save_dict, load_dict
@@ -243,8 +243,7 @@ class PiecewiseRigidMotionCorrector(MotionCorrectionStrategy, Serializer):
         template = torch.as_tensor(self.template, device=self.device, dtype=self.dtype)
         pixel_weighting = self._pixel_weighting_tensor()
 
-        display("extracting all shifts from dataset")
-        for k in tqdm(range(num_batches)):
+        for k in progress(range(num_batches), desc="registering"):
             start = k * self.batch_size
             end = min(start + self.batch_size, num_frames)
             reference_subset = torch.as_tensor(

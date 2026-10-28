@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import scipy.sparse as sp
 import torch
-from tqdm import tqdm
+from masknmf.utils.display import progress
 import torch
 
 from masknmf.arrays.array_interfaces import ArrayLike
@@ -191,6 +191,13 @@ def load_suite2p_ops(folder: str | os.PathLike) -> dict:
         raise FileNotFoundError(f"{folder} holds neither ops.npy nor suite2p 1.x's db/settings/reg_outputs.npy")
     return {**parts, **ops}
 
+def suite2p_frame_rate(ops: dict) -> float | None:
+    """ops['fs'], flat up to suite2p 0.14, in a section in 1.x."""
+    if "fs" in ops:
+        return float(ops["fs"])
+    return next((float(section["fs"]) for section in ops.values() if isinstance(section, dict) and "fs" in section), None)
+
+
 def suite2p_shifts(ops: dict, fov_shape: tuple[int, int]) -> np.ndarray | None:
     """
     suite2p's registration as the (height, width) shift applied to each frame, shape (num_frames, 2), or with
@@ -244,6 +251,61 @@ def suite2p_spatial_matrices(stat, Ly: int, Lx: int, allow_overlap: bool = False
 
 
 class Suite2pResults(BaseResults):
+
+    pipeline = "suite2p"
+    FILES = ("stat.npy", "F.npy", "Fneu.npy")
+
+    @classmethod
+    def is_plane(cls, path: str | os.PathLike) -> bool:
+        return all((Path(path) / name).is_file() for name in cls.FILES)
+
+    @classmethod
+    def matches(cls, path: Path) -> bool:
+        return len(cls.expand(path)) > 0
+
+    @classmethod
+    def expand(cls, path: Path) -> list[Path]:
+        """A plane folder or its stat.npy, or the plane folders in a suite2p folder."""
+        path = Path(path).expanduser()
+        if path.name == "stat.npy":
+            path = path.parent
+        if not path.is_dir():
+            return []
+        if cls.is_plane(path):
+            return [path]
+        planes = [p for p in path.iterdir() if p.name.startswith("plane") and cls.is_plane(p)]
+        return sorted(planes, key=lambda p: (len(p.name), p.name))
+
+    @classmethod
+    def describe(cls, path: Path) -> str:
+        folder = cls.expand(path)[0]
+        num_rois = len(np.load(folder / "stat.npy", allow_pickle=True))
+        return f"suite2p: {num_rois} ROIs, " + ("data.bin" if (folder / "data.bin").is_file() else "no data.bin, so no residual")
+
+    @classmethod
+    def from_path(cls, path: Path, raw: ArrayLike | str | Path | None = None, device: str = "cpu") -> tuple["Suite2pResults", ArrayLike | None, list[str]]:
+        """data.bin beside stat.npy is the registered movie, which gives the residual."""
+        from masknmf.io import load_movie
+
+        folder = cls.expand(path)[0]
+        if isinstance(raw, (str, Path)):
+            raw = load_movie(raw)
+        skipped = []
+        registered = None
+        if (folder / "data.bin").is_file():
+            if (folder / "ops.npy").is_file():
+                registered = MotionBinDataset(folder / "data.bin", folder / "ops.npy")
+            else:
+                skipped.append(f"{folder / 'data.bin'} needs ops.npy beside it to be read; no residual")
+        frames = np.load(folder / "F.npy", mmap_mode="r").shape[1]
+        if registered is not None and registered.shape[0] != frames:
+            skipped.append(f"{folder / 'data.bin'} has {registered.shape[0]} frames, F.npy {frames}; not used, no residual")
+            registered = None
+        return cls(folder, device=device, motion_corrected_data=registered), raw, skipped
+
+    @property
+    def frame_rate(self) -> float | None:
+        return suite2p_frame_rate(self.ops)
 
     def __init__(self,
                  folder: str | os.PathLike,
@@ -425,7 +487,7 @@ def registered_roi_averages(registered, A: sp.spmatrix, batch: int = 1000) -> np
     R = roi_average_operator(A)
     n_frames = registered.shape[0]
     out = np.empty((A.shape[1], n_frames), np.float32)
-    for t0 in tqdm(range(0, n_frames, batch)):
+    for t0 in progress(range(0, n_frames, batch), desc="raw traces"):
         Y = np.asarray(registered[t0:t0 + batch], np.float32).reshape(-1, A.shape[0])
         out[:, t0:t0 + Y.shape[0]] = R @ Y.T
     return out

@@ -40,6 +40,7 @@ from masknmf.visualization.imgui import (
 from masknmf.visualization.imgui.keybinds import MULTISESSION, pressed
 from masknmf.visualization.imgui.options import draw_options_menu, draw_options_popup
 from masknmf.visualization.imgui.panels import KEYBINDS_LABEL, hint_button_width
+from masknmf.visualization.imgui.scale import scale_figure
 from masknmf.visualization.summary_widget import SummaryImageViewer
 
 _UNCLUSTERED_COLOR = (0.45, 0.45, 0.45)
@@ -322,6 +323,9 @@ class MultiSessionDemixingVis:
             self._nd_image_graphics.append(graphic)
             self._bind_panel(k)
         self._ndw.figure.set_imgui_right_click(SourceRightClickMenu(self._panel_choices, self._set_source))
+        # wgpu's imgui renderer drops keys missing from its KEY_MAP, which leaves out [ and ] (page back / next)
+        renderer = self._ndw.figure.imgui_renderer
+        renderer.KEY_MAP = {**renderer.KEY_MAP, "[": imgui.Key.left_bracket, "]": imgui.Key.right_bracket}
 
         for subplot in self._ndw.figure:
             subplot.tooltip.enabled = False
@@ -1147,6 +1151,7 @@ class MultiSessionDemixingVis:
         return self._traces
 
     def show(self):
+        scale_figure(self._ndw.figure)
         return self._ndw.show()
 
     def close(self):

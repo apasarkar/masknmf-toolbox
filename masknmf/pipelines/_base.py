@@ -20,7 +20,7 @@ from masknmf._version import __version__
 from masknmf.pipelines.scraper import slugify, config_json_value, config_from_json
 from masknmf.arrays import ArrayLike, OphysArray
 from masknmf.compression import CompressionArray, CompressStrategy, CompressDenoiseStrategy
-from masknmf.compression.preprocessing import MaximinSplineDetrend
+from masknmf.compression.preprocessing import MaximinSplineDetrend, geometric_knot_positions
 from masknmf.demixing import SignalDemixer, DemixingResults, NoSignalsDetectedError
 from masknmf.motion_correction import BaseRegistrationArray, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.motion_correction.moco_preprocessing import construct_moco_template
@@ -33,6 +33,8 @@ from masknmf.motion_correction.registration_arrays import FilteredArray
 from masknmf.motion_correction.spatial_filters import compute_highpass_filter_kernel, image_filter
 
 logger = logging.getLogger(__name__)
+WIDTH_STAGE_LINE = 60
+
 
 
 def heartbeat(name: str, start: float, seconds: float, stop: threading.Event):
@@ -50,7 +52,7 @@ class RecordsFailure:
     """
     A pipeline's run that, when it raises after making its run folder, logs the error and records in config.json
     that the run failed, then lets the error through. BasePipeline wraps every subclass's run in one, so a run
-    started from Python leaves the same record as one started from the command line. A run given resume_from takes
+    started from Python leaves the same record as one started from the command line. A run given resume takes
     the settings it was not given from the earlier run's config.json first.
     """
 
@@ -157,7 +159,7 @@ class BasePipeline(ABC):
 
     def arguments_resumed(self, run: Callable, args: tuple, kwargs: dict) -> dict:
         """
-        The arguments of run by name. With a resume_from that has a config.json beside it, the run arguments not
+        The arguments of run by name. With a resume that has a config.json beside it, the run arguments not
         given and the config arguments of __init__ not given take that run's values; stop_after is this run's own.
 
         Args:
@@ -172,11 +174,11 @@ class BasePipeline(ABC):
         parameters_run = inspect.signature(run).parameters
         arguments = inspect.signature(run).bind_partial(self, *args, **kwargs).arguments
         del arguments[next(iter(parameters_run))]
-        if arguments.get("resume_from") is None:
+        if arguments.get("resume") is None:
             return arguments
-        filepath_config = Path(arguments["resume_from"]).expanduser().resolve().parent / "config.json"
+        filepath_config = Path(arguments["resume"]).expanduser().resolve().parent / "config.json"
         if not filepath_config.is_file():
-            logger.info(f"no config.json beside {arguments['resume_from']}; the settings not given are the defaults")
+            logger.info(f"no config.json beside {arguments['resume']}; the settings not given are the defaults")
             return arguments
         earlier = json.loads(filepath_config.read_text())
         if earlier.get("pipeline", type(self).__name__) != type(self).__name__:
@@ -242,7 +244,9 @@ class BasePipeline(ABC):
                            "gpu": torch.cuda.get_device_name() if device.startswith("cuda") else None,
                            "started": get_timestamp(), "finished": None, "seconds": None,
                            "status": "running"}
-        logger.info(f"masknmf {__version__} {type(self).__name__} on {device}, {self.log_level} log at {path}")
+        gpu = f", {self.run_record['gpu']}" if self.run_record["gpu"] is not None else ""
+        logger.info(f"masknmf {__version__} {type(self).__name__} on {device}{gpu}")
+        logger.info(f"run folder {folder}" + ("" if self.log_level == "info" else f", {self.log_level} log"))
         return path
 
     @contextmanager
@@ -252,7 +256,7 @@ class BasePipeline(ABC):
         took (with its peak cuda memory on a cuda device), or that it failed and after how long, and record its start,
         seconds, status and peak under name in timings and config.json.
         """
-        logger.info(name)
+        logger.info(f"starting {name} ".ljust(WIDTH_STAGE_LINE, "-"))
         started = get_timestamp()
         start = time.monotonic()
         cuda = str(self.torch_device).startswith("cuda")
@@ -290,17 +294,17 @@ class BasePipeline(ABC):
     def results_path(self, base: Path | None = None) -> str:
         """``results.hdf5`` in a new run folder made in base, or in output_folder unless base is given."""
         path = os.path.join(self.create_run_folder(base), "results.hdf5")
-        display(f"Writing results to {path}")
+        logger.debug(f"writing results to {path}")
         return path
 
-    def resume_source(self, resume_from: str | Path | None, reuse_compression: bool) -> tuple[Path | None, Path | None]:
+    def resume_source(self, resume: str | Path | None, reuse_compression: bool) -> tuple[Path | None, Path | None]:
         """
         The earlier results file a run resumes and the folder its new run folder goes in, checked before anything is
-        written. With reuse_compression and no resume_from, as compress_config "skip" asks, it is the results.hdf5 in
+        written. With reuse_compression and no resume, as compress_config "skip" asks, it is the results.hdf5 in
         output_folder, an earlier run folder, and the new run folder goes beside that one.
 
         Args:
-            resume_from (str | Path | None): The earlier results file, or None
+            resume (str | Path | None): The earlier results file, or None
             reuse_compression (bool): Whether its compression is reused, else only its registration
         Returns:
             Path | None: The earlier results file, or None for a run that resumes nothing
@@ -310,13 +314,13 @@ class BasePipeline(ABC):
             ValueError: If it holds no compression to reuse, or no registration when only that is reused
         """
         base = None
-        if resume_from is None and reuse_compression:
+        if resume is None and reuse_compression:
             folder = Path.cwd() if self.output_folder is None else self.output_folder
-            resume_from = folder / "results.hdf5"
+            resume = folder / "results.hdf5"
             base = folder.parent
-        if resume_from is None:
+        if resume is None:
             return None, None
-        path = Path(resume_from).expanduser().resolve()
+        path = Path(resume).expanduser().resolve()
         if not path.is_file():
             raise FileNotFoundError(f"no results file to resume from at {path}")
         if reuse_compression and not has_group(path, CompressionArray.__name__):
@@ -325,28 +329,28 @@ class BasePipeline(ABC):
             raise ValueError(f"{path} holds no registration to resume from")
         return path, base
 
-    def resume(self, resume_from: Path, results_path: str, reuse_compression: bool) -> type[BaseRegistrationArray] | None:
+    def resume(self, resume: Path, results_path: str, reuse_compression: bool) -> type[BaseRegistrationArray] | None:
         """
         Copy the registration of an earlier results file, and its compression with reuse_compression, into this run's
         results_path; the earlier file is left as it is. config.json keeps the inputs, configs and timings of the run
         that made what is reused.
 
         Args:
-            resume_from (Path): The earlier results file
+            resume (Path): The earlier results file
             results_path (str): This run's results file
             reuse_compression (bool): Whether the compression is copied too
         Returns:
             type[BaseRegistrationArray] | None: The registration array class copied, or None when there was none
         """
-        stored = next((c for c in REGISTRATION_ARRAYS.values() if has_group(resume_from, c.__name__)), None)
+        stored = next((c for c in REGISTRATION_ARRAYS.values() if has_group(resume, c.__name__)), None)
         names = [] if stored is None else [stored.__name__, stored._strategy_cls.__name__]
         if reuse_compression:
             names.append(CompressionArray.__name__)
-        with h5py.File(resume_from, "r") as source, h5py.File(results_path, "a") as target:
+        with h5py.File(resume, "r") as source, h5py.File(results_path, "a") as target:
             for name in names:
                 source.copy(source[name], target, name=name)
-        logger.info(f"reusing {', '.join(names)} from {resume_from}")
-        filepath_config = resume_from.parent / "config.json"
+        logger.info(f"reusing {', '.join(names)} from {resume}")
+        filepath_config = resume.parent / "config.json"
         earlier = json.loads(filepath_config.read_text()) if filepath_config.is_file() else {}
         reused = ["motion_correct_config"] + (["compress_config"] if reuse_compression else [])
         steps = ["motion correction"] + (["compression"] if reuse_compression else [])
@@ -466,13 +470,36 @@ class BasePipeline(ABC):
                          frame_rate: float,
                          window_seconds: float,
                          knot_seconds: float,
-                         sigma_seconds: float) -> MaximinSplineDetrend:
-        """A maximin spline detrender with its rolling window, knot spacing and smoothing given in seconds."""
+                         sigma_seconds: float,
+                         geometric_first_seconds: float | None = None,
+                         geometric_growth: float = 1.5,
+                         edge_mode: Literal["mirror", "line"] = "mirror") -> MaximinSplineDetrend:
+        """
+        A maximin spline detrender with its rolling window, knot spacing and smoothing given in seconds.
+
+        By default the knots are uniform, knot_seconds apart. With geometric_first_seconds set, they are dense at
+        the start instead: the first knot geometric_first_seconds in, each gap geometric_growth times the last,
+        capped at knot_seconds. Use this when photobleaching is fast at the start of the recording.
+        """
+        if int(window_seconds * frame_rate) < 3:
+            raise ValueError(f"at {frame_rate} fps this pipeline's {window_seconds} s detrending window is under 3 frames; "
+                             f"it needs at least {3 / window_seconds:g} fps")
+        knot_positions = None
+        num_knots = max(4, int(num_frames / frame_rate / knot_seconds))
+        if geometric_first_seconds is not None:
+            positions = geometric_knot_positions(num_frames, frame_rate,
+                                                 first_seconds=geometric_first_seconds,
+                                                 growth=geometric_growth,
+                                                 max_spacing_seconds=knot_seconds)
+            if positions:  # a recording too short for any knot keeps the uniform ones
+                knot_positions, num_knots = positions, len(positions)
         return MaximinSplineDetrend(num_frames=num_frames,
-                                    num_knots=max(4, int(num_frames / frame_rate / knot_seconds)),
+                                    num_knots=num_knots,
+                                    knot_positions=knot_positions,
                                     window=int(window_seconds * frame_rate),
                                     sigma=max(2.0, sigma_seconds * frame_rate),
-                                    device=self.torch_device)
+                                    device=self.torch_device,
+                                    edge_mode=edge_mode)
 
     def run_multipass(self, demixer: SignalDemixer, config: MultipassDemixingConfig,
                       name: str = "demixing") -> DemixingResults:
@@ -493,9 +520,10 @@ class BasePipeline(ABC):
                                          "to resolve this issue.")
                     logger.info("no signals detected, keeping the previous pass")
                     break
+                initialized = demixer.results.spatial_demixed.shape[1]
                 demixer.demix(**asdict(singlepass.NMFConfig))
                 results = demixer.results
-                logger.info(f"{results.spatial_demixed.shape[1]} signals")
+                logger.info(f"{initialized} signals initialized, {results.spatial_demixed.shape[1]} kept")
                 torch.cuda.empty_cache()
         return results
 

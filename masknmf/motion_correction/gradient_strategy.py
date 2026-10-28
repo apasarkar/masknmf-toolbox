@@ -8,7 +8,7 @@ from masknmf.utils import Serializer, display
 from masknmf.motion_correction.strategies import MotionCorrectionStrategy
 import numpy as np
 from masknmf.arrays.array_interfaces import ArrayLike, LazyFrameLoader
-from tqdm import tqdm
+from masknmf.utils.display import progress
 from masknmf.motion_correction.registration_arrays import BaseRegistrationArray
 from masknmf.arrays.ophys_array import OphysArray
 import copy
@@ -267,7 +267,7 @@ class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
 
         gradient_steps = []
         total_shifts = []
-        for k in tqdm(range(num_iters)):
+        for k in progress(range(num_iters), desc="registering"):
             start = k * batch_size
             end = min(start + batch_size, num_frames)
             subset = torch.as_tensor(reference_movie._get(slice(start, end), include_mean=True), device=self.device,

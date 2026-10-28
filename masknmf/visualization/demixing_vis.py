@@ -34,6 +34,7 @@ from masknmf.visualization.imgui import (
     help_buttons_width,
     draw_range_filter,
     draw_roi_table,
+    draw_min_brightness,
     draw_switch,
     em,
     popup,
@@ -51,6 +52,8 @@ from masknmf.visualization.imgui import (
 from masknmf.visualization.imgui.curation_help import draw_curation_help
 from masknmf.visualization.imgui.keybinds import DEMIXING, pressed
 from masknmf.visualization.imgui.options import OPTIONS_LABEL, draw_options_popup
+from masknmf.visualization.imgui.run_record import RECORD_LABEL, RECORD_TIP, draw_run_record_popup
+from masknmf.visualization.imgui.scale import scale_figure
 from masknmf.visualization.rois import MARKED_COLOR, SELECTED_ALPHA, FootprintSet
 from masknmf.visualization.summary_widget import SummaryImageViewer
 from masknmf.demixing import CellStats, estimate_temporal_demixed_raw, update_signals, write_curated
@@ -77,7 +80,7 @@ _UNDO_DEPTH = 50  # ctrl+z snapshots kept
 _DEFAULT_ORDER = ("raw", "compressed+denoised", "signals", "background", "registered", "residual")
 _CAPTIONS = (
     "masks", "contours", "sel masks", "sel contours", "weighting", "color by", "traces",
-    "filter", "range", "applied", "run", "options",
+    "filter", "range", "applied", "run", "options", "brightness",
 )
 # signals selected together, in order of mutual contrast on the dark plot; no red, a mask marked for
 # deletion is red
@@ -110,7 +113,9 @@ class SingleSessionDemixingVis:
     own peak is left out, as the contours leave it out.
 
     With ``results_path`` set, "Demix" runs the drawn ROIs and the signals marked with "Delete" through the
-    demixer's NMF pass (``nmf_config``, the pipeline defaults when None) and writes the outcome to a new
+    demixer's NMF pass (``nmf_config``; when None, the pipeline defaults with "filter dim rois" starting at the
+    min brightness of the pass that produced the results, read from the config.json beside them or from a curated
+    file's own record) and writes the outcome to a new
     ``<stem>.<timestamp>.curated.hdf5`` beside the file (``results.hdf5 -> results.<timestamp>.curated.hdf5``),
     never over it: drawn ROIs become ordinary signals, marked signals are gone, the new file's description says
     what was done, and the viewer moves on to it so further passes chain.
@@ -207,6 +212,7 @@ class SingleSessionDemixingVis:
         panel_names: dict[str, str] | None = None,
     ):
         self._results_path = None if results_path is None else str(results_path)
+        self._nmf_config_given = nmf_config is not None
         if nmf_config is None:
             ## At a baseline, we don't want to modify user-input ROIs
             base = NMFConfig(maxiter=40,
@@ -245,6 +251,8 @@ class SingleSessionDemixingVis:
         self._keybinds_open = False
         self._help_open = False
         self._options_open = False
+        self._record = None  # the record of the run that made the results, for File > run parameters
+        self._record_open = False
         self._show_masks = show_masks
         self._mask_opacity = mask_opacity
         self._masks_by_peak = True
@@ -352,6 +360,14 @@ class SingleSessionDemixingVis:
         self._opened = opened
         results = opened.results
         self._results_path = None if opened.path is None else str(opened.path)
+        self._record = None if self._results_path is None else masknmf.io.read_run_record(self._results_path)
+        if not self._nmf_config_given and self._results_path is not None:
+            recorded = masknmf.io.read_nmf_config(self._results_path)
+            if recorded is not None:
+                value = recorded.get("min_brightness")
+                self._min_brightness_cache = 0.0 if value is None else float(value)
+                if self._nmf_config.min_brightness is not None:
+                    self._nmf_config.min_brightness = self._min_brightness_cache
         self._demixing_results = results
         self._is_masknmf_result = isinstance(results, masknmf.DemixingResults)
         self._has_ac = hasattr(results, "signals_array")
@@ -387,7 +403,7 @@ class SingleSessionDemixingVis:
                 "no raw movie: raw= (a movie or a .tif path) adds a raw panel; the only .tif in the results folder is used automatically"
             )
         if opened.shifts is not None:
-            display(f"shift traces: {opened.shifts_source if opened.shifts_source is not None else 'shifts given'}")
+            display(f"shifts: {opened.shifts_source if opened.shifts_source is not None else 'shifts given'}")
         else:
             display(
                 "no motion shifts: shifts= (an array or a results file holding a registration) adds shift traces; "
@@ -425,13 +441,16 @@ class SingleSessionDemixingVis:
         if self._summary_img is not None and tuple(self._summary_img.shape[-2:]) != tuple(self._shape[1:3]):
             self._summary_img = None
         movies = self._movies()
+        self._stills = self._static_images()
+        # a panel shows any movie or any still: the stills play as one image on every frame
+        sources = OrderedDict(movies, **self._stills)
         order = [self._panel_names.get(name, name) for name in _DEFAULT_ORDER]
         order = [name for name in order if name in movies]
         if first:
             # one panel per movie, up to three, each switchable to any of them; they open in _DEFAULT_ORDER
             self._panels = OrderedDict()
             for i, name in enumerate(order[:3], start=1):
-                self._panels[str(i)] = SwitchableArray(movies, self._shape)
+                self._panels[str(i)] = SwitchableArray(sources, self._shape)
                 self._panels[str(i)].current = name
             n = len(self._panels)
             self._video_extents = {name: (i / n, (i + 1) / n, 0.0, 1.0) for i, name in enumerate(self._panels)}
@@ -463,14 +482,13 @@ class SingleSessionDemixingVis:
             same = set(movies) == self._movie_names
             for i, (name, panel) in enumerate(self._panels.items()):
                 keep = panel.current
-                self._panels[name] = SwitchableArray(movies, self._shape)
+                self._panels[name] = SwitchableArray(sources, self._shape)
                 self._panels[name].current = keep if same else order[min(i, len(order) - 1)]
                 self._panel_graphics[name].data = self._panels[name]
                 if frames_changed:
                     self._panel_graphics[name].slider_maps = {"time": frame_timings}
                 self._ndw_fov.figure[name].title = self._panels[name].current
         self._movie_names = set(movies)
-        self._stills = self._static_images()
         if not first and self._summary.is_open:
             self._summary.set_images(self._stills)
 
@@ -757,7 +775,7 @@ class SingleSessionDemixingVis:
             results.temporal_demixed_raw = estimate_temporal_demixed_raw(
                 results, movie, device=self.device, nonneg=True, frame_batch_size=self.frame_batch_size
             )
-            path = write_curated(self._results_path, results, drop, masks.shape[-1], filters)
+            path = write_curated(self._results_path, results, drop, masks.shape[-1], filters, nmf_config=self._nmf_config)
             self._pending = (results, path)
         except Exception as e:
             self._pending = e
@@ -1538,8 +1556,8 @@ class SingleSessionDemixingVis:
         if pressed(DEMIXING["delete"]) and self._worker is None:
             self._delete_selected()
         if pressed(DEMIXING["escape"]):
-            if self._help_open or self._keybinds_open or self._options_open:
-                self._help_open = self._keybinds_open = self._options_open = False
+            if self._help_open or self._keybinds_open or self._options_open or self._record_open:
+                self._help_open = self._keybinds_open = self._options_open = self._record_open = False
             elif self._armed:
                 self._armed = False
             elif self._region is not None:
@@ -1625,6 +1643,9 @@ class SingleSessionDemixingVis:
             "- .txt: signal ids in a custom order, becomes the 'order' column"
         )
         imgui.separator()
+        if imgui.menu_item_simple(RECORD_LABEL, enabled=self._record is not None):
+            self._record_open = True
+        tooltip(RECORD_TIP if self._record is not None else "no config.json beside these results")
         if imgui.menu_item_simple(OPTIONS_LABEL):
             self._options_open = True
         imgui.end_menu()
@@ -1679,6 +1700,7 @@ class SingleSessionDemixingVis:
         self._keybinds_open = draw_keybinds_popup(DEMIXING, self._keybinds_open)
         self._help_open, self._keybinds_open = draw_curation_help(self._help_open, self._keybinds_open)
         self._options_open = draw_options_popup(self._ndw_fov.figure, self._options_open)
+        self._record_open = draw_run_record_popup(self._record, self._record_open)
         path = draw_path_prompt(self._export_prompt)
         if path is not None:
             try:
@@ -2105,6 +2127,18 @@ class SingleSessionDemixingVis:
             "delete signals that never get bright enough during the nmf pass. "
             "turn off if a hand-drawn roi keeps disappearing from add to results."
         )
+        g.row("brightness")
+        imgui.begin_disabled(not filter_dim)
+        changed, value = draw_min_brightness("min_brightness", self._min_brightness_cache, g.w, g.w)
+        imgui.end_disabled()
+        if changed:
+            self._min_brightness_cache = value
+            self._nmf_config.min_brightness = value
+        help_mark(
+            "the brightness a signal must reach to survive the pass: its peak pixel weight times its peak trace "
+            "value, in units of the pixel noise, ramped up to this over the pass's iterations. "
+            "starts at the value of the pass that produced these results."
+        )
 
         imgui.spacing()
         imgui.push_text_wrap_pos(0)
@@ -2198,6 +2232,8 @@ class SingleSessionDemixingVis:
         name = "raw" if self._registered is None else "registered"
         self._lag1 = {f"{name} lag-1 acf": raw, "compressed lag-1 acf": compressed, "residual lag-1 acf": residual}
         self._stills = self._static_images()
+        for panel in self._panels.values():
+            panel.sources.update(self._lag1)
         if self._summary.is_open:
             self._summary.set_images(self._stills)
 
@@ -2206,6 +2242,7 @@ class SingleSessionDemixingVis:
         return self._reference_index
 
     def show(self):
+        scale_figure(self.fov_widget.figure)
         return self.fov_widget.show()
 
     def close(self):
@@ -2316,4 +2353,5 @@ def visualize_superpixels_peaks(init_results: masknmf.InitializationResults):
         name=image_panels[2],
     )
 
+    scale_figure(ndw_corr.figure)
     return ndw_corr.show()

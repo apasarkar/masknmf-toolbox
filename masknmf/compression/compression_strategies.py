@@ -144,6 +144,7 @@ class CompressStrategy:
                                             frame_weighting=self._frame_weighting,
                                             detrender=self.detrender,
                                             device=self.device)
+        masknmf.utils.display(f"rank {self._results.temporal_compressed.shape[0]}")
 
         return self._results
 
@@ -218,6 +219,8 @@ class CompressDenoiseStrategy(CompressStrategy):
                                               device=self.device)
 
         temporal_compressed_no_denoiser = compression_no_denoiser.temporal_compressed.cpu()
+        masknmf.utils.display(f"rank {temporal_compressed_no_denoiser.shape[0]} before the temporal denoiser")
+        masknmf.utils.display(f"training the temporal denoiser on {temporal_compressed_no_denoiser.shape[0]} components")
         trained_model, _ = masknmf.compression.denoising.train_total_variance_denoiser(temporal_compressed_no_denoiser,
                                                                                        max_epochs=self.num_epochs,
                                                                                        batch_size=128,
@@ -240,5 +243,6 @@ class CompressDenoiseStrategy(CompressStrategy):
                                                                 detrender=self.detrender,
                                                                 device=self.device,
                                                                 temporal_denoiser=curr_temporal_denoiser)
+        masknmf.utils.display(f"rank {self._results.temporal_compressed.shape[0]} after it")
 
         return self._results

@@ -11,6 +11,8 @@
 | `masknmf run --pipeline P ...` | build P from flags and a `--config` file, and call `P.run(...)` |
 | `masknmf run --pipeline P --help` | argparse help showing only P's flags |
 | `masknmf view RESULTS.hdf5 ...` | open the viewer for the stages a results file holds |
+| `masknmf view SUITE2P_PLANE` | open the demixing viewer on a suite2p plane folder ([suite2p and caiman results](#suite2p-and-caiman-results)) |
+| `masknmf view CNMF.hdf5` | open the demixing viewer on a results file caiman's `CNMF.save` wrote |
 | `masknmf view RESULTS... --classify` | label ROIs across one or more results files or globs |
 | `masknmf train-classifier RESULTS... --out NAME` | train a ROI classifier on the saved labels |
 | `masknmf classify RESULTS... --classifier F` | classify the ROIs in results files with a trained classifier |
@@ -102,8 +104,8 @@ Batches:
 A run folder's `config.json`:
 - `timings`: each step's start time, seconds, whether it finished, and peak cuda memory (GB) on cuda; updated as the run goes
 - a step still running after 10 minutes is logged, and again every 10 minutes
-- a resumed run (`--resume-from`, or `--compress-kind skip --output-folder <run folder>`) is a new run folder: the registration, and the compression it reuses, are copied in, the earlier folder is left as it is, and config.json keeps the earlier moco and compression configs, inputs and timings
-- with `--resume-from`, every setting not given, all but `--stop-after`, is the earlier run's, from the config.json beside its results file, and the movie it recorded is read unless one is given; anything given replaces it
+- a resumed run (`--resume`, or `--compress-kind skip --output-folder <run folder>`) is a new run folder: the registration, and the compression it reuses, are copied in, the earlier folder is left as it is, and config.json keeps the earlier moco and compression configs, inputs and timings
+- with `--resume`, every setting not given, all but `--stop-after`, is the earlier run's, from the config.json beside its results file, and the movie it recorded is read unless one is given; anything given replaces it
 - a run that fails keeps its folder, marked failed in config.json with the error in its log, whenever it saved a registration or a compression; from Python too
 - `inputs`: the movie and arrays the run read, with their size and modification time; `masknmf run --config <run folder>/config.json` reruns on them unless a movie is given
 - a finished run prints the `masknmf view` line that opens it, with the movie as `--raw`
@@ -113,13 +115,13 @@ A run folder's `config.json`:
 ## two-photon-calcium (`TwoPhotonCalciumPipeline`)
 
 Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise | skip), `spatial-highpass` (spatial-highpass), `filtered-demixing` (multipass: 2 passes by default | skip: the run ends after compression), `unfiltered-demixing` (multipass: 3 passes by default | skip: the filtered passes' results are the run's demixing).
-Run args: `MOVIE` (optional), `--fs` (required unless resumed), `--exclude-border-radius`, `--remove-intermediates`, `--stop-after {registration,compression,demixing}`, `--resume-from RESULTS`.
+Run args: `MOVIE` (optional), `--fs` (required unless resumed), `--exclude-border-radius`, `--remove-intermediates`, `--stop-after {registration,compression,demixing}`, `--resume RESULTS`.
 Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device {auto,cuda,cpu}`, `--log-level {debug,info,warning}`.
 
 - `--load-into-ram true` reads the raw movie into RAM before moco; needs about the movie's size in free RAM
 - demixing passes without a detrender get a spline detrender built from `--fs`
 - `--stop-after registration` writes the shifts and template and ends; `--stop-after compression` (or the older `--filtered-demixing-kind skip`) ends once the compression is written; a later `--compress-kind skip` run demixes it
-- `--resume-from <results.hdf5>` copies that run's registration into the new run folder and replays it on the movie instead of estimating one, so compression can be re-run with other settings; with `--compress-kind skip` its compression is reused too, and demixing gets the registered movie back for raw traces
+- `--resume <results.hdf5>` copies that run's registration into the new run folder and replays it on the movie instead of estimating one, so compression can be re-run with other settings; with `--compress-kind skip` its compression is reused too, and demixing gets the registered movie back for raw traces
 - `--remove-intermediates true` drops the compression once demixing is done; it is kept by default, so it can be checked
 
 ```bash
@@ -143,11 +145,11 @@ masknmf view ./20260923T120000_two-photon-calcium --raw movie.tif
 
 # the same registration, movie and settings, compression re-run with another config
 masknmf run --pipeline two-photon-calcium --stop-after compression \
-    --resume-from ./20260923T120000_two-photon-calcium/results.hdf5 --compress-kind compress
+    --resume ./20260923T120000_two-photon-calcium/results.hdf5 --compress-kind compress
 
 # the same registration and compression, demixing with the configs in demixing.json
 masknmf run --pipeline two-photon-calcium --compress-kind skip --config demixing.json \
-    --resume-from ./20260923T120000_two-photon-calcium/results.hdf5
+    --resume ./20260923T120000_two-photon-calcium/results.hdf5
 
 # the run again, exactly as recorded
 masknmf run --config ./20260923T120000_two-photon-calcium/config.json
@@ -162,7 +164,7 @@ masknmf run --pipeline two-photon-calcium --fs 30 --compress-kind skip \
 
 # the same with the movie the run recorded, so demixing gets raw traces
 masknmf run --pipeline two-photon-calcium --compress-kind skip \
-    --resume-from ./20260923T120000_two-photon-calcium/results.hdf5
+    --resume ./20260923T120000_two-photon-calcium/results.hdf5
 
 # force CPU, smaller batches
 masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --device cpu --frame-batch-size 100
@@ -171,7 +173,7 @@ masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --device cpu --frame
 ## one-photon-culture (`OnePhotonCulturePipeline`)
 
 Sections: `motion-correct` (gradient | skip), `compress` (compress | compress-denoise | skip), `demixing` (multipass: 2 passes by default, no detrending | skip: the run ends after compression).
-Run args: `MOVIE`, `--fs` (required unless resumed), `--indicator-sign {negative,positive}` (required unless resumed), `--active-frames FILE.npy` (required), `--remove-intermediates`, `--stop-after {registration,compression,demixing}`, `--resume-from RESULTS`.
+Run args: `MOVIE`, `--fs` (required unless resumed), `--indicator-sign {negative,positive}` (required unless resumed), `--active-frames FILE.npy` (required), `--remove-intermediates`, `--stop-after {registration,compression,demixing}`, `--resume RESULTS`.
 Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device`, `--log-level`.
 
 - `--active-frames`: 1-D `.npy`, one 0/1 per frame, used as the compression frame weighting
@@ -221,7 +223,7 @@ masknmf run --pipeline glutamate-calcium-spine \
 
 Moco and compression only, no demixing.
 Sections: `motion-correct` (rigid | piecewise-rigid | skip), `compress` (compress | compress-denoise | skip: the run ends after motion correction).
-Run args: `MOVIE`, `--exclude-border-radius`, `--stop-after {registration,compression}`, `--resume-from RESULTS`.
+Run args: `MOVIE`, `--exclude-border-radius`, `--stop-after {registration,compression}`, `--resume RESULTS`.
 Init args: `--output-folder`, `--load-into-ram`, `--frame-batch-size`, `--device`, `--log-level`.
 
 ```bash
@@ -239,13 +241,16 @@ masknmf run --pipeline widefield-singlechannel wf.tif --motion-correct-kind skip
 
 - `RESULTS`: one or more `.h5`/`.hdf5` files or quoted globs; `**` recurses
 - globs skip `.zarr` stores, `.labels.hdf5` sidecars, and results files replaced by a newer curated file ([curated results files](#curated-results-files))
-- the demixing viewer opens one file; several need `--classify`
+- several files open one demixing viewer each, in its own process; `--raw` and `--compression` take one file
+- a suite2p plane folder, its `stat.npy`, or a file caiman saved, opens through its adapter ([suite2p and caiman results](#suite2p-and-caiman-results))
 
 A folder opens by the first match:
 
 | the folder holds | opens |
 |---|---|
 | a `*_roicat-tracking-manifest.json`, directly or in its `tracking` subfolder | the multisession viewer on the newest run ([multisession](#multisession)) |
+| `stat.npy`, `F.npy` and `Fneu.npy` | the suite2p plane, in the demixing viewer |
+| `plane0`, `plane1`, ... suite2p plane folders | one demixing viewer per plane |
 | `*results*.hdf5` files | as the glob `FOLDER/*results*.hdf5`: each results file's newest curated file, else the results file |
 
 ```bash
@@ -256,7 +261,27 @@ masknmf view results.hdf5 --raw movie.tif --fs 30  # + raw and registered panels
 masknmf view results.hdf5 --raw movie.tif --compression  # + lag-1 autocorrelation images of the registered, compressed and residual movies
 masknmf view results.hdf5 --raw raw.h5 --dataset /mov --device cpu
 masknmf view results.glutamate.hdf5 --prefix global  # the glutamate pipeline's whole-dendrite result
+masknmf view results.hdf5 suite2p/plane0           # the same plane by masknmf and by suite2p, side by side
 ```
+
+## suite2p and caiman results
+
+The demixing viewer opens suite2p's and caiman's results through adapters, so a masknmf run and a suite2p or caiman
+run of the same movie are compared in the same viewer, one window each.
+
+```bash
+masknmf view suite2p/plane5                       # a plane folder, or its stat.npy
+masknmf view suite2p                              # every plane in it, one viewer each
+masknmf view run_folder/results.hdf5 suite2p/plane5   # masknmf beside suite2p
+masknmf view suite2p/plane5 --raw movie.tif       # with the raw movie as a panel
+masknmf view cnmf.hdf5                            # a file caiman's CNMF.save wrote
+masknmf view cnmf.hdf5 --raw movie_d1_512_d2_512_d3_1_order_C_frames_3000.mmap   # with the movie caiman fit
+```
+
+- suite2p: the `data.bin` beside `stat.npy` gives the residual, read once when the viewer opens; the shifts and frame rate are ops'
+- caiman: the components in `estimates/idx_components`; `--raw` with a CNMF-E ring model gives the background and residual
+- Demix and curated files need a masknmf run; `--classify`, `--prefix`, `--compression` and `masknmf track` take masknmf results only
+- launcher: View results takes the same paths
 
 ## classification
 
@@ -270,10 +295,10 @@ Label ROIs by hand, train a ROICaT classifier, classify new sessions.
 # label ROIs; --classifier is where Train saves, and an existing file is selected for Classify
 masknmf view "sessions/*/results.hdf5" --classify --labels soma,dendrite,junk --classifier cells.roicat_classifier
 
-# train; every ROI in every session must be labeled. writes cells.roicat_classifier and cells.training.json
+# train on the labeled ROIs; unlabeled ones are left out. writes cells.roicat_classifier and cells.training.json
 masknmf train-classifier "sessions/*/results.hdf5" --out cells
 
-# classify new sessions; unlabeled ROIs take the predictions
+# classify new sessions; predictions are stored, labels are left as they are
 masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classifier --device cpu
 ```
 

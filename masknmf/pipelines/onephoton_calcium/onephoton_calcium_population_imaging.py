@@ -1,6 +1,5 @@
 import masknmf
 from masknmf.arrays import LazyFrameLoader, ArrayLike
-from masknmf.utils import display
 
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import (PiecewiseRigidMotionCorrectionConfig,
@@ -140,7 +139,7 @@ class OnePhotonCalciumPipeline(BasePipeline):
             exclude_border_radius: int = 0,
             remove_intermediates: bool = False,
             stop_after: Literal["registration", "compression", "demixing"] = "demixing",
-            resume_from: str | Path | None = None) -> Path:
+            resume: str | Path | None = None) -> Path:
         """
         Motion corrects, compresses (with denoising) and demixes a 1p movie
         Args:
@@ -152,7 +151,7 @@ class OnePhotonCalciumPipeline(BasePipeline):
             remove_intermediates (bool): Drop the CompressionArray group once demixing is done
             stop_after: the last stage to run: "registration" writes the shifts and template and ends,
                 "compression" ends once the compression is written, "demixing" runs everything
-            resume_from: an earlier results file copied into the new run folder: its registration is applied to
+            resume: an earlier results file copied into the new run folder: its registration is applied to
                 data instead of estimating one, and with compress_config "skip" its compression is reused too.
                 The settings not given, all but stop_after, are that run's, from the config.json beside it.
                 The earlier file is left as it is
@@ -162,16 +161,16 @@ class OnePhotonCalciumPipeline(BasePipeline):
             raise ValueError(f"If compress_config is a string, it can only be `skip`")
         if reuse_compression and stop_after != "demixing":
             raise ValueError('compress_config "skip" reuses a compression for its demixing; stop_after leaves nothing to run')
-        if stop_after == "registration" and isinstance(self.motion_correct_config, str) and resume_from is None:
+        if stop_after == "registration" and isinstance(self.motion_correct_config, str) and resume is None:
             raise ValueError('stop_after "registration" with motion_correct_config "skip" has nothing to write')
         if data is None and not reuse_compression:
             raise ValueError("data is None starting from the motion correction step. Specify a dataset")
-        resume_from, base = self.resume_source(resume_from, reuse_compression)
+        resume, base = self.resume_source(resume, reuse_compression)
         self.run_config = {"frame_rate": frame_rate, "exclude_border_radius": exclude_border_radius,
                            "indicator_polarity": indicator_polarity, "remove_intermediates": remove_intermediates,
-                           "stop_after": stop_after, "resume_from": None if resume_from is None else str(resume_from)}
+                           "stop_after": stop_after, "resume": None if resume is None else str(resume)}
         results_path = self.results_path(base)
-        stored = None if resume_from is None else self.resume(resume_from, results_path, reuse_compression)
+        stored = None if resume is None else self.resume(resume, results_path, reuse_compression)
         # a resumed run without the raw movie has no registered movie to re-estimate raw traces from
         moco_data = None
         if data is not None:
@@ -191,8 +190,11 @@ class OnePhotonCalciumPipeline(BasePipeline):
 
         if not reuse_compression:
             compress_strategy = self.compress_strategy(self.compress_config, shift_mask)
-            compress_strategy.detrender = self.spline_detrender(data.shape[0], frame_rate, window_seconds=40,
-                                                                knot_seconds=25, sigma_seconds=0.3)
+            compress_strategy.detrender = self.spline_detrender(data.shape[0], frame_rate, window_seconds=15,
+                                                                knot_seconds=10,
+                                                                sigma_seconds=0.3,
+                                                                edge_mode="line")
+
             with self.step("compression"):
                 compressed_results = compress_strategy.compress(moco_data)
                 compressed_results.export(results_path)
@@ -205,8 +207,6 @@ class OnePhotonCalciumPipeline(BasePipeline):
             return self.finish()
 
         device = self.torch_device
-        display("Running demixing analysis")
-
         pmd_denoise = masknmf.CompressionArray.from_hdf5(results_path)
         pmd_denoise.to(device)
         filtered_pmd = self._filtered_compression(pmd_denoise)
@@ -215,9 +215,9 @@ class OnePhotonCalciumPipeline(BasePipeline):
 
         filtered_demixer = masknmf.demixing.signal_demixer.SignalDemixer(filtered_pmd, device=device,
                                                                          frame_batch_size=self.frame_batch_size)
+        detrender = self.spline_detrender(pmd_denoise.shape[0], frame_rate, window_seconds=15, knot_seconds=10,
+                                          sigma_seconds=0.3, geometric_first_seconds=0.5, edge_mode="line")
 
-        detrender = self.spline_detrender(pmd_denoise.shape[0], frame_rate, window_seconds=20, knot_seconds=20,
-                                          sigma_seconds=0.3)
         filtered_config_used = self.with_detrender(self.filtered_demixing_config, detrender)
         unfiltered_config_used = self.with_detrender(self.unfiltered_demixing_config, detrender)
 

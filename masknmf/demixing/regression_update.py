@@ -1,6 +1,6 @@
 import scipy.sparse
 import torch
-from tqdm import tqdm
+from masknmf.utils.display import progress
 import math
 from masknmf.utils import SparseCOOTensor, SparseCSRTensor
 from masknmf.demixing.demixing_utils import (construct_graph_from_sparse_tensor,
@@ -233,7 +233,7 @@ def alternating_least_squares_affine_fit(u: SparseCSRTensor,
 
     m = torch.ones(c.shape[1], 1, device=u.device, dtype=v.dtype)
     b = torch.ones(a.shape[0], 1, device=v.device, dtype=v.dtype)
-    for _ in tqdm(range(num_iters)):
+    for _ in progress(range(num_iters), desc="affine fit"):
         m = _affine_fit_scaling_update(v,
                                        a,
                                        c,

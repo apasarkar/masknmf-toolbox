@@ -2,7 +2,7 @@
 The window `masknmf` opens when it is run with no arguments.
 
 A rail of functions on the left and one page each on the right: an Overview of what a run does, Run pipeline,
-Open results, Track sessions and Classify ROIs. Every value on a page becomes an argument of a `masknmf`
+View results, Track sessions and Classify ROIs. Every value on a page becomes an argument of a `masknmf`
 command, so whatever is started here is a command line run, and the equivalent command is printed before it
 starts. Stage configs that differ from the pipeline's defaults are written to a json file passed as --config.
 """
@@ -25,20 +25,22 @@ import numpy as np
 import wgpu
 from imgui_bundle import hello_imgui, imgui, imgui_ctx
 from imgui_bundle import icons_fontawesome_6 as fa
-from imgui_bundle import portable_file_dialogs as pfd
 from wgpu.utils.imgui import ImguiRenderer
 
 import masknmf
 from masknmf import cli
+from masknmf.demixing._adapters import adapter_for
 from masknmf.demixing.curation import latest_results
 from masknmf.io import group_name_compression, group_name_demixing, group_names_registration, stage_groups
 from masknmf.pipelines import scraper
 from masknmf.pipelines._base import BasePipeline
 from masknmf.visualization.imgui import guide
+from masknmf.visualization.imgui.files import NATIVE_DIALOGS, Picker
+from masknmf.visualization.imgui.scale import DIR_CONFIG, Scaler, fit_canvas, push_font_em
 from masknmf.visualization.imgui.theme import button_colors, tooltip
+from masknmf.visualization.imgui.widgets import draw_min_brightness
 
 
-DIR_CONFIG = Path.home() / ".config" / "masknmf"
 FILEPATH_RUN_CONFIGS = DIR_CONFIG / "launcher_configs.json"
 
 PIPELINE_INITIAL = "two-photon-calcium"
@@ -50,7 +52,7 @@ FILETYPES_MOVIE = [
 ]
 FILETYPES_ARRAY = [idl.FileType("NumPy", "*.npy")]
 FILETYPES_RESULTS = [
-    idl.FileType("Results", "*.h5 *.hdf5"),
+    idl.FileType("Results", "*.h5 *.hdf5 stat.npy"),
     idl.FileType("All Files", "*"),
 ]
 FILETYPES_CLASSIFIER = [
@@ -98,7 +100,7 @@ SIZE_MIN = (62 * FONT_SIZE, 44 * FONT_SIZE)
 
 WIDTH_INPUT_EM = 7.5
 WIDTH_RAIL_EM = 13
-WIDTH_CAPTION_EM = 9
+WIDTH_CAPTION_EM = 12.5
 
 NO_DEFAULT = object()
 
@@ -110,45 +112,57 @@ ROWS_FOUND = 12
 # the footer's command is cut after this many characters
 LENGTH_COMMAND = 300
 
-# the rail: a page key, its icon, its name, and the line under the name on its page
+# the rail: a page key, its icon, its name, and its tooltip
 PAGES = (
     ("home", fa.ICON_FA_HOUSE, "Overview", "what a run does, stage by stage, and which function here takes it on"),
     ("run", fa.ICON_FA_PLAY, "Run pipeline", "a pipeline over a movie: registration, compression and demixing into a run folder"),
-    ("open", fa.ICON_FA_FOLDER_OPEN, "Open results", "a results file, run folder or tracking run, in the viewer its stages call for"),
+    ("open", fa.ICON_FA_FOLDER_OPEN, "View results", "a results file, run folder or tracking run, in the viewer its stages call for"),
     ("track", fa.ICON_FA_DIAGRAM_PROJECT, "Track sessions", "match ROIs across sessions' results files with ROICaT"),
     ("classify", fa.ICON_FA_TAGS, "Classify ROIs", "label ROIs, train a classifier, classify new sessions"),
 )
-# the Overview's step cards: the page a click opens, icon, name, hint
+# the Overview's step cards: the page a click opens, icon, name
 STEPS = (
-    ("run", fa.ICON_FA_PLAY, "Run", "a pipeline over a movie"),
-    ("open", fa.ICON_FA_FOLDER_OPEN, "Open", "results at any stage"),
-    ("open", fa.ICON_FA_DRAW_POLYGON, "Curate", "in the demixing viewer"),
-    ("track", fa.ICON_FA_DIAGRAM_PROJECT, "Track", "ROIs across sessions"),
-    ("classify", fa.ICON_FA_TAGS, "Classify", "label, train, classify"),
+    ("run", fa.ICON_FA_PLAY, "Run"),
+    ("open", fa.ICON_FA_FOLDER_OPEN, "View"),
+    ("open", fa.ICON_FA_DRAW_POLYGON, "Curate"),
+    ("track", fa.ICON_FA_DIAGRAM_PROJECT, "Track"),
+    ("classify", fa.ICON_FA_TAGS, "Classify"),
 )
-# the pipeline's flow: a stage, the check that follows it, what the stage does, and what to check
+# the pipeline's flow: a stage, the check that follows it, what the stage does, what it saves, and what to check
 FLOW = (
     (
         "motion correct",
         "check the shifts",
-        "estimates a shift per frame on the raw movie, rigid or piecewise-rigid, against a template; only the shifts "
-        "and the template are kept, no registered movie is written",
-        "in the demixing viewer: the shift traces, and raw beside registered once the raw movie is given",
+        "aligns every frame to a template, rigid or piecewise-rigid",
+        "a shift per frame and the template",
+        "shift traces have no sudden jumps; the registered movie shows no motion beside the raw one",
     ),
     (
         "compress",
         "check the compression",
-        "applies the shifts while compressing the movie into PMD factors, with its mean and noise variance images",
-        "in the demixing viewer: compressed beside raw, the residual, the mean and noise stills; lag-1 autocorrelation "
-        "stills once the raw movie is given",
+        "denoises and compresses the registered movie with PMD",
+        "PMD factors, the mean image and the noise variance image",
+        "the residual shows no cell shapes; the compressed movie shows the activity in the raw one",
     ),
     (
         "demix",
         "check the demixing",
-        "fits footprints, traces and a background to the compressed movie",
-        "in the demixing viewer's Curation: masks over the movie and the traces; delete wrong signals, draw missed cells, "
-        "Demix again",
+        "finds each signal's footprint and trace, and the background",
+        "footprints, traces and the background",
+        "masks sit on cells; in Curation delete wrong signals, draw missed cells, Demix again",
     ),
+)
+# the run folder's name, split into its parts: text, the label under it, color
+RUN_FOLDER_PARTS = (
+    ("2026", "year", guide.ACCENT),
+    ("10", "month", guide.ACCENT),
+    ("21", "day", guide.ACCENT),
+    ("T", None, guide.DIM),
+    ("14", "hour", guide.KEY),
+    ("30", "min", guide.KEY),
+    ("52", "sec", guide.KEY),
+    ("_", None, guide.DIM),
+    ("two-photon-calcium", "pipeline", guide.TEXT),
 )
 # the I/O diagram: a box label and its color
 IO_BOXES = (("movie", guide.TEXT), ("run folder", guide.ACCENT), ("results.hdf5", guide.KEY))
@@ -156,7 +170,7 @@ IO_BOXES = (("movie", guide.TEXT), ("run folder", guide.ACCENT), ("results.hdf5"
 IO_FILES = (
     ("movie", "a .tif/.tiff file, a folder of tiffs read in name order, or an .h5/.hdf5 file with the name of its dataset"),
     ("output folder", "each run makes a timestamped folder here; empty puts it beside the movie"),
-    ("results.hdf5", "one file per run holding every stage it reached; Open results reads it at any stage"),
+    ("results.hdf5", "one file per run holding every stage it reached; View results reads it at any stage"),
     ("config.json", "the values the run used, which masknmf run --config reads back"),
     ("<results>.<time>.curated.hdf5", "a Demix from the viewer, beside the original, which is never changed; the newest opens in its place"),
     ("<results>.labels.hdf5", "the labels Classify ROIs saves beside a results file"),
@@ -185,22 +199,24 @@ STAGE_NOTES = {
     "demixing": "footprints, traces, background; Curation and Signals",
     "curated": "a curated file; its description says what was dropped",
 }
+# what Open results finds at a path; anything else is an adapter's pipeline
+FOUND_MASKNMF = ("", "results", "folder", "tracking", "missing", "other")
 # the viewers Open results offers: key, icon, name, when it applies
 VIEWERS = (
     (
         "demixing",
         fa.ICON_FA_LAYER_GROUP,
         "Demixing viewer",
-        "one session at any stage: registration (raw beside registered with the shifts, given the raw movie), compression "
-        "and denoising (compressed beside raw, the residual, the stills), demixing (Curation and Signals, Demix)",
+        "One session's results at any stage: registration, compression, demixing and curation; other pipelines' results "
+        "through their adapters. Several files open one viewer each",
     ),
     (
         "classification",
         fa.ICON_FA_TAGS,
         "Classification viewer",
-        "label this session's ROIs, train and classify; a folder of results files opens every session",
+        "Label ROIs, train a classifier and classify; a folder opens every session",
     ),
-    ("multisession", fa.ICON_FA_DIAGRAM_PROJECT, "Multisession viewer", "the ROIs tracked across a tracking run's sessions"),
+    ("multisession", fa.ICON_FA_DIAGRAM_PROJECT, "Multisession viewer", "ROIs tracked across a tracking run's sessions"),
 )
 
 
@@ -559,6 +575,7 @@ class Launcher:
         self.loop = None
         self.dialog: Optional[idl.FileDialog] = None
         self.font: Optional[imgui.ImFont] = None
+        self.scaler = Scaler()
 
         self.store = idl.JsonPreferenceStore(path=str(DIR_CONFIG / "recent.json"))
         self.config = idl.FileDialogConfig(
@@ -763,7 +780,7 @@ class Launcher:
         if not filepath.is_file():
             return f"no config.json in {folder}"
         try:
-            loaded = cli.config_record(loaded=json.loads(filepath.read_text()))
+            loaded = masknmf.io.config_record(loaded=json.loads(filepath.read_text()))
         except (OSError, ValueError) as error:
             return f"could not read {filepath.name}: {error}"
         name_class = None if loaded is None else loaded.get("pipeline")
@@ -783,7 +800,7 @@ class Launcher:
             return f"{filepath.name} does not fit {slug}"
         for param in (*self.spec.run_scalars, *self.spec.scalars):
             # a None the parameter does not take was recorded before it existed; where to start is chosen anew
-            if param.field not in configs or param.field == "resume_from":
+            if param.field not in configs or param.field == "resume":
                 continue
             if configs[param.field] is None and param.default is not None:
                 continue
@@ -809,7 +826,7 @@ class Launcher:
             "registration" and "compression", as available.
         """
         filepath = None if self.loaded_run is None else Path(self.loaded_run) / "results.hdf5"
-        if filepath is None or not filepath.is_file() or not any(p.field == "resume_from" for p in self.spec.run_scalars):
+        if filepath is None or not filepath.is_file() or not any(p.field == "resume" for p in self.spec.run_scalars):
             return []
         names = cli.groups_present(filepath_results=str(filepath))
         starts = ["registration"] if any(n in names for n in group_names_registration()) else []
@@ -829,7 +846,7 @@ class Launcher:
             "movie", "registration" or "compression".
         """
         self.start_from = start
-        resume = next(p for p in self.spec.run_scalars if p.field == "resume_from")
+        resume = next(p for p in self.spec.run_scalars if p.field == "resume")
         self.texts[resume.name] = "" if start == "movie" else str(Path(self.loaded_run) / "results.hdf5")
         compress = next((s for s in self.spec.sections if s.argument == "compress_config"), None)
         if compress is None:
@@ -841,19 +858,19 @@ class Launcher:
             self.forget(path=compress.argument)
 
     def inspect(self) -> None:
-        """Read what the Open results path holds, once per change of the path."""
+        """Read what the Open results path holds, once per change."""
         source = self.paths_open["source"].strip()
         if source == self.inspected:
             return
+        if source != "":
+            self.fill_raw(source=source)
         self.inspected = source
-        stages = {"registration": False, "compression": False, "demixing": False, "curated": False}
-        self.found = {"kind": "", "detail": "", "stages": stages, "files": []}
-        if source == "":
-            return
+        self.found = self.describe(source=source)
+
+    def fill_raw(self, source: str) -> None:
+        """The raw movie the run read, from the config.json beside its results, while the field is empty."""
         path = Path(source).expanduser()
         folder = path if path.is_dir() else path.parent
-        # the raw movie the run read, from the config.json beside its results, serves the registration and
-        # compression views
         if (folder / "config.json").is_file() and self.paths_open["raw"].strip() == "":
             try:
                 inputs = json.loads((folder / "config.json").read_text()).get("inputs", {})
@@ -863,40 +880,61 @@ class Launcher:
             if movie is not None and Path(movie["path"]).expanduser().exists():
                 self.paths_open["raw"] = movie["path"]
                 self.dataset_raw = movie.get("dataset", "")
+
+    def describe(self, source: str) -> dict[str, Any]:
+        """What a path holds, for the Found card."""
+        stages = {"registration": False, "compression": False, "demixing": False, "curated": False}
+        found = {"kind": "", "detail": "", "stages": stages, "files": []}
+        if source == "":
+            return found
+        path = Path(source).expanduser()
         try:
             tracking = cli.find_tracking(entry=source)
             if tracking is not None:
-                self.found.update(kind="tracking", detail=tracking.name)
-                return
+                found.update(kind="tracking", detail=tracking.name)
+                return found
+            adapter = adapter_for(source)
+            if adapter is not None:
+                files = adapter.expand(path)
+                detail = f"{len(files)} to open" if len(files) > 1 else f"{files[0].name}: {adapter.describe(files[0])}"
+                found.update(kind=adapter.pipeline, detail=detail, files=[str(p) for p in files])
+                return found
             if path.is_dir():
                 pattern = str(Path(glob.escape(source)) / "*results*.hdf5")
                 # expand_results exits the process on an empty glob, as the command line wants
                 files = cli.expand_results(entries=[pattern]) if len(glob.glob(pattern)) > 0 else []
-                self.found.update(kind="folder", files=files)
+                found.update(kind="folder", files=files)
                 if len(files) != 1:
-                    return
+                    return found
                 path = Path(files[0])
             elif not path.is_file() or not is_hdf5(filepath=source):
                 kind = "missing" if not path.exists() else "other"
                 detail = "not found on this machine" if kind == "missing" else "not a results file, run folder or tracking run"
-                self.found.update(kind=kind, detail=detail)
-                return
+                found.update(kind=kind, detail=detail)
+                return found
             names = cli.groups_present(filepath_results=str(path))
             stages["registration"] = any(n in names for n in group_names_registration())
             stages["compression"] = group_name_compression() in names
             stages["demixing"] = group_name_demixing() in names
             stages["curated"] = ".curated." in path.name
-            if self.found["kind"] == "":
-                self.found.update(kind="results", detail=path.name)
+            if found["kind"] == "":
+                found.update(kind="results", detail=path.name)
         except (Exception, SystemExit) as error:
-            self.found.update(kind="other", detail=f"could not read it: {error}")
+            found.update(kind="other", detail=f"could not read it: {error}")
+        return found
+
+    def several(self) -> bool:
+        """Whether Open results opens more than one viewer."""
+        return len(self.found["files"]) > 1
 
     def available(self, key: str) -> bool:
-        """Whether a viewer applies to what the Open results path holds."""
+        """Whether a viewer applies to what the Open results paths hold."""
         kind, stages, files = self.found["kind"], self.found["stages"], self.found["files"]
         raw = self.paths_open["raw"].strip() != ""
         single = kind == "results" or (kind == "folder" and len(files) == 1)
         if key == "demixing":
+            if kind not in FOUND_MASKNMF or (kind == "folder" and len(files) > 1):
+                return True
             return single and (stages["demixing"] or stages["compression"] or (stages["registration"] and raw))
         if key == "classification":
             return (single and stages["demixing"]) or (kind == "folder" and len(files) > 1)
@@ -904,7 +942,8 @@ class Launcher:
 
     def compression_checkable(self) -> bool:
         """Whether the demixing viewer can add the lag-1 autocorrelation stills: a compression and the raw movie."""
-        return self.available(key="demixing") and self.found["stages"]["compression"] and self.paths_open["raw"].strip() != ""
+        return (self.available(key="demixing") and not self.several() and self.found["stages"]["compression"]
+                and self.paths_open["raw"].strip() != "")
 
     def viewer_current(self) -> str:
         """The chosen viewer while it applies, else the first that does, else nothing."""
@@ -942,7 +981,7 @@ class Launcher:
             if self.found["kind"] == "folder" and len(self.found["files"]) == 0:
                 return ["no results files in this folder"]
             if self.viewer_current() == "":
-                return ["nothing here a viewer opens; a registration alone needs the raw movie"]
+                return ["nothing here a viewer opens; a registration alone needs the raw movie, and opens on its own"]
             raw = self.paths_open["raw"].strip()
             return [f"not found: {raw}"] if raw != "" and not Path(raw).expanduser().exists() else []
         if self.page != "run":
@@ -963,7 +1002,7 @@ class Launcher:
         # the one run argument that names a file
         for param in self.spec.run_scalars:
             path = self.texts[param.name].strip()
-            if param.field == "resume_from" and path != "" and not Path(path).expanduser().exists():
+            if param.field == "resume" and path != "" and not Path(path).expanduser().exists():
                 problems.append(f"not found: {path}")
         params = [*self.spec.run_scalars, *self.spec.scalars]
         problems += [e for e in (self.error_for(param=p) for p in params) if e is not None]
@@ -1029,7 +1068,7 @@ class Launcher:
             return None
         raw = self.paths_open["raw"].strip()
         argv = ["view", self.paths_open["source"].strip()]
-        if raw != "" and key == "demixing":
+        if raw != "" and key == "demixing" and not self.several():
             argv += ["--raw", raw]
             if is_hdf5(filepath=raw) and self.dataset_raw.strip() != "":
                 argv += ["--dataset", self.dataset_raw.strip()]
@@ -1083,7 +1122,7 @@ class Launcher:
         destroys the texture the frame is drawn into.
 
         Args:
-            canvas (BaseRenderCanvas): The canvas; its logical size is kept at least SIZE_MIN
+            canvas (BaseRenderCanvas): The canvas; its logical size is kept at least SIZE_MIN times the UI scale
             loop (BaseLoop): The loop running the canvas
         """
         self.canvas = canvas
@@ -1097,13 +1136,15 @@ class Launcher:
         canvas.request_draw(renderer.render)
 
     def keep_minimum_size(self, event: dict) -> None:
-        """Resize the canvas back up to SIZE_MIN when it is made smaller."""
+        """Resize the canvas back up to SIZE_MIN, times the UI scale, when it is made smaller."""
         width, height = event["width"], event["height"]
-        if width < SIZE_MIN[0] or height < SIZE_MIN[1]:
-            self.loop.call_soon(self.canvas.set_logical_size, max(width, SIZE_MIN[0]), max(height, SIZE_MIN[1]))
+        min_width, min_height = (round(v * self.scaler.applied) for v in SIZE_MIN)
+        if width < min_width or height < min_height:
+            self.loop.call_soon(self.canvas.set_logical_size, max(width, min_width), max(height, min_height))
 
     def draw_window(self) -> None:
-        """One frame: the dialog in a borderless imgui window covering the canvas."""
+        """One frame: the dialog in a borderless imgui window covering the canvas, at the UI scale."""
+        self.scaler()
         viewport = imgui.get_main_viewport()
         imgui.push_font(self.font, self.font.legacy_size)
         imgui.set_next_window_pos(viewport.pos)
@@ -1122,9 +1163,9 @@ class Launcher:
             return
         start = self.store.default_dir() or str(Path.home())
         if filetypes is None:
-            self.picker = pfd.select_folder("Select folder", start)
+            self.picker = Picker(title="Select folder", start=start)
         else:
-            self.picker = pfd.open_file("Select file", start, idl.flatten_filters(filetypes), pfd.opt.none)
+            self.picker = Picker(title="Select file", start=start, filters=idl.flatten_filters(filetypes))
         self.target_picker = (target, key)
 
     def poll_picker(self) -> None:
@@ -1145,14 +1186,14 @@ class Launcher:
         """The name and version, then what masknmf does."""
         em = imgui.get_font_size()
         imgui.dummy(imgui.ImVec2(0, 0.2 * em))
-        imgui.push_font(None, 1.5 * em)
+        push_font_em(1.5)
         imgui.text_colored(COLOR_SUBSECTION, "masknmf")
         imgui.pop_font()
         imgui.same_line(0, 0.6 * em)
         imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 0.45 * em)
         imgui.text_disabled(f"v{masknmf.__version__}")
         imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
-        imgui.text_colored(COLOR_DIM, "Motion correction, compression and demixing of functional imaging data, and the viewers over their results")
+        imgui.text_colored(COLOR_DIM, "Motion correction, compression and demixing of functional imaging data")
         imgui.pop_text_wrap_pos()
 
     def draw_body(self) -> None:
@@ -1192,8 +1233,6 @@ class Launcher:
             if imgui.button(f"{icon}   {name}##rail_{key}", imgui.ImVec2(width, 2.2 * em)):
                 self.page = key
             imgui.pop_style_color(4)
-            if imgui.is_item_hovered():
-                idl.wrapped_tooltip(f"{name}: {hint}")
         recent = [p for p in self.store.recent() if p][:6]
         if len(recent) > 0:
             imgui.dummy(imgui.ImVec2(0, 0.8 * em))
@@ -1208,18 +1247,17 @@ class Launcher:
                     self.page = "open"
                     self.paths_open["source"] = path
                 if imgui.is_item_hovered():
-                    idl.wrapped_tooltip(f"Open results: {path}")
+                    idl.wrapped_tooltip(path)
             imgui.pop_style_color(4)
         imgui.pop_style_var(2)
 
     def draw_content(self) -> None:
-        """The page's title and line, then the page."""
+        """The page's title, then the page."""
         em = imgui.get_font_size()
-        key, icon, name, hint = next(page for page in PAGES if page[0] == self.page)
-        imgui.push_font(None, 1.35 * em)
+        key, icon, name, _hint = next(page for page in PAGES if page[0] == self.page)
+        push_font_em(1.35)
         imgui.text_colored(COLOR_SUBSECTION, f"{icon}  {name}")
         imgui.pop_font()
-        imgui.text_colored(COLOR_DIM, hint)
         imgui.separator()
         imgui.dummy(imgui.ImVec2(0, 0.4 * em))
         if key == "home":
@@ -1259,8 +1297,8 @@ class Launcher:
         imgui.table_setup_column("##widget", imgui.TableColumnFlags_.width_stretch)
         return True
 
-    def row(self, caption: str, color: Optional[imgui.ImVec4] = None) -> None:
-        """Start a form row: the caption, dim unless colored, then the cursor in the widget column."""
+    def row(self, caption: str, color: Optional[imgui.ImVec4] = None, hint: Optional[str] = None) -> None:
+        """Start a form row: the caption, dim unless colored, a (?) with hint, then the cursor in the widget column."""
         imgui.table_next_row()
         imgui.table_next_column()
         imgui.align_text_to_frame_padding()
@@ -1268,6 +1306,8 @@ class Launcher:
             imgui.text_disabled(caption)
         else:
             imgui.text_colored(color, caption)
+        if hint is not None:
+            draw_hint(text=hint)
         imgui.table_next_column()
 
     def draw_results_rows(self, target: dict, folders: bool) -> None:
@@ -1289,15 +1329,15 @@ class Launcher:
 
         gap = 1.4 * em
         card_w = (w - 4 * gap) / 5
-        card_h = 6.8 * em
-        for i, (page, icon, name, hint) in enumerate(STEPS):
+        card_h = 4.8 * em
+        for i, (page, icon, name) in enumerate(STEPS):
             if i:
                 right = imgui.get_item_rect_max()
                 mid = imgui.get_item_rect_min().y + card_h / 2
                 guide.arrow(dl, right.x + 0.25 * em, right.x + gap - 0.25 * em, mid)
                 imgui.same_line(0, gap)
             clicked, a = guide.card_button(dl, f"step{i}", imgui.ImVec2(card_w, card_h))
-            imgui.push_font(None, 1.8 * em)
+            push_font_em(1.8)
             size = imgui.calc_text_size(icon)
             dl.add_text(imgui.get_font(), 1.8 * em, imgui.ImVec2(a.x + (card_w - size.x) / 2, a.y + 0.6 * em), guide.u32(COLOR_SUBSECTION), icon)
             imgui.pop_font()
@@ -1306,10 +1346,9 @@ class Launcher:
             x, y = a.x + (card_w - wn - 0.5 * em - wname) / 2, a.y + 3.1 * em
             dl.add_text(imgui.ImVec2(x, y), guide.u32(COLOR_DIM), number)
             dl.add_text(imgui.ImVec2(x + wn + 0.5 * em, y), guide.u32(COLOR_TITLE), name)
-            dl.add_text(imgui.get_font(), em, imgui.ImVec2(a.x + 0.5 * em, y + 1.5 * em), guide.u32(COLOR_DIM), hint, None, card_w - em)
             if clicked:
                 self.page = page
-        draw_wrapped(text="the functions on the left, in the order a dataset goes through them; a card opens its page", color=COLOR_DIM)
+        imgui.dummy(imgui.ImVec2(0, imgui.get_text_line_height()))
 
         guide.heading(fa.ICON_FA_GEARS, "Pipeline")
         draw_wrapped(
@@ -1325,7 +1364,7 @@ class Launcher:
         bh = 1.9 * em
         col_w = w / len(FLOW)
         y_check = p.y + bh + 1.7 * em
-        for i, (stage, check, _does, _what) in enumerate(FLOW):
+        for i, (stage, check, *_) in enumerate(FLOW):
             cx = p.x + (i + 0.5) * col_w
             bw = imgui.calc_text_size(stage).x + 1.6 * em
             cw = imgui.calc_text_size(check).x + 1.6 * em
@@ -1338,22 +1377,22 @@ class Launcher:
         imgui.dummy(imgui.ImVec2(w, y_check + bh - p.y))
         imgui.dummy(imgui.ImVec2(0, 0.3 * em))
         flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.borders_inner_h
-        if imgui.begin_table("##flow", 3, flags, imgui.ImVec2(w, 0)):
+        if imgui.begin_table("##flow", 4, flags, imgui.ImVec2(w, 0)):
             imgui.table_setup_column("stage", imgui.TableColumnFlags_.width_fixed, 7.5 * em)
-            imgui.table_setup_column("description", imgui.TableColumnFlags_.width_stretch, 1.2)
-            imgui.table_setup_column("check", imgui.TableColumnFlags_.width_stretch, 1.0)
+            imgui.table_setup_column("description", imgui.TableColumnFlags_.width_stretch, 1.0)
+            imgui.table_setup_column("saved", imgui.TableColumnFlags_.width_stretch, 0.9)
+            imgui.table_setup_column("check", imgui.TableColumnFlags_.width_stretch, 1.2)
             imgui.table_next_row()
-            for heading in ("stage", "description", "check"):
+            for heading in ("stage", "description", "saved", "check"):
                 imgui.table_next_column()
                 imgui.text_colored(COLOR_DIM, heading)
-            for stage, _check, does, what in FLOW:
+            for stage, _check, description, saved, check in FLOW:
                 imgui.table_next_row()
                 imgui.table_next_column()
                 imgui.text_colored(COLOR_TITLE, stage)
-                imgui.table_next_column()
-                imgui.text_wrapped(does)
-                imgui.table_next_column()
-                imgui.text_wrapped(what)
+                for text in (description, saved, check):
+                    imgui.table_next_column()
+                    imgui.text_wrapped(text)
             imgui.end_table()
 
         guide.heading(fa.ICON_FA_FILE, "I/O")
@@ -1379,6 +1418,27 @@ class Launcher:
                 imgui.text_wrapped(text)
             imgui.end_table()
 
+        imgui.dummy(imgui.ImVec2(0, 0.6 * em))
+        draw_wrapped(text="a run folder is named by when the run started and its pipeline; a second run in the same "
+                     "second gets _1, _2, ... appended", color=COLOR_DIM)
+        imgui.dummy(imgui.ImVec2(0, 0.4 * em))
+        size = 1.4 * em
+        imgui.push_font(None, size)
+        widths = [imgui.calc_text_size(text).x for text, _, _ in RUN_FOLDER_PARTS]
+        imgui.pop_font()
+        slots = [max(tw, 0.0 if label is None else imgui.calc_text_size(label).x) for (_, label, _), tw in zip(RUN_FOLDER_PARTS, widths)]
+        p = imgui.get_cursor_screen_pos()
+        x = p.x + (w - sum(slots) - 0.4 * em * (len(slots) - 1)) / 2
+        y_line = p.y + size + 0.35 * em
+        for (text, label, color), tw, slot in zip(RUN_FOLDER_PARTS, widths, slots):
+            dl.add_text(imgui.get_font(), size, imgui.ImVec2(x + (slot - tw) / 2, p.y), guide.u32(color), text)
+            if label is not None:
+                dl.add_line(imgui.ImVec2(x, y_line), imgui.ImVec2(x + slot, y_line), guide.u32(color, 0.7), 2.0)
+                lw = imgui.calc_text_size(label).x
+                dl.add_text(imgui.ImVec2(x + (slot - lw) / 2, y_line + 0.3 * em), guide.u32(COLOR_DIM), label)
+            x += slot + 0.4 * em
+        imgui.dummy(imgui.ImVec2(w, size + 2.0 * em))
+
         guide.heading(fa.ICON_FA_TERMINAL, "Command line")
         draw_wrapped(
             color=COLOR_DIM,
@@ -1398,7 +1458,7 @@ class Launcher:
         dl = imgui.get_window_draw_list()
         w = imgui.get_content_region_avail().x
 
-        self.step(1, "Pipeline", "which pipeline runs; switching keeps the movie paths and resets the rest")
+        self.step(1, "Pipeline", "Switching keeps the movie paths and resets the rest")
         gap = 1.0 * em
         card_w = (w - gap) / 2
         # each stage's chip names the config it runs: the selected pipeline's as set, the others' defaults
@@ -1438,30 +1498,31 @@ class Launcher:
                 self.select_pipeline(index=i)
         imgui.dummy(imgui.ImVec2(0, 0.3 * em))
         if self.begin_form(name="load_config"):
-            self.row(caption="load config")
+            self.row(caption="load config", hint="Fill in the pipeline, parameters, movie and output folder of an earlier run")
             if imgui.button(f"{fa.ICON_FA_FILE_LINES}  Load##load_run"):
                 self.message_load = self.load_run(source=self.paths_load["run"]) or ""
                 if self.message_load == "":
                     self.store.record_selection(idl.DialogResult(paths=[self.paths_load["run"].strip()]))
-            if imgui.is_item_hovered():
-                idl.wrapped_tooltip("Load config: the pipeline, every parameter, the movie and the output folder an earlier run "
-                                    "recorded in its config.json; untouched, Run reproduces that run")
             imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
             self.draw_path(target=self.paths_load, key="run", filetypes=FILETYPES_RUN, folders=True,
                            hint="a config.json, its run folder, or a results file beside it")
             starts = self.starts_available()
             if len(starts) > 0:
-                self.row(caption="start from")
-                for start, label in (("movie", "the movie"), ("registration", "its registration"), ("compression", "its compression")):
+                self.row(caption="start from", hint="Run every stage on the movie, or copy the loaded run's registration (applied "
+                                                    "to the movie) or its compression into the new run folder and continue from there")
+                for start, label, hint in (
+                    ("movie", "Raw", "Ignore previous results and start from the input movie"),
+                    ("registration", "Registered", "Keep the registration shifts only"),
+                    ("compression", "Compressed", "Keep registration and compression, rerun demixing"),
+                ):
                     if start != "movie" and start not in starts:
                         continue
                     if imgui.radio_button(f"{label}##start_{start}", self.start_from == start) and self.start_from != start:
                         self.select_start(start=start)
+                    if imgui.is_item_hovered():
+                        idl.wrapped_tooltip(hint)
                     imgui.same_line(0, hello_imgui.em_size(1.2))
                 imgui.new_line()
-                if imgui.is_item_hovered():
-                    idl.wrapped_tooltip("Start from: run every stage on the movie, or copy the loaded run's registration (applied to "
-                                        "the movie) or its compression into the new run folder and continue from there")
             imgui.end_table()
         if self.message_load != "":
             draw_wrapped(text=f"{fa.ICON_FA_CIRCLE_INFO}  {self.message_load}", color=COLOR_WARN)
@@ -1473,7 +1534,7 @@ class Launcher:
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
         # read after the cards: a click on one switched the pipeline
         spec = self.spec
-        self.step(2, "Input", "the movie, where the run folder goes, and what the recording is; nothing else is needed")
+        self.step(2, "Input", "The movie, where the run folder goes, and the recording's settings")
         if self.begin_form(name="run"):
             for param in spec.movie_params:
                 self.row(caption=param.field.replace("_", " ") if len(spec.movie_params) > 1 else "movie")
@@ -1492,7 +1553,7 @@ class Launcher:
                 self.draw_path(target=self.texts, key=param.name, filetypes=None, folders=True, hint="beside the movie")
             for param in spec.run_scalars:
                 # set by start from, under load config
-                if param.field == "resume_from":
+                if param.field == "resume":
                     continue
                 color = COLOR_ERROR if self.error_for(param=param) is not None else COLOR_MODIFIED if self.is_modified(param=param) else None
                 self.row(caption=param.field.replace("_", " "), color=color)
@@ -1501,8 +1562,7 @@ class Launcher:
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
         rows = self.modified()
-        self.step(3, "Parameters", "every stage's config and its fields, the runtime, and what differs from the pipeline's "
-                                   "defaults; a run needs none of them changed")
+        self.step(3, "Parameters", "Optional: every stage's settings and the runtime")
         if imgui.collapsing_header(f"{fa.ICON_FA_SLIDERS}  Stage configs###parameters"):
             with (
                 imgui_ctx.push_style_var(imgui.StyleVar_.item_spacing, hello_imgui.em_to_vec2(0.55, 0.3)),
@@ -1515,8 +1575,7 @@ class Launcher:
                     if imgui.button(f"{fa.ICON_FA_ARROW_ROTATE_LEFT}  Defaults"):
                         self.reset_all()
                     imgui.end_disabled()
-                tooltip("Every value is at its default" if len(rows) == 0 else
-                        "Reset every stage, run and runtime value to its default; movies, paths and required values stay")
+                tooltip("Every value is at its default" if len(rows) == 0 else "Reset every parameter; movies and paths stay")
                 draw_divider()
                 self.draw_stages()
                 draw_divider()
@@ -1528,12 +1587,12 @@ class Launcher:
     def draw_open(self) -> None:
         """A path, what it holds, and the viewer that opens it."""
         em = imgui.get_font_size()
-        self.step(1, "Source", "a results .hdf5, a run folder, a tracking folder or its manifest; a folder means the results "
-                               "files in it, each replaced by its newest curated file")
+        self.step(1, "Source", "A results .hdf5, a run folder or a tracking run; a curated file opens in place of its original. "
+                               "Or a suite2p plane, its stat.npy, or a caiman file")
         if self.begin_form(name="open"):
             self.row(caption="path")
             self.draw_path(target=self.paths_open, key="source", filetypes=FILETYPES_RESULTS, folders=True,
-                           hint="results.hdf5, a run folder, or a tracking run")
+                           hint="results.hdf5, a run folder, a tracking run, a suite2p plane or a caiman file")
             self.row(caption="raw movie")
             self.draw_path(target=self.paths_open, key="raw", filetypes=FILETYPES_MOVIE, folders=True,
                            hint="optional: the movie the run registered, for the registration and compression views")
@@ -1545,22 +1604,52 @@ class Launcher:
         self.inspect()
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
-        self.step(2, "Found", "what the path holds, read whenever it changes")
+        self.step(2, "Found", "What the path holds")
+        self.draw_found(found=self.found, name="found")
+
+        imgui.dummy(imgui.ImVec2(0, 0.6 * em))
+        self.step(3, "Viewer", "Picked from the stages found")
+        current = self.viewer_current()
+        for key, icon, name, why in VIEWERS:
+            imgui.begin_disabled(not self.available(key=key))
+            if imgui.radio_button(f"{icon}  {name}##viewer_{key}", key == current):
+                self.viewer = key
+            imgui.end_disabled()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                idl.wrapped_tooltip(why)
+            if key == "demixing":
+                imgui.indent(hello_imgui.em_size(1.8))
+                imgui.begin_disabled(not self.compression_checkable())
+                _, self.compression_check = imgui.checkbox("lag-1 autocorrelation stills##compression", self.compression_check)
+                imgui.end_disabled()
+                if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                    idl.wrapped_tooltip("Adds lag-1 autocorrelation images of the raw, compressed and residual movies; needs the raw movie")
+                imgui.unindent(hello_imgui.em_size(1.8))
+
+    def draw_found(self, found: dict[str, Any], name: str) -> None:
+        """The card saying what a path holds."""
+        em = imgui.get_font_size()
         flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_use_window_padding
         imgui.push_style_color(imgui.Col_.child_bg, guide.CARD)
         imgui.push_style_var(imgui.StyleVar_.child_rounding, 5.0)
-        with imgui_ctx.begin_child("##found", imgui.ImVec2(0, 0), flags):
-            kind, detail, stages, files = self.found["kind"], self.found["detail"], self.found["stages"], self.found["files"]
+        with imgui_ctx.begin_child(f"##{name}", imgui.ImVec2(0, 0), flags):
+            kind, detail, stages, files = found["kind"], found["detail"], found["stages"], found["files"]
             if kind == "":
                 imgui.text_colored(COLOR_DIM, "type or browse a path to see what it holds")
             elif kind in ("missing", "other"):
                 imgui.text_colored(COLOR_WARN, f"{fa.ICON_FA_CIRCLE_INFO}  {detail}")
-            elif kind == "tracking":
+            elif kind == "tracking" or kind not in FOUND_MASKNMF:
                 imgui.text_colored(COLOR_OK, fa.ICON_FA_CIRCLE_CHECK)
                 imgui.same_line(0, 0.5 * em)
-                imgui.text_colored(COLOR_TITLE, "tracking run")
+                imgui.text_colored(COLOR_TITLE, "tracking run" if kind == "tracking" else f"{kind} results")
                 imgui.same_line(0, 0.6 * em)
                 imgui.text_colored(COLOR_DIM, detail)
+                if len(files) > 1:
+                    for filepath in files[:6]:
+                        imgui.bullet()
+                        imgui.text_colored(COLOR_DIM, Path(filepath).name)
+                    if len(files) > 6:
+                        imgui.text_colored(COLOR_DIM, f"... and {len(files) - 6} more")
             else:
                 if kind == "folder":
                     imgui.text_colored(COLOR_TITLE, f"{len(files)} results file{'' if len(files) == 1 else 's'}")
@@ -1581,32 +1670,10 @@ class Launcher:
         imgui.pop_style_var()
         imgui.pop_style_color()
 
-        imgui.dummy(imgui.ImVec2(0, 0.6 * em))
-        self.step(3, "Viewer", "the viewer the stages call for is picked; another can be chosen when what it needs is there")
-        current = self.viewer_current()
-        for key, icon, name, why in VIEWERS:
-            imgui.begin_disabled(not self.available(key=key))
-            if imgui.radio_button(f"{icon}  {name}##viewer_{key}", key == current):
-                self.viewer = key
-            imgui.end_disabled()
-            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-                idl.wrapped_tooltip(f"{name}: {why}")
-            if key == "demixing":
-                imgui.indent(hello_imgui.em_size(1.8))
-                imgui.begin_disabled(not self.compression_checkable())
-                _, self.compression_check = imgui.checkbox("lag-1 autocorrelation stills##compression", self.compression_check)
-                imgui.end_disabled()
-                if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
-                    idl.wrapped_tooltip("Compression check: also computes the lag-1 autocorrelation images of the raw, compressed and "
-                                        "residual movies into Static images; needs the raw movie and a compression")
-                imgui.unindent(hello_imgui.em_size(1.8))
-
     def draw_track(self) -> None:
         """The sessions' results files, where the tracking goes, and the resolution."""
         em = imgui.get_font_size()
-        self.step(1, "Sessions", f"one masknmf results .hdf5 per session. Per row a folder, searched for {PATTERN_RESULTS} up to "
-                                 f"{DEPTH_SEARCH} folders down, a file, or a glob; a new row opens as the last one fills. The files "
-                                 "found are listed below in session order, row by row and in path order within a row; uncheck any not to track")
+        self.step(1, "Sessions", "One results .hdf5 per session: a folder, file or glob per row; uncheck any found not to track")
         self.update_sessions()
         self.fill_out()
         if self.begin_form(name="track"):
@@ -1614,8 +1681,7 @@ class Launcher:
             imgui.end_table()
         self.draw_sessions_found()
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
-        self.step(2, "Output", "where the tracking run and its manifest are saved, a folder holding every session so it moves as a "
-                               "whole; it starts as the sessions' common folder. Then the imaging resolution, the same for every session")
+        self.step(2, "Output", "Where the tracking run is saved, and the imaging resolution")
         if self.begin_form(name="track_out"):
             self.row(caption="folder")
             self.draw_path(target=self.paths_tracking, key="out", filetypes=None, folders=True, hint="required")
@@ -1690,12 +1756,12 @@ class Launcher:
     def draw_classify(self) -> None:
         """The sessions' results files, the class names, and the classifier file."""
         em = imgui.get_font_size()
-        self.step(1, "Sessions", "one masknmf results .hdf5 per session, a path or a glob per row; labels are saved beside each")
+        self.step(1, "Sessions", "One results .hdf5 per session, a path or glob per row; labels save beside each")
         if self.begin_form(name="classify"):
             self.draw_results_rows(target=self.paths_classify, folders=False)
             imgui.end_table()
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
-        self.step(2, "Classifier", "the class names, and the .roicat_classifier file: train saves there, an existing one is selected for classify")
+        self.step(2, "Classifier", "Training saves the classifier here; an existing one classifies")
         if self.begin_form(name="classify_out"):
             self.row(caption="class names")
             imgui.set_next_item_width(max(imgui.get_content_region_avail().x, hello_imgui.em_size(12)))
@@ -1709,32 +1775,20 @@ class Launcher:
         """One bordered box per pipeline stage."""
         draw_subsection(
             text="Pipeline stages",
-            hint="Every config a stage accepts is listed; the pipeline's own is selected and shows the values it "
-            "runs with. Changed values show orange and are listed under Modified parameters.",
+            hint="Each stage's config and its values; changes show orange",
         )
         imgui.spacing()
         if self.spec.cls.demixing_configs is not BasePipeline.demixing_configs:
             changed_on, self.uniform_min_brightness_on = imgui.checkbox("uniform min brightness", self.uniform_min_brightness_on)
             if imgui.is_item_hovered():
-                idl.wrapped_tooltip(
-                    "Uniform min brightness: while checked, this value is set in every demixing pass, and again each "
-                    "time it changes. A pass edited afterwards keeps its own value; the passes' values are what runs."
-                )
+                idl.wrapped_tooltip("Sets this value in every demixing pass; a pass edited afterwards keeps its own")
             imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
             imgui.begin_disabled(not self.uniform_min_brightness_on)
-            imgui.set_next_item_width(hello_imgui.em_size(12))
-            changed_slider, self.uniform_min_brightness = imgui.slider_float(
-                "##uniform_min_brightness", self.uniform_min_brightness, 0.0, 5.0, "%.2f"
+            changed_value, self.uniform_min_brightness = draw_min_brightness(
+                "uniform_min_brightness", self.uniform_min_brightness, hello_imgui.em_size(12), hello_imgui.em_size(WIDTH_INPUT_EM)
             )
-            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
-            imgui.set_next_item_width(hello_imgui.em_size(WIDTH_INPUT_EM))
-            changed_box, value = imgui.input_float("##uniform_min_brightness_box", self.uniform_min_brightness, 0.0, 0.0, "%.6g")
             imgui.end_disabled()
-            # the min_brightness setter refuses negative values
-            changed_box = changed_box and value >= 0
-            if changed_box:
-                self.uniform_min_brightness = value
-            if self.uniform_min_brightness_on and (changed_on or changed_slider or changed_box):
+            if self.uniform_min_brightness_on and (changed_on or changed_value):
                 pipeline = self.spec.cls(**{section.argument: self.values[section.argument] for section in self.spec.sections})
                 pipeline.min_brightness = self.uniform_min_brightness
             imgui.spacing()
@@ -2059,17 +2113,22 @@ class Launcher:
             hint (str): Shown while the field is empty
         """
         inner = imgui.get_style().item_inner_spacing.x
+        no_dialog = "no file dialog on this machine; type the path instead"
         if filetypes is not None:
+            imgui.begin_disabled(not NATIVE_DIALOGS)
             if imgui.button(f"{fa.ICON_FA_FILE}##file_{key}"):
                 self.open_picker(target=target, key=key, filetypes=filetypes)
-            if imgui.is_item_hovered():
-                idl.wrapped_tooltip("Browse for a file")
+            imgui.end_disabled()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                idl.wrapped_tooltip("Browse for a file" if NATIVE_DIALOGS else no_dialog)
             imgui.same_line(0, inner)
         if folders:
+            imgui.begin_disabled(not NATIVE_DIALOGS)
             if imgui.button(f"{fa.ICON_FA_FOLDER_OPEN}##folder_{key}"):
                 self.open_picker(target=target, key=key, filetypes=None)
-            if imgui.is_item_hovered():
-                idl.wrapped_tooltip("Browse for a folder")
+            imgui.end_disabled()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                idl.wrapped_tooltip("Browse for a folder" if NATIVE_DIALOGS else no_dialog)
             imgui.same_line(0, inner)
 
         padding = imgui.get_style().frame_padding
@@ -2210,7 +2269,12 @@ def run_launcher() -> Optional[list[str]]:
 
     DIR_CONFIG.mkdir(parents=True, exist_ok=True)
     window = Launcher()
-    window.attach(canvas=RenderCanvas(title="masknmf", size=SIZE_WINDOW, update_mode="continuous", max_fps=60), loop=loop)
+    canvas = RenderCanvas(title="masknmf", size=SIZE_WINDOW, update_mode="continuous", max_fps=60)
+    fit_canvas(canvas)
+    window.attach(canvas=canvas, loop=loop)
     print("\r\033[K", end="", file=sys.stderr, flush=True)
     loop.run()
+    # a dialog still open would outlive the window, and portable-file-dialogs' destructor waits for it to close
+    if window.picker is not None:
+        window.picker.kill()
     return window.argv

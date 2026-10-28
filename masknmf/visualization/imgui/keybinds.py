@@ -2,7 +2,7 @@
 Every viewer's keybinds in one place. A :class:`Bind` is a key (or several) with its modifiers and the words the keybinds popup
 and the help pages show for it; a viewer's table maps action names to binds, its key handler asks :func:`pressed`
 about each, and the popup lists the table's rows. Rows without a key (clicks, scrolls) are listed only. Both viewers
-share ``UP``, ``DOWN``, ``MASKS``, ``HELP`` and ``KEYBINDS`` so those read the same everywhere; a custom mapping
+share ``UP``, ``DOWN``, ``MASKS``, ``HELP``, ``KEYBINDS`` and the size binds so those read the same everywhere; a custom mapping
 replaces a table here and every handler and popup follows.
 """
 
@@ -40,6 +40,9 @@ DOWN = Bind("down", "next in the table (shift: by 10)", imgui.Key.down_arrow, re
 MASKS = Bind("m", "toggle the masks overlay", imgui.Key.m)
 HELP = Bind("h", "the help page", imgui.Key.h)
 KEYBINDS = Bind("k", "these keybinds", imgui.Key.k)
+LARGER = Bind("ctrl + =", "larger text and panels", (imgui.Key.equal, imgui.Key.keypad_add), ctrl=True, repeat=True)
+SMALLER = Bind("ctrl + -", "smaller text and panels", (imgui.Key.minus, imgui.Key.keypad_subtract), ctrl=True, repeat=True)
+DESKTOP_SIZE = Bind("ctrl + 0", "text and panels back to the desktop's scale", (imgui.Key._0, imgui.Key.keypad0), ctrl=True)
 LABEL_KEYS = (
     imgui.Key._1, imgui.Key._2, imgui.Key._3, imgui.Key._4, imgui.Key._5,
     imgui.Key._6, imgui.Key._7, imgui.Key._8, imgui.Key._9,
@@ -89,6 +92,9 @@ DEMIXING: Mapping[str, Bind] = {
     "undo": Bind("ctrl + z", "undo the last mark, drawn roi, pixel average or deselect", imgui.Key.z, ctrl=True),
     "help": HELP,
     "keybinds": KEYBINDS,
+    "larger": LARGER,
+    "smaller": SMALLER,
+    "desktop_size": DESKTOP_SIZE,
 }
 
 CLASSIFICATION: Mapping[str, Bind] = {
@@ -103,13 +109,16 @@ CLASSIFICATION: Mapping[str, Bind] = {
     "clear_delete": Bind("delete", "clear the label", imgui.Key.delete),
     "unlabeled": Bind("u", "jump to the next unlabeled ROI", imgui.Key.u),
     "masks": MASKS,
-    "background": Bind("b", "toggle the background image", imgui.Key.b),
+    "background": Bind("b", "toggle the background image, here and on the full FOV", imgui.Key.b),
     "class_masks": Bind("c", "toggle every ROI's class mask on the full FOV", imgui.Key.c),
     "fov": Bind("f", "open the full FOV window on the current ROI", imgui.Key.f),
     "undo": Bind("ctrl + z", "undo the last label change", imgui.Key.z, ctrl=True),
     "escape": Bind("esc", "close the help and keybinds windows", imgui.Key.escape),
     "help": HELP,
     "keybinds": KEYBINDS,
+    "larger": LARGER,
+    "smaller": SMALLER,
+    "desktop_size": DESKTOP_SIZE,
 }
 
 MULTISESSION: Mapping[str, Bind] = {
@@ -130,4 +139,7 @@ MULTISESSION: Mapping[str, Bind] = {
     "reset": Bind("r", "zoom every panel out to the whole fov", imgui.Key.r),
     "escape": Bind("esc", "close the keybinds window, else deselect", imgui.Key.escape),
     "keybinds": KEYBINDS,
+    "larger": LARGER,
+    "smaller": SMALLER,
+    "desktop_size": DESKTOP_SIZE,
 }

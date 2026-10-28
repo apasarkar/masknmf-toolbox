@@ -3,7 +3,7 @@ from scipy.signal import butter, lfilter, filtfilt
 import masknmf
 import math
 import torch
-from tqdm import tqdm
+from masknmf.utils.display import progress
 
 def construct_gaussian_highpass_filter_kernel(gaussian_sigma: list[float]) -> torch.Tensor:
     """
@@ -58,7 +58,7 @@ def spatial_filter_compressed_array(compression_array: masknmf.CompressionArray,
     num_batches = math.ceil(compression_array.shape[0] / batch_size)
     relu_obj = torch.nn.ReLU()
     results = []
-    for k in tqdm(range(num_batches)):
+    for k in progress(range(num_batches), desc="spatial filtering"):
         start = k * batch_size
         end = min(start + batch_size, compression_array.shape[0])
         curr_frames = compression_array[slice(start, end)]

@@ -53,22 +53,22 @@ class WidefieldSinglechannelPipeline(BasePipeline):
             good_frame_indicator: torch.Tensor | np.ndarray | list | None = None,
             exclude_border_radius: int = 0,
             stop_after: Literal["registration", "compression"] = "compression",
-            resume_from: str | Path | None = None) -> Path:
+            resume: str | Path | None = None) -> Path:
         """
         Uses the API to run rigid motion correction, compression (with denoising). With stop_after "registration" the
-        run ends once the shifts and template are written; resume_from, an earlier results file, is copied into the new
+        run ends once the shifts and template are written; resume, an earlier results file, is copied into the new
         run folder and its registration applied instead of estimating one, and the settings not given, all but
         stop_after, are that run's, from the config.json beside it.
         """
         ends_at_registration = stop_after == "registration" or isinstance(self.compress_config, str)
-        if ends_at_registration and isinstance(self.motion_correct_config, str) and resume_from is None:
+        if ends_at_registration and isinstance(self.motion_correct_config, str) and resume is None:
             raise ValueError('a run ending after registration with motion_correct_config "skip" has nothing to write')
-        resume_from, base = self.resume_source(resume_from, reuse_compression=False)
+        resume, base = self.resume_source(resume, reuse_compression=False)
         self.run_config = {"exclude_border_radius": exclude_border_radius, "indicator_polarity": indicator_polarity,
                            "stop_after": stop_after,
-                           "resume_from": None if resume_from is None else str(resume_from)}
+                           "resume": None if resume is None else str(resume)}
         results_path = self.results_path(base)
-        stored = None if resume_from is None else self.resume(resume_from, results_path, reuse_compression=False)
+        stored = None if resume is None else self.resume(resume, results_path, reuse_compression=False)
         if self.load_into_ram:
             data = self.read_into_ram(data)
         data = self._construct_ophys_array(data,

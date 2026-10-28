@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 import torch
 import numpy as np
@@ -10,8 +11,32 @@ from masknmf.utils import SparseCOOTensor
 
 class BaseResults:
 
+    # an adapter reads another pipeline's results: it sets pipeline and overrides matches and from_path
+    pipeline = "masknmf"
+
     def __init__(self):
         pass
+
+    @classmethod
+    def matches(cls, path: Path) -> bool:
+        return False
+
+    @classmethod
+    def expand(cls, path: Path) -> list[Path]:
+        return [path]
+
+    @classmethod
+    def describe(cls, path: Path) -> str:
+        return cls.pipeline
+
+    @classmethod
+    def from_path(cls, path: Path, raw: ArrayLike | str | Path | None = None, device: str = "cpu") -> tuple["BaseResults", ArrayLike | None, list[str]]:
+        """The results at path, the raw movie to show, and notes on what was found but not used."""
+        raise NotImplementedError
+
+    @property
+    def frame_rate(self) -> float | None:
+        return None
 
     @property
     def spatial_demixed(self) -> SparseCOOTensor:

@@ -8,6 +8,7 @@ from masknmf.diagnostics import pmd_autocovariance_diagnostics
 import fastplotlib as fpl
 from collections import OrderedDict
 from masknmf.visualization.imgui import CheckboxWindow
+from masknmf.visualization.imgui.scale import scale_figure
 import pygfx
 import torch
 from functools import partial
@@ -380,6 +381,8 @@ class CompressionVis:
         self._col_slice = None
 
     def show(self):
+        scale_figure(self.ndw_videos.figure)
+        scale_figure(self.ndw_diagnostics.figure)
         # parse based on canvas type
         if is_notebook_canvas(self.ndw_videos.figure):
             from ipywidgets import VBox

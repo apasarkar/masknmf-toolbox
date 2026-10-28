@@ -17,6 +17,9 @@ here enumerates a parameter by hand:
     masknmf view results.hdf5 --raw movie.tif
     masknmf view run_folder
     masknmf view results.hdf5 --raw movie.tif --compression
+    masknmf view "sessions/*/results.hdf5" --fs 30
+    masknmf view results.hdf5 suite2p/plane0
+    masknmf view cnmf.hdf5
     masknmf view results.hdf5 --classify --labels soma,dendrite,junk
     masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
     masknmf view tracking_folder
@@ -36,7 +39,9 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import warnings
 from datetime import datetime, timedelta
@@ -46,11 +51,13 @@ import numpy as np
 
 import masknmf
 from masknmf.classification import RoicatClassifier
+from masknmf.demixing._adapters import adapter_for
 from masknmf.demixing.curation import latest_results
 from masknmf.demixing.labels import SIDECAR_SUFFIX, read_labels
 from masknmf.io import (
     SUFFIXES_HDF5,
     SUFFIXES_TIFF,
+    config_record,
     group_name_compression,
     group_name_demixing,
     group_names_registration,
@@ -60,6 +67,7 @@ from masknmf.io import (
 )
 from masknmf.multisession import RoicatDataAdapter, RoicatTracker
 from masknmf.pipelines import scraper
+from masknmf.utils.display import handler as handler_console
 
 
 GLOB_TRACKING_MANIFEST = "*_roicat-tracking-manifest.json"
@@ -90,6 +98,26 @@ def groups_present(filepath_results: str) -> list[str]:
         return stage_groups(filepath_results)
     except (OSError, ValueError) as e:
         fail(str(e))
+
+
+def expand_sources(entries: list[str]) -> list[str]:
+    """The results files, and the paths adapters expand entries to, that view entries name."""
+    sources = []
+    for entry in entries:
+        adapter = adapter_for(entry)
+        if adapter is not None:
+            sources += [str(path) for path in adapter.expand(Path(entry))]
+            continue
+        # glob characters in the folder's own name are escaped, so only the file pattern matches
+        pattern = str(Path(glob.escape(entry)) / "*results*.hdf5") if Path(entry).expanduser().is_dir() else entry
+        sources += expand_results(entries=[pattern])
+    return list(dict.fromkeys(sources))
+
+
+def describe_source(filepath: str) -> list[str]:
+    """A results file's stage groups, else its adapter's line about it."""
+    adapter = adapter_for(filepath)
+    return [adapter.describe(Path(filepath))] if adapter is not None else groups_present(filepath)
 
 
 def expand_results(entries: list[str]) -> list[str]:
@@ -230,29 +258,6 @@ def spec_for(slug: str) -> scraper.PipelineSpec:
     if slug not in registry:
         fail(f"unknown pipeline {slug!r}; choose from {', '.join(sorted(registry))}")
     return scraper.scrape(cls_pipeline=registry[slug])
-
-
-KEYS_RECORD = ("masknmf_version", "pipeline", "run", "inputs", "timings")
-
-
-def config_record(loaded: Any) -> dict | None:
-    """
-    A config file's object with the argument values under "configs". Run folders from before they were nested
-    there hold them at the top level, beside "pipeline".
-
-    Args:
-        loaded (Any): The parsed json
-    Returns:
-        dict | None: The object, or None when it holds no argument values
-    """
-    if not isinstance(loaded, dict):
-        return None
-    if isinstance(loaded.get("configs"), dict):
-        return loaded
-    if "pipeline" not in loaded:
-        return None
-    return {**{k: loaded[k] for k in KEYS_RECORD if k in loaded},
-            "configs": {k: v for k, v in loaded.items() if k not in KEYS_RECORD}}
 
 
 def read_config_file(filepath: str) -> dict:
@@ -484,9 +489,9 @@ def command_run(args: argparse.Namespace) -> None:
 
     # a run folder's config.json records the files its run read; a movie or array not given comes from there
     inputs_file = loaded.get("inputs", {})
-    resume_from = getattr(args, "resume_from", None)
-    if resume_from is not None and len(inputs_file) == 0:
-        filepath_config_resumed = Path(resume_from).expanduser().resolve().parent / "config.json"
+    resume = getattr(args, "resume", None)
+    if resume is not None and len(inputs_file) == 0:
+        filepath_config_resumed = Path(resume).expanduser().resolve().parent / "config.json"
         if filepath_config_resumed.is_file():
             inputs_file = read_config_file(filepath=str(filepath_config_resumed)).get("inputs", {})
     for param in (*spec.movie_params, *spec.array_params):
@@ -503,7 +508,7 @@ def command_run(args: argparse.Namespace) -> None:
     if len(spec.movie_params) == 1 and not getattr(args, spec.movie_params[0].field):
         _, allows_none = scraper.annotation_members(annotation=spec.movie_params[0].annotation)
         if not allows_none:
-            fail(f"{spec.slug} needs a movie: pass one, or a --config or --resume-from from a run that recorded it")
+            fail(f"{spec.slug} needs a movie: pass one, or a --config or --resume from a run that recorded it")
 
     kwargs_init = {}
     for param in spec.scalars:
@@ -580,7 +585,7 @@ def command_run(args: argparse.Namespace) -> None:
 
         for param in spec.run_scalars:
             # where to start is chosen anew
-            if param.field in values_file and param.field != "resume_from":
+            if param.field in values_file and param.field != "resume":
                 kwargs_run[param.field] = values_file[param.field]
             text = getattr(args, param.field, None)
             if param.field == "stop_after" and text is None and values_file.get(param.field, "demixing") != "demixing":
@@ -588,7 +593,7 @@ def command_run(args: argparse.Namespace) -> None:
                       f"--stop-after demixing runs every stage")
             if text is None:
                 # a resumed run takes what it is not given from the earlier run's config.json
-                if param.required and param.field not in values_file and resume_from is None:
+                if param.required and param.field not in values_file and resume is None:
                     fail(f"{param.flag} is required for {spec.slug}")
                 continue
             try:
@@ -621,7 +626,7 @@ def command_run(args: argparse.Namespace) -> None:
             for p in spec.movie_params
             if kwargs_run.get(p.field) is not None
         )
-        print(f"{spec.cls.__name__} on {shapes or 'stored results'}")
+        print(f"Starting pipeline: {spec.cls.__name__} on {shapes or 'stored results'}")
         start = time.monotonic()
         try:
             run_folder = pipeline.run(**kwargs_run)
@@ -737,23 +742,82 @@ def view_tracking(args: argparse.Namespace, source: Path) -> None:
     fpl.loop.run()
 
 
+def launch_viewer(argv: list[str], filepath_log: Path) -> subprocess.Popen:
+    """
+    Run ``masknmf <argv>`` in a process of its own, detached from this terminal, its output going to a log.
+
+    Args:
+        argv (list[str]): The arguments, without the program name
+        filepath_log (Path): Where the process writes its output
+    Returns:
+        subprocess.Popen: The process
+    """
+    python = sys.executable
+    if sys.platform == "win32" and python.endswith("python.exe"):
+        # no console window beside the viewer's
+        pythonw = python[: -len("python.exe")] + "pythonw.exe"
+        if Path(pythonw).exists():
+            python = pythonw
+    # its own session or process group, so closing this terminal or ctrl+c here leaves the window open
+    detach = (
+        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {"start_new_session": True}
+    )
+    # unbuffered, so an error lands in the log after the output before it
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    with filepath_log.open("a", encoding="utf-8") as out:
+        return subprocess.Popen(
+            [python, "-m", "masknmf.cli", *argv], stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, env=env, **detach
+        )
+
+
+def view_each(args: argparse.Namespace, files: list[str]) -> None:
+    """
+    Open one demixing viewer per results file, each in its own process, so the windows never share a GPU context and
+    one crashing leaves the rest open. Waits for them and reports any that fail; ctrl+c stops waiting, not the windows.
+    """
+    options = ["--device", args.device]
+    if args.fs is not None:
+        options += ["--fs", str(args.fs)]
+    if args.prefix:
+        options += ["--prefix", args.prefix]
+    folder_logs = Path(tempfile.gettempdir()) / "masknmf-view"
+    folder_logs.mkdir(exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    viewers = []
+    for index, filepath in enumerate(files):
+        filepath_log = folder_logs / f"{stamp}_{index}_{Path(filepath).stem}.log"
+        process = launch_viewer(argv=["view", filepath, *options], filepath_log=filepath_log)
+        print(f"opened {filepath}  (pid {process.pid}, log {filepath_log})", flush=True)
+        viewers.append((filepath, process, filepath_log))
+
+    try:
+        while len(viewers) > 0:
+            time.sleep(1.0)
+            for viewer in [v for v in viewers if v[1].poll() is not None]:
+                viewers.remove(viewer)
+                filepath, process, filepath_log = viewer
+                if process.returncode != 0:
+                    lines = [line for line in filepath_log.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+                    print(f"{filepath} failed: {lines[-1] if lines else f'exit code {process.returncode}'} (log {filepath_log})",
+                          file=sys.stderr)
+    except KeyboardInterrupt:
+        print(f"\nstopped waiting; {len(viewers)} viewers stay open", file=sys.stderr)
+
+
 def command_view(args: argparse.Namespace) -> None:
     """
     Open the viewers for whatever stages the results files hold; --classify opens only the classification viewer.
     A folder opens its newest tracking manifest in the multisession viewer, else its results files.
     """
+    # a viewer's notes need no timestamps
+    handler_console.setFormatter(logging.Formatter("%(message)s"))
     tracking = find_tracking(entry=args.results[0])
     if tracking is not None:
         view_tracking(args=args, source=tracking)
         return
     # a folder without a manifest means the results files in it, each replaced by its newest curated file
-    entries = [
-        # glob characters in the folder's own name are escaped, so only the file pattern matches
-        str(Path(glob.escape(entry)) / "*results*.hdf5") if Path(entry).expanduser().is_dir() else entry
-        for entry in args.results
-    ]
-    files = expand_results(entries=entries)
-    present = {filepath: groups_present(filepath_results=filepath) for filepath in files}
+    files = expand_sources(entries=args.results)
+    present = {filepath: describe_source(filepath=filepath) for filepath in files}
     for filepath, names in present.items():
         print(Path(filepath).resolve())
         for name in names or ["no masknmf results"]:
@@ -766,6 +830,9 @@ def command_view(args: argparse.Namespace) -> None:
             fail("--classify reads only the top-level demixing results; drop --prefix")
         if args.raw is not None or args.compression:
             fail("--classify opens only the classification viewer; drop --raw and --compression")
+        foreign = next((f for f in files if adapter_for(f) is not None), None)
+        if foreign is not None:
+            fail(f"--classify reads masknmf results files; {foreign} holds {adapter_for(foreign).pipeline} results")
         import fastplotlib as fpl
 
         classification = masknmf.ClassificationVis.from_masknmf(
@@ -780,12 +847,18 @@ def command_view(args: argparse.Namespace) -> None:
         return
 
     if len(files) > 1:
-        fail(f"the demixing viewer opens one results file, got {len(files)}; --classify opens several")
+        if args.raw is not None or args.compression:
+            fail("--raw and --compression name one movie; open its results file on its own")
+        view_each(args=args, files=files)
+        return
     filepath_results = files[0]
     names_present = present[filepath_results]
     if len(names_present) == 0:
         fail(f"{filepath_results} holds no masknmf results")
 
+    adapter = adapter_for(filepath_results)
+    if args.prefix and adapter is not None:
+        fail(f"{filepath_results} holds {adapter.pipeline} results, which take no prefix")
     name_demixing = f"{args.prefix}/{group_name_demixing()}" if args.prefix else group_name_demixing()
     if name_demixing not in names_present and args.prefix:
         fail(f"{filepath_results} holds no {name_demixing}")
@@ -804,13 +877,14 @@ def command_view(args: argparse.Namespace) -> None:
     for note in opened.skipped:
         print(note)
     results, raw, registered = opened.results, opened.raw, opened.registered
-    if args.compression and isinstance(results, masknmf.BaseRegistrationArray):
+    if args.compression and not isinstance(results, (masknmf.DemixingResults, masknmf.CompressionArray)):
         fail(f"{filepath_results} holds no compression")
     if args.compression and raw is None:
         fail("--compression needs --raw, the movie the compression saw, with the results' frame count")
+    frame_rate = args.fs if args.fs is not None else getattr(results, "frame_rate", None)
     viewer = masknmf.SingleSessionDemixingVis(
         demixing_results=results,
-        frame_timings=timings(results.shape[0], args.fs),
+        frame_timings=timings(results.shape[0], frame_rate),
         device=device,
         results_path=filepath_results,
         raw=raw,
@@ -825,13 +899,13 @@ def command_view(args: argparse.Namespace) -> None:
 def command_train_classifier(args: argparse.Namespace) -> None:
     """Train a ROICaT classifier on the labels the classification viewer saved beside each results file."""
     sessions = demixing_sessions(files=expand_results(entries=args.results))
-    incomplete = []
+    unlabeled = []
     for filepath in sessions:
         labels, _ = read_labels(filepath)
-        if labels is None or (labels < 0).any():
-            incomplete.append(filepath)
-    if len(incomplete) > 0:
-        fail("every ROI must be labeled before training; label these with masknmf view --classify:\n  " + "\n  ".join(incomplete))
+        if labels is None:
+            unlabeled.append(filepath)
+    if len(unlabeled) > 0:
+        fail("no labels saved for these; label them with masknmf view --classify:\n  " + "\n  ".join(unlabeled))
 
     classifier = RoicatClassifier.from_masknmf(sessions)
     try:
@@ -844,7 +918,7 @@ def command_train_classifier(args: argparse.Namespace) -> None:
 
 
 def command_classify(args: argparse.Namespace) -> None:
-    """Classify every ROI in each results file; predictions go to its labels sidecar, unlabeled ROIs take them."""
+    """Classify every ROI in each results file; predictions go to its labels sidecar, the labels are left as they are."""
     sessions = demixing_sessions(files=expand_results(entries=args.results))
     if not Path(args.classifier).is_file():
         fail(f"no such classifier: {args.classifier}")
@@ -922,11 +996,12 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
         add_pipeline_options(parser=parser_run, spec=spec)
     parser_run.set_defaults(handler=command_run)
 
-    parser_view = subparsers.add_parser("view", help="open the viewers for a results file")
+    parser_view = subparsers.add_parser("view", help="open the viewers for results files")
     parser_view.add_argument(
-        "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several need --classify. "
+        "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several open one viewer each, or one classification viewer with --classify. "
         "Or a tracking folder (its newest run) or one run's *-manifest.json; a tracking folder without a manifest is followed by its results files in session order. "
-        "Any other folder means the *results*.hdf5 files in it, each replaced by its newest curated file",
+        "Any other folder means the *results*.hdf5 files in it, each replaced by its newest curated file. "
+        "A suite2p plane folder, or a file caiman saved, opens through its adapter",
     )
     parser_view.add_argument("--raw", default=None, help="the raw movie the results came from")
     parser_view.add_argument("--dataset", default=None)

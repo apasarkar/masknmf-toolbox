@@ -239,11 +239,11 @@ def test_start_from_a_loaded_runs_compression_resumes_it_and_back_to_the_movie_r
     assert window.starts_available() == ["registration", "compression"]
     window.select_start(start="compression")
     argv = window.argv_run()
-    assert argv[argv.index("--resume-from") + 1] == str(folder / "results.hdf5") and "--config" in argv
+    assert argv[argv.index("--resume") + 1] == str(folder / "results.hdf5") and "--config" in argv
     assert window.values["compress_config"] == "skip"
     window.select_start(start="movie")
     assert launcher.same(window.values["compress_config"], cls.default_configs()["compress_config"])
-    assert "--resume-from" not in window.argv_run()
+    assert "--resume" not in window.argv_run()
 
 
 def test_tracking_rows_grow_and_build_a_track_command(tmp_path):

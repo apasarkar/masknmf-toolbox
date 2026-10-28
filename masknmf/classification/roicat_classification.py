@@ -37,7 +37,8 @@ class RoicatClassifier:
     ROICaT ROI classifier trained on one or more demixing sessions.
 
     Workflow: ``from_masknmf(files)`` picks up labels the labeling GUI stored in the
-    files (or set ``labels`` yourself), ``train()``, ``save(path)``. Later
+    files (or set ``labels`` yourself), ``train()``, ``save(path)``. ROIs labeled -1
+    are left out of training, so not every ROI needs a label. Later
     ``from_disk(path).classify(other_files, write=True)`` labels new sessions.
     ``save`` writes the network (``.roicat_classifier``) plus a ``.training.json``
     with the labels and the session files they came from.
@@ -65,21 +66,28 @@ class RoicatClassifier:
     def from_masknmf(cls, demixing_result_files: Sequence[str | Path], **adapter_kwargs) -> "RoicatClassifier":
         """
         Build the training data from demixing .hdf5 files (one per session). Labels
-        the labeling GUI stored next to them (``<results>.labels.hdf5``) are used when
-        every session is completely labeled; otherwise set ``labels`` before ``train``.
+        the labeling GUI stored next to them (``<results>.labels.hdf5``) are used, with
+        unlabeled ROIs kept as -1 (left out of training). A session with no stored
+        labels at all leaves ``labels`` unset; set it yourself before ``train``.
         """
         files = [str(f) for f in demixing_result_files]
         adapter = RoicatDataAdapter.from_masknmf(files, **adapter_kwargs)
-        labels, incomplete = [], []
-        for f in files:
+        labels, missing = [], []
+        for f, n_roi in zip(files, adapter.n_roi):
             stored, names = read_labels(f)
-            if stored is None or names is None or (stored < 0).any():
-                incomplete.append(os.path.basename(f))
-            else:
-                labels.append([names[i] for i in stored])
+            if stored is None or names is None or len(stored) != n_roi:
+                missing.append(os.path.basename(f))
+                continue
+            session_labels = []
+            for index in stored:
+                if index < 0:
+                    session_labels.append(_UNCLASSIFIED_FLAG)
+                else:
+                    session_labels.append(names[index])
+            labels.append(session_labels)
         clf = cls(training_data=adapter, training_files=files)
-        if incomplete:
-            display(f"labels missing or incomplete in {incomplete}: label them in ClassificationVis or set clf.labels")
+        if missing:
+            display(f"no labels in {missing}: label them in ClassificationVis or set clf.labels")
         else:
             clf.labels = labels
         return clf
@@ -101,7 +109,7 @@ class RoicatClassifier:
 
     @property
     def labels(self) -> list[list] | None:
-        """One list per session, one label (str or int) per ROI"""
+        """One list per session, one label (str or int) per ROI; -1 leaves the ROI out of training"""
         return self._labels
 
     @labels.setter
@@ -122,14 +130,7 @@ class RoicatClassifier:
                         f"At session {k} the number of neural signals is {n} but the "
                         f"number of labels provided is {len(session_labels)}"
                     )
-        ## Verify that all labels are valid:
-        tentative_labels = [list(l) for l in new_labels]
-        for elt in tentative_labels:
-            for sub_elt in elt:
-                if sub_elt == _UNCLASSIFIED_FLAG:
-                    raise ValueError(f"Some elements seem to be unclassified with value {_UNCLASSIFIED_FLAG}")
-
-        self._labels = tentative_labels
+        self._labels = [list(l) for l in new_labels]
 
     @property
     def trainable(self) -> bool:
@@ -138,10 +139,15 @@ class RoicatClassifier:
 
     @property
     def class_counts(self) -> dict | None:
-        """Labeled ROI count per class across all sessions"""
+        """Labeled ROI count per class across all sessions (unlabeled ROIs not counted)"""
         if self.labels is None:
             return None
-        return dict(Counter(l for session_labels in self.labels for l in session_labels))
+        counts = Counter()
+        for session_labels in self.labels:
+            for label in session_labels:
+                if label != _UNCLASSIFIED_FLAG:
+                    counts[label] += 1
+        return dict(counts)
 
     @property
     def valid_classes(self) -> list | None:
@@ -163,8 +169,9 @@ class RoicatClassifier:
 
     def train(self, roinet_dir: Optional[str | Path] = None, num_workers: int = -1) -> ClassifierPackage:
         """
-        Embed every ROI image with ROInet, fit a logistic regression on the
-        labels and package the result as a ClassifierPackage (self.classifier).
+        Embed the labeled ROI images with ROInet, fit a logistic regression on
+        their labels and package the result as a ClassifierPackage (self.classifier).
+        ROIs labeled -1 are skipped.
 
         Parameters
         ----------
@@ -185,7 +192,24 @@ class RoicatClassifier:
                 f"train/test split, too few: {rare}"
             )
         adapter = self.training_data
-        adapter.set_class_labels(labels=self.labels)
+
+        # one image stack per session, holding only that session's labeled ROIs
+        images, um_per_pixel, targets = [], [], []
+        for session_images, session_um, session_labels in zip(
+            adapter.ROI_images, _um_per_pixel_list(adapter), self.labels
+        ):
+            keep = []
+            for k, label in enumerate(session_labels):
+                if label != _UNCLASSIFIED_FLAG:
+                    keep.append(k)
+                    targets.append(str(label))
+            if keep:
+                images.append(np.asarray(session_images)[keep])
+                um_per_pixel.append(session_um)
+
+        names = sorted(set(targets))
+        name_to_index = {name: i for i, name in enumerate(names)}
+        y = np.array([name_to_index[t] for t in targets], dtype=np.int64)
 
         roinet = roicat.ROInet.ROInet_embedder(
             device=self.device,
@@ -197,8 +221,8 @@ class RoicatClassifier:
             verbose=True,
         )
         roinet.generate_dataloader(
-            ROI_images=adapter.ROI_images,
-            um_per_pixel=adapter.um_per_pixel,
+            ROI_images=images,
+            um_per_pixel=um_per_pixel,
             pref_plot=False,
             numWorkers_dataloader=num_workers,
             persistentWorkers_dataloader=num_workers != 0,
@@ -206,8 +230,6 @@ class RoicatClassifier:
         roinet.generate_latents()
 
         x = np.asarray(roinet.latents, dtype=np.float32)
-        y = np.concatenate(adapter.class_labels_index).astype(np.int64)
-        names = [str(n) for n in adapter.unique_class_labels]
 
         autoclassifier = roicat.classification.classifier.Auto_LogisticRegression(
             X=x,
@@ -288,8 +310,8 @@ class RoicatClassifier:
             ROI images to classify; paths are loaded into a RoicatDataAdapter.
         write : bool
             With paths: store ``class_predictions`` / ``class_probabilities`` /
-            ``classified_with`` in each session's ``.labels.hdf5`` sidecar and give
-            still-unlabeled ROIs the predicted label (existing labels are kept).
+            ``classified_with`` in each session's ``.labels.hdf5`` sidecar. The labels
+            are left as they are, so predictions never become training labels.
 
         Returns
         -------
@@ -331,8 +353,8 @@ class RoicatClassifier:
             if n not in names:
                 names.append(n)
         pred = np.array([names.index(n) for n in predicted], dtype=np.int64)
-        labels = np.full(len(pred), -1, dtype=np.int64) if stored is None or len(stored) != len(pred) else stored.copy()
-        fill = labels < 0
-        labels[fill] = pred[fill]
-        write_labels(path, labels, names)
+        if stored is None or len(stored) != len(pred):
+            stored = np.full(len(pred), -1, dtype=np.int64)
+        # labels unchanged; written so label_names holds every name pred indexes into
+        write_labels(path, stored, names)
         write_predictions(path, pred, probs.max(axis=1), self._path or "")

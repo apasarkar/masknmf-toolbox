@@ -18,6 +18,7 @@ from wgpu.utils.imgui import ImguiRenderer
 from masknmf.visualization.imgui.guide import ACCENT, CARD, DIM, EDGE, KEY, PLOT, TEXT, arrow, box, heading, u32
 from masknmf.visualization.imgui.keybinds import CLASSIFICATION
 from masknmf.visualization.imgui.panels import draw_keybinds_button, draw_keybinds_popup
+from masknmf.visualization.imgui.scale import fit_canvas, push_font_em, scaled
 from masknmf.visualization.imgui.theme import popup
 
 WARN = imgui.ImVec4(0.95, 0.68, 0.25, 1.0)
@@ -42,7 +43,7 @@ STEPS = (
     (fa.ICON_FA_FOLDER_OPEN, "Load", "sessions: results files or a folder"),
     (fa.ICON_FA_TAG, "Label", "1-9 each ROI; 0 clears"),
     (fa.ICON_FA_IMAGE, "View", "backgrounds, the full FOV"),
-    (fa.ICON_FA_GRADUATION_CAP, "Train", "every ROI labeled, 2 per class"),
+    (fa.ICON_FA_GRADUATION_CAP, "Train", "on labeled ROIs, 2 per class"),
     (fa.ICON_FA_WAND_MAGIC_SPARKLES, "Classify", "new sessions; fix, train again"),
 )
 # the three looks a label rests on
@@ -138,11 +139,12 @@ CLASSIFY = (
     ("button", "description"),
     (
         "train",
-        "fits a ROICaT classifier on the labels, every ROI labeled and at least 2 per class, and saves it to "
-        "the path",
+        "fits a ROICaT classifier on the labeled ROIs, at least 2 per class (unlabeled ones are left out), "
+        "and saves it to the path",
     ),
     ("Select classifier", "a saved .roicat_classifier: its classes join the list, classify on load turns on"),
-    ("classify", "predicts every ROI: unlabeled ROIs take the prediction, your labels are kept"),
+    ("classify", "predicts every ROI into the pred column; your labels are left as they are"),
+    ("accept", "copies the predictions into the unlabeled ROIs, which are then trained on (ctrl+z undoes)"),
     (
         "pred",
         "the prediction and its confidence in the table, red where it disagrees with your label: fix it, "
@@ -224,7 +226,7 @@ def cards(dl, items: tuple) -> None:
             child_flags=imgui.ChildFlags_.borders,
             window_flags=imgui.WindowFlags_.no_scrollbar,
         )
-        imgui.push_font(None, 1.8 * em)
+        push_font_em(1.8)
         imgui.set_cursor_pos_x((card_w - imgui.calc_text_size(icon).x) / 2)
         imgui.text_colored(ACCENT, icon)
         imgui.pop_font()
@@ -418,7 +420,7 @@ def draw_classification_help(is_open: bool, keys_open: bool) -> tuple[bool, bool
     imgui.dummy(imgui.ImVec2(w, 1.4 * em + bh + 1.4 * em))
     imgui.text_colored(
         DIM,
-        "unlabeled ROIs take the prediction, yours stay; red where the two disagree: fix it and train again",
+        "labels stay yours, predictions stay in pred; red where the two disagree: fix it and train again",
     )
     table("classify", CLASSIFY)
 
@@ -486,9 +488,10 @@ def main() -> None:
     from rendercanvas.auto import RenderCanvas, loop
 
     canvas = RenderCanvas(title="classification help", size=(760, 1000), update_mode="continuous", max_fps=60)
+    fit_canvas(canvas)
     renderer = ImguiRenderer(wgpu.utils.get_default_device(), canvas)
     load_fonts()
-    renderer.set_gui(partial(draw_window, {"open": True, "keys": False}))
+    renderer.set_gui(scaled(partial(draw_window, {"open": True, "keys": False})))
     canvas.request_draw(renderer.render)
     loop.run()
 

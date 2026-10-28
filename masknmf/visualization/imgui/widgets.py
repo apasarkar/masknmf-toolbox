@@ -79,3 +79,20 @@ def draw_switch(key: str, value: bool, left: str, right: str, live: bool = True)
     if imgui.is_item_clicked() and not value:
         changed, value = True, True
     return changed or flipped, value
+
+
+def draw_min_brightness(key: str, value: float, width_slider: float, width_box: float) -> tuple[bool, float]:
+    """
+    A min brightness control: a 0 to 5 slider and a number box for values past it, side by side. A negative
+    value typed in the box is refused, as the pipeline's min_brightness setter refuses it. Returns (changed, value).
+    """
+    imgui.set_next_item_width(width_slider)
+    changed_slider, value_slider = imgui.slider_float(f"##{key}_slider", value, 0.0, 5.0, "%.2f")
+    imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+    imgui.set_next_item_width(width_box)
+    changed_box, value_box = imgui.input_float(f"##{key}_box", value, 0.0, 0.0, "%.6g")
+    if changed_box and value_box >= 0:
+        return True, value_box
+    if changed_slider:
+        return True, value_slider
+    return False, value

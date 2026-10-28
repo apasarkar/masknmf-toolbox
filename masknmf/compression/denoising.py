@@ -2,16 +2,24 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+import logging
+import warnings
+
 import torch
 import pytorch_lightning as pl
 import torch.nn as nn
+
+# lightning's device report, tips and dataloader advice; both loggers reset themselves to info on import
+logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
+logging.getLogger("lightning_fabric").setLevel(logging.WARNING)
+warnings.filterwarnings("ignore", message="The 'train_dataloader' does not have many workers")
+warnings.filterwarnings("ignore", message="`isinstance\\(treespec, LeafSpec\\)` is deprecated")
 import networkx as nx
 import numpy as np
 from torch.utils.data import DataLoader
 import os
 import sys
 from masknmf.utils import display
-from pytorch_lightning.callbacks import TQDMProgressBar
 
 
 class MaskedConv1d(nn.Conv1d):
@@ -277,7 +285,8 @@ def train_total_variance_denoiser(
         precision=precision,
         logger=False,
         enable_checkpointing=False,
-        callbacks=[TQDMProgressBar(refresh_rate=log_every_n_steps)],
+        enable_model_summary=False,
+        enable_progress_bar=False,
         benchmark=True,
     )
 

@@ -13,6 +13,7 @@ import torch
 from masknmf.arrays import ArrayLike, Hdf5Array, TiffArray, TiffSeriesLoader
 from masknmf.compression import CompressionArray
 from masknmf.demixing import DemixingResults, results_stem
+from masknmf.demixing.curation import ATTR_NMF_CONFIG
 from masknmf.demixing._base_results import BaseResults
 from masknmf.motion_correction import BaseRegistrationArray, GradientRegistrationArray, PiecewiseRigidRegistrationArray, RigidRegistrationArray
 from masknmf._version import __version__
@@ -106,6 +107,75 @@ def movie_beside(path: str | Path) -> Path | None:
     return tiffs[0] if len(tiffs) == 1 else None
 
 
+KEYS_RECORD = ("masknmf_version", "pipeline", "run", "inputs", "timings")
+
+
+def config_record(loaded) -> dict | None:
+    """
+    A config file's object with the argument values under "configs". Run folders from before they were nested
+    there hold them at the top level, beside "pipeline".
+
+    Parameters
+    ----------
+    loaded
+        The parsed json.
+
+    Returns
+    -------
+    dict | None
+        The object, or None when it holds no argument values.
+    """
+    if not isinstance(loaded, dict):
+        return None
+    if isinstance(loaded.get("configs"), dict):
+        return loaded
+    if "pipeline" not in loaded:
+        return None
+    return {**{k: loaded[k] for k in KEYS_RECORD if k in loaded},
+            "configs": {k: v for k, v in loaded.items() if k not in KEYS_RECORD}}
+
+
+def read_run_record(path: str | Path) -> dict | None:
+    """
+    The record of the run a results file belongs to: the config.json beside ``path`` (:func:`write_run_config`),
+    through :func:`config_record`; None when there is none or it holds no argument values.
+    """
+    filepath_config = Path(path).parent / "config.json"
+    if not filepath_config.is_file():
+        return None
+    return config_record(loaded=json.loads(filepath_config.read_text()))
+
+
+def last_nmf_config(record: dict) -> dict | None:
+    """
+    The NMFConfig, as config.json writes it, of the last demixing pass a run record holds: the pass that
+    produced its signals. None when the record holds no demixing pass.
+    """
+    last = None
+    for value in record.get("configs", {}).values():
+        if isinstance(value, dict) and value.get("kind") == "multipass":
+            value = value["DemixingConfigs"][-1] if value["DemixingConfigs"] else None
+        if isinstance(value, dict) and value.get("kind") == "singlepass":
+            last = value["NMFConfig"]
+    return last
+
+
+def read_nmf_config(path: str | Path) -> dict | None:
+    """
+    The NMFConfig, as config.json writes it, of the pass that produced a results file's signals: the one a
+    curated file records in its ``nmf_config`` attribute (:func:`masknmf.demixing.write_curated`), else the
+    last demixing pass of the run record beside ``path``. None when neither is found.
+    """
+    recorded = None
+    if h5py.is_hdf5(str(path)):
+        with h5py.File(path, "r") as file:
+            recorded = file.attrs.get(ATTR_NMF_CONFIG)
+    if recorded is not None:
+        return json.loads(recorded)
+    record = read_run_record(path)
+    return None if record is None else last_nmf_config(record=record)
+
+
 def find_raw_movie(path: str | Path) -> tuple[ArrayLike | None, Path] | None:
     """
     The raw movie of the run a results file belongs to, and where it is: the movie the config.json beside ``path``
@@ -113,8 +183,7 @@ def find_raw_movie(path: str | Path) -> tuple[ArrayLike | None, Path] | None:
     A run that read several movies (``results.calcium.hdf5``) uses the input named after the results file.
     The movie is None when the recorded file is not one :func:`load_movie` reads.
     """
-    filepath_config = Path(path).parent / "config.json"
-    inputs = json.loads(filepath_config.read_text()).get("inputs", {}) if filepath_config.is_file() else {}
+    inputs = (read_run_record(path) or {}).get("inputs", {})
     movies = {name: entry for name, entry in inputs.items()
               if isinstance(entry, dict) and "path" in entry and Path(entry["path"]).suffix.lower() != ".npy"}
     channel = results_stem(path).partition(".")[2]
@@ -208,7 +277,7 @@ class OpenedResults:
              prefix: str = "",
              device: str = "cpu") -> "OpenedResults":
         """
-        Open a results file of any stage.
+        Open a results file of any stage, or another pipeline's results through its adapter.
 
         The results are the file's DemixingResults, else its CompressionArray, else its registration applied to the
         raw movie. A ``raw`` whose shape does not match the results is not used and is reported in ``skipped``; it
@@ -217,7 +286,7 @@ class OpenedResults:
         Parameters
         ----------
         path : str | Path
-            The results file.
+            The results file, or a path an adapter reads.
         raw : ArrayLike | np.ndarray | str | Path | None
             The raw movie, or a path :func:`load_movie` reads.
         prefix : str
@@ -233,9 +302,19 @@ class OpenedResults:
         ------
         ValueError
             If the file holds no masknmf results, none under ``prefix``, or only a registration and no raw movie with
-            the registration's number of frames is available.
+            the registration's number of frames is available; or if ``prefix`` is given with an adapter's results.
         """
+        from masknmf.demixing._adapters import adapter_for
+
         path = Path(path)
+        adapter = adapter_for(path)
+        if adapter is not None:
+            if prefix:
+                raise ValueError(f"{path} holds {adapter.pipeline} results, which take no prefix")
+            raw_source = Path(raw) if isinstance(raw, (str, Path)) else None
+            results, raw, skipped = adapter.from_path(path, raw=raw, device=device)
+            opened = cls.resolve(results, raw=raw, device=device)
+            return replace(opened, path=path, raw_source=raw_source if raw is not None else None, skipped=skipped + opened.skipped)
         groups = stage_groups(path)
         if not groups:
             raise ValueError(f"{path} holds no masknmf results")
@@ -347,7 +426,7 @@ class OpenedResults:
                 skipped.append(f"{source} shape {tuple(movie.shape)} does not match results shape {shape}; not used")
 
         stored = None
-        if path is not None and not is_registration:
+        if path is not None and path.is_file() and not is_registration:
             with h5py.File(path, "r") as f:
                 stored = next((name for name in group_names_registration() if name in f), None)
                 frames = f[stored]["shifts"].shape[0] if stored is not None else None
