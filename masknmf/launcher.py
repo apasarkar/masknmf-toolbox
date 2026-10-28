@@ -29,6 +29,7 @@ from wgpu.utils.imgui import ImguiRenderer
 
 import masknmf
 from masknmf import cli
+from masknmf.demixing._adapters import adapter_for
 from masknmf.demixing.curation import latest_results
 from masknmf.io import group_name_compression, group_name_demixing, group_names_registration, stage_groups
 from masknmf.pipelines import scraper
@@ -50,7 +51,7 @@ FILETYPES_MOVIE = [
 ]
 FILETYPES_ARRAY = [idl.FileType("NumPy", "*.npy")]
 FILETYPES_RESULTS = [
-    idl.FileType("Results", "*.h5 *.hdf5"),
+    idl.FileType("Results", "*.h5 *.hdf5 stat.npy"),
     idl.FileType("All Files", "*"),
 ]
 FILETYPES_CLASSIFIER = [
@@ -197,13 +198,16 @@ STAGE_NOTES = {
     "demixing": "footprints, traces, background; Curation and Signals",
     "curated": "a curated file; its description says what was dropped",
 }
+# what Open results finds at a path; anything else is an adapter's pipeline
+FOUND_MASKNMF = ("", "results", "folder", "tracking", "missing", "other")
 # the viewers Open results offers: key, icon, name, when it applies
 VIEWERS = (
     (
         "demixing",
         fa.ICON_FA_LAYER_GROUP,
         "Demixing viewer",
-        "One session's results at any stage: registration, compression, demixing and curation",
+        "One session's results at any stage: registration, compression, demixing and curation; other pipelines' results "
+        "through their adapters. Several files, or a path to compare with, open one viewer each",
     ),
     (
         "classification",
@@ -542,12 +546,13 @@ class Launcher:
         self.start_from = "movie"
         self.values_loaded: dict[str, Any] = {}
         # Open results: the path and the raw movie with its dataset, the viewer picked, and what the path holds
-        self.paths_open: dict[str, str] = {"source": "", "raw": ""}
+        self.paths_open: dict[str, str] = {"source": "", "compare": "", "raw": ""}
         self.dataset_raw = ""
         self.viewer = ""
         self.compression_check = False
-        self.inspected: Optional[str] = None
+        self.inspected: Optional[tuple[str, str]] = None
         self.found: dict[str, Any] = {"kind": "", "detail": "", "stages": {}, "files": []}
+        self.found_compare: dict[str, Any] = {"kind": "", "detail": "", "stages": {}, "files": []}
         # Track sessions: results rows results_0, results_1, ... and the out folder
         self.paths_tracking: dict[str, str] = {"out": "", "results_0": ""}
         self.um_per_pixel = 1.2
@@ -853,19 +858,20 @@ class Launcher:
             self.forget(path=compress.argument)
 
     def inspect(self) -> None:
-        """Read what the Open results path holds, once per change of the path."""
-        source = self.paths_open["source"].strip()
-        if source == self.inspected:
+        """Read what the Open results paths hold, once per change."""
+        source, compare = self.paths_open["source"].strip(), self.paths_open["compare"].strip()
+        if (source, compare) == self.inspected:
             return
-        self.inspected = source
-        stages = {"registration": False, "compression": False, "demixing": False, "curated": False}
-        self.found = {"kind": "", "detail": "", "stages": stages, "files": []}
-        if source == "":
-            return
+        if source != "" and (self.inspected is None or source != self.inspected[0]):
+            self.fill_raw(source=source)
+        self.inspected = (source, compare)
+        self.found = self.describe(source=source)
+        self.found_compare = self.describe(source=compare)
+
+    def fill_raw(self, source: str) -> None:
+        """The raw movie the run read, from the config.json beside its results, while the field is empty."""
         path = Path(source).expanduser()
         folder = path if path.is_dir() else path.parent
-        # the raw movie the run read, from the config.json beside its results, serves the registration and
-        # compression views
         if (folder / "config.json").is_file() and self.paths_open["raw"].strip() == "":
             try:
                 inputs = json.loads((folder / "config.json").read_text()).get("inputs", {})
@@ -875,48 +881,75 @@ class Launcher:
             if movie is not None and Path(movie["path"]).expanduser().exists():
                 self.paths_open["raw"] = movie["path"]
                 self.dataset_raw = movie.get("dataset", "")
+
+    def describe(self, source: str) -> dict[str, Any]:
+        """What a path holds, for the Found card."""
+        stages = {"registration": False, "compression": False, "demixing": False, "curated": False}
+        found = {"kind": "", "detail": "", "stages": stages, "files": []}
+        if source == "":
+            return found
+        path = Path(source).expanduser()
         try:
             tracking = cli.find_tracking(entry=source)
             if tracking is not None:
-                self.found.update(kind="tracking", detail=tracking.name)
-                return
+                found.update(kind="tracking", detail=tracking.name)
+                return found
+            adapter = adapter_for(source)
+            if adapter is not None:
+                files = adapter.expand(path)
+                detail = f"{len(files)} to open" if len(files) > 1 else f"{files[0].name}: {adapter.describe(files[0])}"
+                found.update(kind=adapter.pipeline, detail=detail, files=[str(p) for p in files])
+                return found
             if path.is_dir():
                 pattern = str(Path(glob.escape(source)) / "*results*.hdf5")
                 # expand_results exits the process on an empty glob, as the command line wants
                 files = cli.expand_results(entries=[pattern]) if len(glob.glob(pattern)) > 0 else []
-                self.found.update(kind="folder", files=files)
+                found.update(kind="folder", files=files)
                 if len(files) != 1:
-                    return
+                    return found
                 path = Path(files[0])
             elif not path.is_file() or not is_hdf5(filepath=source):
                 kind = "missing" if not path.exists() else "other"
                 detail = "not found on this machine" if kind == "missing" else "not a results file, run folder or tracking run"
-                self.found.update(kind=kind, detail=detail)
-                return
+                found.update(kind=kind, detail=detail)
+                return found
             names = cli.groups_present(filepath_results=str(path))
             stages["registration"] = any(n in names for n in group_names_registration())
             stages["compression"] = group_name_compression() in names
             stages["demixing"] = group_name_demixing() in names
             stages["curated"] = ".curated." in path.name
-            if self.found["kind"] == "":
-                self.found.update(kind="results", detail=path.name)
+            if found["kind"] == "":
+                found.update(kind="results", detail=path.name)
         except (Exception, SystemExit) as error:
-            self.found.update(kind="other", detail=f"could not read it: {error}")
+            found.update(kind="other", detail=f"could not read it: {error}")
+        return found
+
+    def several(self) -> bool:
+        """Whether Open results opens more than one viewer."""
+        return self.paths_open["compare"].strip() != "" or len(self.found["files"]) > 1
 
     def available(self, key: str) -> bool:
-        """Whether a viewer applies to what the Open results path holds."""
+        """Whether a viewer applies to what the Open results paths hold."""
         kind, stages, files = self.found["kind"], self.found["stages"], self.found["files"]
         raw = self.paths_open["raw"].strip() != ""
+        compare = self.paths_open["compare"].strip() != ""
         single = kind == "results" or (kind == "folder" and len(files) == 1)
         if key == "demixing":
-            return single and (stages["demixing"] or stages["compression"] or (stages["registration"] and raw))
+            if compare and self.found_compare["kind"] not in ("results", "folder") and self.found_compare["kind"] in FOUND_MASKNMF:
+                return False
+            if compare and self.found_compare["kind"] == "folder" and len(self.found_compare["files"]) == 0:
+                return False
+            if kind not in FOUND_MASKNMF or (kind == "folder" and len(files) > 1):
+                return True
+            return single and (stages["demixing"] or stages["compression"] or (stages["registration"] and raw and not compare))
         if key == "classification":
-            return (single and stages["demixing"]) or (kind == "folder" and len(files) > 1)
-        return key == "multisession" and kind == "tracking"
+            return not compare and ((single and stages["demixing"]) or (kind == "folder" and len(files) > 1))
+        return key == "multisession" and kind == "tracking" and not compare
 
     def compression_checkable(self) -> bool:
         """Whether the demixing viewer can add the lag-1 autocorrelation stills: a compression and the raw movie."""
-        return self.available(key="demixing") and self.found["stages"]["compression"] and self.paths_open["raw"].strip() != ""
+        return (self.available(key="demixing") and not self.several() and self.found["stages"]["compression"]
+                and self.paths_open["raw"].strip() != "")
 
     def viewer_current(self) -> str:
         """The chosen viewer while it applies, else the first that does, else nothing."""
@@ -953,8 +986,15 @@ class Launcher:
                 return [self.found["detail"]]
             if self.found["kind"] == "folder" and len(self.found["files"]) == 0:
                 return ["no results files in this folder"]
+            compare = self.paths_open["compare"].strip()
+            if compare != "" and self.found_compare["kind"] in ("missing", "other"):
+                return [f"compare with: {self.found_compare['detail']}"]
+            if compare != "" and self.found_compare["kind"] == "folder" and len(self.found_compare["files"]) == 0:
+                return ["compare with: no results files in this folder"]
+            if compare != "" and self.found_compare["kind"] == "tracking":
+                return ["compare with takes results files, not a tracking run"]
             if self.viewer_current() == "":
-                return ["nothing here a viewer opens; a registration alone needs the raw movie"]
+                return ["nothing here a viewer opens; a registration alone needs the raw movie, and opens on its own"]
             raw = self.paths_open["raw"].strip()
             return [f"not found: {raw}"] if raw != "" and not Path(raw).expanduser().exists() else []
         if self.page != "run":
@@ -1040,8 +1080,9 @@ class Launcher:
         if key == "":
             return None
         raw = self.paths_open["raw"].strip()
-        argv = ["view", self.paths_open["source"].strip()]
-        if raw != "" and key == "demixing":
+        compare = self.paths_open["compare"].strip()
+        argv = ["view", self.paths_open["source"].strip(), *([compare] if compare != "" else [])]
+        if raw != "" and key == "demixing" and not self.several():
             argv += ["--raw", raw]
             if is_hdf5(filepath=raw) and self.dataset_raw.strip() != "":
                 argv += ["--dataset", self.dataset_raw.strip()]
@@ -1560,11 +1601,15 @@ class Launcher:
     def draw_open(self) -> None:
         """A path, what it holds, and the viewer that opens it."""
         em = imgui.get_font_size()
-        self.step(1, "Source", "A results .hdf5, a run folder or a tracking run; a curated file opens in place of its original")
+        self.step(1, "Source", "A results .hdf5, a run folder or a tracking run; a curated file opens in place of its original. "
+                               "Or a suite2p plane, its stat.npy, or a caiman file")
         if self.begin_form(name="open"):
             self.row(caption="path")
             self.draw_path(target=self.paths_open, key="source", filetypes=FILETYPES_RESULTS, folders=True,
-                           hint="results.hdf5, a run folder, or a tracking run")
+                           hint="results.hdf5, a run folder, a tracking run, a suite2p plane or a caiman file")
+            self.row(caption="compare with")
+            self.draw_path(target=self.paths_open, key="compare", filetypes=FILETYPES_RESULTS, folders=True,
+                           hint="optional: a second results file or suite2p plane, in a viewer of its own")
             self.row(caption="raw movie")
             self.draw_path(target=self.paths_open, key="raw", filetypes=FILETYPES_MOVIE, folders=True,
                            hint="optional: the movie the run registered, for the registration and compression views")
@@ -1576,41 +1621,12 @@ class Launcher:
         self.inspect()
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
-        self.step(2, "Found", "What the path holds")
-        flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_use_window_padding
-        imgui.push_style_color(imgui.Col_.child_bg, guide.CARD)
-        imgui.push_style_var(imgui.StyleVar_.child_rounding, 5.0)
-        with imgui_ctx.begin_child("##found", imgui.ImVec2(0, 0), flags):
-            kind, detail, stages, files = self.found["kind"], self.found["detail"], self.found["stages"], self.found["files"]
-            if kind == "":
-                imgui.text_colored(COLOR_DIM, "type or browse a path to see what it holds")
-            elif kind in ("missing", "other"):
-                imgui.text_colored(COLOR_WARN, f"{fa.ICON_FA_CIRCLE_INFO}  {detail}")
-            elif kind == "tracking":
-                imgui.text_colored(COLOR_OK, fa.ICON_FA_CIRCLE_CHECK)
-                imgui.same_line(0, 0.5 * em)
-                imgui.text_colored(COLOR_TITLE, "tracking run")
-                imgui.same_line(0, 0.6 * em)
-                imgui.text_colored(COLOR_DIM, detail)
-            else:
-                if kind == "folder":
-                    imgui.text_colored(COLOR_TITLE, f"{len(files)} results file{'' if len(files) == 1 else 's'}")
-                    for filepath in files[:6]:
-                        imgui.bullet()
-                        imgui.text_colored(COLOR_DIM, Path(filepath).name)
-                    if len(files) > 6:
-                        imgui.text_colored(COLOR_DIM, f"... and {len(files) - 6} more")
-                else:
-                    imgui.text_colored(COLOR_TITLE, detail)
-                if kind == "results" or len(files) == 1:
-                    for stage, present in stages.items():
-                        imgui.text_colored(COLOR_OK if present else COLOR_DIM, fa.ICON_FA_CIRCLE_CHECK if present else fa.ICON_FA_CIRCLE)
-                        imgui.same_line(0, 0.5 * em)
-                        imgui.text_colored(guide.TEXT if present else COLOR_DIM, stage)
-                        imgui.same_line(0, 0.6 * em)
-                        imgui.text_colored(COLOR_DIM, STAGE_NOTES[stage])
-        imgui.pop_style_var()
-        imgui.pop_style_color()
+        self.step(2, "Found", "What the paths hold")
+        self.draw_found(found=self.found, name="found")
+        if self.paths_open["compare"].strip() != "":
+            imgui.dummy(imgui.ImVec2(0, 0.3 * em))
+            imgui.text_colored(COLOR_DIM, "compare with")
+            self.draw_found(found=self.found_compare, name="found_compare")
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
         self.step(3, "Viewer", "Picked from the stages found")
@@ -1630,6 +1646,50 @@ class Launcher:
                 if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
                     idl.wrapped_tooltip("Adds lag-1 autocorrelation images of the raw, compressed and residual movies; needs the raw movie")
                 imgui.unindent(hello_imgui.em_size(1.8))
+
+    def draw_found(self, found: dict[str, Any], name: str) -> None:
+        """The card saying what a path holds."""
+        em = imgui.get_font_size()
+        flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_use_window_padding
+        imgui.push_style_color(imgui.Col_.child_bg, guide.CARD)
+        imgui.push_style_var(imgui.StyleVar_.child_rounding, 5.0)
+        with imgui_ctx.begin_child(f"##{name}", imgui.ImVec2(0, 0), flags):
+            kind, detail, stages, files = found["kind"], found["detail"], found["stages"], found["files"]
+            if kind == "":
+                imgui.text_colored(COLOR_DIM, "type or browse a path to see what it holds")
+            elif kind in ("missing", "other"):
+                imgui.text_colored(COLOR_WARN, f"{fa.ICON_FA_CIRCLE_INFO}  {detail}")
+            elif kind == "tracking" or kind not in FOUND_MASKNMF:
+                imgui.text_colored(COLOR_OK, fa.ICON_FA_CIRCLE_CHECK)
+                imgui.same_line(0, 0.5 * em)
+                imgui.text_colored(COLOR_TITLE, "tracking run" if kind == "tracking" else f"{kind} results")
+                imgui.same_line(0, 0.6 * em)
+                imgui.text_colored(COLOR_DIM, detail)
+                if len(files) > 1:
+                    for filepath in files[:6]:
+                        imgui.bullet()
+                        imgui.text_colored(COLOR_DIM, Path(filepath).name)
+                    if len(files) > 6:
+                        imgui.text_colored(COLOR_DIM, f"... and {len(files) - 6} more")
+            else:
+                if kind == "folder":
+                    imgui.text_colored(COLOR_TITLE, f"{len(files)} results file{'' if len(files) == 1 else 's'}")
+                    for filepath in files[:6]:
+                        imgui.bullet()
+                        imgui.text_colored(COLOR_DIM, Path(filepath).name)
+                    if len(files) > 6:
+                        imgui.text_colored(COLOR_DIM, f"... and {len(files) - 6} more")
+                else:
+                    imgui.text_colored(COLOR_TITLE, detail)
+                if kind == "results" or len(files) == 1:
+                    for stage, present in stages.items():
+                        imgui.text_colored(COLOR_OK if present else COLOR_DIM, fa.ICON_FA_CIRCLE_CHECK if present else fa.ICON_FA_CIRCLE)
+                        imgui.same_line(0, 0.5 * em)
+                        imgui.text_colored(guide.TEXT if present else COLOR_DIM, stage)
+                        imgui.same_line(0, 0.6 * em)
+                        imgui.text_colored(COLOR_DIM, STAGE_NOTES[stage])
+        imgui.pop_style_var()
+        imgui.pop_style_color()
 
     def draw_track(self) -> None:
         """The sessions' results files, where the tracking goes, and the resolution."""
