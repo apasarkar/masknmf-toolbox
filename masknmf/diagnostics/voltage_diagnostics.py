@@ -3,128 +3,93 @@ import numpy as np
 import masknmf
 from typing import *
 from scipy.signal import find_peaks
+from scipy.ndimage import median_filter
+import math
 
-def onephoton_voltage_noise_heuristic(my_trace: np.ndarray,
-                sampling_speed: int,
-               cutoff_for_snr_estimate: float = 300):
+
+def detect_spikes(trace: np.ndarray,
+                  fps: int=800,
+                  median_ms: int=10,
+                  threshold_factor=6,
+                  min_interval_frames=3,
+                  negative_going=False):
     """
-    This code estimates shot noise variance by (a) high-pass filtering the temporal trace (b) computing the signal power in this interval
-    (c) rescaling this to get a general shot noise variance estimate.
+    Coarse temporal spike detection applied to a 1D trace.
+    Median filter the trace, look at time points with large mean absolute deviation, find peaks among those time points.
+
+    Median filter removes slower trends (subthreshold signal, optostim, etc.)
 
     Args:
-        my_trace (np.ndarray): Shape (num_frames,)
-        sampling_speed (int): Frame rate of the imaging
-        cutoff_for_snr_estimate (float): The cutoff for the high pass filter
-    """
-    if sampling_speed / 2 <= cutoff_for_snr_estimate:
-        raise ValueError(f"The cutoff has to be lower than nyquist frequency; in this case that frequency is {sampling_speed / 2}")
-    filtered_trace = masknmf.demixing.filters.high_pass_filter_batch(my_trace[None, :],
-                                                                    cutoff_for_snr_estimate,
-                                                                    sampling_speed).squeeze()
-
-    high_pass_var = np.var(filtered_trace)
-    return high_pass_var * (sampling_speed / 2) / (sampling_speed / 2 - cutoff_for_snr_estimate)
-
-
-def mad_filter_for_spikes(filtered_spike: np.ndarray,
-                         mad_factor: float=1.5):
-    median_abs_dev = np.median(np.abs(filtered_spike - np.median(filtered_spike)))
-    new_trace = np.maximum(0, filtered_spike - np.median(filtered_spike) - mad_factor * median_abs_dev)
-    return new_trace
-
-def detect_peaks(trace, height=None, distance=None, prominence=None):
-    """
-    Detect peaks in a 1D time series.
-
-    Parameters:
-    - trace (array-like): The input 1D signal.
-    - height (float or tuple, optional): Required height of peaks.
-    - distance (int, optional): Minimum distance between peaks (in samples).
-    - prominence (float or tuple, optional): Required prominence of peaks.
+        trace (np.ndarray): Shape (num_frames,). The voltage imaging time series
+        fps (int): The video frame rate (in Hz)
+        median_ms (int): This defines the window (in milliseconds) for the median filter
+        threshold_factor (float): How many mean absolute deviations above the mean the threshold lies for findng spike peaks
+        min_interval_frames (int): The min number of frames between two spikes
+        negative_going (bool): Whether the input trace has spikes that are negative oing or not. maskNMF will invert
+            negatively tuned data, so this should always be False
 
     Returns:
-    - peaks (np.ndarray): Indices of detected peaks.
-    - properties (dict): Properties of the peaks (heights, prominences, etc).
+        - peaks (np.ndarray): An array containing frame indices for the spike detections
+        - detr (np.ndarray): The detrended time series used to perform the detection
+        - threshold (float): The threshold value applied to the detrended time series. Peaks above this threshold are considered spikes
     """
-    peaks, properties = find_peaks(trace, height=height, distance=distance, prominence=prominence)
-    return peaks, properties
+    trace = np.asarray(trace, float).ravel()
+    W = int(round(median_ms / 1000 * fps))  # 8 frames @800Hz = 10 ms
+    W_temporal = W * 4  # detrend the trace at 4x (=40 ms)
+
+    base = median_filter(trace, size=W_temporal, mode='nearest')
+    detr = (base - trace) if negative_going else (trace - base)  # spikes -> positive
+
+    edge = int(round(W / 2) * 4)  # ignore frames at the edges
+    detr[:edge] = 0
+    detr[-edge:] = 0
+
+    noise = np.mean(np.abs(detr - detr.mean()))  # mean absolute deviation plots
+    threshold = detr.mean() + threshold_factor * noise
+    detr[detr < threshold] = 0
+
+    peaks, _ = find_peaks(detr)
+
+    if peaks.size:  # refractory: drop spikes < interval apart
+        gaps = np.concatenate(([min_interval_frames], np.diff(peaks)))
+        peaks = peaks[gaps >= min_interval_frames]
+    return peaks, detr, threshold
 
 
-def onephoton_voltage_snr_stats(full_moco_dense: np.ndarray,
-                                pmd_arr_moco: masknmf.PMDArray,
-                                spatial_footprint: np.ndarray,
-                                temporal_trace: np.ndarray,
-                                trend_filter_cutoff_freq: float = 1,
-                                spike_detect_cutoff_freq: float = 3,
-                                mad_cutoff=8,
-                                sampling_rate: float = 800,
-                                reverse_polarity: bool = True):
+def spike_reassignment(trace: np.ndarray,
+                       noisy_trace: np.ndarray,
+                       peaks: np.ndarray,
+                       fps=800,
+                       ms_radius: float = 2):
     """
-    General pipeline for studying the spikes present in the same ROI average across two image stacks.
-    Assumption: the pmd array (pmd_arr_moco) has been "flipped" if the indicator is negative (i.e. all spikes point upwards in that stack).
+    Routine to assign signals from the raw data back to the denoised traces to avoid any spike height loss
+    We detect spikes on the smoothed PMD trace and then look for missed signal in the noisy raw data trace
+
     Args:
-        full_moco_dense: dense stack (frames, fov_dim1, fov_dim2)
-        pmd_arr_moco: masknmf.PMDArray object
-        spatial_footprint (np.ndarray). Shape (fov_dim1, fov_dim2)
-        temporal_trace (np.ndarray): Shape (num_frames,)
-        trend_filter_cutoff_freq (float): the frequency cutoff for highpass filtering to remove optostim related smooth trends
-        spike_detect_cutoff_freq (float): the highpass filter frequency used before running MAD thresholding to identify spikes
-        mad_cutoff (float): the mad threshold used to identify spiking locations (and eventually find the spike peak times).
-        sampling_rate (float): The sampling rate of the data in Hz
-        reverse_polarity (bool): True if the raw stack contains a negatively tuned indicator.
+        trace (np.ndarray): Shape (num_frames,). The denoised trace obtained from demixing the PMD compressed representation of the movie
+        noisy_trace: Shape (num_frmaes,). The trace obtained by running temporal HALS on the motion corrected (raw) data, keeping
+            the spatial footprints fixed
+        peaks (np.ndarray): An array of frame indices where a spike is detected
+        fps (int): The sampling speed of the movie in hz
+        ms_radius (float): The time radius (in milliseconds) around each spike where signal is
+            reassigned from the noisy trace to the denoised trace.
 
     Returns:
-        - np.ndarray: raw roi average time series
-        - np.ndarray: raw pmd roi average time series
-        - np.ndarray: time series indicating estimated spike peak frame locations
-        - np.ndarray: time series indicating pmd spike height estimates
-        - np.ndarray: time series indicating raw data spike height estimates
-        - np.ndarray: time series indicating the spike height 'attenuation' estimate
-        - np.ndarray: time series indicating the spike height attenuation as fraction of raw spike height (we disregard negative values here)
-        - np.ndarray: the spike height attenuation divided by the residual standard deviation
+        - final_trace: The de-biased trace which re-incorporates any missing spike information
+
     """
+    frame_interval = math.ceil(fps * 0.001 * ms_radius)
 
-    raw_roi_avg, pmd_roi_avg = masknmf.visualization.plots.roi_compare_pmd_raw(full_moco_dense,
-                                                                               pmd_arr_moco,
-                                                                               spatial_footprint)
+    offset = np.mean(trace - noisy_trace)
+    noisy_trace_centered = noisy_trace + offset
 
-    if reverse_polarity:
-        raw_roi_avg *= -1
-        raw_roi_avg -= np.mean(raw_roi_avg)
+    intervals = np.arange(-1 * frame_interval, frame_interval)
+    peak_indices = (peaks[:, None] + intervals[None, :])
 
-    pmd_roi_avg -= np.mean(pmd_roi_avg)
+    peak_indices = peak_indices.flatten()
+    peak_indices = np.unique(np.arange(trace.shape[0])[peak_indices])
 
-    pmd_roi_lowpass = pmd_roi_avg - masknmf.demixing.filters.high_pass_filter_batch(pmd_roi_avg[None, :],
-                                                                                    trend_filter_cutoff_freq,
-                                                                                    sampling_rate).squeeze()
-
-    raw_roi_lowpass = raw_roi_avg - masknmf.demixing.filters.high_pass_filter_batch(raw_roi_avg[None, :],
-                                                                                    trend_filter_cutoff_freq,
-                                                                                    sampling_rate).squeeze()
-
-    resid_roi_avg = raw_roi_avg - pmd_roi_avg
-
-    raw_roi_avg_noisevar = masknmf.diagnostics.voltage_diagnostics.onephoton_voltage_noise_heuristic(raw_roi_avg, 800,
-                                                                                                     300)
-    resid_std = np.std(resid_roi_avg)
-
-    ## Next step: let's take the C matrix and compute the spike locations (after running a 3Hz high pass filter)
-    hp_filter_c = masknmf.demixing.filters.high_pass_filter_batch(temporal_trace[None, :],
-                                                                  spike_detect_cutoff_freq,
-                                                                  sampling_rate).squeeze()
-
-    thres_c = masknmf.diagnostics.voltage_diagnostics.mad_filter_for_spikes(hp_filter_c, mad_cutoff)
-    c_peaks, _ = masknmf.diagnostics.voltage_diagnostics.detect_peaks(thres_c, distance=10)
-
-    # For each peak, estimate the splike amplitude. Strategy: subtract the 1Hz low-pass
-    pmd_spike_heights = pmd_roi_avg[c_peaks] - pmd_roi_lowpass[c_peaks]
-    raw_spike_heights = raw_roi_avg[c_peaks] - raw_roi_lowpass[c_peaks]
-
-    attenuation_estimate = raw_spike_heights - pmd_spike_heights
-    attenuation_estimate[attenuation_estimate < 0] = 0
-    fractional_attenuation = np.nan_to_num(np.abs(attenuation_estimate) / raw_spike_heights, nan=0.0)
-    zscore_attenuation = np.nan_to_num(np.abs(attenuation_estimate) / resid_std, nan=0.0)
-
-    return raw_roi_avg, pmd_roi_avg, c_peaks, pmd_spike_heights, raw_spike_heights, attenuation_estimate, fractional_attenuation, zscore_attenuation
-
+    final_trace = trace.copy()
+    final_trace[peak_indices] = noisy_trace_centered[peak_indices]
+    return final_trace
 

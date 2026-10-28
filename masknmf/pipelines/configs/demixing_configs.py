@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 import numpy as np
 from typing import *
+from masknmf.compression.preprocessing import SplineDetrenderBase
 
 @dataclass
 class SuperpixelInitConfig:
@@ -9,6 +10,9 @@ class SuperpixelInitConfig:
     mad_threshold: float =  1
     residual_threshold: float = 0.3
     patch_size: tuple[int, int] = (40, 40)
+    detrender: Optional[SplineDetrenderBase] = None
+    sign: Literal["positive", "negative", "unconstrained"] = "unconstrained"
+    carry_background: bool = False #for keeping the previous pass's background estimate
 
 @dataclass
 class CustomInitConfig:
@@ -20,17 +24,21 @@ class CustomInitConfig:
 @dataclass
 class NMFConfig:
     maxiter: int = 40
-    support_threshold: tuple[int, int] = (0.95, 0.8)
+    support_threshold: tuple[float, float] = (0.95, 0.8)
     deletion_threshold: float = 0.2
+    min_brightness: float = 1
     ring_model_start_pt: Optional[int] = 0
     ring_radius: int = 10
     background_downsampling_factor: int = 30
-    merge_threshold: float = 0.8
-    merge_overlap_threshold: float = 0.8
+    merge_threshold: float = 0.6
+    merge_overlap_threshold: float = 0.6
     update_frequency: int = 4
     c_nonneg: bool = True
     denoise: bool = False
     plot_en: bool = False
+    reassign_background: bool = True
+    detrender: Optional[SplineDetrenderBase] = None
+    sign: str = "unconstrained"
 
 @dataclass
 class SinglepassDemixingConfig:
@@ -43,10 +51,26 @@ class MultipassDemixingConfig:
 
 #### Below are configs for the different decimation strategies used to initialize cells
 @dataclass
+class GlobalSignalFilterConfig:
+    """
+    Config for removing the shared (global) background fluctuation from the compressed data instead of spatially
+    highpassing it. Used for 1p (miniscope) data, where out-of-focus light is correlated across the whole fov.
+    rank is the number of global components that are subtracted.
+    """
+    rank: int = 20
+    num_oversamples: int = 5
+
+@dataclass
 class SpatialHighpassConfig:
     """
     Config for the filtering we do on the compressed data to produced a new dataset that exposes signals (for the NMF initialization step)
     If this step ever becomes more complicated, add fields here
     """
     filter_sigma: float=4.0
+
+# every config a pipeline's spatial highpass and multipass demixing steps can take; see MotionCorrectionConfigs
+SpatialHighpassConfigs = SpatialHighpassConfig
+# either way of making the filtered copy of the compressed data that the first demixing passes run on
+CompressedFilterConfigs = SpatialHighpassConfig | GlobalSignalFilterConfig
+MultipassDemixingConfigs = MultipassDemixingConfig
 
