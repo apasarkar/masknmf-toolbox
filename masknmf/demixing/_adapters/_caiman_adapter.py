@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import h5py
 import numpy as np
@@ -249,6 +250,46 @@ class CaimanResults(BaseResults):
     traces estimates/C (components x frames) and the fov estimates/dims.
 
     """
+
+    pipeline = "caiman"
+
+    @classmethod
+    def matches(cls, path: Path) -> bool:
+        from masknmf.io import SUFFIXES_HDF5, group_name_compression, group_name_demixing, group_names_registration
+
+        path = Path(path).expanduser()
+        if path.suffix.lower() not in SUFFIXES_HDF5 or not path.is_file():
+            return False
+        with h5py.File(path, "r") as f:
+            names = (*group_names_registration(), group_name_compression(), group_name_demixing())
+            return "estimates" in f and not any(name in f for name in names)
+
+    @classmethod
+    def describe(cls, path: Path) -> str:
+        with h5py.File(path, "r") as f:
+            num_components = f["estimates/C"].shape[0]
+            accepted = f["estimates"].get("idx_components")
+            num_accepted = accepted.shape[0] if accepted is not None and accepted.ndim == 1 else None
+        return f"caiman: {num_components} components" + ("" if num_accepted is None else f", {num_accepted} accepted")
+
+    @classmethod
+    def from_path(cls, path: Path, raw: ArrayLike | str | Path | None = None, device: str = "cpu") -> tuple["CaimanResults", ArrayLike | None, list[str]]:
+        """raw is the movie caiman fit; with the file's ring model it gives the background and residual."""
+        from masknmf.io import load_movie
+
+        if isinstance(raw, (str, Path)):
+            raw = load_caiman_memmap(raw) if Path(raw).suffix.lower() == ".mmap" else load_movie(raw)
+        skipped = []
+        results = cls(path, device=device)
+        if raw is not None and tuple(raw.shape) != tuple(results.shape):
+            skipped.append(f"raw movie shape {tuple(raw.shape)} does not match results shape {tuple(results.shape)}; not used")
+            raw = None
+        if raw is not None:
+            try:
+                results = cls(path, device=device, movie=raw)
+            except ValueError as e:
+                skipped.append(f"{e}; the movie is shown without a background or residual")
+        return results, raw, skipped
 
     def __init__(self,
                  results_file: str | os.PathLike,

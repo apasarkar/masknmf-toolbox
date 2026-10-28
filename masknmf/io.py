@@ -208,7 +208,7 @@ class OpenedResults:
              prefix: str = "",
              device: str = "cpu") -> "OpenedResults":
         """
-        Open a results file of any stage.
+        Open a results file of any stage, or another pipeline's results through its adapter.
 
         The results are the file's DemixingResults, else its CompressionArray, else its registration applied to the
         raw movie. A ``raw`` whose shape does not match the results is not used and is reported in ``skipped``; it
@@ -217,7 +217,7 @@ class OpenedResults:
         Parameters
         ----------
         path : str | Path
-            The results file.
+            The results file, or a path an adapter reads.
         raw : ArrayLike | np.ndarray | str | Path | None
             The raw movie, or a path :func:`load_movie` reads.
         prefix : str
@@ -233,9 +233,19 @@ class OpenedResults:
         ------
         ValueError
             If the file holds no masknmf results, none under ``prefix``, or only a registration and no raw movie with
-            the registration's number of frames is available.
+            the registration's number of frames is available; or if ``prefix`` is given with an adapter's results.
         """
+        from masknmf.demixing._adapters import adapter_for
+
         path = Path(path)
+        adapter = adapter_for(path)
+        if adapter is not None:
+            if prefix:
+                raise ValueError(f"{path} holds {adapter.pipeline} results, which take no prefix")
+            raw_source = Path(raw) if isinstance(raw, (str, Path)) else None
+            results, raw, skipped = adapter.from_path(path, raw=raw, device=device)
+            opened = cls.resolve(results, raw=raw, device=device)
+            return replace(opened, path=path, raw_source=raw_source if raw is not None else None, skipped=skipped + opened.skipped)
         groups = stage_groups(path)
         if not groups:
             raise ValueError(f"{path} holds no masknmf results")
@@ -347,7 +357,7 @@ class OpenedResults:
                 skipped.append(f"{source} shape {tuple(movie.shape)} does not match results shape {shape}; not used")
 
         stored = None
-        if path is not None and not is_registration:
+        if path is not None and path.is_file() and not is_registration:
             with h5py.File(path, "r") as f:
                 stored = next((name for name in group_names_registration() if name in f), None)
                 frames = f[stored]["shifts"].shape[0] if stored is not None else None
