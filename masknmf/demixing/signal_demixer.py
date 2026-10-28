@@ -3289,6 +3289,19 @@ class DemixingState(SignalProcessingState):
             mean_used = self.uv_mean
         self.b = regression_update.baseline_update(mean_used, self.a, self.c) * 0
 
+    def apply_reassignment_background_term(self,
+                                           c_diff: torch.Tensor):
+        """
+        We find some amount of the signals, A @ C_{diff}, is in the background array. We want to subtract this from
+        the background array, in the spatial and temporal basis of the factorized background array.
+        background = u @ b1 @ b2.T
+        """
+        ##Project ac^t onto U
+        u_proj_a = torch.sparse.mm(self.spatial_compressed_local_projector, self.a)  # (compression rank, num_signals)
+        c_proj = c_diff.T @ self.factorized_ring_term[1].T  # (num_signals, num_signals)
+        b1 = self.factorized_ring_term[0] - torch.sparse.mm(u_proj_a, c_proj)
+        return b1, self.factorized_ring_term[1]
+
     def lowrank_ring_update(self,
                             x: torch.tensor):
         """
@@ -3471,9 +3484,11 @@ class DemixingState(SignalProcessingState):
             del x_chunk, atl_chunk
 
         appl_inverse = torch.linalg.lstsq(atla, alu).solution             # (K, r)
-        self.c += (appl_inverse @ ring_right).T
+        c_diff = (appl_inverse @ ring_right).T
+        self.c += c_diff
         if c_nonneg:
             self.c.clamp_(min=0)
+        return self.c, c_diff
 
     def _flag_components_for_deletion(self,
                                       deletion_threshold: float,
@@ -3779,7 +3794,6 @@ class DemixingState(SignalProcessingState):
             denoise = [False for i in range(maxiter)]
 
         background_enabled: bool = False
-        background_reassigned: bool = False
         for iters in tqdm(range(maxiter)):
             self.static_baseline_update()
 
@@ -3788,10 +3802,6 @@ class DemixingState(SignalProcessingState):
 
 
             if background_enabled:
-                if self.factorized_ring_term is not None and reassign_background and iters == maxiter - 1:
-                    self.reassign_background_to_signal(max(1, ring_radius // 2), c_nonneg=c_nonneg)
-                    background_reassigned = True
-
                 self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
 
             self.spatial_update(plot_en=plot_en)
@@ -3800,7 +3810,9 @@ class DemixingState(SignalProcessingState):
 
             denoise_flag = denoise[iters]
             self.temporal_update(
-                denoise=denoise_flag, plot_en=plot_en, c_nonneg=c_nonneg
+                denoise=denoise_flag,
+                plot_en=plot_en,
+                c_nonneg=c_nonneg if iters < maxiter - 1 else False ##Unconstrained updates
             )
 
             if update_frequency and ((iters + 1) % update_frequency == 0):
@@ -3808,12 +3820,11 @@ class DemixingState(SignalProcessingState):
                 self.standard_correlation_image.temporal_demixed = self.c
 
                 # Merge signals as needed and update the scheduler
-                if not background_reassigned:
-                    original_shape = self.a.shape[1]
-                    self.merge_signals(merge_threshold, merge_overlap_threshold, plot_en)
+                original_shape = self.a.shape[1]
+                self.merge_signals(merge_threshold, merge_overlap_threshold, plot_en)
 
-                    if self.a.shape[1] < original_shape:
-                        self.update_hals_scheduler()
+                if self.a.shape[1] < original_shape:
+                    self.update_hals_scheduler()
 
                 self.support_update_routine(
                     support_threshold[iters],
@@ -3823,6 +3834,12 @@ class DemixingState(SignalProcessingState):
 
 
                 self.update_hals_scheduler()
+
+        ## Finally reassign any signal from the background that belongs to sources:
+        if self.factorized_ring_term is not None and reassign_background:
+            _, c_diff = self.reassign_background_to_signal(max(1, ring_radius // 2), c_nonneg=False) #This adds/subtracts signal back to "c"
+            self.factorized_ring_term = self.apply_reassignment_background_term(c_diff)
+
 
         self.standard_correlation_image.temporal_demixed = self.c
         self.compute_residual_correlation_image()
