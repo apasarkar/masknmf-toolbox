@@ -38,6 +38,7 @@ from masknmf.visualization.imgui import guide
 from masknmf.visualization.imgui.files import NATIVE_DIALOGS, Picker
 from masknmf.visualization.imgui.scale import DIR_CONFIG, Scaler, fit_canvas, push_font_em
 from masknmf.visualization.imgui.theme import button_colors, tooltip
+from masknmf.visualization.imgui.widgets import draw_min_brightness
 
 
 FILEPATH_RUN_CONFIGS = DIR_CONFIG / "launcher_configs.json"
@@ -1805,19 +1806,11 @@ class Launcher:
                 idl.wrapped_tooltip("Sets this value in every demixing pass; a pass edited afterwards keeps its own")
             imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
             imgui.begin_disabled(not self.uniform_min_brightness_on)
-            imgui.set_next_item_width(hello_imgui.em_size(12))
-            changed_slider, self.uniform_min_brightness = imgui.slider_float(
-                "##uniform_min_brightness", self.uniform_min_brightness, 0.0, 5.0, "%.2f"
+            changed_value, self.uniform_min_brightness = draw_min_brightness(
+                "uniform_min_brightness", self.uniform_min_brightness, hello_imgui.em_size(12), hello_imgui.em_size(WIDTH_INPUT_EM)
             )
-            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
-            imgui.set_next_item_width(hello_imgui.em_size(WIDTH_INPUT_EM))
-            changed_box, value = imgui.input_float("##uniform_min_brightness_box", self.uniform_min_brightness, 0.0, 0.0, "%.6g")
             imgui.end_disabled()
-            # the min_brightness setter refuses negative values
-            changed_box = changed_box and value >= 0
-            if changed_box:
-                self.uniform_min_brightness = value
-            if self.uniform_min_brightness_on and (changed_on or changed_slider or changed_box):
+            if self.uniform_min_brightness_on and (changed_on or changed_value):
                 pipeline = self.spec.cls(**{section.argument: self.values[section.argument] for section in self.spec.sections})
                 pipeline.min_brightness = self.uniform_min_brightness
             imgui.spacing()
