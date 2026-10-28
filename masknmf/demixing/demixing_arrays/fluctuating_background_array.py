@@ -25,7 +25,7 @@ class FluctuatingBackgroundArray(ArrayLike):
         self._pixel_mat = torch.arange(self.shape[1] * self.shape[2], device=self.device, dtype=torch.long).reshape(self.shape[1], self.shape[2])
 
         self._default_normalizer = torch.ones(self.shape[1], self.shape[2], device=self.device).float()
-        if hasattr(self.flyweight, "normalizer"):
+        if getattr(self.flyweight, "normalizer", None) is not None:
             if self.flyweight.normalizer.shape[0] != self.shape[1] or self.flyweight.normalizer.shape[1] != self.shape[2]:
                 raise ValueError("Normalizer from flyweight had dimensions not equal to the fov dimensions")
 
@@ -39,7 +39,7 @@ class FluctuatingBackgroundArray(ArrayLike):
                      spatial_compressed: SparseCOOTensor,
                      factorized_background_term1: torch.Tensor,
                      factorized_background_term2: torch.Tensor,
-                     normalizer: torch.Tensor | None,
+                     normalizer: torch.Tensor | None = None,
                      rescale: bool = False
                      ):
         """
@@ -89,7 +89,7 @@ class FluctuatingBackgroundArray(ArrayLike):
 
     @property
     def normalizer(self) -> torch.Tensor:
-        if not hasattr(self.flyweight, "normalizer"):
+        if getattr(self.flyweight, "normalizer", None) is None:
             return self._default_normalizer.to(self.device)
         return self.flyweight.normalizer
 
