@@ -618,6 +618,11 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
         "every signal refit, the original file untouched; a filter behind a Delete is named in the new "
         "file's description; the viewer moves on to the new file",
     )
+    imgui.text_colored(
+        DIM,
+        "filter dim rois drops signals under the brightness slider during the pass, as the run did; the slider "
+        "starts at the run's value (File > run parameters shows them all) and the new file records the one used",
+    )
 
     imgui.pop_text_wrap_pos()
     imgui.dummy(imgui.ImVec2(0, 0.4 * em))
