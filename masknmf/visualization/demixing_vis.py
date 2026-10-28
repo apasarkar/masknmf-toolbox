@@ -52,6 +52,7 @@ from masknmf.visualization.imgui import (
 from masknmf.visualization.imgui.curation_help import draw_curation_help
 from masknmf.visualization.imgui.keybinds import DEMIXING, pressed
 from masknmf.visualization.imgui.options import OPTIONS_LABEL, draw_options_popup
+from masknmf.visualization.imgui.run_record import RECORD_LABEL, RECORD_TIP, draw_run_record_popup
 from masknmf.visualization.imgui.scale import scale_figure
 from masknmf.visualization.rois import MARKED_COLOR, SELECTED_ALPHA, FootprintSet
 from masknmf.visualization.summary_widget import SummaryImageViewer
@@ -250,6 +251,8 @@ class SingleSessionDemixingVis:
         self._keybinds_open = False
         self._help_open = False
         self._options_open = False
+        self._record = None  # the record of the run that made the results, for File > run parameters
+        self._record_open = False
         self._show_masks = show_masks
         self._mask_opacity = mask_opacity
         self._masks_by_peak = True
@@ -357,6 +360,7 @@ class SingleSessionDemixingVis:
         self._opened = opened
         results = opened.results
         self._results_path = None if opened.path is None else str(opened.path)
+        self._record = None if self._results_path is None else masknmf.io.read_run_record(self._results_path)
         if not self._nmf_config_given and self._results_path is not None:
             recorded = masknmf.io.read_nmf_config(self._results_path)
             if recorded is not None:
@@ -1552,8 +1556,8 @@ class SingleSessionDemixingVis:
         if pressed(DEMIXING["delete"]) and self._worker is None:
             self._delete_selected()
         if pressed(DEMIXING["escape"]):
-            if self._help_open or self._keybinds_open or self._options_open:
-                self._help_open = self._keybinds_open = self._options_open = False
+            if self._help_open or self._keybinds_open or self._options_open or self._record_open:
+                self._help_open = self._keybinds_open = self._options_open = self._record_open = False
             elif self._armed:
                 self._armed = False
             elif self._region is not None:
@@ -1639,6 +1643,9 @@ class SingleSessionDemixingVis:
             "- .txt: signal ids in a custom order, becomes the 'order' column"
         )
         imgui.separator()
+        if imgui.menu_item_simple(RECORD_LABEL, enabled=self._record is not None):
+            self._record_open = True
+        tooltip(RECORD_TIP if self._record is not None else "no config.json beside these results")
         if imgui.menu_item_simple(OPTIONS_LABEL):
             self._options_open = True
         imgui.end_menu()
@@ -1693,6 +1700,7 @@ class SingleSessionDemixingVis:
         self._keybinds_open = draw_keybinds_popup(DEMIXING, self._keybinds_open)
         self._help_open, self._keybinds_open = draw_curation_help(self._help_open, self._keybinds_open)
         self._options_open = draw_options_popup(self._ndw_fov.figure, self._options_open)
+        self._record_open = draw_run_record_popup(self._record, self._record_open)
         path = draw_path_prompt(self._export_prompt)
         if path is not None:
             try:
