@@ -281,7 +281,7 @@ masknmf view cnmf.hdf5 --raw movie_d1_512_d2_512_d3_1_order_C_frames_3000.mmap  
 - suite2p: the `data.bin` beside `stat.npy` gives the residual, read once when the viewer opens; the shifts and frame rate are ops'
 - caiman: the components in `estimates/idx_components`; `--raw` with a CNMF-E ring model gives the background and residual
 - Demix and curated files need a masknmf run; `--classify`, `--prefix`, `--compression` and `masknmf track` take masknmf results only
-- launcher: View results takes the same paths, and "compare with" opens a second one in a viewer of its own
+- launcher: View results takes the same paths
 
 ## classification
 

@@ -208,7 +208,7 @@ VIEWERS = (
         fa.ICON_FA_LAYER_GROUP,
         "Demixing viewer",
         "One session's results at any stage: registration, compression, demixing and curation; other pipelines' results "
-        "through their adapters. Several files, or a path to compare with, open one viewer each",
+        "through their adapters. Several files open one viewer each",
     ),
     (
         "classification",
@@ -547,13 +547,12 @@ class Launcher:
         self.start_from = "movie"
         self.values_loaded: dict[str, Any] = {}
         # Open results: the path and the raw movie with its dataset, the viewer picked, and what the path holds
-        self.paths_open: dict[str, str] = {"source": "", "compare": "", "raw": ""}
+        self.paths_open: dict[str, str] = {"source": "", "raw": ""}
         self.dataset_raw = ""
         self.viewer = ""
         self.compression_check = False
-        self.inspected: Optional[tuple[str, str]] = None
+        self.inspected: Optional[str] = None
         self.found: dict[str, Any] = {"kind": "", "detail": "", "stages": {}, "files": []}
-        self.found_compare: dict[str, Any] = {"kind": "", "detail": "", "stages": {}, "files": []}
         # Track sessions: results rows results_0, results_1, ... and the out folder
         self.paths_tracking: dict[str, str] = {"out": "", "results_0": ""}
         self.um_per_pixel = 1.2
@@ -859,15 +858,14 @@ class Launcher:
             self.forget(path=compress.argument)
 
     def inspect(self) -> None:
-        """Read what the Open results paths hold, once per change."""
-        source, compare = self.paths_open["source"].strip(), self.paths_open["compare"].strip()
-        if (source, compare) == self.inspected:
+        """Read what the Open results path holds, once per change."""
+        source = self.paths_open["source"].strip()
+        if source == self.inspected:
             return
-        if source != "" and (self.inspected is None or source != self.inspected[0]):
+        if source != "":
             self.fill_raw(source=source)
-        self.inspected = (source, compare)
+        self.inspected = source
         self.found = self.describe(source=source)
-        self.found_compare = self.describe(source=compare)
 
     def fill_raw(self, source: str) -> None:
         """The raw movie the run read, from the config.json beside its results, while the field is empty."""
@@ -927,25 +925,20 @@ class Launcher:
 
     def several(self) -> bool:
         """Whether Open results opens more than one viewer."""
-        return self.paths_open["compare"].strip() != "" or len(self.found["files"]) > 1
+        return len(self.found["files"]) > 1
 
     def available(self, key: str) -> bool:
         """Whether a viewer applies to what the Open results paths hold."""
         kind, stages, files = self.found["kind"], self.found["stages"], self.found["files"]
         raw = self.paths_open["raw"].strip() != ""
-        compare = self.paths_open["compare"].strip() != ""
         single = kind == "results" or (kind == "folder" and len(files) == 1)
         if key == "demixing":
-            if compare and self.found_compare["kind"] not in ("results", "folder") and self.found_compare["kind"] in FOUND_MASKNMF:
-                return False
-            if compare and self.found_compare["kind"] == "folder" and len(self.found_compare["files"]) == 0:
-                return False
             if kind not in FOUND_MASKNMF or (kind == "folder" and len(files) > 1):
                 return True
-            return single and (stages["demixing"] or stages["compression"] or (stages["registration"] and raw and not compare))
+            return single and (stages["demixing"] or stages["compression"] or (stages["registration"] and raw))
         if key == "classification":
-            return not compare and ((single and stages["demixing"]) or (kind == "folder" and len(files) > 1))
-        return key == "multisession" and kind == "tracking" and not compare
+            return (single and stages["demixing"]) or (kind == "folder" and len(files) > 1)
+        return key == "multisession" and kind == "tracking"
 
     def compression_checkable(self) -> bool:
         """Whether the demixing viewer can add the lag-1 autocorrelation stills: a compression and the raw movie."""
@@ -987,13 +980,6 @@ class Launcher:
                 return [self.found["detail"]]
             if self.found["kind"] == "folder" and len(self.found["files"]) == 0:
                 return ["no results files in this folder"]
-            compare = self.paths_open["compare"].strip()
-            if compare != "" and self.found_compare["kind"] in ("missing", "other"):
-                return [f"compare with: {self.found_compare['detail']}"]
-            if compare != "" and self.found_compare["kind"] == "folder" and len(self.found_compare["files"]) == 0:
-                return ["compare with: no results files in this folder"]
-            if compare != "" and self.found_compare["kind"] == "tracking":
-                return ["compare with takes results files, not a tracking run"]
             if self.viewer_current() == "":
                 return ["nothing here a viewer opens; a registration alone needs the raw movie, and opens on its own"]
             raw = self.paths_open["raw"].strip()
@@ -1081,8 +1067,7 @@ class Launcher:
         if key == "":
             return None
         raw = self.paths_open["raw"].strip()
-        compare = self.paths_open["compare"].strip()
-        argv = ["view", self.paths_open["source"].strip(), *([compare] if compare != "" else [])]
+        argv = ["view", self.paths_open["source"].strip()]
         if raw != "" and key == "demixing" and not self.several():
             argv += ["--raw", raw]
             if is_hdf5(filepath=raw) and self.dataset_raw.strip() != "":
@@ -1608,9 +1593,6 @@ class Launcher:
             self.row(caption="path")
             self.draw_path(target=self.paths_open, key="source", filetypes=FILETYPES_RESULTS, folders=True,
                            hint="results.hdf5, a run folder, a tracking run, a suite2p plane or a caiman file")
-            self.row(caption="compare with")
-            self.draw_path(target=self.paths_open, key="compare", filetypes=FILETYPES_RESULTS, folders=True,
-                           hint="optional: a second results file or suite2p plane, in a viewer of its own")
             self.row(caption="raw movie")
             self.draw_path(target=self.paths_open, key="raw", filetypes=FILETYPES_MOVIE, folders=True,
                            hint="optional: the movie the run registered, for the registration and compression views")
@@ -1622,12 +1604,8 @@ class Launcher:
         self.inspect()
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
-        self.step(2, "Found", "What the paths hold")
+        self.step(2, "Found", "What the path holds")
         self.draw_found(found=self.found, name="found")
-        if self.paths_open["compare"].strip() != "":
-            imgui.dummy(imgui.ImVec2(0, 0.3 * em))
-            imgui.text_colored(COLOR_DIM, "compare with")
-            self.draw_found(found=self.found_compare, name="found_compare")
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
         self.step(3, "Viewer", "Picked from the stages found")

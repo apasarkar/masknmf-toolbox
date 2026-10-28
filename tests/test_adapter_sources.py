@@ -157,7 +157,7 @@ def test_the_frame_rate_comes_from_suite2p_ops_in_any_version():
     assert suite2p_frame_rate({"Ly": 4}) is None
 
 
-def test_the_launcher_opens_a_suite2p_plane_and_a_path_to_compare_with(tmp_path, plane, caiman_path):
+def test_the_launcher_opens_a_suite2p_plane(tmp_path, plane):
     from test_launcher_defaults import render_frames
 
     from masknmf import launcher
@@ -173,23 +173,9 @@ def test_the_launcher_opens_a_suite2p_plane_and_a_path_to_compare_with(tmp_path,
     args = cli.build_parser(spec=None).parse_args(window.build_argv())
     assert args.handler is cli.command_view and args.results == [str(plane / "stat.npy")] and args.raw is None
 
-    # a caiman file beside it, each in a viewer of its own; the raw movie goes with one file only
-    window.paths_open["compare"] = str(caiman_path)
-    window.paths_open["raw"] = str(tmp_path / "movie.tif")
-    window.inspect()
-    assert window.found_compare["kind"] == "caiman" and window.found_compare["detail"] == "cnmf.hdf5: caiman: 3 components, 2 accepted"
-    assert window.available(key="demixing") and not window.compression_checkable()
-    assert window.build_argv() == ["view", str(plane / "stat.npy"), str(caiman_path)]
-    render_frames(window=window)
-
-    window.paths_open["compare"] = str(tmp_path / "missing.hdf5")
-    window.inspect()
-    assert window.problems() == ["compare with: not found on this machine"]
-    assert not window.available(key="demixing")
-
     # the suite2p folder of planes opens one viewer per plane
     write_suite2p_plane(tmp_path / "suite2p" / "plane1", with_bin=False)
-    window.paths_open.update(source=str(tmp_path / "suite2p"), compare="")
+    window.paths_open["source"] = str(tmp_path / "suite2p")
     window.inspect()
     assert window.found["kind"] == "suite2p" and window.found["detail"] == "2 to open" and len(window.found["files"]) == 2
     assert window.available(key="demixing") and window.build_argv() == ["view", str(tmp_path / "suite2p")]
