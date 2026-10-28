@@ -33,6 +33,8 @@ from masknmf.motion_correction.registration_arrays import FilteredArray
 from masknmf.motion_correction.spatial_filters import compute_highpass_filter_kernel, image_filter
 
 logger = logging.getLogger(__name__)
+WIDTH_STAGE_LINE = 60
+
 
 
 def heartbeat(name: str, start: float, seconds: float, stop: threading.Event):
@@ -242,7 +244,9 @@ class BasePipeline(ABC):
                            "gpu": torch.cuda.get_device_name() if device.startswith("cuda") else None,
                            "started": get_timestamp(), "finished": None, "seconds": None,
                            "status": "running"}
-        logger.info(f"masknmf {__version__} {type(self).__name__} on {device}, {self.log_level} log at {path}")
+        gpu = f", {self.run_record['gpu']}" if self.run_record["gpu"] is not None else ""
+        logger.info(f"masknmf {__version__} {type(self).__name__} on {device}{gpu}")
+        logger.info(f"run folder {folder}" + ("" if self.log_level == "info" else f", {self.log_level} log"))
         return path
 
     @contextmanager
@@ -252,7 +256,7 @@ class BasePipeline(ABC):
         took (with its peak cuda memory on a cuda device), or that it failed and after how long, and record its start,
         seconds, status and peak under name in timings and config.json.
         """
-        logger.info(name)
+        logger.info(f"starting {name} ".ljust(WIDTH_STAGE_LINE, "-"))
         started = get_timestamp()
         start = time.monotonic()
         cuda = str(self.torch_device).startswith("cuda")
@@ -290,7 +294,7 @@ class BasePipeline(ABC):
     def results_path(self, base: Path | None = None) -> str:
         """``results.hdf5`` in a new run folder made in base, or in output_folder unless base is given."""
         path = os.path.join(self.create_run_folder(base), "results.hdf5")
-        display(f"Writing results to {path}")
+        logger.debug(f"writing results to {path}")
         return path
 
     def resume_source(self, resume: str | Path | None, reuse_compression: bool) -> tuple[Path | None, Path | None]:
@@ -496,9 +500,10 @@ class BasePipeline(ABC):
                                          "to resolve this issue.")
                     logger.info("no signals detected, keeping the previous pass")
                     break
+                initialized = demixer.results.spatial_demixed.shape[1]
                 demixer.demix(**asdict(singlepass.NMFConfig))
                 results = demixer.results
-                logger.info(f"{results.spatial_demixed.shape[1]} signals")
+                logger.info(f"{initialized} signals initialized, {results.spatial_demixed.shape[1]} kept")
                 torch.cuda.empty_cache()
         return results
 

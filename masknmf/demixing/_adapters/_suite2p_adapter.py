@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import scipy.sparse as sp
 import torch
-from tqdm import tqdm
+from masknmf.utils.display import progress
 import torch
 
 from masknmf.arrays.array_interfaces import ArrayLike
@@ -487,7 +487,7 @@ def registered_roi_averages(registered, A: sp.spmatrix, batch: int = 1000) -> np
     R = roi_average_operator(A)
     n_frames = registered.shape[0]
     out = np.empty((A.shape[1], n_frames), np.float32)
-    for t0 in tqdm(range(0, n_frames, batch)):
+    for t0 in progress(range(0, n_frames, batch), desc="raw traces"):
         Y = np.asarray(registered[t0:t0 + batch], np.float32).reshape(-1, A.shape[0])
         out[:, t0:t0 + Y.shape[0]] = R @ Y.T
     return out

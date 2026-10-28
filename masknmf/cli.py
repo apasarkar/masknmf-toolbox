@@ -66,6 +66,7 @@ from masknmf.io import (
 )
 from masknmf.multisession import RoicatDataAdapter, RoicatTracker
 from masknmf.pipelines import scraper
+from masknmf.utils.display import handler as handler_console
 
 
 GLOB_TRACKING_MANIFEST = "*_roicat-tracking-manifest.json"
@@ -647,7 +648,7 @@ def command_run(args: argparse.Namespace) -> None:
             for p in spec.movie_params
             if kwargs_run.get(p.field) is not None
         )
-        print(f"{spec.cls.__name__} on {shapes or 'stored results'}")
+        print(f"Starting pipeline: {spec.cls.__name__} on {shapes or 'stored results'}")
         start = time.monotonic()
         try:
             run_folder = pipeline.run(**kwargs_run)
@@ -830,6 +831,8 @@ def command_view(args: argparse.Namespace) -> None:
     Open the viewers for whatever stages the results files hold; --classify opens only the classification viewer.
     A folder opens its newest tracking manifest in the multisession viewer, else its results files.
     """
+    # a viewer's notes need no timestamps
+    handler_console.setFormatter(logging.Formatter("%(message)s"))
     tracking = find_tracking(entry=args.results[0])
     if tracking is not None:
         view_tracking(args=args, source=tracking)

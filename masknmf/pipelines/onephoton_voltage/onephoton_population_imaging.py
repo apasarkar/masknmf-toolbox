@@ -6,7 +6,7 @@ from masknmf.utils._serialization import save_dict
 from dataclasses import asdict, replace
 import torch
 import math
-from tqdm import tqdm
+from masknmf.utils.display import progress
 
 from masknmf.utils import SparseCSRTensor
 from masknmf.demixing.demixing_utils import csr_index_select_cols, csr_index_select_rows
@@ -85,7 +85,7 @@ def hals_on_rawdata(moco_data: np.ndarray,
                                                                     device,
                                                                     frame_batch_size=200)  ##TODO: set this in a principled way later
     c_new = c.clone()
-    for k in tqdm(range(num_batches)):
+    for k in progress(range(num_batches), desc="temporal update"):
         start_pt = batch_size * k
         end_pt = min(moco_data.shape[0], start_pt + batch_size)
         data = torch.as_tensor(moco_data[start_pt:end_pt, :, :], device=device,
@@ -343,8 +343,6 @@ class OnePhotonCulturePipeline(BasePipeline):
         if stop_after == "compression" or isinstance(self.demixing_config, str):
             return self.finish()
         device = self.torch_device
-        display("Running demixing analysis")
-
         pmd_denoise = masknmf.CompressionArray.from_hdf5(results_path)
 
         v = pmd_denoise.temporal_compressed[:, active_in_good.astype('bool')]

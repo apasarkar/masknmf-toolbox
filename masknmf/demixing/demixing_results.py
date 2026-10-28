@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import *
+import logging
 import h5py
 import numpy as np
 from masknmf import display
@@ -10,8 +11,10 @@ import torch
 from masknmf.utils import Serializer, SparseCOOTensor
 from masknmf.utils._serialization import save_dict, load_dict
 from masknmf.arrays.array_interfaces import TensorFlyWeight
-from masknmf.utils import display, infill_bad_timepoints
+from masknmf.utils import infill_bad_timepoints
 from masknmf.demixing._base_results import BaseResults
+
+logger = logging.getLogger(__name__)
 
 class DemixingResults(Serializer, BaseResults):
     _serialized = {
@@ -159,7 +162,7 @@ class DemixingResults(Serializer, BaseResults):
             self.flyweight.temporal_trend_basis = temporal_trend_basis.to(self._device)
 
         if factorized_background_term1 is None or factorized_background_term2 is None:
-            display("Background term empty")
+            logger.debug("Background term empty")
             self.flyweight.factorized_background_term1 = torch.zeros(self.spatial_compressed.shape[1], 1, dtype=self.spatial_compressed.dtype, device=self._device)
             self.flyweight.factorized_background_term2 = torch.zeros((1, self.temporal_compressed.shape[1]), dtype=self.spatial_compressed.dtype, device=self._device)
         else:
@@ -170,7 +173,7 @@ class DemixingResults(Serializer, BaseResults):
 
 
         if static_baseline is None:
-            display("Static term was not provided, constructing baseline_image to ensure residual is mean 0")
+            logger.debug("Static term was not provided, constructing baseline_image to ensure residual is mean 0")
             self.flyweight.static_baseline = (torch.sparse.mm(self.spatial_compressed, torch.mean(self.temporal_compressed, dim=1, keepdim=True)) -
                                 torch.sparse.mm(self.spatial_demixed, torch.mean(self.temporal_demixed.T, dim=1, keepdim=True)) -
                                 torch.sparse.mm(self.spatial_compressed, (

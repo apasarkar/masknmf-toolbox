@@ -96,7 +96,7 @@ def test_step_logs_its_start_and_how_long_it_took_or_that_it_failed(tmp_path):
         with pipeline.step("a broken step"):
             raise RuntimeError("broken")
     text = (folder / f"{folder.name}.log").read_text()
-    assert "INFO masknmf.pipelines._base: a quick step\n" in text
+    assert "INFO masknmf.pipelines._base: starting a quick step ----" in text
     assert "a quick step done in 0:00:00" in text
     assert "ERROR masknmf.pipelines._base: a broken step failed after 0:00:00" in text
     logging.getLogger("masknmf").removeHandler(pipeline.log_handler)

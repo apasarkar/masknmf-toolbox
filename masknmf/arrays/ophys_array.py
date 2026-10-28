@@ -3,7 +3,7 @@ import threading
 
 import numpy as np
 import torch
-from tqdm import tqdm
+from masknmf.utils.display import progress
 
 from masknmf.arrays.array_interfaces import ArrayLike
 from masknmf.arrays.array_utils import normalize_spatial_indexer, test_spatial_crop_effect
@@ -133,10 +133,7 @@ class OphysArray(ArrayLike):
         num_frames = self.shape[0]
         cumulated_mean = torch.zeros(self.shape[1], self.shape[2], dtype=self.dtype, device=self.device)
         num_batches = math.ceil(self.shape[0] / self.batch_size)
-        # Visible progress: this pass can take a while and may start in the middle of a getitem / mean_image call
-        progress = tqdm(range(num_batches), unit="batch",
-                        desc=f"OphysArray: computing mean image over {num_frames} frames")
-        for ind in progress:
+        for ind in progress(range(num_batches), desc=f"mean image over {num_frames} frames"):
             start_pt = ind * self.batch_size
             end_pt = min(self.shape[0], start_pt + self.batch_size)
             frames = slice(start_pt, end_pt)

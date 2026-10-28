@@ -388,7 +388,7 @@ class SingleSessionDemixingVis:
                 "no raw movie: raw= (a movie or a .tif path) adds a raw panel; the only .tif in the results folder is used automatically"
             )
         if opened.shifts is not None:
-            display(f"shift traces: {opened.shifts_source if opened.shifts_source is not None else 'shifts given'}")
+            display(f"shifts: {opened.shifts_source if opened.shifts_source is not None else 'shifts given'}")
         else:
             display(
                 "no motion shifts: shifts= (an array or a results file holding a registration) adds shift traces; "

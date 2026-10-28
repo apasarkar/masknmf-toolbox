@@ -4,7 +4,7 @@ import random
 
 import torch
 import numpy as np
-from tqdm import tqdm
+from masknmf.utils.display import progress
 
 import masknmf
 from masknmf.utils import torch_select_device, display
@@ -179,7 +179,7 @@ class MotionCorrectionStrategy:
         for pass_iter_rigid in range(num_iterations):
             slices_sampled = random.sample(slice_list, num_splits_to_sample)
             template_list = []
-            for j in tqdm(range(num_splits_to_sample)):
+            for j in progress(range(num_splits_to_sample), desc=f"template pass {pass_iter_rigid + 1} of {num_iterations}"):
                 corrected_frames = self.correct(frames[slices_sampled[j]])[0]
                 template = np.mean(corrected_frames, axis=0)
                 template_list.append(template)

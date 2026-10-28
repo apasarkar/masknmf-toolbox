@@ -7,7 +7,7 @@ import math
 import numpy as np
 from collections.abc import Callable
 from typing import Literal
-from tqdm import tqdm
+from masknmf.utils.display import progress
 
 from masknmf import display
 from masknmf.utils import torch_select_device, SparseCOOTensor, SparseCSRTensor
@@ -205,7 +205,7 @@ def identify_window_chunks(
         available_intervals, size=num_intervals, replace=False
     )
     starting_points = np.sort(starting_points)
-    display("sampled from the following regions: {}".format(starting_points))
+    logger.debug("sampled from the following regions: {}".format(starting_points))
 
     net_frames = []
     for k in starting_points:
@@ -614,7 +614,7 @@ def regress_onto_spatial_basis(
     mean_projected = torch.sparse.mm(u_t_normalized, dataset_mean)
 
     temporal_results = []
-    for k in tqdm(range(num_iters)):
+    for k in progress(range(num_iters), desc="projecting frames"):
         start_pt = k * frame_batch_size
         end_pt = min(start_pt + frame_batch_size, num_frames)
         curr_data = dataset[start_pt:end_pt]
@@ -1054,7 +1054,7 @@ def threshold_heuristic(
     frame_weighting = torch.ones(num_frames, device=device, dtype=dtype)
     max_components = num_comps
 
-    for k in tqdm(range(iters)):
+    for k in progress(range(iters), desc="noise thresholds"):
         sim_data = torch.randn(num_frames, fov_height * fov_width, device=device, dtype=dtype).reshape(
             (num_frames, fov_height, fov_width)
         )
@@ -1153,7 +1153,7 @@ def compression_routine(
 
     device = torch_select_device(device)
 
-    display("Starting compression")
+    logger.debug("Starting compression")
     num_frames, fov_height, fov_width = dataset.shape
     dtype = torch.float32  # This is the target dtype we use for doing computations
     check_fov_size((dataset.shape[1], dataset.shape[2]))
@@ -1183,7 +1183,7 @@ def compression_routine(
         if frame_range <= window_chunks:
             window_chunks = frame_range
         frames = identify_window_chunks(frame_range, dataset.shape[0], window_chunks)
-    display("We are initializing on a total of {} frames".format(len(frames)))
+    logger.debug("We are initializing on a total of {} frames".format(len(frames)))
 
     block_sizes = update_block_sizes(block_sizes, (dataset.shape[1], dataset.shape[2]))
 
@@ -1196,13 +1196,13 @@ def compression_routine(
     else:
         dataset_noise_std = torch.zeros(dataset.shape[1], dataset.shape[2]).to(device).to(dtype)
 
-    display("Loading data to estimate complete spatial basis")
+    logger.debug("Loading data to estimate complete spatial basis")
 
     # First make sure the number of frames loaded is divisible by the temporal average factor
     if temporal_avg_factor >= len(frames):
         raise ValueError("Need at least {} frames".format(temporal_avg_factor))
 
-    display("skipping the pruning step for frame cutoff")
+    logger.debug("skipping the pruning step for frame cutoff")
     #frame_cutoff = (len(frames) // temporal_avg_factor) * temporal_avg_factor
     # frames = frames[:frame_cutoff]
     if len(frames) // temporal_avg_factor <= max_components:
@@ -1270,7 +1270,7 @@ def compression_routine(
     cumulative_weights = torch.zeros((fov_height, fov_width), dtype=dtype, device=device)
     total_temporal_fit = []
 
-    display("Finding spatiotemporal roughness thresholds")
+    logger.debug("Finding spatiotemporal roughness thresholds")
     spatial_roughness_threshold, temporal_roughness_threshold = threshold_heuristic(
         [block_sizes[0], block_sizes[1], window_chunks],
         spatial_avg_factor,
@@ -1295,8 +1295,8 @@ def compression_routine(
         temporal_preprocess_basis = None
 
 
-    display("Running Blockwise Decompositions")
-    for k in tqdm(dim_1_iters):
+    logger.debug("Running Blockwise Decompositions")
+    for k in progress(dim_1_iters, desc="decomposing blocks"):
         for j in dim_2_iters:
             slice_dim1 = slice(k, k + block_sizes[0])
             slice_dim2 = slice(j, j + block_sizes[1])
@@ -1418,7 +1418,7 @@ def compression_routine(
     u_aggregated = torch.sparse_coo_tensor(
         final_indices, spatial_overall_values, (num_rows, num_cols)
     ).coalesce()
-    display(f"Constructed spatial_compressed matrix. Rank of spatial_compressed is {u_aggregated.shape[1]}")
+    logger.debug(f"Constructed spatial_compressed matrix. Rank of spatial_compressed is {u_aggregated.shape[1]}")
 
 
     ## If the preprocessing basis was used, re-assign the mean of that decomposition to the compression array
@@ -1444,5 +1444,5 @@ def compression_routine(
         temporal_trend_basis = temporal_preprocess_basis.cpu() if temporal_preprocess_basis is not None else None,
         device="cpu",
     )
-    display("Compression Object constructed")
+    logger.debug("Compression Object constructed")
     return final_compression_arr

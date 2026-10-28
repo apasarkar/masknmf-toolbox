@@ -1,6 +1,5 @@
 import masknmf
 from masknmf.arrays import LazyFrameLoader, ArrayLike
-from masknmf.utils import display
 
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import (PiecewiseRigidMotionCorrectionConfig,
@@ -205,8 +204,6 @@ class OnePhotonCalciumPipeline(BasePipeline):
             return self.finish()
 
         device = self.torch_device
-        display("Running demixing analysis")
-
         pmd_denoise = masknmf.CompressionArray.from_hdf5(results_path)
         pmd_denoise.to(device)
         filtered_pmd = self._filtered_compression(pmd_denoise)

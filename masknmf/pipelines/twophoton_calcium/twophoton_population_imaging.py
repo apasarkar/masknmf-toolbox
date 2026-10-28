@@ -1,6 +1,5 @@
 import masknmf
 from masknmf.arrays import LazyFrameLoader, ArrayLike
-from masknmf.utils import display
 
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, MotionCorrectionConfigs
@@ -148,8 +147,6 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             return self.finish()
 
         device = self.torch_device
-        display("Running demixing analysis")
-
         pmd_denoise = masknmf.CompressionArray.from_hdf5(results_path)
         pmd_denoise.to(device)
         spatial_filt_pmd = masknmf.demixing.filters.spatial_filter_compressed_array(pmd_denoise,

@@ -1,9 +1,13 @@
 import logging
 import sys
+import warnings
 from pathlib import Path
 
 logging.getLogger("torch.utils.flop_counter").setLevel(logging.ERROR)
 logging.getLogger("cmap").setLevel(logging.ERROR)
+# torch's notices about its own sparse support, nothing the user can act on
+warnings.filterwarnings("ignore", message="Sparse CSR tensor support is in beta state")
+warnings.filterwarnings("ignore", message="Sparse invariant checks are implicitly disabled")
 # the masknmf console script imports this package before any of its own code runs
 if Path(sys.argv[0]).stem == "masknmf":
     print("Loading packages...", end="", file=sys.stderr, flush=True)

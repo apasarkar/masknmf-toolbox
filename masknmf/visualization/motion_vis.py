@@ -4,7 +4,7 @@ from typing import *
 import numpy as np
 import torch
 import fastplotlib as fpl
-from tqdm import tqdm
+from masknmf.utils.display import progress
 import masknmf.arrays
 from masknmf.arrays.array_interfaces import ArrayLike
 from masknmf.utils import display
@@ -160,7 +160,7 @@ class MotionCorrectionVis:
                                     dtype=self.registration_array.dtype)
         batch_size = self.registration_array.batch_size
         num_iters = math.ceil(num_frames_used / batch_size)
-        for k in tqdm(range(num_iters)):
+        for k in progress(range(num_iters), desc="mean of each stack"):
             start = k * batch_size
             end = min(start + batch_size, frame_indices.shape[0])
             raw_frames = self.raw_stack[frame_indices[start:end]]

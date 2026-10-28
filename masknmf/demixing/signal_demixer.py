@@ -10,7 +10,7 @@ import scipy.signal
 import scipy.sparse
 import scipy
 import networkx as nx
-from tqdm import tqdm
+from masknmf.utils.display import progress
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from typing import Literal
 from collections.abc import Sequence
@@ -614,7 +614,7 @@ def process_custom_signals(
 
     if c is None:
         message = "nonneg" if c_nonneg else "unconstrained"
-        display(f"no temporal footprints provided, running {message} least squares")
+        logger.debug(f"no temporal footprints provided, running {message} least squares")
         c = torch.zeros([v.shape[1], a.shape[1]], device=device, dtype=torch.float)
 
         if b is None:
@@ -625,7 +625,7 @@ def process_custom_signals(
 
     else:
         message = "nonneg" if c_nonneg else "unconstrained"
-        display(
+        logger.debug(
             f"temporal footprints provided. Initializing signals. Computing optimal {message} affine transform of signal "
             f"to match video ")
 
@@ -643,7 +643,7 @@ def process_custom_signals(
     a_torch = torch.index_select(a, 1, nonzero_dim1).to_sparse_csr()
     a_mask = a_torch.bool()
 
-    display(f"started with {initial_num_signals} signals, ended initialization with {a_torch.shape[1]} signals")
+    logger.debug(f"started with {initial_num_signals} signals, ended initialization with {a_torch.shape[1]} signals")
 
     init_res = InitializationResults(a_torch,
                                      a_mask,
@@ -1357,7 +1357,7 @@ def delete_comp(
             - spatial_masks (torch.sparse_coo_tensor): Updated sparse tensor of dimensions (d, K')
               containing the spatial masks after deletion.
     """
-    logger.info(reasoning_message)
+    logger.debug(reasoning_message)
     pos = torch.nonzero(components_to_delete)[:, 0]
     neg = torch.nonzero(components_to_delete == 0)[:, 0]
     if int(torch.sum(components_to_delete).cpu()) == spatial_components.shape[1]:
@@ -1950,7 +1950,7 @@ def superpixel_init(
                                              kernel_radius=min_peak_distance,
                                              correlation_cutoff=cut_off_point,
                                              exclude_border=True)
-    display(f" peaks shape is {peaks.shape}")
+    logger.debug(f"peaks shape is {peaks.shape}")
     if peaks.shape[0] == 0:
         display("No superpixels found, set lower correlation threshold!")
         return None
@@ -2035,7 +2035,7 @@ def superpixel_init(
     peaks = peaks.cpu().numpy()
     total_peaks = total_peaks.cpu().numpy()
 
-    display(f'initialized {a.shape[1]} signals')
+    logger.debug(f'initialized {a.shape[1]} signals')
 
     init_res = InitializationResults(a,
                                      a.bool(),
@@ -2725,7 +2725,7 @@ class InitializingState(SignalProcessingState):
         variance_cumulator = relu_fn(sq_cumulator - mean_cumulator ** 2)
         variance_cumulator = torch.sqrt(variance_cumulator)
         baseline = torch.quantile(variance_cumulator.flatten(), 0.1)
-        display(f"baseline is {baseline}")
+        logger.debug(f"baseline is {baseline}")
 
         output = torch.ones_like(variance_cumulator) * baseline
         return output.reshape(self.fov_height, self.fov_width)
@@ -2816,7 +2816,7 @@ class InitializingState(SignalProcessingState):
             plot_en (bool): Used for debugging; whether to plot the superpixels and pure superpixel plots.
         """
         if mad_threshold != self._th:
-            logger.info(
+            logger.debug(
                 f"Computing correlation data structure with MAD threshold  {mad_threshold}"
             )
 
@@ -3049,7 +3049,7 @@ class DemixingState(SignalProcessingState):
             factorized_ring_term[0].to(self.device), factorized_ring_term[1].to(self.device))
             self._validate_factorized_ring_term()
             self.background_rank = factorized_ring_term[0].shape[1]
-            display(f"Background from previous iteration {self.background_rank}")
+            logger.debug(f"Background from previous iteration {self.background_rank}")
         self.factorized_ring_term = None
 
         #Run after factorized ring term has been initialized
@@ -3104,7 +3104,7 @@ class DemixingState(SignalProcessingState):
         variance_cumulator = relu_fn(sq_cumulator - mean_cumulator**2)
         variance_cumulator = torch.sqrt(variance_cumulator)
         baseline = torch.quantile(variance_cumulator.flatten(), 0.1)
-        display(f"baseline is {baseline}")
+        logger.debug(f"baseline is {baseline}")
 
         output = torch.ones_like(variance_cumulator) * baseline
         return output.reshape(self.fov_height, self.fov_width), compression_pixelwise_norms.reshape(self.fov_height, self.fov_width)
@@ -3346,7 +3346,7 @@ class DemixingState(SignalProcessingState):
             explained_variance_term = torch.cumsum(s_bkgd ** 2, dim=0) / torch.sum(s_bkgd ** 2)
             min_rank = int(torch.argmax((explained_variance_term >= 0.99).float()).item())
             self.background_rank = min_rank + 1 ## This is the new estimate
-            display(f"The estimated min rank is {self.background_rank}")
+            logger.debug(f"The estimated min rank is {self.background_rank}")
 
         s_bkgd, v_bkgd = self.lowrank_background_svd(downsampling_factor,
                                                              self.background_rank)
@@ -3514,9 +3514,9 @@ class DemixingState(SignalProcessingState):
                 c_used = self.c
             idx, brightnesses = masknmf.demixing.demixing_utils.brightness_order(self.a, c_used)
             good_idx = brightnesses >= min_brightness
-            display(f"min brightness is {min_brightness}")
-            display(f"Deleting {int(good_idx.shape[0] - torch.count_nonzero(good_idx))} components via min brightness criteria")
-            display(f"Started with {support_data.shape[1]} neurons")
+            logger.debug(f"min brightness is {min_brightness}")
+            logger.debug(f"Deleting {int(good_idx.shape[0] - torch.count_nonzero(good_idx))} components via min brightness criteria")
+            logger.debug(f"Started with {support_data.shape[1]} neurons")
             # boolean_indices[bad_idx] = False
             boolean_indices *= good_idx.bool()
             #Reset the background rank term in the ring model
@@ -3781,7 +3781,7 @@ class DemixingState(SignalProcessingState):
 
         background_enabled: bool = False
         background_reassigned: bool = False
-        for iters in tqdm(range(maxiter)):
+        for iters in progress(range(maxiter), desc="demixing"):
             self.static_baseline_update()
 
             if ring_model_start_pt is not None and iters >= ring_model_start_pt:
