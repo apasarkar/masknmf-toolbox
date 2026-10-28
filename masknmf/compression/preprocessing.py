@@ -1,8 +1,64 @@
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from typing import Literal
+from warnings import warn
 import numpy as np
 import torch
 from scipy.interpolate import BSpline
+
+def _point_reflect_pad(x: torch.Tensor, padding: int, anchor_frames: int = 1) -> torch.Tensor:
+    """
+    Pad the last axis by point reflection: left pad x[-k] = 2 * a0 - x[k], right pad likewise about a1. Unlike a
+    mirror ("reflect"), this continues the local slope, so a monotone trend stays monotone past the ends.
+
+    a0 and a1 are the frame-0 and last-frame values of a least-squares line fit to the first and last anchor_frames
+    frames. The reflection doubles any error in the anchor across the whole pad, so the anchor must be far less noisy
+    than one frame: a line over many frames averages the noise down and still follows a sloped trend (a median over
+    a sloped stretch would not). With anchor_frames=1 this is plain point reflection through the end frames.
+    Needs padding <= x.shape[-1] - 1.
+    """
+    if padding == 0:
+        return x
+    n = max(1, min(anchor_frames, x.shape[-1]))
+    if n == 1:
+        a0, a1 = x[..., :1], x[..., -1:]
+    else:
+        s = torch.arange(n, dtype=x.dtype, device=x.device)
+        design = torch.stack([torch.ones_like(s), s], dim=1)              # (n, 2)
+        fit = torch.linalg.pinv(design)[:1]                                 # (1, n): intercept at s = 0
+        a0 = x[..., :n] @ fit.T                                             # line through the first n frames, at frame 0
+        a1 = x[..., -n:].flip(-1) @ fit.T                                   # line through the last n frames, at the last frame
+    left = 2 * a0 - x[..., 1:padding + 1].flip(-1)
+    right = 2 * a1 - x[..., -padding - 1:-1].flip(-1)
+    return torch.cat([left, x, right], dim=-1)
+
+
+def geometric_knot_positions(num_frames: int,
+                             frame_rate: float,
+                             first_seconds: float,
+                             growth: float,
+                             max_spacing_seconds: float) -> list[float]:
+    """
+    Interior spline knots as fractions of the recording in (0, 1), dense at the start and sparse later: the first
+    knot is first_seconds in, each gap is growth times the previous one, and no gap exceeds max_spacing_seconds.
+    Suits photobleaching, which is fastest at the start of a recording.
+    """
+    if first_seconds <= 0 or max_spacing_seconds <= 0:
+        raise ValueError("first_seconds and max_spacing_seconds must be > 0")
+    if growth < 1:
+        raise ValueError(f"growth must be >= 1, got {growth}")
+    # knots closer than a few frames make the spline basis ill-conditioned
+    min_gap_seconds = 4 / frame_rate
+    duration = num_frames / frame_rate
+    gap = max(first_seconds, min_gap_seconds)
+    t = gap
+    positions = []
+    while t < duration - min_gap_seconds:  # keep the last knot clear of the end
+        positions.append(t / duration)
+        gap = min(max(gap * growth, min_gap_seconds), max_spacing_seconds)
+        t += gap
+    return positions
+
 
 class SplineDetrenderBase(torch.nn.Module, ABC):
     """
@@ -249,6 +305,19 @@ class MaximinSplineDetrend(SplineDetrenderBase):
     Stores only the basis B (num_frames, spline_rank), a precomputed solve
     matrix (B^T B)^{-1} B^T (spline_rank, num_frames), and the smoothing kernel.
 
+    Edge handling (`edge_mode`): near the first and last half-window the rolling
+    min/max need frames that don't exist, so each trace is padded.
+        - "mirror" (default, the original behavior): mirror the trace at each
+          end. Unaffected by activity near the edges and exact for flat
+          baselines, but a trend that is still falling (bleaching) at an end
+          becomes a peak in the mirror, so the baseline over that half-window
+          comes out too low.
+        - "line": point-reflect each trace about a straight line fit to its
+          first / last half-window. Follows a sloped (bleaching) trend to the
+          ends; cells active near an edge pull their own line, so per-pixel
+          edge error is somewhat larger than "mirror" on stable baselines.
+          Cannot follow a fast, curved decay within the first half-window.
+
     Knot placement:
         - `num_knots` (required): number of interior knots.
         - `knot_positions` (optional): explicit interior knot positions as
@@ -292,6 +361,7 @@ class MaximinSplineDetrend(SplineDetrenderBase):
         window: int = 600,
         sigma: float = 10.0,
         device: str | torch.device = "cpu",
+        edge_mode: Literal["mirror", "line"] = "mirror",
     ):
         """
         Args:
@@ -307,6 +377,10 @@ class MaximinSplineDetrend(SplineDetrenderBase):
             sigma: Gaussian pre-smoothing width in frames (suppresses per-frame
                 noise so the rolling min doesn't latch onto single noisy frames).
             device: Device for buffers.
+            edge_mode: How traces are padded at the ends, "mirror" (default,
+                the original behavior) or "line"; see the class docstring.
+                Recordings too short for the window or smoothing get a
+                smaller one, with a warning.
         """
         super().__init__()
 
@@ -314,18 +388,52 @@ class MaximinSplineDetrend(SplineDetrenderBase):
             raise ValueError(f"num_knots must be >= 1, got {num_knots}")
         if window < 3:
             raise ValueError(f"window must be >= 3, got {window}")
-        # a recording shorter than the window is one window
-        window = min(window, num_frames)
-        if window % 2 == 0:
-            window += 1
         if sigma <= 0:
             raise ValueError(f"sigma must be > 0, got {sigma}")
+        if edge_mode not in ("mirror", "line"):
+            raise ValueError(f'edge_mode must be "mirror" or "line", got {edge_mode!r}')
+        if num_frames < 4:
+            raise ValueError(f"MaximinSplineDetrend needs at least 4 frames, got {num_frames}")
+        self.edge_mode = edge_mode
+        radius = max(1, int(3 * sigma))
+
+        if edge_mode == "mirror":
+            # The original behavior: a recording shorter than the window is one window. Each of the three mirror
+            # pads must be shorter than the trace; only recordings the original code could not run at all are
+            # changed below.
+            window = min(window, num_frames)
+            if window % 2 == 0:
+                window += 1
+            if radius > num_frames - 1:
+                warn(f"MaximinSplineDetrend: {num_frames} frames is too short for sigma={sigma:g}; "
+                     f"using sigma={(num_frames - 1) / 3:g} (smoothing radius {num_frames - 1} frames) instead.")
+                radius = num_frames - 1
+                sigma = radius / 3
+            if window // 2 > num_frames - 1:
+                window = 2 * (num_frames - 1) - 1
+                warn(f"MaximinSplineDetrend: {num_frames} frames is too short for the window; "
+                     f"using a {window}-frame window instead.")
+        else:
+            if window % 2 == 0:
+                window += 1
+            # _maximin pads each trace once by 2 * (window // 2) + radius frames, and a reflection can only
+            # reach num_frames - 1 frames back from either end. Shrink the smoothing, then the window, to fit.
+            max_padding = num_frames - 1
+            if radius > max_padding - 2:  # leave room for the smallest window (3 frames, padding 2)
+                radius = max_padding - 2
+                warn(f"MaximinSplineDetrend: {num_frames} frames is too short for sigma={sigma:g}; "
+                     f"using sigma={radius / 3:g} (smoothing radius {radius} frames) instead.")
+                sigma = radius / 3
+            max_window = 2 * ((max_padding - radius) // 2) + 1
+            if window > max_window:
+                warn(f"MaximinSplineDetrend: {num_frames} frames is too short for a {window}-frame window; "
+                     f"using a {max_window}-frame window instead.")
+                window = max_window
 
         self.window = window
         self.window_padding = window // 2
 
         # Gaussian smoothing kernel
-        radius = max(1, int(3 * sigma))
         self.gaussian_padding = radius
         t = torch.arange(2 * radius + 1, dtype=torch.float32) - radius
         gauss = torch.exp(-(t ** 2) / (2 * sigma ** 2))
@@ -403,6 +511,12 @@ class MaximinSplineDetrend(SplineDetrenderBase):
         Maximin lower envelope.
         data: (num_frames, num_pixels) -> (num_frames, num_pixels).
         """
+        if self.edge_mode == "line":
+            return self._maximin_line(data)
+        return self._maximin_mirror(data)
+
+    def _maximin_mirror(self, data: torch.Tensor) -> torch.Tensor:
+        """The original envelope: each step mirrors the trace at its ends."""
         input_traces = data.t().unsqueeze(1)  # (num_pixels, 1, num_frames)
 
         # Gaussian smooth along time
@@ -423,6 +537,26 @@ class MaximinSplineDetrend(SplineDetrenderBase):
             kernel_size=self.window,
             stride=1,
         )
+
+        return traces_max_min.squeeze(1).t()  # (num_frames, num_pixels)
+
+    def _maximin_line(self, data: torch.Tensor) -> torch.Tensor:
+        """The envelope with each trace point-reflected once about a line fit to its first / last half-window."""
+        input_traces = data.t().unsqueeze(1)  # (num_pixels, 1, num_frames)
+
+        # Pad once, wide enough for the smoothing and both rolling steps, so the rolling max works on the padded
+        # envelope rather than a re-padded one. The line fit over half a window keeps per-pixel noise out of the pad.
+        padded = _point_reflect_pad(input_traces, 2 * self.window_padding + self.gaussian_padding,
+                                    anchor_frames=max(2, self.window_padding))
+
+        # Gaussian smooth along time: length num_frames + 4 * window_padding
+        traces_smoothed = torch.nn.functional.conv1d(padded, self.gaussian_kernel)
+
+        # Rolling min (negate, max-pool, negate): length num_frames + 2 * window_padding
+        traces_min = -torch.nn.functional.max_pool1d(-traces_smoothed, kernel_size=self.window, stride=1)
+
+        # Rolling max of the rolling min: length num_frames
+        traces_max_min = torch.nn.functional.max_pool1d(traces_min, kernel_size=self.window, stride=1)
 
         return traces_max_min.squeeze(1).t()  # (num_frames, num_pixels)
 

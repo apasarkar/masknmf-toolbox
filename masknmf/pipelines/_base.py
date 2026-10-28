@@ -20,7 +20,7 @@ from masknmf._version import __version__
 from masknmf.pipelines.scraper import slugify, config_json_value, config_from_json
 from masknmf.arrays import ArrayLike, OphysArray
 from masknmf.compression import CompressionArray, CompressStrategy, CompressDenoiseStrategy
-from masknmf.compression.preprocessing import MaximinSplineDetrend
+from masknmf.compression.preprocessing import MaximinSplineDetrend, geometric_knot_positions
 from masknmf.demixing import SignalDemixer, DemixingResults, NoSignalsDetectedError
 from masknmf.motion_correction import BaseRegistrationArray, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.motion_correction.moco_preprocessing import construct_moco_template
@@ -470,16 +470,36 @@ class BasePipeline(ABC):
                          frame_rate: float,
                          window_seconds: float,
                          knot_seconds: float,
-                         sigma_seconds: float) -> MaximinSplineDetrend:
-        """A maximin spline detrender with its rolling window, knot spacing and smoothing given in seconds."""
+                         sigma_seconds: float,
+                         geometric_first_seconds: float | None = None,
+                         geometric_growth: float = 1.5,
+                         edge_mode: Literal["mirror", "line"] = "mirror") -> MaximinSplineDetrend:
+        """
+        A maximin spline detrender with its rolling window, knot spacing and smoothing given in seconds.
+
+        By default the knots are uniform, knot_seconds apart. With geometric_first_seconds set, they are dense at
+        the start instead: the first knot geometric_first_seconds in, each gap geometric_growth times the last,
+        capped at knot_seconds. Use this when photobleaching is fast at the start of the recording.
+        """
         if int(window_seconds * frame_rate) < 3:
             raise ValueError(f"at {frame_rate} fps this pipeline's {window_seconds} s detrending window is under 3 frames; "
                              f"it needs at least {3 / window_seconds:g} fps")
+        knot_positions = None
+        num_knots = max(4, int(num_frames / frame_rate / knot_seconds))
+        if geometric_first_seconds is not None:
+            positions = geometric_knot_positions(num_frames, frame_rate,
+                                                 first_seconds=geometric_first_seconds,
+                                                 growth=geometric_growth,
+                                                 max_spacing_seconds=knot_seconds)
+            if positions:  # a recording too short for any knot keeps the uniform ones
+                knot_positions, num_knots = positions, len(positions)
         return MaximinSplineDetrend(num_frames=num_frames,
-                                    num_knots=max(4, int(num_frames / frame_rate / knot_seconds)),
+                                    num_knots=num_knots,
+                                    knot_positions=knot_positions,
                                     window=int(window_seconds * frame_rate),
                                     sigma=max(2.0, sigma_seconds * frame_rate),
-                                    device=self.torch_device)
+                                    device=self.torch_device,
+                                    edge_mode=edge_mode)
 
     def run_multipass(self, demixer: SignalDemixer, config: MultipassDemixingConfig,
                       name: str = "demixing") -> DemixingResults:
