@@ -18,6 +18,8 @@ here enumerates a parameter by hand:
     masknmf view run_folder
     masknmf view results.hdf5 --raw movie.tif --compression
     masknmf view "sessions/*/results.hdf5" --fs 30
+    masknmf view results.hdf5 suite2p/plane0
+    masknmf view cnmf.hdf5
     masknmf view results.hdf5 --classify --labels soma,dendrite,junk
     masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
     masknmf view tracking_folder
@@ -49,6 +51,7 @@ import numpy as np
 
 import masknmf
 from masknmf.classification import RoicatClassifier
+from masknmf.demixing._adapters import adapter_for
 from masknmf.demixing.curation import latest_results
 from masknmf.demixing.labels import SIDECAR_SUFFIX, read_labels
 from masknmf.io import (
@@ -93,6 +96,26 @@ def groups_present(filepath_results: str) -> list[str]:
         return stage_groups(filepath_results)
     except (OSError, ValueError) as e:
         fail(str(e))
+
+
+def expand_sources(entries: list[str]) -> list[str]:
+    """The results files, and the paths adapters expand entries to, that view entries name."""
+    sources = []
+    for entry in entries:
+        adapter = adapter_for(entry)
+        if adapter is not None:
+            sources += [str(path) for path in adapter.expand(Path(entry))]
+            continue
+        # glob characters in the folder's own name are escaped, so only the file pattern matches
+        pattern = str(Path(glob.escape(entry)) / "*results*.hdf5") if Path(entry).expanduser().is_dir() else entry
+        sources += expand_results(entries=[pattern])
+    return list(dict.fromkeys(sources))
+
+
+def describe_source(filepath: str) -> list[str]:
+    """A results file's stage groups, else its adapter's line about it."""
+    adapter = adapter_for(filepath)
+    return [adapter.describe(Path(filepath))] if adapter is not None else groups_present(filepath)
 
 
 def expand_results(entries: list[str]) -> list[str]:
@@ -812,13 +835,8 @@ def command_view(args: argparse.Namespace) -> None:
         view_tracking(args=args, source=tracking)
         return
     # a folder without a manifest means the results files in it, each replaced by its newest curated file
-    entries = [
-        # glob characters in the folder's own name are escaped, so only the file pattern matches
-        str(Path(glob.escape(entry)) / "*results*.hdf5") if Path(entry).expanduser().is_dir() else entry
-        for entry in args.results
-    ]
-    files = expand_results(entries=entries)
-    present = {filepath: groups_present(filepath_results=filepath) for filepath in files}
+    files = expand_sources(entries=args.results)
+    present = {filepath: describe_source(filepath=filepath) for filepath in files}
     for filepath, names in present.items():
         print(Path(filepath).resolve())
         for name in names or ["no masknmf results"]:
@@ -831,6 +849,9 @@ def command_view(args: argparse.Namespace) -> None:
             fail("--classify reads only the top-level demixing results; drop --prefix")
         if args.raw is not None or args.compression:
             fail("--classify opens only the classification viewer; drop --raw and --compression")
+        foreign = next((f for f in files if adapter_for(f) is not None), None)
+        if foreign is not None:
+            fail(f"--classify reads masknmf results files; {foreign} holds {adapter_for(foreign).pipeline} results")
         import fastplotlib as fpl
 
         classification = masknmf.ClassificationVis.from_masknmf(
@@ -854,6 +875,9 @@ def command_view(args: argparse.Namespace) -> None:
     if len(names_present) == 0:
         fail(f"{filepath_results} holds no masknmf results")
 
+    adapter = adapter_for(filepath_results)
+    if args.prefix and adapter is not None:
+        fail(f"{filepath_results} holds {adapter.pipeline} results, which take no prefix")
     name_demixing = f"{args.prefix}/{group_name_demixing()}" if args.prefix else group_name_demixing()
     if name_demixing not in names_present and args.prefix:
         fail(f"{filepath_results} holds no {name_demixing}")
@@ -872,13 +896,14 @@ def command_view(args: argparse.Namespace) -> None:
     for note in opened.skipped:
         print(note)
     results, raw, registered = opened.results, opened.raw, opened.registered
-    if args.compression and isinstance(results, masknmf.BaseRegistrationArray):
+    if args.compression and not isinstance(results, (masknmf.DemixingResults, masknmf.CompressionArray)):
         fail(f"{filepath_results} holds no compression")
     if args.compression and raw is None:
         fail("--compression needs --raw, the movie the compression saw, with the results' frame count")
+    frame_rate = args.fs if args.fs is not None else getattr(results, "frame_rate", None)
     viewer = masknmf.SingleSessionDemixingVis(
         demixing_results=results,
-        frame_timings=timings(results.shape[0], args.fs),
+        frame_timings=timings(results.shape[0], frame_rate),
         device=device,
         results_path=filepath_results,
         raw=raw,
@@ -994,7 +1019,8 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_view.add_argument(
         "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several open one viewer each, or one classification viewer with --classify. "
         "Or a tracking folder (its newest run) or one run's *-manifest.json; a tracking folder without a manifest is followed by its results files in session order. "
-        "Any other folder means the *results*.hdf5 files in it, each replaced by its newest curated file",
+        "Any other folder means the *results*.hdf5 files in it, each replaced by its newest curated file. "
+        "A suite2p plane folder, or a file caiman saved, opens through its adapter",
     )
     parser_view.add_argument("--raw", default=None, help="the raw movie the results came from")
     parser_view.add_argument("--dataset", default=None)
