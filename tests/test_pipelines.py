@@ -1,5 +1,6 @@
 """The contract every pipeline keeps with BasePipeline."""
 
+import dataclasses
 import inspect
 import json
 import logging
@@ -283,3 +284,16 @@ def test_from_config_builds_the_pipeline_a_config_json_describes(slug, tmp_path)
     other = next(c for s, c in scraper.pipeline_registry().items() if s != slug)
     with pytest.raises(ValueError):
         other.from_config(folder / "config.json")
+
+
+def test_a_curated_file_records_the_nmf_config_its_pass_ran_with(tmp_path):
+    with h5py.File(tmp_path / "results.hdf5", "w") as file:
+        file.create_group(masknmf.DemixingResults.__name__)
+    config = masknmf.NMFConfig(min_brightness=0.5, detrender=masknmf.compression.preprocessing.MaximinSplineDetrend(num_frames=100, num_knots=4, window=10, sigma=2.0, device="cpu"))
+    curated = masknmf.demixing.write_curated(str(tmp_path / "results.hdf5"), StubResults(), drop=[0], nmf_config=config)
+    recorded = masknmf.io.read_nmf_config(curated)
+    assert recorded["min_brightness"] == 0.5
+    assert recorded["detrender"] == "*"
+    restored = scraper.config_from_json(value=recorded, annotation=masknmf.NMFConfig)
+    assert restored == dataclasses.replace(config, detrender=None)
+    assert masknmf.io.read_nmf_config(tmp_path / "results.hdf5") is None

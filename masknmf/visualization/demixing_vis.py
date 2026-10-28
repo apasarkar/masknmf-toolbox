@@ -760,7 +760,7 @@ class SingleSessionDemixingVis:
             results.temporal_demixed_raw = estimate_temporal_demixed_raw(
                 results, movie, device=self.device, nonneg=True, frame_batch_size=self.frame_batch_size
             )
-            path = write_curated(self._results_path, results, drop, masks.shape[-1], filters)
+            path = write_curated(self._results_path, results, drop, masks.shape[-1], filters, nmf_config=self._nmf_config)
             self._pending = (results, path)
         except Exception as e:
             self._pending = e

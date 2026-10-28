@@ -13,6 +13,7 @@ import torch
 from masknmf.arrays import ArrayLike, Hdf5Array, TiffArray, TiffSeriesLoader
 from masknmf.compression import CompressionArray
 from masknmf.demixing import DemixingResults, results_stem
+from masknmf.demixing.curation import ATTR_NMF_CONFIG
 from masknmf.demixing._base_results import BaseResults
 from masknmf.motion_correction import BaseRegistrationArray, GradientRegistrationArray, PiecewiseRigidRegistrationArray, RigidRegistrationArray
 from masknmf._version import __version__
@@ -107,8 +108,6 @@ def movie_beside(path: str | Path) -> Path | None:
 
 
 KEYS_RECORD = ("masknmf_version", "pipeline", "run", "inputs", "timings")
-
-ATTR_NMF_CONFIG = "nmf_config"
 
 
 def config_record(loaded) -> dict | None:
