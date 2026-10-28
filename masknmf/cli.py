@@ -57,6 +57,7 @@ from masknmf.demixing.labels import SIDECAR_SUFFIX, read_labels
 from masknmf.io import (
     SUFFIXES_HDF5,
     SUFFIXES_TIFF,
+    config_record,
     group_name_compression,
     group_name_demixing,
     group_names_registration,
@@ -257,29 +258,6 @@ def spec_for(slug: str) -> scraper.PipelineSpec:
     if slug not in registry:
         fail(f"unknown pipeline {slug!r}; choose from {', '.join(sorted(registry))}")
     return scraper.scrape(cls_pipeline=registry[slug])
-
-
-KEYS_RECORD = ("masknmf_version", "pipeline", "run", "inputs", "timings")
-
-
-def config_record(loaded: Any) -> dict | None:
-    """
-    A config file's object with the argument values under "configs". Run folders from before they were nested
-    there hold them at the top level, beside "pipeline".
-
-    Args:
-        loaded (Any): The parsed json
-    Returns:
-        dict | None: The object, or None when it holds no argument values
-    """
-    if not isinstance(loaded, dict):
-        return None
-    if isinstance(loaded.get("configs"), dict):
-        return loaded
-    if "pipeline" not in loaded:
-        return None
-    return {**{k: loaded[k] for k in KEYS_RECORD if k in loaded},
-            "configs": {k: v for k, v in loaded.items() if k not in KEYS_RECORD}}
 
 
 def read_config_file(filepath: str) -> dict:

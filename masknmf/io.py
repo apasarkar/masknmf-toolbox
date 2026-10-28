@@ -106,6 +106,75 @@ def movie_beside(path: str | Path) -> Path | None:
     return tiffs[0] if len(tiffs) == 1 else None
 
 
+KEYS_RECORD = ("masknmf_version", "pipeline", "run", "inputs", "timings")
+
+ATTR_NMF_CONFIG = "nmf_config"
+
+
+def config_record(loaded) -> dict | None:
+    """
+    A config file's object with the argument values under "configs". Run folders from before they were nested
+    there hold them at the top level, beside "pipeline".
+
+    Parameters
+    ----------
+    loaded
+        The parsed json.
+
+    Returns
+    -------
+    dict | None
+        The object, or None when it holds no argument values.
+    """
+    if not isinstance(loaded, dict):
+        return None
+    if isinstance(loaded.get("configs"), dict):
+        return loaded
+    if "pipeline" not in loaded:
+        return None
+    return {**{k: loaded[k] for k in KEYS_RECORD if k in loaded},
+            "configs": {k: v for k, v in loaded.items() if k not in KEYS_RECORD}}
+
+
+def read_run_record(path: str | Path) -> dict | None:
+    """
+    The record of the run a results file belongs to: the config.json beside ``path`` (:func:`write_run_config`),
+    through :func:`config_record`; None when there is none or it holds no argument values.
+    """
+    filepath_config = Path(path).parent / "config.json"
+    if not filepath_config.is_file():
+        return None
+    return config_record(loaded=json.loads(filepath_config.read_text()))
+
+
+def last_nmf_config(record: dict) -> dict | None:
+    """
+    The NMFConfig, as config.json writes it, of the last demixing pass a run record holds: the pass that
+    produced its signals. None when the record holds no demixing pass.
+    """
+    last = None
+    for value in record.get("configs", {}).values():
+        if isinstance(value, dict) and value.get("kind") == "multipass":
+            value = value["DemixingConfigs"][-1] if value["DemixingConfigs"] else None
+        if isinstance(value, dict) and value.get("kind") == "singlepass":
+            last = value["NMFConfig"]
+    return last
+
+
+def read_nmf_config(path: str | Path) -> dict | None:
+    """
+    The NMFConfig, as config.json writes it, of the pass that produced a results file's signals: the one a
+    curated file records in its ``nmf_config`` attribute (:func:`masknmf.demixing.write_curated`), else the
+    last demixing pass of the run record beside ``path``. None when neither is found.
+    """
+    with h5py.File(path, "r") as file:
+        recorded = file.attrs.get(ATTR_NMF_CONFIG)
+    if recorded is not None:
+        return json.loads(recorded)
+    record = read_run_record(path)
+    return None if record is None else last_nmf_config(record=record)
+
+
 def find_raw_movie(path: str | Path) -> tuple[ArrayLike | None, Path] | None:
     """
     The raw movie of the run a results file belongs to, and where it is: the movie the config.json beside ``path``
@@ -113,8 +182,7 @@ def find_raw_movie(path: str | Path) -> tuple[ArrayLike | None, Path] | None:
     A run that read several movies (``results.calcium.hdf5``) uses the input named after the results file.
     The movie is None when the recorded file is not one :func:`load_movie` reads.
     """
-    filepath_config = Path(path).parent / "config.json"
-    inputs = json.loads(filepath_config.read_text()).get("inputs", {}) if filepath_config.is_file() else {}
+    inputs = (read_run_record(path) or {}).get("inputs", {})
     movies = {name: entry for name, entry in inputs.items()
               if isinstance(entry, dict) and "path" in entry and Path(entry["path"]).suffix.lower() != ".npy"}
     channel = results_stem(path).partition(".")[2]

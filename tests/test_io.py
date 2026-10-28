@@ -10,7 +10,17 @@ import tifffile
 import torch
 
 import masknmf
-from masknmf.io import OpenedResults, create_run_folder, drop_group, has_group, log_to, stage_groups, write_run_config
+from masknmf.io import (
+    OpenedResults,
+    create_run_folder,
+    drop_group,
+    has_group,
+    log_to,
+    read_nmf_config,
+    read_run_record,
+    stage_groups,
+    write_run_config,
+)
 
 
 @pytest.fixture(scope="module")
@@ -131,3 +141,27 @@ def test_the_run_record_and_log_land_in_the_run_folder(tmp_path):
     assert handler not in logging.getLogger("masknmf").handlers
     logging.getLogger("masknmf").removeHandler(later)
     later.close()
+
+
+def test_a_run_record_beside_results_gives_the_last_demixing_pass_nmf_config(tmp_path):
+    passes = [{"kind": "singlepass", "InitConfig": {"kind": "superpixel-init"},
+               "NMFConfig": {"kind": "n-m-f", "min_brightness": value}} for value in (1, 0.5)]
+    configs = {"frame_rate": 30.0, "filtered_demixing_config": "skip",
+               "unfiltered_demixing_config": {"kind": "multipass", "DemixingConfigs": passes}}
+    write_run_config(tmp_path, "TwoPhotonCalciumPipeline", configs, run={"status": "done"})
+    with h5py.File(tmp_path / "results.hdf5", "w") as file:
+        file.create_group(masknmf.DemixingResults.__name__)
+    record = read_run_record(tmp_path / "results.hdf5")
+    assert record["run"] == {"status": "done"}
+    assert record["configs"]["frame_rate"] == 30.0
+    assert read_nmf_config(tmp_path / "results.hdf5") == passes[-1]["NMFConfig"]
+
+
+def test_results_without_a_record_or_demixing_pass_have_no_nmf_config(tmp_path):
+    with h5py.File(tmp_path / "results.hdf5", "w") as file:
+        file.create_group(masknmf.DemixingResults.__name__)
+    assert read_run_record(tmp_path / "results.hdf5") is None
+    assert read_nmf_config(tmp_path / "results.hdf5") is None
+    (tmp_path / "config.json").write_text(json.dumps({"pipeline": "by-hand", "compress": {"kind": "compress"}}))
+    assert read_run_record(tmp_path / "results.hdf5")["configs"] == {"compress": {"kind": "compress"}}
+    assert read_nmf_config(tmp_path / "results.hdf5") is None

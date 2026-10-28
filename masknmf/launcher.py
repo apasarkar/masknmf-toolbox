@@ -780,7 +780,7 @@ class Launcher:
         if not filepath.is_file():
             return f"no config.json in {folder}"
         try:
-            loaded = cli.config_record(loaded=json.loads(filepath.read_text()))
+            loaded = masknmf.io.config_record(loaded=json.loads(filepath.read_text()))
         except (OSError, ValueError) as error:
             return f"could not read {filepath.name}: {error}"
         name_class = None if loaded is None else loaded.get("pipeline")
