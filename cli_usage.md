@@ -11,6 +11,8 @@
 | `masknmf run --pipeline P ...` | build P from flags and a `--config` file, and call `P.run(...)` |
 | `masknmf run --pipeline P --help` | argparse help showing only P's flags |
 | `masknmf view RESULTS.hdf5 ...` | open the viewer for the stages a results file holds |
+| `masknmf view SUITE2P_PLANE` | open the demixing viewer on a suite2p plane folder ([suite2p and caiman results](#suite2p-and-caiman-results)) |
+| `masknmf view CNMF.hdf5` | open the demixing viewer on a results file caiman's `CNMF.save` wrote |
 | `masknmf view RESULTS... --classify` | label ROIs across one or more results files or globs |
 | `masknmf train-classifier RESULTS... --out NAME` | train a ROI classifier on the saved labels |
 | `masknmf classify RESULTS... --classifier F` | classify the ROIs in results files with a trained classifier |
@@ -240,12 +242,15 @@ masknmf run --pipeline widefield-singlechannel wf.tif --motion-correct-kind skip
 - `RESULTS`: one or more `.h5`/`.hdf5` files or quoted globs; `**` recurses
 - globs skip `.zarr` stores, `.labels.hdf5` sidecars, and results files replaced by a newer curated file ([curated results files](#curated-results-files))
 - several files open one demixing viewer each, in its own process; `--raw` and `--compression` take one file
+- a suite2p plane folder, its `stat.npy`, or a file caiman saved, opens through its adapter ([suite2p and caiman results](#suite2p-and-caiman-results))
 
 A folder opens by the first match:
 
 | the folder holds | opens |
 |---|---|
 | a `*_roicat-tracking-manifest.json`, directly or in its `tracking` subfolder | the multisession viewer on the newest run ([multisession](#multisession)) |
+| `stat.npy`, `F.npy` and `Fneu.npy` | the suite2p plane, in the demixing viewer |
+| `plane0`, `plane1`, ... suite2p plane folders | one demixing viewer per plane |
 | `*results*.hdf5` files | as the glob `FOLDER/*results*.hdf5`: each results file's newest curated file, else the results file |
 
 ```bash
@@ -256,7 +261,27 @@ masknmf view results.hdf5 --raw movie.tif --fs 30  # + raw and registered panels
 masknmf view results.hdf5 --raw movie.tif --compression  # + lag-1 autocorrelation images of the registered, compressed and residual movies
 masknmf view results.hdf5 --raw raw.h5 --dataset /mov --device cpu
 masknmf view results.glutamate.hdf5 --prefix global  # the glutamate pipeline's whole-dendrite result
+masknmf view results.hdf5 suite2p/plane0           # the same plane by masknmf and by suite2p, side by side
 ```
+
+## suite2p and caiman results
+
+The demixing viewer opens suite2p's and caiman's results through adapters, so a masknmf run and a suite2p or caiman
+run of the same movie are compared in the same viewer, one window each.
+
+```bash
+masknmf view suite2p/plane5                       # a plane folder, or its stat.npy
+masknmf view suite2p                              # every plane in it, one viewer each
+masknmf view run_folder/results.hdf5 suite2p/plane5   # masknmf beside suite2p
+masknmf view suite2p/plane5 --raw movie.tif       # with the raw movie as a panel
+masknmf view cnmf.hdf5                            # a file caiman's CNMF.save wrote
+masknmf view cnmf.hdf5 --raw movie_d1_512_d2_512_d3_1_order_C_frames_3000.mmap   # with the movie caiman fit
+```
+
+- suite2p: the `data.bin` beside `stat.npy` gives the residual, read once when the viewer opens; the shifts and frame rate are ops'
+- caiman: the components in `estimates/idx_components`; `--raw` with a CNMF-E ring model gives the background and residual
+- Demix and curated files need a masknmf run; `--classify`, `--prefix`, `--compression` and `masknmf track` take masknmf results only
+- launcher: View results takes the same paths, and "compare with" opens a second one in a viewer of its own
 
 ## classification
 
