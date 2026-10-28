@@ -34,6 +34,7 @@ from masknmf.visualization.imgui import (
     help_buttons_width,
     draw_range_filter,
     draw_roi_table,
+    draw_min_brightness,
     draw_switch,
     em,
     popup,
@@ -78,7 +79,7 @@ _UNDO_DEPTH = 50  # ctrl+z snapshots kept
 _DEFAULT_ORDER = ("raw", "compressed+denoised", "signals", "background", "registered", "residual")
 _CAPTIONS = (
     "masks", "contours", "sel masks", "sel contours", "weighting", "color by", "traces",
-    "filter", "range", "applied", "run", "options",
+    "filter", "range", "applied", "run", "options", "brightness",
 )
 # signals selected together, in order of mutual contrast on the dark plot; no red, a mask marked for
 # deletion is red
@@ -111,7 +112,9 @@ class SingleSessionDemixingVis:
     own peak is left out, as the contours leave it out.
 
     With ``results_path`` set, "Demix" runs the drawn ROIs and the signals marked with "Delete" through the
-    demixer's NMF pass (``nmf_config``, the pipeline defaults when None) and writes the outcome to a new
+    demixer's NMF pass (``nmf_config``; when None, the pipeline defaults with "filter dim rois" starting at the
+    min brightness of the pass that produced the results, read from the config.json beside them or from a curated
+    file's own record) and writes the outcome to a new
     ``<stem>.<timestamp>.curated.hdf5`` beside the file (``results.hdf5 -> results.<timestamp>.curated.hdf5``),
     never over it: drawn ROIs become ordinary signals, marked signals are gone, the new file's description says
     what was done, and the viewer moves on to it so further passes chain.
@@ -208,6 +211,7 @@ class SingleSessionDemixingVis:
         panel_names: dict[str, str] | None = None,
     ):
         self._results_path = None if results_path is None else str(results_path)
+        self._nmf_config_given = nmf_config is not None
         if nmf_config is None:
             ## At a baseline, we don't want to modify user-input ROIs
             base = NMFConfig(maxiter=40,
@@ -353,6 +357,13 @@ class SingleSessionDemixingVis:
         self._opened = opened
         results = opened.results
         self._results_path = None if opened.path is None else str(opened.path)
+        if not self._nmf_config_given and self._results_path is not None:
+            recorded = masknmf.io.read_nmf_config(self._results_path)
+            if recorded is not None:
+                value = recorded.get("min_brightness")
+                self._min_brightness_cache = 0.0 if value is None else float(value)
+                if self._nmf_config.min_brightness is not None:
+                    self._nmf_config.min_brightness = self._min_brightness_cache
         self._demixing_results = results
         self._is_masknmf_result = isinstance(results, masknmf.DemixingResults)
         self._has_ac = hasattr(results, "signals_array")
@@ -2107,6 +2118,18 @@ class SingleSessionDemixingVis:
         help_mark(
             "delete signals that never get bright enough during the nmf pass. "
             "turn off if a hand-drawn roi keeps disappearing from add to results."
+        )
+        g.row("brightness")
+        imgui.begin_disabled(not filter_dim)
+        changed, value = draw_min_brightness("min_brightness", self._min_brightness_cache, g.w, g.w)
+        imgui.end_disabled()
+        if changed:
+            self._min_brightness_cache = value
+            self._nmf_config.min_brightness = value
+        help_mark(
+            "the brightness a signal must reach to survive the pass: its peak pixel weight times its peak trace "
+            "value, in units of the pixel noise, ramped up to this over the pass's iterations. "
+            "starts at the value of the pass that produced these results."
         )
 
         imgui.spacing()

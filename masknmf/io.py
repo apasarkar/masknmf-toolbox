@@ -166,8 +166,10 @@ def read_nmf_config(path: str | Path) -> dict | None:
     curated file records in its ``nmf_config`` attribute (:func:`masknmf.demixing.write_curated`), else the
     last demixing pass of the run record beside ``path``. None when neither is found.
     """
-    with h5py.File(path, "r") as file:
-        recorded = file.attrs.get(ATTR_NMF_CONFIG)
+    recorded = None
+    if h5py.is_hdf5(str(path)):
+        with h5py.File(path, "r") as file:
+            recorded = file.attrs.get(ATTR_NMF_CONFIG)
     if recorded is not None:
         return json.loads(recorded)
     record = read_run_record(path)
