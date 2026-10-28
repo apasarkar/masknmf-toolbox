@@ -437,35 +437,27 @@ def extract_multiunit_factorization(
 
 
 def _multiunit_factorization_routine(
-        spatial_compressed: torch.Tensor,
-        temporal_compressed: torch.Tensor,
-        a: torch.Tensor,
-        c: torch.Tensor,
-        b: torch.Tensor,
-        factorized_ring_term: tuple[torch.Tensor, torch.Tensor] | None = None,
-        background_rank: int = 200,
-        num_oversamples: int = 5,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        spatial_compressed, temporal_compressed, a, c, b,
+        factorized_ring_term=None, background_rank=200, num_oversamples=5,
+):
     """
-    Randomized SVD of the residual UV - AC - b1^T - UF1F2 (row-mean subtracted in the sketch).
-
-    Returns:
-        left (num_pixels, k), singular values (k,), right (k, num_frames), with k = background_rank
+    Randomized PCA of the residual R = UV - AC - b1^T - UF1F2.
+    Each pixel is centered over time before the SVD.
     """
     device = temporal_compressed.device
-    b = b.reshape(-1, 1)  # DemixingResults stores the baseline squeezed to 1D
+    b = b.reshape(-1, 1)
     num_frames = temporal_compressed.shape[1]
     random_data = torch.randn(num_frames, background_rank + num_oversamples,
                               device=device, dtype=temporal_compressed.dtype)
+    random_data -= random_data.mean(dim=0, keepdim=True)   # R @ centered(Omega) == centered(R) @ Omega
 
     resid_projection = (torch.sparse.mm(spatial_compressed, temporal_compressed @ random_data)
                         - torch.sparse.mm(a, c.T @ random_data)
-                        - b @ torch.sum(random_data, dim=0, keepdim=True))
+                        - b @ torch.sum(random_data, dim=0, keepdim=True))  # now exactly 0; can delete
     if factorized_ring_term is not None:
         f1, f2 = factorized_ring_term
         resid_projection -= torch.sparse.mm(spatial_compressed, f1 @ (f2 @ random_data))
 
-    resid_projection -= torch.mean(resid_projection, dim=1, keepdim=True)
     orth_qr, _ = torch.linalg.qr(resid_projection, mode="reduced")
 
     proj_u = torch.sparse.mm(spatial_compressed.t(), orth_qr)
@@ -473,11 +465,10 @@ def _multiunit_factorization_routine(
     if factorized_ring_term is not None:
         right_term -= (proj_u.T @ f1) @ f2
     right_term -= torch.sparse.mm(a.t(), orth_qr).T @ c.T
-    right_term -= orth_qr.T @ b
+    right_term -= right_term.mean(dim=1, keepdim=True)     # Q^T centered(R); b drops out here too
 
     left_svd, sing_svd, right_svd = torch.linalg.svd(right_term, full_matrices=False)
     left_term = orth_qr @ left_svd
     return left_term[:, :background_rank], sing_svd[:background_rank], right_svd[:background_rank, :]
-
 
 
