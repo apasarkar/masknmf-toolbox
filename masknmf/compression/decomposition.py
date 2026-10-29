@@ -1,12 +1,12 @@
 import torch
-
+import psutil
 import masknmf
 from masknmf.compression.compression_array import CompressionArray
 import logging
 import math
 import numpy as np
 from collections.abc import Callable
-from typing import Literal
+from typing import Literal, NamedTuple
 from masknmf.utils.display import progress
 
 from masknmf import display
@@ -1102,8 +1102,257 @@ def construct_weighting_scheme(dim1, dim2) -> torch.Tensor:
     return block_weights
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Memory planning for compression_routine
+#
+# compression_routine decomposes overlapping blocks. Rather than reading every block from `dataset` on its own, it
+# reads a "tile" covering a group of neighboring blocks once and slices the blocks out of it. Larger tiles mean fewer
+# redundant reads (and less redundant on-the-fly motion correction) but more memory. The planner picks how many blocks
+# each tile groups, and whether the tile is held in host RAM or on the compute device, from the memory budgets.
+# ---------------------------------------------------------------------------------------------------------------------
+
+_GIGABYTE = 2 ** 30  # "GB" in the memory budgets, matching how GPU memory is usually reported
+
+_BYTES_PER_VALUE = 4  # tiles and blocks are processed as float32
+
+# Host copies of a tile at its peak: the tile, plus the array `dataset[...]` returned before conversion. A
+# RegistrationArray also concatenates its per-batch outputs, so two full copies briefly coexist there too.
+_HOST_TILE_COPIES = 2.0
+
+# Memory one block decomposition needs, in multiples of the block's float32 size: the block, its mean-subtracted
+# copy, the weighted copy, the lag-1 product of the noise estimate, and slack for the detrender and the SVDs.
+# This is an estimate; refine it with torch.cuda.max_memory_allocated() around one block.
+_BLOCK_WORKSPACE_COPIES = 6.0
+
+# Fixed device headroom: cuBLAS / cuSOLVER workspaces, denoiser activations, allocator fragmentation.
+_DEVICE_HEADROOM_BYTES = 512 * 2 ** 20
+
+# With no budget given, the fraction of currently available memory compression allows itself.
+_AUTO_HOST_FRACTION = 0.5
+_AUTO_DEVICE_FRACTION = 0.8
+
+# A tile on the compute device skips the per-block host-to-device copies (which move ~4x the data, since blocks
+# overlap), but device memory usually makes it smaller than a host tile, so it needs more reads. Prefer the device
+# tile unless it reads more than this factor of the data the best host tile reads.
+_DEVICE_TILE_MAX_READ_RATIO = 1.25
 
 
+class TilePlan(NamedTuple):
+    """How compression_routine groups blocks into tiles. Produced by plan_tiles."""
+
+    data_batching: tuple[int, int]
+    """Most block positions a tile covers along (height, width)"""
+    tile_device: str
+    """Where tiles are held: "cpu", or the compute device (e.g. "cuda")"""
+    max_tile_shape: tuple[int, int]
+    """Largest tile, in pixels"""
+    max_tile_bytes: int
+    """Size of the largest tile across all frames, as float32"""
+    num_tiles: int
+    read_amplification: float
+    """Pixels read from `dataset` divided by the pixels in the field of view; 1.0 means every pixel is read once"""
+    host_budget_bytes: int
+    device_budget_bytes: int | None
+
+    def describe(self) -> str:
+        budgets = f"host budget {self.host_budget_bytes / _GIGABYTE:.2f} GB"
+        if self.device_budget_bytes is not None:
+            budgets += f", device budget {self.device_budget_bytes / _GIGABYTE:.2f} GB"
+        return (f"compression tiles: up to {self.data_batching[0]}x{self.data_batching[1]} blocks "
+                f"({self.max_tile_shape[0]}x{self.max_tile_shape[1]} px, {self.max_tile_bytes / _GIGABYTE:.2f} GB) "
+                f"held on {self.tile_device}; {self.num_tiles} tiles, each pixel read "
+                f"{self.read_amplification:.2f}x on average; {budgets}")
+
+
+def _tile_groups(positions: list[int], blocks_per_tile: int) -> list[list[int]]:
+    """
+    Split sorted block start positions along one axis into consecutive groups of at most blocks_per_tile, sized as
+    evenly as possible. compression_routine and plan_tiles both use this, so the plan describes the tiles exactly.
+    """
+    num_positions = len(positions)
+    num_groups = math.ceil(num_positions / blocks_per_tile)
+    bounds = [round(i * num_positions / num_groups) for i in range(num_groups + 1)]
+    return [positions[bounds[i]:bounds[i + 1]] for i in range(num_groups)]
+
+
+def _axis_groupings(positions: list[int], block_size: int) -> dict[int, tuple[int, int, int]]:
+    """
+    Every distinct way to group one axis, keyed by the most positions a group holds, as
+    (sum of the tiles' extents, largest extent, number of tiles), extents in pixels.
+    """
+    groupings = {}
+    for blocks_per_tile in range(1, len(positions) + 1):
+        groups = _tile_groups(positions, blocks_per_tile)
+        extents = [group[-1] - group[0] + block_size for group in groups]
+        largest_group = max(len(group) for group in groups)
+        groupings[largest_group] = (sum(extents), max(extents), len(groups))
+    return groupings
+
+
+def plan_tiles(
+        dim1_positions: list[int],
+        dim2_positions: list[int],
+        block_sizes: tuple[int, int],
+        num_frames: int,
+        compute_device: str,
+        host_budget_bytes: int,
+        device_budget_bytes: int | None,
+        data_batching: tuple[int, int] | None = None,
+        tile_device: Literal["cpu", "device"] | None = None,
+) -> TilePlan:
+    """
+    Choose how compression_routine groups blocks into tiles: the grouping that reads the least data from `dataset`
+    within the memory budgets, and whether tiles are held in host RAM or on the compute device.
+
+    Tiles group blocks along each axis independently, so the total read is (sum of tile heights) x (sum of tile
+    widths) x frames, and the largest tile is (largest height) x (largest width) x frames. The planner searches every
+    pair of axis groupings for the smallest total read whose largest tile fits.
+
+    Memory model, per tile placement:
+        - Host tile, device compute: _HOST_TILE_COPIES x tile <= host budget, and one block's workspace <= device budget
+        - Host tile, CPU compute: _HOST_TILE_COPIES x tile + one block's workspace <= host budget
+        - Device tile: tile + one block's workspace <= device budget, and _HOST_TILE_COPIES x tile <= host budget (the
+          array `dataset[...]` returns sits in host RAM before it is copied over)
+
+    Args:
+        dim1_positions (list[int]): Sorted start rows of the blocks
+        dim2_positions (list[int]): Sorted start columns of the blocks
+        block_sizes (tuple[int, int]): Block height and width in pixels
+        num_frames (int): Frames loaded per pixel (the frames used for the fit)
+        compute_device (str): The device the decompositions run on, e.g. "cpu" or "cuda"
+        host_budget_bytes (int): Host RAM compression may use for tiles and, when computing on CPU, block workspace
+        device_budget_bytes (int | None): Device memory compression may use. None when computing on CPU.
+        data_batching (tuple[int, int] | None): Fix the most block positions per tile instead of planning them
+        tile_device ("cpu" | "device" | None): Fix where tiles are held instead of choosing. "device" means the
+            compute device.
+
+    Returns:
+        TilePlan: The chosen grouping and placement, with its tile sizes and read cost
+    """
+    if tile_device not in (None, "cpu", "device"):
+        raise ValueError(f'tile_device must be "cpu", "device" or None, got {tile_device}')
+    on_device = not str(compute_device).startswith("cpu")
+    if tile_device == "device" and not on_device:
+        raise ValueError('tile_device="device" needs a compute device other than the CPU')
+    # Tiles can only be held on the device when its memory budget is known
+    device_tiles_allowed = on_device and device_budget_bytes is not None
+    if tile_device == "device" and not device_tiles_allowed:
+        raise ValueError('tile_device="device" needs a device memory budget (device_memory_gb) for this device')
+
+    column_bytes = num_frames * _BYTES_PER_VALUE  # one pixel across all frames
+    block_workspace = _BLOCK_WORKSPACE_COPIES * block_sizes[0] * block_sizes[1] * column_bytes
+    if on_device:
+        # Block decompositions run on the device, so host RAM holds only tiles
+        host_tile_limit = host_budget_bytes / _HOST_TILE_COPIES
+    else:
+        host_tile_limit = (host_budget_bytes - block_workspace) / _HOST_TILE_COPIES
+    device_tile_limit = None
+    if device_tiles_allowed:
+        block_workspace_device = block_workspace + _DEVICE_HEADROOM_BYTES
+        if device_budget_bytes < block_workspace_device:
+            logger.warning(f"The device memory budget ({device_budget_bytes / _GIGABYTE:.2f} GB) is below what one "
+                           f"block decomposition needs (~{block_workspace_device / _GIGABYTE:.2f} GB for "
+                           f"{num_frames} frames); compression may run out of device memory.")
+        device_tile_limit = min(device_budget_bytes - block_workspace_device, host_tile_limit)
+
+    axis1 = _axis_groupings(dim1_positions, block_sizes[0])
+    axis2 = _axis_groupings(dim2_positions, block_sizes[1])
+    fov_pixels = (max(dim1_positions) + block_sizes[0]) * (max(dim2_positions) + block_sizes[1])
+
+    def make_plan(per_tile: tuple[int, int], held_on: str) -> TilePlan:
+        sum1, max1, count1 = axis1[per_tile[0]]
+        sum2, max2, count2 = axis2[per_tile[1]]
+        return TilePlan(data_batching=per_tile,
+                        tile_device=compute_device if held_on == "device" else "cpu",
+                        max_tile_shape=(max1, max2),
+                        max_tile_bytes=int(max1 * max2 * column_bytes),
+                        num_tiles=count1 * count2,
+                        read_amplification=sum1 * sum2 / fov_pixels,
+                        host_budget_bytes=int(host_budget_bytes),
+                        device_budget_bytes=None if device_budget_bytes is None else int(device_budget_bytes))
+
+    def best_grouping(tile_limit: float) -> tuple[int, int] | None:
+        """The grouping with the smallest total read whose largest tile fits tile_limit; ties go to fewer tiles."""
+        best, best_key = None, None
+        for per_tile1, (sum1, max1, count1) in axis1.items():
+            for per_tile2, (sum2, max2, count2) in axis2.items():
+                if max1 * max2 * column_bytes > tile_limit:
+                    continue
+                key = (sum1 * sum2, count1 * count2)
+                if best_key is None or key < best_key:
+                    best, best_key = (per_tile1, per_tile2), key
+        return best
+
+    if data_batching is not None:
+        if min(data_batching) < 1:
+            raise ValueError(f"data_batching entries must be positive, got {data_batching}")
+        # Snap to the grouping the loop will actually use (groups never exceed the requested size)
+        per_tile = tuple(max(len(group) for group in _tile_groups(positions, int(count)))
+                         for positions, count in zip((dim1_positions, dim2_positions), data_batching))
+        tile_bytes = axis1[per_tile[0]][1] * axis2[per_tile[1]][1] * column_bytes
+        if tile_device is None:
+            fits_device = device_tiles_allowed and tile_bytes <= device_tile_limit
+            tile_device = "device" if fits_device else "cpu"
+        limit = device_tile_limit if tile_device == "device" else host_tile_limit
+        if tile_bytes > limit:
+            logger.warning(f"data_batching={data_batching} makes tiles of {tile_bytes / _GIGABYTE:.2f} GB, over the "
+                           f"{max(limit, 0) / _GIGABYTE:.2f} GB the memory budgets allow on {tile_device}")
+        return make_plan(per_tile, tile_device)
+
+    host_grouping = best_grouping(host_tile_limit) if tile_device in (None, "cpu") else None
+    device_grouping = (best_grouping(device_tile_limit)
+                       if device_tiles_allowed and tile_device in (None, "device") else None)
+
+    if host_grouping is None and device_grouping is None:
+        held_on = tile_device if tile_device is not None else "cpu"
+        logger.warning("The memory budgets cannot hold even one block per tile; reading each block separately, "
+                       "which may exceed the budgets.")
+        return make_plan((1, 1), held_on)
+    if device_grouping is None:
+        return make_plan(host_grouping, "cpu")
+    if host_grouping is None:
+        return make_plan(device_grouping, "device")
+
+    host_plan = make_plan(host_grouping, "cpu")
+    device_plan = make_plan(device_grouping, "device")
+    if device_plan.read_amplification <= _DEVICE_TILE_MAX_READ_RATIO * host_plan.read_amplification:
+        return device_plan
+    return host_plan
+
+
+def _available_host_bytes() -> int | None:
+    """Host RAM available to this process now, or None when it cannot be measured."""
+    return int(psutil.virtual_memory().available)
+
+
+def _resolve_memory_budgets(device: str,
+                            host_memory_gb: float | None,
+                            device_memory_gb: float | None) -> tuple[int, int | None]:
+    """
+    The host and device budgets in bytes. A budget left as None is a fraction of the memory available now. The
+    device budget is None when computing on a device whose memory cannot be measured (the CPU included).
+    """
+    if host_memory_gb is not None:
+        host_budget = int(host_memory_gb * _GIGABYTE)
+    else:
+        available = _available_host_bytes()
+        if available is None:
+            available = 16 * _GIGABYTE
+            logger.warning("Could not measure available host RAM; assuming 16 GB. Set host_memory_gb to override.")
+        host_budget = int(_AUTO_HOST_FRACTION * available)
+
+    torch_device = torch.device(device)
+    if torch_device.type != "cuda":
+        if torch_device.type != "cpu" and device_memory_gb is not None:
+            return host_budget, int(device_memory_gb * _GIGABYTE)
+        return host_budget, None
+
+    if device_memory_gb is not None:
+        return host_budget, int(device_memory_gb * _GIGABYTE)
+    free, _ = torch.cuda.mem_get_info(torch_device)
+    # Memory PyTorch's caching allocator holds but is not using is free to us, though the driver counts it as used
+    cached_unused = torch.cuda.memory_reserved(torch_device) - torch.cuda.memory_allocated(torch_device)
+    return host_budget, int(_AUTO_DEVICE_FRACTION * (free + cached_unused))
 
 
 def compression_routine(
@@ -1122,10 +1371,11 @@ def compression_routine(
         spatial_denoiser: torch.nn.Module | None = None,
         temporal_denoiser: torch.nn.Module | None = None,
         detrender: SplineDetrenderBase | None = None,
-        data_batching: tuple[int, int] = (10, 10),
+        data_batching: tuple[int, int] | None = None,
         device: Literal["auto", "cuda", "cpu"] = "auto",
         device_memory_gb: float | None = None,
         host_memory_gb: float | None = None,
+        tile_device: Literal["cpu", "device"] | None = None,
 ) -> CompressionArray:
     """
     General masknmf compression method
@@ -1150,13 +1400,19 @@ def compression_routine(
         spatial_denoiser (torch.nn.Module | None): A function that operates on (height, width, num_components)-shaped images, denoising each of the images.
         temporal_denoiser (torch.nn.Module | None): A function that operates on (num_components, num_frames)-shaped traces, denoising each of the traces.
         detrender (SplineDetrenderBase): Module for detrending data
-        data_batching (tuple[int, int]): We load enough data into CPU ram to process data_batching[0] * data_batching[1] chunks at a time
-            This parameter helps reduce the number of redundant i/o reads and overall dynamic motion correction compute time
+        data_batching (tuple[int, int] | None): Blocks are read from `dataset` in tiles of up to data_batching[0] x
+            data_batching[1] neighboring blocks, so overlapping blocks share one read (and one on-the-fly motion
+            correction). None (recommended) lets plan_tiles choose it from the memory budgets; set it to fix the
+            tiling, e.g. for benchmarking.
         device ("auto" | "cuda" | "cpu"): Which device the computations should be performed on.
-        device_memory_gb (float | None): How much memory, in gigabytes, the pipeline may use on the compute
-                device (the GPU when device is "cuda"). None detects the free device memory when the pipeline runs.
-        host_memory_gb (float | None): How much host RAM, in gigabytes, the pipeline may use for data it holds
-            in memory while processing. None detects the free host RAM when the pipeline runs.
+        device_memory_gb (float | None): How much memory, in gigabytes, compression may use on the compute
+            device (the GPU when device is "cuda"). None uses a fraction of the device memory free when it starts.
+        host_memory_gb (float | None): How much host RAM, in gigabytes, compression may use for the data it
+            holds while processing. None uses a fraction of the host RAM available when it starts. The compression
+            results themselves are kept in host RAM in addition to this.
+        tile_device ("cpu" | "device" | None): Where tiles are held. "device" keeps them on the compute device,
+            avoiding host-to-device copies per block; "cpu" keeps them in host RAM, allowing larger tiles. None
+            (recommended) lets plan_tiles choose.
 
     Returns:
         compression_array (masknmf.CompressionArray): A CompressionArray object capturing the compression results.
@@ -1261,12 +1517,6 @@ def compression_routine(
     ):
         dim_2_iters.append(fov_width - block_sizes[1])
 
-    approx_iters = math.ceil(len(dim_1_iters) / data_batching[0]), math.ceil(len(dim_2_iters) / data_batching[1])
-
-    dim1_batches = torch.round(torch.linspace(0, len(dim_1_iters), approx_iters[0] + 1))
-    dim2_batches = torch.round(torch.linspace(0, len(dim_2_iters), approx_iters[1] + 1))
-
-
     # Define the block weighting matrix
     block_weights = (
         construct_weighting_scheme(block_sizes[0], block_sizes[1]).to(device).to(dtype)
@@ -1312,109 +1562,131 @@ def compression_routine(
         effective_frame_indexer = slice(0, int(dataset.shape[0]))
     else:
         effective_frame_indexer = frames
+
+    # Plan the tiles last, so the device memory measured excludes what the denoisers and thresholds hold
+    host_budget_bytes, device_budget_bytes = _resolve_memory_budgets(device, host_memory_gb, device_memory_gb)
+    plan = plan_tiles(dim_1_iters,
+                      dim_2_iters,
+                      block_sizes,
+                      num_frames=len(frames),
+                      compute_device=device,
+                      host_budget_bytes=host_budget_bytes,
+                      device_budget_bytes=device_budget_bytes,
+                      data_batching=data_batching,
+                      tile_device=tile_device)
+    logger.info(plan.describe())
+    tiles = [(dim1_group, dim2_group)
+             for dim1_group in _tile_groups(dim_1_iters, plan.data_batching[0])
+             for dim2_group in _tile_groups(dim_2_iters, plan.data_batching[1])]
+
     logger.debug("Running Blockwise Decompositions")
-    for ind1, ind_into_total_dim1 in progress(enumerate(dim1_batches[:-1]), desc="decomposing blocks"):
-        for ind2, ind_into_total_dim2 in enumerate(dim2_batches[:-1]):
-            dim1_batch_start = dim_1_iters[int(dim1_batches[ind1]):int(dim1_batches[ind1+1])]
-            dim2_batch_start = dim_2_iters[int(dim2_batches[ind2]):int(dim2_batches[ind2 + 1])]
-            ## Now compute the slice into the dataset array required to load this batch
-            dataset_slice_lower_bound = (int(dim1_batch_start[0]), int(dim2_batch_start[0]))
-            dataset_slice_upper_bound = (int(dim1_batch_start[-1]) + block_sizes[0], int(dim2_batch_start[-1]) + block_sizes[1])
-            dim1_batch_slice = slice(dataset_slice_lower_bound[0], dataset_slice_upper_bound[0])
-            dim2_batch_slice = slice(dataset_slice_lower_bound[1], dataset_slice_upper_bound[1])
+    for dim1_batch_start, dim2_batch_start in progress(tiles, desc="decomposing blocks"):
+        ## Now compute the slice into the dataset array required to load this batch
+        dataset_slice_lower_bound = (int(dim1_batch_start[0]), int(dim2_batch_start[0]))
+        dataset_slice_upper_bound = (int(dim1_batch_start[-1]) + block_sizes[0], int(dim2_batch_start[-1]) + block_sizes[1])
+        dim1_batch_slice = slice(dataset_slice_lower_bound[0], dataset_slice_upper_bound[0])
+        dim2_batch_slice = slice(dataset_slice_lower_bound[1], dataset_slice_upper_bound[1])
 
-            curr_dataset = torch.as_tensor(dataset[effective_frame_indexer, dim1_batch_slice, dim2_batch_slice], device='cpu', dtype=dtype)
-            for k in dim1_batch_start:
-                for j in dim2_batch_start:
-                    slice_dim1 = slice(k, k + block_sizes[0])
-                    slice_dim2 = slice(j, j + block_sizes[1])
+        # Release the previous tile first: the right-hand side below runs before the assignment, so otherwise
+        # two tiles would coexist while the next one loads
+        curr_dataset = None
+        curr_dataset = torch.as_tensor(dataset[effective_frame_indexer, dim1_batch_slice, dim2_batch_slice],
+                                       device=plan.tile_device, dtype=dtype)
+        for k in dim1_batch_start:
+            for j in dim2_batch_start:
+                slice_dim1 = slice(k, k + block_sizes[0])
+                slice_dim2 = slice(j, j + block_sizes[1])
 
-                    offset_slice_dim1 = slice(k - dataset_slice_lower_bound[0], k - dataset_slice_lower_bound[0] + block_sizes[0])
-                    offset_slice_dim2 = slice(j - dataset_slice_lower_bound[1], j - dataset_slice_lower_bound[1] + block_sizes[1])
+                offset_slice_dim1 = slice(k - dataset_slice_lower_bound[0], k - dataset_slice_lower_bound[0] + block_sizes[0])
+                offset_slice_dim2 = slice(j - dataset_slice_lower_bound[1], j - dataset_slice_lower_bound[1] + block_sizes[1])
 
-                    current_data_for_fit = curr_dataset[:, offset_slice_dim1, offset_slice_dim2].to(device)
+                current_data_for_fit = curr_dataset[:, offset_slice_dim1, offset_slice_dim2].to(device)
 
-                    if detrender is not None:
-                        curr_shape = current_data_for_fit.shape
-                        current_data_for_fit, curr_spline_basis = detrender(
-                            current_data_for_fit.reshape(curr_shape[0], -1)
-                        )
-                        spatial_preprocess_basis[slice_dim1, slice_dim2, :] = (
-                            curr_spline_basis.T.reshape(curr_shape[1], curr_shape[2], -1)
-                        )
-                        current_data_for_fit = current_data_for_fit.reshape(*curr_shape)
-
-                    (
-                        unweighted_local_spatial_basis,
-                        local_temporal_basis,
-                        subset_mean,
-                        subset_noise_std
-                    ) = blockwise_decomposition_with_rank_selection(
-                        current_data_for_fit,
-                        pixel_weighting[slice_dim1, slice_dim2],
-                        frame_weighting,
-                        max_components,
-                        max_consecutive_failures,
-                        spatial_roughness_threshold,
-                        temporal_roughness_threshold,
-                        spatial_avg_factor,
-                        temporal_avg_factor,
-                        dtype,
-                        spatial_denoiser=spatial_denoiser,
-                        temporal_denoiser=temporal_denoiser,
-                        device=device,
-                        subset_noise_std=dataset_noise_std[slice_dim1, slice_dim2] if not compute_normalizer else None
+                if detrender is not None:
+                    curr_shape = current_data_for_fit.shape
+                    current_data_for_fit, curr_spline_basis = detrender(
+                        current_data_for_fit.reshape(curr_shape[0], -1)
                     )
-
-                    dataset_mean[slice_dim1, slice_dim2] = subset_mean
-                    dataset_noise_std[slice_dim1, slice_dim2] = subset_noise_std
-
-                    if local_temporal_basis.shape[0] == 0:
-                        continue
-
-                    total_temporal_fit.append(local_temporal_basis)
-
-                    # Weight the spatial components here
-
-                    local_spatial_basis = (
-                            unweighted_local_spatial_basis * block_weights[:, :, None]
+                    spatial_preprocess_basis[slice_dim1, slice_dim2, :] = (
+                        curr_spline_basis.T.reshape(curr_shape[1], curr_shape[2], -1)
                     )
-                    current_cumulative_weight = block_weights
-                    cumulative_weights[
-                    k: k + block_sizes[0], j: j + block_sizes[1]
-                    ] += current_cumulative_weight
+                    current_data_for_fit = current_data_for_fit.reshape(*curr_shape)
 
-                    curr_spatial_row_indices = sparse_indices[
-                                               k: k + block_sizes[0], j: j + block_sizes[1]
-                                               ][:, :, None]
-                    curr_spatial_row_indices = curr_spatial_row_indices + torch.zeros(
-                        (1, 1, local_spatial_basis.shape[2]), device=device, dtype=torch.long
-                    )
+                (
+                    unweighted_local_spatial_basis,
+                    local_temporal_basis,
+                    subset_mean,
+                    subset_noise_std
+                ) = blockwise_decomposition_with_rank_selection(
+                    current_data_for_fit,
+                    pixel_weighting[slice_dim1, slice_dim2],
+                    frame_weighting,
+                    max_components,
+                    max_consecutive_failures,
+                    spatial_roughness_threshold,
+                    temporal_roughness_threshold,
+                    spatial_avg_factor,
+                    temporal_avg_factor,
+                    dtype,
+                    spatial_denoiser=spatial_denoiser,
+                    temporal_denoiser=temporal_denoiser,
+                    device=device,
+                    subset_noise_std=dataset_noise_std[slice_dim1, slice_dim2] if not compute_normalizer else None
+                )
 
-                    curr_spatial_col_indices = torch.zeros_like(
-                        curr_spatial_row_indices, device=device
-                    )
-                    addend = torch.arange(
-                        column_number,
-                        column_number + local_spatial_basis.shape[2],
-                        device=device,
-                        dtype=torch.long,
-                    )[None, None, :]
-                    curr_spatial_col_indices = curr_spatial_col_indices + addend
+                dataset_mean[slice_dim1, slice_dim2] = subset_mean
+                dataset_noise_std[slice_dim1, slice_dim2] = subset_noise_std
 
-                    sparse_row_indices_f = curr_spatial_row_indices.flatten()
-                    sparse_col_indices_f = curr_spatial_col_indices.flatten()
-                    spatial_values_f = local_spatial_basis.flatten()
+                if local_temporal_basis.shape[0] == 0:
+                    continue
 
-                    final_row_indices.append(sparse_row_indices_f)
-                    final_column_indices.append(sparse_col_indices_f)
-                    spatial_overall_values.append(spatial_values_f)
-                    spatial_overall_unweighted_values.append(
-                        unweighted_local_spatial_basis.flatten()
-                    )
-                    column_number += local_spatial_basis.shape[2]
+                # Results move to host RAM as they are produced; kept on the device they would grow through the
+                # whole run outside any memory budget (they are moved to the CPU at the end regardless)
+                total_temporal_fit.append(local_temporal_basis.cpu())
 
-    # Construct the spatial_compressed matrix up to this point
+                # Weight the spatial components here
+
+                local_spatial_basis = (
+                        unweighted_local_spatial_basis * block_weights[:, :, None]
+                )
+                current_cumulative_weight = block_weights
+                cumulative_weights[
+                k: k + block_sizes[0], j: j + block_sizes[1]
+                ] += current_cumulative_weight
+
+                curr_spatial_row_indices = sparse_indices[
+                                           k: k + block_sizes[0], j: j + block_sizes[1]
+                                           ][:, :, None]
+                curr_spatial_row_indices = curr_spatial_row_indices + torch.zeros(
+                    (1, 1, local_spatial_basis.shape[2]), device=device, dtype=torch.long
+                )
+
+                curr_spatial_col_indices = torch.zeros_like(
+                    curr_spatial_row_indices, device=device
+                )
+                addend = torch.arange(
+                    column_number,
+                    column_number + local_spatial_basis.shape[2],
+                    device=device,
+                    dtype=torch.long,
+                )[None, None, :]
+                curr_spatial_col_indices = curr_spatial_col_indices + addend
+
+                sparse_row_indices_f = curr_spatial_row_indices.flatten()
+                sparse_col_indices_f = curr_spatial_col_indices.flatten()
+                spatial_values_f = local_spatial_basis.flatten()
+
+                final_row_indices.append(sparse_row_indices_f.cpu())
+                final_column_indices.append(sparse_col_indices_f.cpu())
+                spatial_overall_values.append(spatial_values_f.cpu())
+                spatial_overall_unweighted_values.append(
+                    unweighted_local_spatial_basis.flatten().cpu()
+                )
+                column_number += local_spatial_basis.shape[2]
+
+    curr_dataset = None  # release the last tile before assembling the results
+
+    # Construct the spatial_compressed matrix up to this point (the per-block results are in host RAM)
     final_row_indices = torch.concatenate(final_row_indices, dim=0)
     final_column_indices = torch.concatenate(final_column_indices, dim=0)
     spatial_overall_values = torch.concatenate(spatial_overall_values, dim=0)
@@ -1436,7 +1708,7 @@ def compression_routine(
         v_aggregated = torch.concatenate(total_temporal_fit, dim=0)
 
     interpolation_weightings = torch.reciprocal(
-        cumulative_weights.flatten()[final_row_indices]
+        cumulative_weights.flatten().cpu()[final_row_indices]
     )
     spatial_overall_values *= interpolation_weightings
 

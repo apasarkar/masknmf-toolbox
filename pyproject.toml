@@ -34,6 +34,7 @@ dependencies = [
     "imgui_data_loader>=0.2.0",
     "simplejpeg",
     "glfw",
+    "psutil",
     "oasis-deconv", ## Latest version that allows clean axonal and somatic tracking
     "roicat[latest] >= 1.7.10",
     "scipy-stubs~=1.15.3",
