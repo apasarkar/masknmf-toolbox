@@ -299,7 +299,7 @@ def test_a_curated_file_records_the_nmf_config_its_pass_ran_with(tmp_path):
     assert masknmf.io.read_nmf_config(tmp_path / "results.hdf5") is None
 
 
-def test_an_init_argument_that_is_also_a_settable_property_gets_one_flag():
+def test_an_init_argument_that_is_also_a_settable_property_gets_one_flag(capsys):
     from masknmf import cli
     from masknmf.pipelines.twophoton_calcium import TwoPhotonCalciumPipeline
 
@@ -316,8 +316,22 @@ def test_an_init_argument_that_is_also_a_settable_property_gets_one_flag():
         def memory_gb(self, value: float | None):
             self._memory_gb = value
 
+        @property
+        def memory_note(self) -> str:
+            """A note on the memory, with no setter docstring."""
+            return self._memory_note
+
+        @memory_note.setter
+        def memory_note(self, value: str):
+            self._memory_note = value
+
+    MemoryPipeline._memory_note = ""
     spec = scraper.scrape(cls_pipeline=MemoryPipeline)
     assert [p.field for p in spec.scalars if p.field == "memory_gb"] == ["memory_gb"]
-    assert "memory_gb" not in [p.field for p in spec.properties]
-    args = cli.build_parser(spec=spec).parse_args(["run", "--pipeline", "two-photon-calcium", "movie.tif", "--memory-gb", "4"])
-    assert args.memory_gb == "4"
+    assert [p.field for p in spec.properties if p.field.startswith("memory")] == ["memory_note"]
+    parser = cli.build_parser(spec=spec)
+    args = parser.parse_args(["run", "--pipeline", "two-photon-calcium", "movie.tif", "--memory-gb", "4", "--memory-note", "x"])
+    assert args.memory_gb == "4" and args.memory_note == "x"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["run", "--pipeline", "two-photon-calcium", "--help"])
+    assert "A note on the memory" in capsys.readouterr().out

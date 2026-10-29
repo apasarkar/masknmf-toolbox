@@ -374,12 +374,14 @@ def add_pipeline_options(parser: argparse.ArgumentParser, spec: scraper.Pipeline
         )
 
     for param in spec.properties:
+        prop = getattr(spec.cls, param.field)
+        # the setter's docstring says what setting it does; it is applied over the configs given
+        doc = prop.fset.__doc__ or prop.__doc__ or ""
         parser.add_argument(
             param.flag,
             default=None,
             metavar="VALUE",
-            # the setter's docstring says what setting it does; it is applied over the configs given
-            help=f"{' '.join(getattr(spec.cls, param.field).fset.__doc__.split())} {param.description}",
+            help=f"{' '.join(doc.split())} {param.description}".strip(),
         )
 
     for section in spec.sections:
