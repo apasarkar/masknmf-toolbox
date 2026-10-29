@@ -1112,7 +1112,6 @@ def compression_routine(
         frame_range: int | None = None,
         max_components: int = 20,
         sim_conf: int = 5,
-        frame_batch_size: int = 10000,
         max_consecutive_failures=1,
         spatial_avg_factor: int = 1,
         temporal_avg_factor: int = 1,
@@ -1136,7 +1135,6 @@ def compression_routine(
         frame_range (int): Number of frames of raw data used to fit the spatial basis.
         max_components (int): Max number of components we use to decompose any individual spatial block of the raw data.
         sim_conf (int): The percentile value used to define spatial and temporal roughness thresholds for rejecting/keeping SVD components
-        frame_batch_size (int): The maximum number of frames we load onto the computational device (CPU or GPU) at any point in time.
         max_consecutive_failures (int): In each blockwise decomposition, we stop accepting SVD components after we see this many "bad" components.
         spatial_avg_factor (int): In the blockwise decompositions, we can spatially downsample the data to estimate a cleaner temporal basis. We can use this to iteratively estimate a better
             full-resolution basis for the data. If signal sits on only a few pixels, keep this parameter at 1 (spatially downsampling is undesirable in this case).
@@ -1219,9 +1217,6 @@ def compression_routine(
         )
         display(string_to_disp)
         max_components = int(len(frames) // temporal_avg_factor)
-
-    if frame_batch_size >= num_frames:
-        dataset = torch.as_tensor(dataset[:], device=device, dtype=dtype)
 
     if pixel_weighting is None:
         pixel_weighting = torch.ones((fov_height, fov_width), device=device, dtype=dtype)

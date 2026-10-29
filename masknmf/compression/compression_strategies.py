@@ -15,7 +15,6 @@ class CompressStrategy:
                  frame_range: int | None  = None,
                  max_components: int = 20,
                  sim_conf: int = 5,
-                 frame_batch_size: int = 10000,
                  max_consecutive_failures: int=1,
                  spatial_avg_factor:int=1,
                  temporal_avg_factor:int=1,
@@ -30,7 +29,6 @@ class CompressStrategy:
         self._block_sizes = block_sizes
         self._frame_range = frame_range
         self._max_components = max_components
-        self._frame_batch_size = frame_batch_size
         self._spatial_avg_factor = spatial_avg_factor
         self._temporal_avg_factor = temporal_avg_factor
         self._detrender = detrender
@@ -86,14 +84,6 @@ class CompressStrategy:
         self._max_components = num_comps
 
     @property
-    def frame_batch_size(self) -> int:
-        return self._frame_batch_size
-
-    @frame_batch_size.setter
-    def frame_batch_size(self, new_batch_size:int):
-        self._frame_batch_size = new_batch_size
-
-    @property
     def spatial_avg_factor(self) -> int:
         return self._spatial_avg_factor
 
@@ -135,7 +125,6 @@ class CompressStrategy:
                                             frame_range=self.frame_range,
                                             max_components=self.max_components,
                                             sim_conf=self._sim_conf,
-                                            frame_batch_size=self.frame_batch_size,
                                             max_consecutive_failures=self._max_consecutive_failures,
                                             spatial_avg_factor=self.spatial_avg_factor,
                                             temporal_avg_factor=self.temporal_avg_factor,
@@ -156,7 +145,6 @@ class CompressDenoiseStrategy(CompressStrategy):
                  frame_range: int | None  = None,
                  max_components: int = 20,
                  sim_conf: int = 5,
-                 frame_batch_size: int = 10000,
                  max_consecutive_failures: int=1,
                  spatial_avg_factor:int=1,
                  temporal_avg_factor:int=1,
@@ -173,7 +161,6 @@ class CompressDenoiseStrategy(CompressStrategy):
                          frame_range,
                          max_components,
                          sim_conf,
-                         frame_batch_size,
                          max_consecutive_failures,
                          spatial_avg_factor,
                          temporal_avg_factor,
@@ -208,7 +195,6 @@ class CompressDenoiseStrategy(CompressStrategy):
                                               frame_range=self.frame_range,
                                               max_components=self.max_components,
                                               sim_conf=self._sim_conf,
-                                              frame_batch_size=self.frame_batch_size,
                                               max_consecutive_failures=self._max_consecutive_failures,
                                               spatial_avg_factor=self.spatial_avg_factor,
                                               temporal_avg_factor=self.temporal_avg_factor,
@@ -233,7 +219,6 @@ class CompressDenoiseStrategy(CompressStrategy):
                                                                 frame_range=self.frame_range,
                                                                 max_components=self.max_components,
                                                                 sim_conf=self._sim_conf,
-                                                                frame_batch_size=self.frame_batch_size,
                                                                 max_consecutive_failures=self._max_consecutive_failures,
                                                                 spatial_avg_factor=self.spatial_avg_factor,
                                                                 temporal_avg_factor=self.temporal_avg_factor,
