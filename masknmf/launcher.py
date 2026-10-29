@@ -29,7 +29,7 @@ from wgpu.utils.imgui import ImguiRenderer
 
 import masknmf
 from masknmf import cli
-from masknmf.demixing._adapters import adapter_for
+from masknmf.demixing._adapters import ADAPTERS, adapter_for, adapter_patterns, adapter_sources
 from masknmf.demixing.curation import latest_results
 from masknmf.io import group_name_compression, group_name_demixing, group_names_registration, stage_groups
 from masknmf.pipelines import scraper
@@ -52,7 +52,7 @@ FILETYPES_MOVIE = [
 ]
 FILETYPES_ARRAY = [idl.FileType("NumPy", "*.npy")]
 FILETYPES_RESULTS = [
-    idl.FileType("Results", "*.h5 *.hdf5 stat.npy"),
+    idl.FileType("Results", " ".join(["*.h5", "*.hdf5", *adapter_patterns()])),
     idl.FileType("All Files", "*"),
 ]
 FILETYPES_CLASSIFIER = [
@@ -983,6 +983,9 @@ class Launcher:
             if self.viewer_current() == "":
                 return ["nothing here a viewer opens; a registration alone needs the raw movie, and opens on its own"]
             raw = self.paths_open["raw"].strip()
+            adapter = next((cls for cls in ADAPTERS if cls.pipeline == self.found["kind"]), None)
+            if adapter is not None and adapter.raw_source and raw == "":
+                return [f"{adapter.pipeline} results need the raw movie: {adapter.raw_source}"]
             return [f"not found: {raw}"] if raw != "" and not Path(raw).expanduser().exists() else []
         if self.page != "run":
             return []
@@ -1588,11 +1591,11 @@ class Launcher:
         """A path, what it holds, and the viewer that opens it."""
         em = imgui.get_font_size()
         self.step(1, "Source", "A results .hdf5, a run folder or a tracking run; a curated file opens in place of its original. "
-                               "Or a suite2p plane, its stat.npy, or a caiman file")
+                               f"Or {adapter_sources()}")
         if self.begin_form(name="open"):
             self.row(caption="path")
             self.draw_path(target=self.paths_open, key="source", filetypes=FILETYPES_RESULTS, folders=True,
-                           hint="results.hdf5, a run folder, a tracking run, a suite2p plane or a caiman file")
+                           hint="results.hdf5, a run/tracking folder, or path to another supported pipeline files")
             self.row(caption="raw movie")
             self.draw_path(target=self.paths_open, key="raw", filetypes=FILETYPES_MOVIE, folders=True,
                            hint="optional: the movie the run registered, for the registration and compression views")

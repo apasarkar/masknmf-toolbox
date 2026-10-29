@@ -51,7 +51,7 @@ import numpy as np
 
 import masknmf
 from masknmf.classification import RoicatClassifier
-from masknmf.demixing._adapters import adapter_for
+from masknmf.demixing._adapters import adapter_for, adapter_raw_sources, adapter_sources
 from masknmf.demixing.curation import latest_results
 from masknmf.demixing.labels import SIDECAR_SUFFIX, read_labels
 from masknmf.io import (
@@ -1001,9 +1001,9 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
         "results", nargs="+", help="results .hdf5 files or globs, e.g. \"sessions/*/results.hdf5\"; several open one viewer each, or one classification viewer with --classify. "
         "Or a tracking folder (its newest run) or one run's *-manifest.json; a tracking folder without a manifest is followed by its results files in session order. "
         "Any other folder means the *results*.hdf5 files in it, each replaced by its newest curated file. "
-        "A suite2p plane folder, or a file caiman saved, opens through its adapter",
+        f"Other pipelines' results open through their adapters: {adapter_sources()}",
     )
-    parser_view.add_argument("--raw", default=None, help="the raw movie the results came from")
+    parser_view.add_argument("--raw", default=None, help=f"the raw movie the results came from; {adapter_raw_sources()}")
     parser_view.add_argument("--dataset", default=None)
     parser_view.add_argument("--fs", default=None, type=float, help="acquisition rate in Hz")
     parser_view.add_argument(
