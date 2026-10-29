@@ -420,7 +420,7 @@ class BasePipeline(ABC):
                 if moco_strategy.template is None:
                     moco_strategy.compute_template(reference_data)
                 moco_data = moco_strategy.motion_correct(reference_data, target_movie=data)
-                moco_data.output_device = moco_data.compute_device
+                moco_data.output_device = torch.device('cpu')
                 moco_data.export(results_path)
 
         if isinstance(moco_data, BaseRegistrationArray):
