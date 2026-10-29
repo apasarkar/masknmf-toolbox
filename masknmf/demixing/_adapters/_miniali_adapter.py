@@ -11,6 +11,7 @@ For negatively tuned indicators we invert this appropriately
 Conventions on the masknmf side: frames come first, a pixel (row, col) is index row * width + col (C order, as in
 SignalsArray), and every index is 0-based. MATLAB's 1-based, column-major indices are converted on load.
 """
+import math
 import os
 import warnings
 from pathlib import Path
@@ -32,6 +33,7 @@ from masknmf.demixing.demixing_arrays import SignalsArray
 from masknmf.demixing.demixing_utils import scipy_sparse_to_torch
 from masknmf.utils import SparseCOOTensor, torch_select_device
 RESULT_FILE_NAME = "ALI_Result_new.mat"
+METADATA_FILE_NAME = "output_data.mat"
 
 # ---- reading MATLAB -v7.3 files ----------------------------------------------------------------------------------
 def _matlab_array(dataset: h5py.Dataset) -> np.ndarray:
@@ -55,6 +57,44 @@ def _matlab_cell(file: h5py.File, dataset: h5py.Dataset) -> list:
 
 def _optional(file: h5py.File, name: str) -> np.ndarray | None:
     return _matlab_array(file[name]) if name in file else None
+
+
+def _matlab_chars(dataset: h5py.Dataset) -> str:
+    """Decodes a MATLAB char array; -v7.3 saves it as uint16 codes."""
+    return "".join(chr(int(code)) for code in np.asarray(dataset[()]).ravel())
+
+
+def recording_shape(filepath_metadata: str | os.PathLike) -> tuple[int, int, int]:
+    """
+    Reads (frames, height, width) of a recording's movie from output_data.mat: the Device_Data entry with
+    deviceType Camera gives frames_requested, ROI(4) and ROI(2).
+    """
+    with h5py.File(filepath_metadata, "r") as f:
+        if "Device_Data" not in f:
+            raise ValueError(f"{filepath_metadata} holds no Device_Data")
+        for ref in np.asarray(f["Device_Data"][()]).ravel():
+            entry = f[ref]
+            if "deviceType" in entry and _matlab_chars(entry["deviceType"]) == "Camera":
+                roi = np.asarray(entry["ROI"][()]).ravel()
+                frames = int(np.asarray(entry["frames_requested"][()]).ravel()[0])
+                return frames, int(roi[3]), int(roi[1])
+    raise ValueError(f"{filepath_metadata} has no Device_Data entry with deviceType Camera")
+
+
+def load_miniali_movie(folder: str | os.PathLike) -> np.memmap:
+    """
+    Memmaps the one headerless .bin file in a miniALI recording folder, shaped by output_data.mat; uint8 or uint16
+    by the file's size.
+    """
+    folder = Path(folder)
+    bins = sorted(folder.glob("*.bin"))
+    if len(bins) != 1:
+        raise ValueError(f"{folder} holds {len(bins)} .bin files; a miniALI recording folder holds one")
+    shape = recording_shape(folder / METADATA_FILE_NAME)
+    itemsize = bins[0].stat().st_size / math.prod(shape)
+    if itemsize not in (1, 2):
+        raise ValueError(f"{bins[0]} has {bins[0].stat().st_size} bytes for a {shape} movie; neither 8 nor 16 bit")
+    return np.memmap(bins[0], dtype=np.uint8 if itemsize == 1 else np.uint16, mode="r", shape=shape)
 
 
 def _footprint_pixels(idx: np.ndarray,
@@ -136,6 +176,55 @@ class MiniALIResidualArray(ArrayLike):
 
 
 class MiniALIResults(BaseResults):
+
+    pipeline = "miniali"
+    source = "miniALI's ALI_Result_new.mat"
+    raw_source = "its recording folder (the .bin movie and output_data.mat)"
+    patterns = ("*.mat",)
+    DATASETS = ("footprint", "cell_traces", "reference_image", "dfdx", "dfdy", "shift")
+
+    @classmethod
+    def expand(cls, path: Path) -> list[Path]:
+        """Accepts ALI_Result_new.mat or the folder holding it."""
+        path = Path(path).expanduser()
+        if path.is_dir():
+            path = path / RESULT_FILE_NAME
+        if not path.is_file() or path.suffix.lower() != ".mat" or not h5py.is_hdf5(str(path)):
+            return []
+        with h5py.File(path, "r") as f:
+            return [path] if all(name in f for name in cls.DATASETS) else []
+
+    @classmethod
+    def matches(cls, path: Path) -> bool:
+        return len(cls.expand(path)) > 0
+
+    @classmethod
+    def describe(cls, path: Path) -> str:
+        with h5py.File(cls.expand(path)[0], "r") as f:
+            frames, cells = f["cell_traces"].shape  # MATLAB cells x frames, axes reversed on disk
+            background = "Background saved" if "Background" in f else "no Background, recomputed"
+        return f"miniali: {cells} cells, {frames} frames, {background}"
+
+    @classmethod
+    def from_path(cls, path: Path, raw: ArrayLike | str | Path | None = None, device: str = "cpu") -> tuple["MiniALIResults", ArrayLike | None, list[str]]:
+        """
+        raw is the movie miniALI read: its recording folder (the .bin and output_data.mat), a movie file, or an
+        array. The frames past the shifts' count are the ones miniALI dropped; the indicator is taken as negative.
+        """
+        from masknmf.io import load_movie
+
+        path = cls.expand(path)[0]
+        if raw is None:
+            raise ValueError(f"{path} holds miniALI results, which need the raw movie: the recording folder or the movie file")
+        if isinstance(raw, (str, Path)):
+            raw = load_movie(raw)
+        with h5py.File(path, "r") as f:
+            frames_analyzed = f["shift"].shape[0]
+        if raw.shape[0] < frames_analyzed:
+            raise ValueError(f"the raw movie has {raw.shape[0]} frames, the results {frames_analyzed}")
+        good_frames = np.arange(raw.shape[0]) < frames_analyzed
+        results = cls(path, indicator_polarity="negative", good_frame_indicator=good_frames, raw_video=raw, device=device)
+        return results, results.raw_array, []
 
     def __init__(self,
                  path: str | os.PathLike,
@@ -275,7 +364,6 @@ class MiniALIResults(BaseResults):
         self._residual_array = residual
 
 
-        self._device = torch.device(device)
         self.to(self._device)
 
     def to(self, new_device: str | torch.device):

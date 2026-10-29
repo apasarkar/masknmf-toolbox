@@ -68,7 +68,8 @@ def load_movie(path: str | Path, dataset: str | None = None) -> ArrayLike:
     Parameters
     ----------
     path : str | Path
-        A .tif/.tiff file, a folder of them (read in name order as one movie), or a .h5/.hdf5 file.
+        A .tif/.tiff file, a folder of them (read in name order as one movie), a .h5/.hdf5 file, or a miniALI
+        recording folder (its .bin movie and output_data.mat).
     dataset : str | None
         The dataset holding the movie in an hdf5 file.
 
@@ -87,6 +88,10 @@ def load_movie(path: str | Path, dataset: str | None = None) -> ArrayLike:
     if not path.exists():
         raise FileNotFoundError(f"no such file or directory: {path}")
     if path.is_dir():
+        if (path / "output_data.mat").is_file():
+            from masknmf.demixing._adapters._miniali_adapter import load_miniali_movie
+
+            return load_miniali_movie(path)
         tiffs = sorted(str(p) for p in path.iterdir() if p.suffix.lower() in SUFFIXES_TIFF)
         if not tiffs:
             raise ValueError(f"no tiff files in {path}")

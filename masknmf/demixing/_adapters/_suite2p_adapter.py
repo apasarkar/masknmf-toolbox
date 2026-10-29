@@ -253,6 +253,8 @@ def suite2p_spatial_matrices(stat, Ly: int, Lx: int, allow_overlap: bool = False
 class Suite2pResults(BaseResults):
 
     pipeline = "suite2p"
+    source = "a suite2p plane folder or its stat.npy"
+    patterns = ("stat.npy",)
     FILES = ("stat.npy", "F.npy", "Fneu.npy")
 
     @classmethod

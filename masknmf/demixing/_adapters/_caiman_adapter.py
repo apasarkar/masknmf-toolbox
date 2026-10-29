@@ -252,6 +252,7 @@ class CaimanResults(BaseResults):
     """
 
     pipeline = "caiman"
+    source = "caiman CNMF.save output"
 
     @classmethod
     def matches(cls, path: Path) -> bool:

@@ -1,4 +1,4 @@
-"""suite2p plane folders and caiman files open like results files, through their adapters."""
+"""suite2p plane folders, caiman files and miniALI .mat files open like results files, through their adapters."""
 
 import h5py
 import numpy as np
@@ -7,9 +7,9 @@ import scipy.sparse as sp
 
 import masknmf
 from masknmf import cli
-from masknmf.demixing._adapters import CaimanResults, Suite2pResults, adapter_for, suite2p_frame_rate
+from masknmf.demixing._adapters import CaimanResults, MiniALIResults, Suite2pResults, adapter_for, suite2p_frame_rate
 from masknmf.demixing._base_results import BaseResults
-from masknmf.io import OpenedResults
+from masknmf.io import OpenedResults, load_movie
 
 FRAMES, HEIGHT, WIDTH = 40, 16, 20
 
@@ -57,6 +57,45 @@ def write_caiman_file(path, with_ring_model: bool = False) -> None:
             est["b0"] = np.zeros(pixels, np.float32)
 
 
+def write_miniali_file(path, num_cells: int = 2) -> None:
+    """Writes ALI_Result_new.mat as mini_ali_run saves it with -v7.3: arrays transposed, footprint a cell of {idx, values} cells."""
+    rng = np.random.default_rng(2)
+    with h5py.File(path, "w") as f:
+        refs = f.create_group("#refs#")
+        f["reference_image"] = (rng.random((HEIGHT, WIDTH)) * 100).T
+        f["dfdx"] = rng.standard_normal((HEIGHT, WIDTH)).T
+        f["dfdy"] = rng.standard_normal((HEIGHT, WIDTH)).T
+        f["shift"] = (rng.standard_normal((2, FRAMES)) * 0.1).T
+        f["cell_traces"] = rng.standard_normal((num_cells, FRAMES)).T
+        cells = []
+        for k, (r0, c0) in enumerate(((4, 5), (10, 13))[:num_cells]):
+            rows, cols = np.meshgrid(np.arange(r0 - 2, r0 + 3), np.arange(c0 - 2, c0 + 3), indexing="ij")
+            idx = (cols * HEIGHT + rows).ravel(order="F") + 1  # 1-based, column-major
+            d_idx = refs.create_dataset(f"idx{k}", data=idx.astype(np.float64)[:, None])
+            d_val = refs.create_dataset(f"val{k}", data=rng.random(idx.size)[None, :])
+            pair = refs.create_dataset(f"pair{k}", data=np.array([d_idx.ref, d_val.ref], dtype=h5py.ref_dtype)[:, None])
+            cells.append(pair.ref)
+        f.create_dataset("footprint", data=np.array(cells, dtype=h5py.ref_dtype)[None, :])
+
+
+def write_miniali_recording(folder, frames: int = FRAMES + 4) -> None:
+    """Writes a recording folder as the microscope does: frames1.bin, uint8 and headerless, and output_data.mat."""
+    folder.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(3)
+    (rng.random((frames, HEIGHT, WIDTH)) * 255).astype(np.uint8).tofile(folder / "frames1.bin")
+    with h5py.File(folder / "output_data.mat", "w") as f:
+        refs = f.create_group("#refs#")
+        entries = []
+        for name, kind in (("daq", "DAQ"), ("cam", "Camera")):
+            entry = refs.create_group(name)
+            entry["deviceType"] = np.array([ord(c) for c in kind], np.uint16)[:, None]
+            if kind == "Camera":
+                entry["ROI"] = np.array([1.0, WIDTH, 1.0, HEIGHT])[:, None]
+                entry["frames_requested"] = np.array([[float(frames)]])
+            entries.append(entry.ref)
+        f.create_dataset("Device_Data", data=np.array(entries, dtype=h5py.ref_dtype)[:, None])
+
+
 @pytest.fixture
 def plane(tmp_path):
     folder = tmp_path / "suite2p" / "plane0"
@@ -69,6 +108,15 @@ def caiman_path(tmp_path):
     path = tmp_path / "cnmf.hdf5"
     write_caiman_file(path)
     return path
+
+
+@pytest.fixture
+def miniali(tmp_path):
+    folder = tmp_path / "miniALI_matlab"
+    folder.mkdir()
+    write_miniali_file(folder / "ALI_Result_new.mat")
+    write_miniali_recording(tmp_path / "recording")
+    return folder / "ALI_Result_new.mat"
 
 
 def test_suite2p_planes_are_found_from_a_plane_its_stat_file_or_the_folder_of_planes(tmp_path):
@@ -180,3 +228,49 @@ def test_the_launcher_opens_a_suite2p_plane(tmp_path, plane):
     assert window.found["kind"] == "suite2p" and window.found["detail"] == "2 to open" and len(window.found["files"]) == 2
     assert window.available(key="demixing") and window.build_argv() == ["view", str(tmp_path / "suite2p")]
     render_frames(window=window)
+
+
+def test_a_miniali_file_is_found_from_the_file_or_its_folder(tmp_path, miniali):
+    assert MiniALIResults.expand(miniali) == [miniali] and MiniALIResults.expand(miniali.parent) == [miniali]
+    assert adapter_for(miniali) is MiniALIResults and adapter_for(miniali.parent) is MiniALIResults
+    with h5py.File(tmp_path / "other.mat", "w") as f:
+        f["x"] = 1
+    assert adapter_for(tmp_path / "other.mat") is None and adapter_for(tmp_path / "recording") is None
+    assert MiniALIResults.describe(miniali) == "miniali: 2 cells, 40 frames, no Background, recomputed"
+
+
+def test_a_miniali_recording_folder_loads_as_a_movie(tmp_path, miniali):
+    movie = load_movie(tmp_path / "recording")
+    assert movie.shape == (FRAMES + 4, HEIGHT, WIDTH) and movie.dtype == np.uint8
+
+
+def test_a_miniali_file_opens_with_its_recording_folder_and_drops_the_frames_past_the_shifts(tmp_path, miniali):
+    opened = OpenedResults.open(miniali, raw=tmp_path / "recording")
+    assert isinstance(opened.results, MiniALIResults) and opened.results.shape == (FRAMES, HEIGHT, WIDTH)
+    assert opened.results.num_frames_raw == FRAMES + 4 and opened.results.num_frames_analyzed == FRAMES
+    assert opened.raw is opened.results.raw_array and opened.raw_source == tmp_path / "recording"
+    assert opened.shifts.shape == (FRAMES, 2) and isinstance(opened.registered, masknmf.GradientRegistrationArray)
+    assert opened.results.residual_array.shape == (FRAMES, HEIGHT, WIDTH) and opened.skipped == []
+    with pytest.raises(ValueError, match="need the raw movie"):
+        OpenedResults.open(miniali)
+    with pytest.raises(ValueError, match="the results 40"):
+        OpenedResults.open(miniali, raw=np.zeros((FRAMES - 1, HEIGHT, WIDTH), np.uint8))
+
+
+def test_view_lists_a_miniali_file_and_the_launcher_opens_it(tmp_path, miniali, capsys):
+    cli.main(["view", str(miniali), "--list"])
+    assert "miniali: 2 cells, 40 frames" in capsys.readouterr().out
+
+    from masknmf import launcher
+
+    window = launcher.Launcher()
+    window.page = "open"
+    window.paths_open["source"] = str(miniali)
+    window.inspect()
+    assert window.found["kind"] == "miniali" and window.found["files"] == [str(miniali)]
+    assert window.available(key="demixing") and not window.available(key="classification")
+    assert window.problems() == ["miniali results need the raw movie: its recording folder (the .bin movie and output_data.mat)"]
+    window.paths_open["raw"] = str(tmp_path / "recording")
+    assert window.problems() == []
+    args = cli.build_parser(spec=None).parse_args(window.build_argv())
+    assert args.handler is cli.command_view and args.results == [str(miniali)] and args.raw == str(tmp_path / "recording")
