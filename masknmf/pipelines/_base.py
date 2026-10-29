@@ -395,7 +395,7 @@ class BasePipeline(ABC):
         if stored is not None:
             logger.info(f"applying the stored {stored.__name__}")
             moco_data = stored.from_hdf5(results_path, input_movie=data, device=self.device)
-            moco_data.output_device = moco_data.compute_device
+            moco_data.output_device = torch.device('cpu')
         elif isinstance(config, str):
             if config.lower() != "skip":
                 raise ValueError("Invalid MotionCorrectionConfig input")

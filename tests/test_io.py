@@ -40,7 +40,7 @@ def run(movie, tmp_path_factory):
     corrector.compute_template(movie)
     registration = corrector.motion_correct(movie)
     registration.export(folder / "results.hdf5")
-    strategy = masknmf.CompressStrategy(block_sizes=(16, 16), frame_batch_size=100, device="cpu")
+    strategy = masknmf.CompressStrategy(block_sizes=(16, 16), device="cpu")
     strategy.compress(registration).export(folder / "results.hdf5")
     tifffile.imwrite(folder / "movie.tif", movie)
     return folder
