@@ -38,8 +38,9 @@ class OnePhotonCalciumPipeline(BasePipeline):
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto",
                  log_level: Literal["debug", "info", "warning"] = "info",
-                 load_into_ram: bool = False
-                 ):
+                 load_into_ram: bool = False,
+                 device_memory_gb: float | None = None,
+                 host_memory_gb: float | None = None):
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
                          log_level=log_level,
                          load_into_ram=load_into_ram,
@@ -49,7 +50,10 @@ class OnePhotonCalciumPipeline(BasePipeline):
                          global_filter_config=global_filter_config,
                          spatial_highpass_config=spatial_highpass_config,
                          filtered_demixing_config=filtered_demixing_config,
-                         unfiltered_demixing_config=unfiltered_demixing_config)
+                         unfiltered_demixing_config=unfiltered_demixing_config,
+                         device_memory_gb=device_memory_gb,
+                         host_memory_gb=host_memory_gb
+                         )
 
     @classmethod
     def default_configs(cls) -> dict:

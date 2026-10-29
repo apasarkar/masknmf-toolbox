@@ -93,6 +93,8 @@ class BasePipeline(ABC):
                  device: Literal["auto", "cuda", "cpu"] = "auto",
                  log_level: Literal["debug", "info", "warning"] = "info",
                  load_into_ram: bool = False,
+                 device_memory_gb: float | None = None,
+                 host_memory_gb: float | None = None,
                  **configs):
         if output_folder is not None:
             output_folder = Path(output_folder).expanduser().resolve()
@@ -130,6 +132,8 @@ class BasePipeline(ABC):
             setattr(self, name, default if configs.get(name) is None else configs[name])
         # the config arguments given, which a resumed run keeps over the earlier run's
         self.configs_given = {name for name in defaults if configs.get(name) is not None}
+        self._device_memory_gb = device_memory_gb
+        self._host_memory_gb = host_memory_gb
 
     @classmethod
     @abstractmethod
@@ -195,6 +199,34 @@ class BasePipeline(ABC):
                 arguments[name] = values[name]
         logger.info(f"the settings not given are those of {filepath_config}")
         return arguments
+
+    @property
+    def device_memory_gb(self) -> float | None:
+        """
+        The allowed memory footprint of the computational device (gpu for e.g.) measured in gigabytes
+        """
+        return self._device_memory_gb
+
+    @device_memory_gb.setter
+    def device_memory_gb(self, new_memory: float):
+        if new_memory > 0:
+            self._device_memory_gb = new_memory
+        else:
+            raise ValueError(f"Most provide a positive value to device_memory_gb setter, provided {new_memory}")
+
+    @property
+    def host_memory_gb(self) -> float | None:
+        """
+        The allowed memory footprint of the host system (CPU vRAM) measured in gigabytes
+        """
+        return self._host_memory_gb
+
+    @host_memory_gb.setter
+    def host_memory_gb(self, new_memory: float):
+        if new_memory > 0:
+            self._host_memory_gb = new_memory
+        else:
+            raise ValueError(f"Most provide a positive value to host_memory_gb setter, provided {new_memory}")
 
     @property
     def config(self) -> dict:
