@@ -492,9 +492,11 @@ class BasePipeline(ABC):
         if pixel_weighting is not None:
             kwargs["pixel_weighting"] = pixel_weighting if config.pixel_weighting is None else config.pixel_weighting * pixel_weighting
         if isinstance(config, CompressConfig):
-            return CompressStrategy(device=self.device, **kwargs)
+            return CompressStrategy(device=self.device, device_memory_gb=self.device_memory_gb,
+                        host_memory_gb=self.host_memory_gb,**kwargs)
         if isinstance(config, CompressDenoiseConfig):
-            return CompressDenoiseStrategy(device=self.device, **kwargs)
+            return CompressDenoiseStrategy(device=self.device, device_memory_gb=self.device_memory_gb,
+                        host_memory_gb=self.host_memory_gb, **kwargs)
         raise ValueError("Invalid compression config")
 
     def spline_detrender(self,
