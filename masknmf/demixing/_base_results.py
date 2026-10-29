@@ -11,8 +11,11 @@ from masknmf.utils import SparseCOOTensor
 
 class BaseResults:
 
-    # an adapter reads another pipeline's results: it sets pipeline and overrides matches and from_path
+    # an adapter reads another pipeline's results: it sets these four and overrides matches and from_path
     pipeline = "masknmf"
+    source = ""  # names what the adapter opens, in the CLI and launcher help
+    raw_source = ""  # names what --raw must be, when the adapter cannot open without it
+    patterns = ()  # file dialog patterns beyond *.h5 *.hdf5
 
     def __init__(self):
         pass
