@@ -1322,8 +1322,7 @@ def compression_routine(
             dim1_batch_slice = slice(dataset_slice_lower_bound[0], dataset_slice_upper_bound[0])
             dim2_batch_slice = slice(dataset_slice_lower_bound[1], dataset_slice_upper_bound[1])
 
-            ## This is CPU only for now because all the data might not fit on GPU
-            curr_dataset = torch.as_tensor(dataset[effective_frame_indexer, dim1_batch_slice, dim2_batch_slice], device='cpu', dtype=dtype)
+            curr_dataset = torch.as_tensor(dataset[effective_frame_indexer, dim1_batch_slice, dim2_batch_slice], device=device, dtype=dtype)
             for k in dim1_batch_start:
                 for j in dim2_batch_start:
                     slice_dim1 = slice(k, k + block_sizes[0])
