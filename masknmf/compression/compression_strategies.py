@@ -23,6 +23,8 @@ class CompressStrategy:
                  frame_weighting: np.ndarray | torch.Tensor | None = None,
                  detrender: SplineDetrenderBase | None = None,
                  device: Literal["auto", "cpu", "cuda"] = "auto",
+                 device_memory_gb: float | None = None,
+                 host_memory_gb: float | None = None,
                  ):
 
         ##User-settable parameters
@@ -40,6 +42,9 @@ class CompressStrategy:
         self._compute_normalizer = compute_normalizer
         self._pixel_weighting = pixel_weighting
         self._frame_weighting = frame_weighting
+
+        self.device_memory_gb = device_memory_gb
+        self.host_memory_gb = host_memory_gb
 
         self._results = None
 
@@ -100,6 +105,34 @@ class CompressStrategy:
         self._temporal_avg_factor = new_temporal_avg_factor
 
     @property
+    def device_memory_gb(self) -> float | None:
+        """
+        The allowed memory footprint of the computational device (gpu for e.g.) measured in gigabytes
+        """
+        return self._device_memory_gb
+
+    @device_memory_gb.setter
+    def device_memory_gb(self, new_memory: float | None):
+        if new_memory is None or new_memory > 0:
+            self._device_memory_gb = new_memory
+        else:
+            raise ValueError(f"Must provide a positive value to device_memory_gb setter or None, provided {new_memory}")
+
+    @property
+    def host_memory_gb(self) -> float | None:
+        """
+        The allowed memory footprint of the host system measured in gigabytes
+        """
+        return self._host_memory_gb
+
+    @host_memory_gb.setter
+    def host_memory_gb(self, new_memory: float | None):
+        if new_memory is None or new_memory > 0:
+            self._host_memory_gb = new_memory
+        else:
+            raise ValueError(f"Must provide a positive value to host_memory_gb setter or None, provided {new_memory}")
+
+    @property
     def detrender(self) -> SplineDetrenderBase | None:
         return self._detrender
 
@@ -132,7 +165,10 @@ class CompressStrategy:
                                             pixel_weighting=self._pixel_weighting,
                                             frame_weighting=self._frame_weighting,
                                             detrender=self.detrender,
-                                            device=self.device)
+                                            device=self.device,
+                                            device_memory_gb=self.device_memory_gb,
+                                            host_memory_gb=self.host_memory_gb
+                                            )
         masknmf.utils.display(f"rank {self._results.temporal_compressed.shape[0]}")
 
         return self._results
@@ -155,6 +191,8 @@ class CompressDenoiseStrategy(CompressStrategy):
                  noise_variance_quantile: float = 0.3,
                  num_epochs: int = 10,
                  detrender: SplineDetrenderBase | None = None,
+                 device_memory_gb: float | None = None,
+                 host_memory_gb: float | None = None,
                  ):
 
         super().__init__(block_sizes,
@@ -168,7 +206,9 @@ class CompressDenoiseStrategy(CompressStrategy):
                          pixel_weighting,
                          frame_weighting,
                          detrender=detrender,
-                         device=device)
+                         device=device,
+                         device_memory_gb=device_memory_gb,
+                         host_memory_gb=host_memory_gb)
         self._num_epochs = num_epochs
         self._noise_variance_quantile = noise_variance_quantile
 
@@ -202,7 +242,10 @@ class CompressDenoiseStrategy(CompressStrategy):
                                               pixel_weighting=self._pixel_weighting,
                                               frame_weighting=self._frame_weighting,
                                               detrender=self.detrender,
-                                              device=self.device)
+                                              device=self.device,
+                                              device_memory_gb=self.device_memory_gb,
+                                              host_memory_gb=self.host_memory_gb
+                                                      )
 
         temporal_compressed_no_denoiser = compression_no_denoiser.temporal_compressed.cpu()
         masknmf.utils.display(f"rank {temporal_compressed_no_denoiser.shape[0]} before the temporal denoiser")
@@ -227,7 +270,10 @@ class CompressDenoiseStrategy(CompressStrategy):
                                                                 frame_weighting=self._frame_weighting,
                                                                 detrender=self.detrender,
                                                                 device=self.device,
-                                                                temporal_denoiser=curr_temporal_denoiser)
+                                                                temporal_denoiser=curr_temporal_denoiser,
+                                                                device_memory_gb=self.device_memory_gb,
+                                                                host_memory_gb=self.host_memory_gb
+                                                                )
         masknmf.utils.display(f"rank {self._results.temporal_compressed.shape[0]} after it")
 
         return self._results

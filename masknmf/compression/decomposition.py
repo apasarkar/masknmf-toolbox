@@ -1124,6 +1124,8 @@ def compression_routine(
         detrender: SplineDetrenderBase | None = None,
         data_batching: tuple[int, int] = (10, 10),
         device: Literal["auto", "cuda", "cpu"] = "auto",
+        device_memory_gb: float | None = None,
+        host_memory_gb: float | None = None,
 ) -> CompressionArray:
     """
     General masknmf compression method
@@ -1151,6 +1153,10 @@ def compression_routine(
         data_batching (tuple[int, int]): We load enough data into CPU ram to process data_batching[0] * data_batching[1] chunks at a time
             This parameter helps reduce the number of redundant i/o reads and overall dynamic motion correction compute time
         device ("auto" | "cuda" | "cpu"): Which device the computations should be performed on.
+        device_memory_gb (float | None): How much memory, in gigabytes, the pipeline may use on the compute
+                device (the GPU when device is "cuda"). None detects the free device memory when the pipeline runs.
+        host_memory_gb (float | None): How much host RAM, in gigabytes, the pipeline may use for data it holds
+            in memory while processing. None detects the free host RAM when the pipeline runs.
 
     Returns:
         compression_array (masknmf.CompressionArray): A CompressionArray object capturing the compression results.
