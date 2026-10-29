@@ -23,24 +23,18 @@ urlretrieve(
 # always lazy load raw data by memmaping or other methods
 data = tifffile.imread("./demo.tif")
 
-block_sizes = [32, 32]
-max_components = 20
-
 # it's recommended to use masknmf on a machine with a GPU
 # device = "cuda" if torch.cuda.is_available() else "cpu"
 device = "cpu"
-# number of frames used to estimate the spatial basis in PMD
-num_frames_for_spatial_fit = data.shape[0]
 
 # perform PMD
-pmd_result = masknmf.compression.pmd_decomposition(
-    data,
-    block_sizes,
-    num_frames_for_spatial_fit,
-    max_components=max_components,
+strategy = masknmf.compression.CompressStrategy(
+    block_sizes=(32, 32),
+    max_components=20,
+    frame_batch_size=1024,
     device=device,
-    frame_batch_size=1024
 )
+pmd_result = strategy.compress(data)
 
 # get the residual
 pmd_residual = masknmf.CompressionResidualArray(data, pmd_result)
