@@ -217,7 +217,7 @@ class BasePipeline(ABC):
     @property
     def host_memory_gb(self) -> float | None:
         """
-        The allowed memory footprint of the host system (CPU vRAM) measured in gigabytes
+        The allowed memory footprint of the host system measured in gigabytes
         """
         return self._host_memory_gb
 
