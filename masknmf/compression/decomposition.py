@@ -1260,11 +1260,7 @@ def compression_routine(
     ):
         dim_2_iters.append(fov_width - block_sizes[1])
 
-    #Meshgrid
-    total_dim1, total_dim2 = torch.meshgrid(torch.as_tensor(dim_1_iters, device = 'cpu', dtype = torch.long),
-                                            torch.as_tensor(dim_2_iters, device = 'cpu', dtype = torch.long), indexing='ij')
-
-    approx_iters = math.ceil(len(dim_1_iters) // data_batching[0]), math.ceil(len(dim_2_iters) / data_batching[1])
+    approx_iters = math.ceil(len(dim_1_iters) / data_batching[0]), math.ceil(len(dim_2_iters) / data_batching[1])
 
     dim1_batches = torch.round(torch.linspace(0, len(dim_1_iters), approx_iters[0] + 1))
     dim2_batches = torch.round(torch.linspace(0, len(dim_2_iters), approx_iters[1] + 1))
@@ -1311,7 +1307,10 @@ def compression_routine(
         spatial_preprocess_basis = None
         temporal_preprocess_basis = None
 
-
+    if len(frames) == dataset.shape[0]:
+        effective_frame_indexer = slice(0, int(dataset.shape[0]))
+    else:
+        effective_frame_indexer = frames
     logger.debug("Running Blockwise Decompositions")
     for ind1, ind_into_total_dim1 in progress(enumerate(dim1_batches[:-1]), desc="decomposing blocks"):
         for ind2, ind_into_total_dim2 in enumerate(dim2_batches[:-1]):
@@ -1324,7 +1323,7 @@ def compression_routine(
             dim2_batch_slice = slice(dataset_slice_lower_bound[1], dataset_slice_upper_bound[1])
 
             ## This is CPU only for now because all the data might not fit on GPU
-            curr_dataset = torch.as_tensor(dataset[frames, dim1_batch_slice, dim2_batch_slice], device='cpu', dtype=dtype)
+            curr_dataset = torch.as_tensor(dataset[effective_frame_indexer, dim1_batch_slice, dim2_batch_slice], device='cpu', dtype=dtype)
             for k in dim1_batch_start:
                 for j in dim2_batch_start:
                     slice_dim1 = slice(k, k + block_sizes[0])
@@ -1333,7 +1332,7 @@ def compression_routine(
                     offset_slice_dim1 = slice(k - dataset_slice_lower_bound[0], k - dataset_slice_lower_bound[0] + block_sizes[0])
                     offset_slice_dim2 = slice(j - dataset_slice_lower_bound[1], j - dataset_slice_lower_bound[1] + block_sizes[1])
 
-                    current_data_for_fit = curr_dataset[frames, offset_slice_dim1, offset_slice_dim2].to(device)
+                    current_data_for_fit = curr_dataset[:, offset_slice_dim1, offset_slice_dim2].to(device)
 
                     if detrender is not None:
                         curr_shape = current_data_for_fit.shape
