@@ -29,6 +29,5 @@ def get_timestamp() -> str:
 
 
 def progress(iterable, desc: str) -> tqdm:
-    """A progress bar for iterable that clears once done, and stays off when stderr is a log file rather than a terminal."""
-    interactive = sys.stderr.isatty() or "ipykernel" in sys.modules
-    return tqdm(iterable, desc=desc, leave=False, disable=not interactive)
+    """A tqdm progress bar for iterable, with tqdm's defaults."""
+    return tqdm(iterable, desc=desc)
