@@ -132,8 +132,8 @@ class BasePipeline(ABC):
             setattr(self, name, default if configs.get(name) is None else configs[name])
         # the config arguments given, which a resumed run keeps over the earlier run's
         self.configs_given = {name for name in defaults if configs.get(name) is not None}
-        self._device_memory_gb = device_memory_gb
-        self._host_memory_gb = host_memory_gb
+        self.device_memory_gb = device_memory_gb
+        self.host_memory_gb = host_memory_gb
 
     @classmethod
     @abstractmethod
@@ -208,11 +208,11 @@ class BasePipeline(ABC):
         return self._device_memory_gb
 
     @device_memory_gb.setter
-    def device_memory_gb(self, new_memory: float):
-        if new_memory > 0:
+    def device_memory_gb(self, new_memory: float | None):
+        if new_memory is None or new_memory > 0:
             self._device_memory_gb = new_memory
         else:
-            raise ValueError(f"Most provide a positive value to device_memory_gb setter, provided {new_memory}")
+            raise ValueError(f"Must provide a positive value to device_memory_gb setter or None, provided {new_memory}")
 
     @property
     def host_memory_gb(self) -> float | None:
@@ -222,11 +222,11 @@ class BasePipeline(ABC):
         return self._host_memory_gb
 
     @host_memory_gb.setter
-    def host_memory_gb(self, new_memory: float):
-        if new_memory > 0:
+    def host_memory_gb(self, new_memory: float | None):
+        if new_memory is None or new_memory > 0:
             self._host_memory_gb = new_memory
         else:
-            raise ValueError(f"Most provide a positive value to host_memory_gb setter, provided {new_memory}")
+            raise ValueError(f"Must provide a positive value to host_memory_gb setter or None, provided {new_memory}")
 
     @property
     def config(self) -> dict:

@@ -35,6 +35,10 @@ class WidefieldSinglechannelPipeline(BasePipeline):
             device (str): Indicates which device pytorch runs on
             log_level (str): How much the run logs, to the console and to the run folder's .log file
             load_into_ram (bool): Read the whole movie into RAM before motion correction, so no stage reads it from disk
+            device_memory_gb (float | None): How much memory, in gigabytes, the pipeline may use on the compute
+                device (the GPU when device is "cuda"). None detects the free device memory when the pipeline runs.
+            host_memory_gb (float | None): How much host RAM, in gigabytes, the pipeline may use for data it holds
+                in memory while processing. None detects the free host RAM when the pipeline runs.
         """
         super().__init__(output_folder=output_folder,
                          frame_batch_size=frame_batch_size,
