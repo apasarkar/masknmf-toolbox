@@ -554,6 +554,10 @@ def scrape(cls_pipeline: type) -> PipelineSpec:
     properties = []
     pipeline = cls_pipeline()
     for name, attribute in inspect.getmembers(cls_pipeline, lambda a: isinstance(a, property) and a.fset is not None):
+        # a settable property that is also an __init__ argument is already a scalar; listing it again gives argparse
+        # the same flag twice
+        if name in signature_init.parameters:
+            continue
         # a property this pipeline cannot use, such as min_brightness without demixing configs, raises when read
         try:
             current = getattr(pipeline, name)

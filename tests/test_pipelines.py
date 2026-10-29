@@ -297,3 +297,27 @@ def test_a_curated_file_records_the_nmf_config_its_pass_ran_with(tmp_path):
     restored = scraper.config_from_json(value=recorded, annotation=masknmf.NMFConfig)
     assert restored == dataclasses.replace(config, detrender=None)
     assert masknmf.io.read_nmf_config(tmp_path / "results.hdf5") is None
+
+
+def test_an_init_argument_that_is_also_a_settable_property_gets_one_flag():
+    from masknmf import cli
+    from masknmf.pipelines.twophoton_calcium import TwoPhotonCalciumPipeline
+
+    class MemoryPipeline(TwoPhotonCalciumPipeline):
+        def __init__(self, memory_gb: float | None = None, **kwargs):
+            super().__init__(**kwargs)
+            self.memory_gb = memory_gb
+
+        @property
+        def memory_gb(self) -> float | None:
+            return self._memory_gb
+
+        @memory_gb.setter
+        def memory_gb(self, value: float | None):
+            self._memory_gb = value
+
+    spec = scraper.scrape(cls_pipeline=MemoryPipeline)
+    assert [p.field for p in spec.scalars if p.field == "memory_gb"] == ["memory_gb"]
+    assert "memory_gb" not in [p.field for p in spec.properties]
+    args = cli.build_parser(spec=spec).parse_args(["run", "--pipeline", "two-photon-calcium", "movie.tif", "--memory-gb", "4"])
+    assert args.memory_gb == "4"
