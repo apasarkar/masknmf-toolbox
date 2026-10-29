@@ -13,9 +13,14 @@ def adapter_for(path) -> type[BaseResults] | None:
 
 
 def adapter_sources() -> str:
-    """Joins the adapters' sources into one phrase: "a, b, or c"."""
+    """
+    Lists every adapter's ``source`` as one comma-separated phrase for help text, "or" before the last:
+    "a suite2p plane folder or its stat.npy, caiman CNMF.save output, or miniALI's ALI_Result_new.mat".
+    """
     sources = [cls.source for cls in ADAPTERS]
-    return ", ".join(sources[:-1]) + f", or {sources[-1]}" if len(sources) > 1 else sources[0]
+    if len(sources) == 1:
+        return sources[0]
+    return ", ".join(sources[:-1]) + f", or {sources[-1]}"
 
 
 def adapter_raw_sources() -> str:
