@@ -190,19 +190,15 @@ class TotalVarianceTemporalDenoiser(pl.LightningModule):
         self.max_epochs = max_epochs
 
     def training_step(self, batch, batch_idx):
-        input_traces = batch
-        mu_x, total_variance = self(input_traces)
+        r = self.receptive_radius
+        mu_x, total_variance = self(batch)
+        # Only outputs whose receptive field lies inside the window, matching what inference keeps
+        x, mu_x, total_variance = batch[..., r:-r], mu_x[..., r:-r], total_variance[..., r:-r]
 
-        num_datapoints = input_traces.numel()
-
-        # make sure all total variances are positive
         total_variance = torch.clamp(total_variance, min=1e-8)
+        log_lik = torch.nansum(torch.log(total_variance)) + torch.nansum((x - mu_x) ** 2 / total_variance)
+        loss = log_lik / x.numel()  # normalize by the samples actually scored
 
-        log_lik = torch.nansum(torch.log(total_variance))
-        log_lik = log_lik + torch.nansum(
-            (input_traces - mu_x) ** 2 / total_variance
-        )
-        loss = log_lik / num_datapoints
         self.log("train_loss", loss)
 
         return loss
@@ -257,7 +253,7 @@ def train_total_variance_denoiser(
     padded_timeseries = blind_spot_safe_pad(
         time_series.to(data_device, torch.float32), padding, radius=model.receptive_radius
     )
-    dataset = MultivariateTimeSeriesDataset(padded_timeseries, input_size=input_size, overlap=overlap)
+    dataset = MultivariateTimeSeriesDataset(padded_timeseries, input_size=input_size, overlap=2*model.receptive_radius)
 
     del padded_timeseries
 
