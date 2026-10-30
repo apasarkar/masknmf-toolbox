@@ -472,7 +472,7 @@ def _process_data_batch(model: torch.nn.Module,
     """
     data_to_process is batched in its first dimension
     """
-    num_iters = math.ceil(data_to_process.shape[0], batch_size)
+    num_iters = math.ceil(data_to_process.shape[0] / batch_size)
     variance_estimates = []
     mean_estimates = []
     model.eval()
@@ -483,7 +483,7 @@ def _process_data_batch(model: torch.nn.Module,
 
     variance_estimates = torch.concatenate(variance_estimates, dim=0)
     mean_estimates = torch.concatenate(mean_estimates, dim=0)
-    return variance_estimates, mean_estimates
+    return mean_estimates, variance_estimates
 
 def _denoise_batched_inner(model: torch.nn.Module,
                            traces: torch.Tensor,
@@ -535,13 +535,13 @@ def _denoise_batched_inner(model: torch.nn.Module,
     for ind, s in enumerate(starts):
         if ind + 1 == len(starts):
             if pad_last:
-                placeholder = torch.zeros(num_timepoints, input_use, device=traces.device, dtype=traces.dtype)
+                placeholder = torch.zeros(num_traces, input_use, device=traces.device, dtype=traces.dtype)
                 curr = traces[:, s:num_timepoints]
                 placeholder[:, 0:num_timepoints-s] = curr
                 net_batches.append(placeholder)
         else:
             net_batches.append(traces[:, s:s+input_use])
-    window = torch.stack([net_batches], dim=1).reshape(-1, 1, input_use)
+    window = torch.stack(net_batches, dim=1).reshape(-1, 1, input_use)
 
     with torch.no_grad():
         mean_predict, variance_predict = _process_data_batch(model,
@@ -552,7 +552,7 @@ def _denoise_batched_inner(model: torch.nn.Module,
                                                     num_frames,
                                                     radius,
                                                     starts)
-        total_variance_estimates = _reconstruct_stacked_tensors(mean_predict,
+        total_variance_estimates = _reconstruct_stacked_tensors(variance_predict,
                                                     num_traces,
                                                     num_frames,
                                                     radius,
