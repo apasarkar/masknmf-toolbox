@@ -93,6 +93,8 @@ class BasePipeline(ABC):
                  device: Literal["auto", "cuda", "cpu"] = "auto",
                  log_level: Literal["debug", "info", "warning"] = "info",
                  load_into_ram: bool = False,
+                 device_memory_gb: float | None = None,
+                 host_memory_gb: float | None = None,
                  **configs):
         if output_folder is not None:
             output_folder = Path(output_folder).expanduser().resolve()
@@ -130,6 +132,8 @@ class BasePipeline(ABC):
             setattr(self, name, default if configs.get(name) is None else configs[name])
         # the config arguments given, which a resumed run keeps over the earlier run's
         self.configs_given = {name for name in defaults if configs.get(name) is not None}
+        self.device_memory_gb = device_memory_gb
+        self.host_memory_gb = host_memory_gb
 
     @classmethod
     @abstractmethod
@@ -195,6 +199,34 @@ class BasePipeline(ABC):
                 arguments[name] = values[name]
         logger.info(f"the settings not given are those of {filepath_config}")
         return arguments
+
+    @property
+    def device_memory_gb(self) -> float | None:
+        """
+        The allowed memory footprint of the computational device (gpu for e.g.) measured in gigabytes
+        """
+        return self._device_memory_gb
+
+    @device_memory_gb.setter
+    def device_memory_gb(self, new_memory: float | None):
+        if new_memory is None or new_memory > 0:
+            self._device_memory_gb = new_memory
+        else:
+            raise ValueError(f"Must provide a positive value to device_memory_gb setter or None, provided {new_memory}")
+
+    @property
+    def host_memory_gb(self) -> float | None:
+        """
+        The allowed memory footprint of the host system measured in gigabytes
+        """
+        return self._host_memory_gb
+
+    @host_memory_gb.setter
+    def host_memory_gb(self, new_memory: float | None):
+        if new_memory is None or new_memory > 0:
+            self._host_memory_gb = new_memory
+        else:
+            raise ValueError(f"Must provide a positive value to host_memory_gb setter or None, provided {new_memory}")
 
     @property
     def config(self) -> dict:
@@ -395,7 +427,7 @@ class BasePipeline(ABC):
         if stored is not None:
             logger.info(f"applying the stored {stored.__name__}")
             moco_data = stored.from_hdf5(results_path, input_movie=data, device=self.device)
-            moco_data.output_device = moco_data.compute_device
+            moco_data.output_device = torch.device('cpu')
         elif isinstance(config, str):
             if config.lower() != "skip":
                 raise ValueError("Invalid MotionCorrectionConfig input")
@@ -420,7 +452,7 @@ class BasePipeline(ABC):
                 if moco_strategy.template is None:
                     moco_strategy.compute_template(reference_data)
                 moco_data = moco_strategy.motion_correct(reference_data, target_movie=data)
-                moco_data.output_device = moco_data.compute_device
+                moco_data.output_device = torch.device('cpu')
                 moco_data.export(results_path)
 
         if isinstance(moco_data, BaseRegistrationArray):
@@ -460,9 +492,11 @@ class BasePipeline(ABC):
         if pixel_weighting is not None:
             kwargs["pixel_weighting"] = pixel_weighting if config.pixel_weighting is None else config.pixel_weighting * pixel_weighting
         if isinstance(config, CompressConfig):
-            return CompressStrategy(device=self.device, frame_batch_size=self.frame_batch_size, **kwargs)
+            return CompressStrategy(device=self.device, device_memory_gb=self.device_memory_gb,
+                        host_memory_gb=self.host_memory_gb,**kwargs)
         if isinstance(config, CompressDenoiseConfig):
-            return CompressDenoiseStrategy(device=self.device, frame_batch_size=self.frame_batch_size, **kwargs)
+            return CompressDenoiseStrategy(device=self.device, device_memory_gb=self.device_memory_gb,
+                        host_memory_gb=self.host_memory_gb, **kwargs)
         raise ValueError("Invalid compression config")
 
     def spline_detrender(self,

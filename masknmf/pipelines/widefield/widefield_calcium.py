@@ -19,7 +19,9 @@ class WidefieldSinglechannelPipeline(BasePipeline):
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto",
                  log_level: Literal["debug", "info", "warning"] = "info",
-                 load_into_ram: bool = False
+                 load_into_ram: bool = False,
+                 device_memory_gb: float | None = None,
+                 host_memory_gb: float | None = None,
                  ):
         """
         Args:
@@ -33,11 +35,20 @@ class WidefieldSinglechannelPipeline(BasePipeline):
             device (str): Indicates which device pytorch runs on
             log_level (str): How much the run logs, to the console and to the run folder's .log file
             load_into_ram (bool): Read the whole movie into RAM before motion correction, so no stage reads it from disk
+            device_memory_gb (float | None): How much memory, in gigabytes, the pipeline may use on the compute
+                device (the GPU when device is "cuda"). None detects the free device memory when the pipeline runs.
+            host_memory_gb (float | None): How much host RAM, in gigabytes, the pipeline may use for data it holds
+                in memory while processing. None detects the free host RAM when the pipeline runs.
         """
-        super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
+        super().__init__(output_folder=output_folder,
+                         frame_batch_size=frame_batch_size,
+                         device=device,
                          log_level=log_level,
                          load_into_ram=load_into_ram,
-                         motion_correct_config=motion_correct_config, compress_config=compress_config)
+                         motion_correct_config=motion_correct_config,
+                         compress_config=compress_config,
+                         device_memory_gb=device_memory_gb,
+                         host_memory_gb=host_memory_gb)
 
     @classmethod
     def default_configs(cls) -> dict:

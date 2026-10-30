@@ -15,7 +15,6 @@ class CompressStrategy:
                  frame_range: int | None  = None,
                  max_components: int = 20,
                  sim_conf: int = 5,
-                 frame_batch_size: int = 10000,
                  max_consecutive_failures: int=1,
                  spatial_avg_factor:int=1,
                  temporal_avg_factor:int=1,
@@ -24,13 +23,14 @@ class CompressStrategy:
                  frame_weighting: np.ndarray | torch.Tensor | None = None,
                  detrender: SplineDetrenderBase | None = None,
                  device: Literal["auto", "cpu", "cuda"] = "auto",
+                 device_memory_gb: float | None = None,
+                 host_memory_gb: float | None = None,
                  ):
 
         ##User-settable parameters
         self._block_sizes = block_sizes
         self._frame_range = frame_range
         self._max_components = max_components
-        self._frame_batch_size = frame_batch_size
         self._spatial_avg_factor = spatial_avg_factor
         self._temporal_avg_factor = temporal_avg_factor
         self._detrender = detrender
@@ -42,6 +42,9 @@ class CompressStrategy:
         self._compute_normalizer = compute_normalizer
         self._pixel_weighting = pixel_weighting
         self._frame_weighting = frame_weighting
+
+        self.device_memory_gb = device_memory_gb
+        self.host_memory_gb = host_memory_gb
 
         self._results = None
 
@@ -86,14 +89,6 @@ class CompressStrategy:
         self._max_components = num_comps
 
     @property
-    def frame_batch_size(self) -> int:
-        return self._frame_batch_size
-
-    @frame_batch_size.setter
-    def frame_batch_size(self, new_batch_size:int):
-        self._frame_batch_size = new_batch_size
-
-    @property
     def spatial_avg_factor(self) -> int:
         return self._spatial_avg_factor
 
@@ -108,6 +103,34 @@ class CompressStrategy:
     @temporal_avg_factor.setter
     def temporal_avg_factor(self, new_temporal_avg_factor: int):
         self._temporal_avg_factor = new_temporal_avg_factor
+
+    @property
+    def device_memory_gb(self) -> float | None:
+        """
+        The allowed memory footprint of the computational device (gpu for e.g.) measured in gigabytes
+        """
+        return self._device_memory_gb
+
+    @device_memory_gb.setter
+    def device_memory_gb(self, new_memory: float | None):
+        if new_memory is None or new_memory > 0:
+            self._device_memory_gb = new_memory
+        else:
+            raise ValueError(f"Must provide a positive value to device_memory_gb setter or None, provided {new_memory}")
+
+    @property
+    def host_memory_gb(self) -> float | None:
+        """
+        The allowed memory footprint of the host system measured in gigabytes
+        """
+        return self._host_memory_gb
+
+    @host_memory_gb.setter
+    def host_memory_gb(self, new_memory: float | None):
+        if new_memory is None or new_memory > 0:
+            self._host_memory_gb = new_memory
+        else:
+            raise ValueError(f"Must provide a positive value to host_memory_gb setter or None, provided {new_memory}")
 
     @property
     def detrender(self) -> SplineDetrenderBase | None:
@@ -135,7 +158,6 @@ class CompressStrategy:
                                             frame_range=self.frame_range,
                                             max_components=self.max_components,
                                             sim_conf=self._sim_conf,
-                                            frame_batch_size=self.frame_batch_size,
                                             max_consecutive_failures=self._max_consecutive_failures,
                                             spatial_avg_factor=self.spatial_avg_factor,
                                             temporal_avg_factor=self.temporal_avg_factor,
@@ -143,7 +165,10 @@ class CompressStrategy:
                                             pixel_weighting=self._pixel_weighting,
                                             frame_weighting=self._frame_weighting,
                                             detrender=self.detrender,
-                                            device=self.device)
+                                            device=self.device,
+                                            device_memory_gb=self.device_memory_gb,
+                                            host_memory_gb=self.host_memory_gb
+                                            )
         masknmf.utils.display(f"rank {self._results.temporal_compressed.shape[0]}")
 
         return self._results
@@ -156,7 +181,6 @@ class CompressDenoiseStrategy(CompressStrategy):
                  frame_range: int | None  = None,
                  max_components: int = 20,
                  sim_conf: int = 5,
-                 frame_batch_size: int = 10000,
                  max_consecutive_failures: int=1,
                  spatial_avg_factor:int=1,
                  temporal_avg_factor:int=1,
@@ -167,13 +191,14 @@ class CompressDenoiseStrategy(CompressStrategy):
                  noise_variance_quantile: float = 0.3,
                  num_epochs: int = 10,
                  detrender: SplineDetrenderBase | None = None,
+                 device_memory_gb: float | None = None,
+                 host_memory_gb: float | None = None,
                  ):
 
         super().__init__(block_sizes,
                          frame_range,
                          max_components,
                          sim_conf,
-                         frame_batch_size,
                          max_consecutive_failures,
                          spatial_avg_factor,
                          temporal_avg_factor,
@@ -181,7 +206,9 @@ class CompressDenoiseStrategy(CompressStrategy):
                          pixel_weighting,
                          frame_weighting,
                          detrender=detrender,
-                         device=device)
+                         device=device,
+                         device_memory_gb=device_memory_gb,
+                         host_memory_gb=host_memory_gb)
         self._num_epochs = num_epochs
         self._noise_variance_quantile = noise_variance_quantile
 
@@ -208,7 +235,6 @@ class CompressDenoiseStrategy(CompressStrategy):
                                               frame_range=self.frame_range,
                                               max_components=self.max_components,
                                               sim_conf=self._sim_conf,
-                                              frame_batch_size=self.frame_batch_size,
                                               max_consecutive_failures=self._max_consecutive_failures,
                                               spatial_avg_factor=self.spatial_avg_factor,
                                               temporal_avg_factor=self.temporal_avg_factor,
@@ -216,7 +242,10 @@ class CompressDenoiseStrategy(CompressStrategy):
                                               pixel_weighting=self._pixel_weighting,
                                               frame_weighting=self._frame_weighting,
                                               detrender=self.detrender,
-                                              device=self.device)
+                                              device=self.device,
+                                              device_memory_gb=self.device_memory_gb,
+                                              host_memory_gb=self.host_memory_gb
+                                                      )
 
         temporal_compressed_no_denoiser = compression_no_denoiser.temporal_compressed.cpu()
         masknmf.utils.display(f"rank {temporal_compressed_no_denoiser.shape[0]} before the temporal denoiser")
@@ -233,7 +262,6 @@ class CompressDenoiseStrategy(CompressStrategy):
                                                                 frame_range=self.frame_range,
                                                                 max_components=self.max_components,
                                                                 sim_conf=self._sim_conf,
-                                                                frame_batch_size=self.frame_batch_size,
                                                                 max_consecutive_failures=self._max_consecutive_failures,
                                                                 spatial_avg_factor=self.spatial_avg_factor,
                                                                 temporal_avg_factor=self.temporal_avg_factor,
@@ -242,7 +270,10 @@ class CompressDenoiseStrategy(CompressStrategy):
                                                                 frame_weighting=self._frame_weighting,
                                                                 detrender=self.detrender,
                                                                 device=self.device,
-                                                                temporal_denoiser=curr_temporal_denoiser)
+                                                                temporal_denoiser=curr_temporal_denoiser,
+                                                                device_memory_gb=self.device_memory_gb,
+                                                                host_memory_gb=self.host_memory_gb
+                                                                )
         masknmf.utils.display(f"rank {self._results.temporal_compressed.shape[0]} after it")
 
         return self._results

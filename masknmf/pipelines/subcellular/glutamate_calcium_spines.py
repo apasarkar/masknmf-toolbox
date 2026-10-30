@@ -48,13 +48,17 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                  demixing_config: MultipassDemixingConfigs | Literal["skip"] | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto",
-                 log_level: Literal["debug", "info", "warning"] = "info"):
+                 log_level: Literal["debug", "info", "warning"] = "info",
+                 device_memory_gb: float | None = None,
+                 host_memory_gb: float | None = None):
         # both channels are always read into RAM
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
                          log_level=log_level,
                          load_into_ram=True,
                          motion_correct_config=motion_correct_config, compress_config=compress_config,
-                         demixing_config=demixing_config)
+                         demixing_config=demixing_config,
+                         device_memory_gb=device_memory_gb,
+                         host_memory_gb=host_memory_gb)
 
     @classmethod
     def default_configs(cls) -> dict:
@@ -146,8 +150,9 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                                                    max_consecutive_failures=self.compress_config.max_consecutive_failures,
                                                    temporal_avg_factor=2,
                                                    spatial_avg_factor=4,
-                                                   frame_batch_size=self.frame_batch_size,
-                                                    device=device)
+                                                   device=device,
+                                                   device_memory_gb=self.device_memory_gb,
+                                                   host_memory_gb=self.host_memory_gb)
             with self.step("reference compression"):
                 pmd_pre_moco_reference = pre_moco_strategy.compress(reference_input)
                 pmd_pre_moco_reference.to(device) #Move it to the accelerator

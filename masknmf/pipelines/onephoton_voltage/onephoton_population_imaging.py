@@ -194,13 +194,17 @@ class OnePhotonCulturePipeline(BasePipeline):
                  load_into_ram: bool = False,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto",
-                 log_level: Literal["debug", "info", "warning"] = "info"
-                 ):
+                 log_level: Literal["debug", "info", "warning"] = "info",
+                 device_memory_gb: float | None = None,
+                 host_memory_gb: float | None = None):
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
                          log_level=log_level,
                          load_into_ram=load_into_ram,
                          motion_correct_config=motion_correct_config, compress_config=compress_config,
-                         demixing_config=demixing_config)
+                         demixing_config=demixing_config,
+                         device_memory_gb=device_memory_gb,
+                         host_memory_gb=host_memory_gb
+                         )
 
     @classmethod
     def default_configs(cls) -> dict:
@@ -263,7 +267,6 @@ class OnePhotonCulturePipeline(BasePipeline):
                 The raw-scale footprints and the denoised and raw-regressed traces over all frames are written to the
                 RawScaleEstimates group as a, c_denoised and c_raw.
                 """
-
         device = self.torch_device
         reuse_compression = isinstance(self.compress_config, str)
         moco_array = None ## By default this is None
