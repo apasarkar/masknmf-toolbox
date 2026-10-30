@@ -490,7 +490,7 @@ def _denoise_batched_inner(model: torch.nn.Module,
                            traces: torch.Tensor,
                            quantile: float,
                            input_size: int = 3000,
-                           input_batch_size: int = 300):
+                           input_batch_size: int = 20):
     """
     Denoise traces by running the network over overlapping windows and fusing its predictions with the
     observations using a Bayesian update.
@@ -573,19 +573,22 @@ class CompressionTemporalDenoiser(torch.nn.Module):
                  trained_model: torch.nn.Module,
                  noise_variance_quantile:float = 1,
                  input_size: int = 3000,
-                 padding: int = 100):
+                 padding: int = 100,
+                 input_batch_size: int = 20):
         super(CompressionTemporalDenoiser, self).__init__()
         self.noise_variance_quantile = noise_variance_quantile
         self.net = trained_model
         self.net.eval()
         self._padding = padding
         self._input_size = input_size
+        self._input_batch_size=input_batch_size
 
     def forward(self, traces: torch.Tensor):
         #F.pad(x, (pad_size, pad_size), mode=mode)
         padded = blind_spot_safe_pad(traces, self._padding, radius=self.net.receptive_radius)
         outputs = denoise_batched(self.net,
-                               padded,
-                               noise_variance_quantile=self.noise_variance_quantile,
-                               input_size=self._input_size)[0]
+                                  padded,
+                                  noise_variance_quantile=self.noise_variance_quantile,
+                                  input_size=self._input_size,
+                                 input_batch_size=self.input_batch_size)[0]
         return outputs[:, self._padding:outputs.shape[1] - self._padding]
