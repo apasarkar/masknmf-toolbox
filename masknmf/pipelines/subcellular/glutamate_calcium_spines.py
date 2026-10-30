@@ -150,8 +150,9 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                                                    max_consecutive_failures=self.compress_config.max_consecutive_failures,
                                                    temporal_avg_factor=2,
                                                    spatial_avg_factor=4,
-                                                   frame_batch_size=self.frame_batch_size,
-                                                    device=device)
+                                                   device=device,
+                                                   device_memory_gb=self.device_memory_gb,
+                                                   host_memory_gb=self.host_memory_gb)
             with self.step("reference compression"):
                 pmd_pre_moco_reference = pre_moco_strategy.compress(reference_input)
                 pmd_pre_moco_reference.to(device) #Move it to the accelerator
