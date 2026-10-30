@@ -476,10 +476,6 @@ class MiniALIResults(BaseResults):
         return self._registered_array
 
     @property
-    def global_residual_correlation_image(self) -> torch.Tensor | None:
-        return None
-
-    @property
     def signals_array(self) -> SignalsArray:
         """footprints @ traces, as a movie"""
         return self._signals_array
