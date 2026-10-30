@@ -516,7 +516,7 @@ def _denoise_batched_inner(model: torch.nn.Module,
             (system + observation), clamped below at the observation variance
         All three are in the normalized units of `traces`.
     """
-    radius = model.receptive_radius
+    device = traces.device
     radius = model.receptive_radius
     if input_size <= 2 * radius:
         raise ValueError(f"input_size ({input_size}) must be larger than twice the network's receptive radius "
