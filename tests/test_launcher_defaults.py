@@ -225,7 +225,8 @@ def test_load_run_reads_a_config_json_from_before_configs_were_nested(tmp_path):
     assert window.values["compress_config"].max_components == 9
 
 
-def test_start_from_a_loaded_runs_compression_resumes_it_and_back_to_the_movie_restores_the_config(tmp_path):
+def test_start_from_a_loaded_runs_compression_resumes_it_and_back_to_the_movie_restores_the_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(launcher, "FILEPATH_RUN_CONFIGS", tmp_path / "launcher_configs.json")
     cls = scraper.pipeline_registry()["two-photon-calcium"]
     pipeline = cls(output_folder=str(tmp_path), device="cpu")
     folder = pipeline.create_run_folder()
@@ -247,18 +248,24 @@ def test_start_from_a_loaded_runs_compression_resumes_it_and_back_to_the_movie_r
 
 
 def test_tracking_rows_grow_and_build_a_track_command(tmp_path):
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+        with h5py.File(tmp_path / name / "results.hdf5", "w") as file:
+            file.create_group("DemixingResults")
     window = launcher.Launcher()
     window.page = "track"
     window.paths_tracking["results_0"] = str(tmp_path / "*" / "results.hdf5")
+    assert window.problems() == ["looking for the sessions' results files", "choose the folder the tracking is saved in"]
+    window.search_sessions(rows=tuple(window.results_given(target=window.paths_tracking)))
     assert window.problems() == ["choose the folder the tracking is saved in"]
     render_frames(window=window)
     assert window.paths_tracking["results_1"] == ""
-    window.paths_tracking["out"] = str(tmp_path / "tracking")
+    window.paths_tracking["out"] = str(tmp_path)
     assert window.problems() == []
     args = cli.build_parser(spec=None).parse_args(window.build_argv())
     assert args.handler is cli.command_track
-    assert args.results == [str(tmp_path / "*" / "results.hdf5")]
-    assert args.out == str(tmp_path / "tracking") and args.um_per_pixel == 1.2
+    assert args.results == [str(tmp_path / name / "results.hdf5") for name in ("a", "b")]
+    assert args.out == str(tmp_path) and args.um_per_pixel == 1.2
 
 
 def click_card(original, slug: str, label: str, *args, **kwargs) -> bool:

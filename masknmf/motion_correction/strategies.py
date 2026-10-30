@@ -168,7 +168,7 @@ class MotionCorrectionStrategy:
             # account for use cases with very few frames, ex: spatial transcriptomics
             num_frames_template = min(frames.shape[0], 500)
 
-            frames_loaded = torch.as_tensor(frames[:num_frames_template])
+            frames_loaded = torch.as_tensor(frames[:num_frames_template], dtype=torch.float32)
             template = torch.quantile(frames_loaded, 0.5, dim=0).cpu().numpy()
             self._template = template
 
