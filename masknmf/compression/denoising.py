@@ -446,24 +446,25 @@ def _reconstruct_stacked_tensors(stacked_data: torch.Tensor,
                                  num_timeseries: int,
                                  num_frames: int,
                                  radius: int,
-                                 starts: list[int]):
+                                 starts: list[int]) -> torch.Tensor:
     """
-    Routine to re-assemble data that we've stacked for time series
-    Args:
-        stacked_data (torch.Tensor): Shape (num_timeseries * num_batches, 1, input_length)
-        num_timeseries (int): The number of time series we started with
-        num_frames (int): The total number of frames in the whole dataset
-        radius (int): The receptive field radius of the neural network
-        starts (list[int]):
-    """
-    input_length = stacked_data.shape[2]
-    stacked_data = stacked_data.reshape(num_timeseries, -1, input_length)
-    output = [stacked_data[:, 0, 0:input_length - radius]]
-    for k in range(1, stacked_data.shape[1]):
-        output.append(stacked_data[:, k, radius:-1*radius])
+    Reassemble per-window network outputs into full traces, keeping from each window only the outputs whose
+    receptive field lies inside it, except at the trace's true start and end, where no other window covers them.
 
-    output = torch.concatenate(output, dim = 1)
-    output = output[:, :num_frames]
+    Args:
+        stacked_data (torch.Tensor): Shape (num_timeseries * len(starts), 1, window_length), ordered trace-major
+        num_timeseries (int): The number of time series
+        num_frames (int): Length of each time series
+        radius (int): The network's receptive radius
+        starts (list[int]): Start of each window, ascending; the last window ends at num_frames
+    """
+    window_length = stacked_data.shape[2]
+    stacked_data = stacked_data.reshape(num_timeseries, len(starts), window_length)
+    output = torch.empty(num_timeseries, num_frames, device=stacked_data.device, dtype=stacked_data.dtype)
+    for k, s in enumerate(starts):
+        keep_start = 0 if s == 0 else radius
+        keep_end = window_length if s + window_length == num_frames else window_length - radius
+        output[:, s + keep_start:s + keep_end] = stacked_data[:, k, keep_start:keep_end]
     return output
 
 def _process_data_batch(model: torch.nn.Module,
@@ -516,31 +517,23 @@ def _denoise_batched_inner(model: torch.nn.Module,
         All three are in the normalized units of `traces`.
     """
     radius = model.receptive_radius
-    if not 2 * radius <= input_size:
-        raise ValueError(f"and smaller than input_size ({input_size})")
+    radius = model.receptive_radius
+    if input_size <= 2 * radius:
+        raise ValueError(f"input_size ({input_size}) must be larger than twice the network's receptive radius "
+                         f"({2 * radius})")
 
-    device = next(model.parameters()).device
-    num_timepoints = traces.shape[1]
-
-    num_traces = traces.shape[0]
-    radius, num_frames = model.receptive_radius, traces.shape[1]
+    num_traces, num_frames = traces.shape
     input_use = min(input_size, num_frames)
+    if input_use <= 2 * radius:
+        raise ValueError(f"Traces must be longer than {2 * radius} samples, got {num_frames}")
     stride = input_use - 2 * radius
-    starts = list(range(0, num_frames, stride))
-    if starts[-1] + input_use > num_frames:
-        pad_last = True
-    else:
-        pad_last = False
-    net_batches = []
-    for ind, s in enumerate(starts):
-        if ind + 1 == len(starts):
-            if pad_last:
-                placeholder = torch.zeros(num_traces, input_use, device=traces.device, dtype=traces.dtype)
-                curr = traces[:, s:num_timepoints]
-                placeholder[:, 0:num_timepoints-s] = curr
-                net_batches.append(placeholder)
-        else:
-            net_batches.append(traces[:, s:s+input_use])
+    # Windows advance by stride, so the kept regions [radius, input_use - radius) tile the trace. The last
+    # window is aligned to the trace's end rather than zero-padded: the convolutions pad every layer's features
+    # with zeros, which zero-padding the input does not reproduce (biases make the padded features nonzero).
+    starts = list(range(0, num_frames - input_use + 1, stride))
+    if starts[-1] + input_use < num_frames:
+        starts.append(num_frames - input_use)
+    net_batches = [traces[:, s:s + input_use] for s in starts]
     window = torch.stack(net_batches, dim=1).reshape(-1, 1, input_use)
 
     with torch.no_grad():
