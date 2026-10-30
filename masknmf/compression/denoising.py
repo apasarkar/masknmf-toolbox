@@ -221,7 +221,6 @@ def train_total_variance_denoiser(
         time_series,  # num_timeseries x time_series_length
         learning_rate: float = 1e-2,
         input_size: int = 900,
-        overlap: int = 600,
         max_epochs: int = 20,
         batch_size: int = 1,
         devices: int = 1,
