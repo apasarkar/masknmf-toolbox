@@ -5,7 +5,8 @@ the frame slider, the zoom and pan of the video panels, and the selected cell.
 Each window is an ordinary ``SingleSessionDemixingVis``. Linking them is three hooks on top:
 
 - the frame index: each viewer's ``ReferenceIndices`` reports a change and the other is set to the same time;
-- the camera: each figure's pan-zoom controller also drives the other figure's cameras;
+- the camera: each figure's pan-zoom controller also drives the other figure's cameras, and centering on a followed
+  cell copies the camera to the other figure;
 - the selection: a click on a cell in one viewer selects the cell in the other whose footprint overlaps it most
   (largest intersection over union); a cell nothing overlaps clears the other viewer's selection.
 
@@ -85,6 +86,14 @@ class LinkedVis(masknmf.SingleSessionDemixingVis):
             return
         for partner, matches in self._partners.items():
             partner.select_relayed(int(matches[int(component)]))
+
+    def _center_on(self, component: int):
+        ## NOTE: show_rect moves the cameras directly, not through the pan-zoom controller the cameras share
+        super()._center_on(component)
+        state = self._fov_subplot.camera.get_state()
+        for partner in self._partners:
+            for subplot in partner.fov_widget.figure:
+                subplot.camera.set_state(state)
 
     def deselect(self):
         super().deselect()
