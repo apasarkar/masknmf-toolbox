@@ -23,6 +23,7 @@ import scipy.sparse as sp
 import torch
 from tqdm import tqdm
 
+import masknmf
 from masknmf.arrays.array_interfaces import ArrayLike
 from masknmf.arrays import OphysArray
 from masknmf.arrays import StaticArray
@@ -277,7 +278,8 @@ class MiniALIResults(BaseResults):
         self._raw_array = OphysArray(raw_video,
                                      negative_indicator = True if self._indicator_polarity == "negative" else False,
                                      device=self.device,
-                                     good_frames = good_frame_indicator)
+                                     good_frames = good_frame_indicator,
+                                     include_mean = False)
 
         #This code loads the gradients,
         with h5py.File(path, "r") as f:
@@ -313,7 +315,6 @@ class MiniALIResults(BaseResults):
             raise ValueError(f"dfdx has shape {self._gradient.shape[:2]}, reference_image {self.fov_shape}")
 
         self._fix_footprint_orientation = fix_footprint_orientation
-
         # footprints: MATLAB {idx (1-based, column-major), values} per cell -> (pixels, cells), zeros dropped
         rows, cols, vals = [], [], []
         for k, (idx, values) in enumerate(footprints):
@@ -333,37 +334,38 @@ class MiniALIResults(BaseResults):
         self._temporal_demixed = torch.as_tensor(traces).T # (frames, cells)
         if self.indicator_polarity == "negative":
             self._temporal_demixed = mean_invert_temporal_vectors(self._temporal_demixed) #(frames, cells)
-
         if background is None:
             background = saved_background if saved_background is not None else miniali_background(self._reference_image)
         self._background = np.asarray(background, np.float32)
         if self._background.shape != self.fov_shape:
             raise ValueError(f"background has shape {self._background.shape}, the field of view is {self.fov_shape}")
-
         # Averages over each footprint's support, (cells, frames), as the viewer's trace panel draws them
         self._roi_average = roi_average_operator(self._spatial_scipy)
         self._signal_roi_averages = torch.from_numpy(
             np.asarray((self._roi_average @ self._spatial_scipy) @ traces, np.float32))
         self._background_roi_averages = torch.from_numpy(
             (self._roi_average @ self._background.ravel()).astype(np.float32))
-
         self._registered_array = None
         self._residual_array = None
         self._registered_roi_averages = None
 
 
+        ## Now we want a mean 0 version of the registered array
         self._registered_array = GradientRegistrationArray(self.raw_array,
                                                            self._shifts,
                                                            self._gradient.reshape(-1, 2))
-        self._signals_array = SignalsArray.from_tensors(self.fov_shape, self._spatial_demixed, self._temporal_demixed)
+        self._registered_array.include_mean = False
+
+
+        self._signals_array = SignalsArray.from_tensors(self.fov_shape, self._spatial_demixed, self._temporal_demixed - torch.mean(self._temporal_demixed, dim=0, keepdim=True))
         self._background_array = StaticArray(self._background, self.shape[0])
-
-        residual = MiniALIResidualArray(self._registered_array, self._background_array, self._signals_array)
+        self._placeholder_background_array = StaticArray(self._background * 0, self.shape[0])
+        residual = MiniALIResidualArray(self._registered_array, self._placeholder_background_array, self._signals_array)
         if residual_compress:
-            residual = CompressStrategy(block_sizes=[32, 32]).compress(residual)
+            residual = CompressStrategy(block_sizes=[32, 32],
+                                        host_memory_gb=8).compress(residual)
         self._residual_array = residual
-
-
+        self._global_residual_correlation_image = torch.zeros(self.fov_shape[0], self.fov_shape[1])
         self.to(self._device)
 
     def to(self, new_device: str | torch.device):
@@ -374,6 +376,8 @@ class MiniALIResults(BaseResults):
         self._background_roi_averages = self._background_roi_averages.to(device)
         self._signals_array.to(device)
         self._background_array.to(device)
+        self._placeholder_background_array.to(device)
+        self._global_residual_correlation_image.to(device)
         self._device = device
 
 
