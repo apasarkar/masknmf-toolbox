@@ -428,10 +428,6 @@ class CaimanResults(BaseResults):
         return self._correlation_image
 
     @property
-    def global_residual_correlation_image(self) -> torch.Tensor | None:
-        return None
-
-    @property
     def fluctuating_background_array(self) -> CaimanBackgroundArray | None:
         return self._background_array
 

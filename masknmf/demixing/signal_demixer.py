@@ -16,6 +16,7 @@ from typing import Literal
 from collections.abc import Sequence
 from masknmf.utils import SparseCOOTensor, SparseCSRTensor
 from masknmf.compression.preprocessing import SplineDetrenderBase
+from masknmf.demixing.local_correlation import local_mad_correlation_mat, fov_tiles, neighbor_correlations
 import masknmf.demixing.regression_update
 from masknmf.demixing.demixing_arrays import (
     StandardCorrelationImages,
@@ -729,38 +730,6 @@ def median_filter_subtract_batched(x, window, batch=128):
     return out
 
 
-def threshold_data_inplace(movie_chunk,
-                           mad_threshold_value: int = 2,
-                           dim: int = 2,
-                           sign: Literal["positive", "negative", "unconstrained"] = "unconstrained"):
-    """
-    Threshold data: in each pixel, compute the median and median absolute deviation (MAD),
-    then zero all bins (x,t) such that Yd(x,t) < med(x) + th * MAD(x).
-    Min subtract and return the result.
-    Args:
-        movie_chunk (torch.tensor). Shape (fov dim 1, fov dim 2, frames)
-        mad_threshold_value (int): "th", as described above. The number of median absolute deviations in the threshold.
-        dim (int): The axis over which operations are applied.
-    Returns:
-        Yd: A MAD thresholded version of the movie, where values that do not make it past the threhold are set to nan
-    """
-    movie_median = torch.median(movie_chunk, dim=dim, keepdim=True)[0]
-    diff = torch.abs(movie_chunk - movie_median)
-    mad_values = torch.median(diff, dim=dim, keepdim=True)[0]
-
-    if sign == "unconstrained":
-        condition = diff >= mad_values * mad_threshold_value
-    elif sign == "positive":
-        condition = (diff >= mad_values * mad_threshold_value) & (movie_chunk > movie_median)
-    elif sign == "negative":
-        condition = (diff >= mad_values * mad_threshold_value) & (movie_chunk < movie_median)
-    else:
-        raise ValueError("Invalid sign parameter")
-    weight_matrix = torch.where(condition, 1.0, torch.nan)
-
-    return movie_chunk * weight_matrix
-
-
 def reshape_fortran(x, shape):
     if len(x.shape) > 0:
         x = x.permute(*reversed(range(len(x.shape))))
@@ -769,14 +738,6 @@ def reshape_fortran(x, shape):
 
 def reshape_c(x, shape):
     return torch.reshape(x, shape)
-
-
-def get_total_edges(d1, d2):
-    assert (
-            d1 > 2 and d2 > 2
-    ), "At least one dimensions is less than 2 pixels. Not supported"
-    overcount = 8 * (d1 - 2) * (d2 - 2) + 2 * (d1 - 2) * 5 + 2 * (d2 - 2) * 5 + 4 * 3
-    return math.ceil(overcount / 2)
 
 
 def sparse_dilation_routine(fov_height: int,
@@ -991,151 +952,49 @@ def get_local_correlation_structure(
         background_flag = False
 
     dims = (dims[0], dims[1], v.shape[1])
-
     ref_mat = torch.arange(np.prod(dims[:-1]), device=device)
     ref_mat = ref_mat.reshape(dims[0], dims[1])
-
-    # a tile of 1 pixel would make the tile step below (tilesize - 1) zero
-    tilesize = max(2, math.floor(math.sqrt(batch_size)))
-
-    iters_x = math.ceil((dims[0] / (tilesize - 1)))
-    iters_y = math.ceil((dims[1] / (tilesize - 1)))
-
-    # Pixel-to-pixel coordinates for highly-correlated neighbors
-    total_edges = 2 * get_total_edges(
-        dims[0], dims[1]
-    )  # Here we multiply by two because when we tile the FOV, some correlations are computed twice
-    point1_indices = torch.zeros((total_edges), dtype=torch.int32, device=device)
-    point2_indices = torch.zeros((total_edges), dtype=torch.int32, device=device)
-    correlation_values = torch.zeros((total_edges), dtype=torch.float32, device=device)
 
     if resid_flag:
         a_csr = a.to_sparse_csr()
     else:
         a_csr = None
-    progress_index = 0
-    for tile_x in range(iters_x):
-        for tile_y in range(iters_y):
-            x_pt = (tilesize - 1) * tile_x
-            x_end = x_pt + tilesize
-            y_pt = (tilesize - 1) * tile_y
-            y_end = y_pt + tilesize
+    point1_indices, point2_indices, correlation_values = [], [], []
+    for x_pt, x_end, y_pt, y_end in fov_tiles(dims[0], dims[1], batch_size):
+        indices_curr_2d = ref_mat[x_pt:x_end, y_pt:y_end]
+        robust_corr_values = noise_std[x_pt:x_end, y_pt:y_end]
+        x_interval = indices_curr_2d.shape[0]
+        y_interval = indices_curr_2d.shape[1]
 
-            indices_curr_2d = ref_mat[x_pt:x_end, y_pt:y_end]
-            robust_corr_values = noise_std[x_pt:x_end, y_pt:y_end]
-            x_interval = indices_curr_2d.shape[0]
-            y_interval = indices_curr_2d.shape[1]
+        indices_curr = indices_curr_2d.reshape(x_interval * y_interval,)
 
-            indices_curr = indices_curr_2d.reshape(x_interval * y_interval,)
+        u_sparse_crop = csr_index_select_rows(u_sparse, indices_curr)
+        Yd = torch.sparse.mm(u_sparse_crop, v).reshape(x_interval, y_interval, -1)
+        if resid_flag:
+            a_sparse_crop = csr_index_select_rows(a_csr, indices_curr) ##TODO: deal with just csr "a" tensor
 
-            u_sparse_crop = csr_index_select_rows(u_sparse, indices_curr)
-            Yd = torch.sparse.mm(u_sparse_crop, v).reshape(x_interval, y_interval, -1)
-            if resid_flag:
-                a_sparse_crop = csr_index_select_rows(a_csr, indices_curr) ##TODO: deal with just csr "a" tensor
+            ac_mov = torch.sparse.mm(a_sparse_crop, c.T).reshape(x_interval, y_interval, -1)
+            Yd -= ac_mov
 
-                ac_mov = torch.sparse.mm(a_sparse_crop, c.T).reshape(x_interval, y_interval, -1)
-                Yd -= ac_mov
+        if background_flag:
+            background_subset = torch.sparse.mm(u_sparse_crop, fluctuating_background_term1) @ fluctuating_background_term2
+            background_subset = background_subset.reshape(x_interval, y_interval, -1)
+            Yd -= background_subset
 
-            if background_flag:
-                background_subset = torch.sparse.mm(u_sparse_crop, fluctuating_background_term1) @ fluctuating_background_term2
-                background_subset = background_subset.reshape(x_interval, y_interval, -1)
-                Yd -= background_subset
+        if detrender is not None:
+            curr_height, curr_width, curr_frames = Yd.shape
+            Yd, _ = detrender(Yd.reshape(curr_height * curr_width, curr_frames).T) #frames x pixels
+            Yd = Yd.T.reshape(curr_height, curr_width, curr_frames)
 
-            if detrender is not None:
-                curr_height, curr_width, curr_frames = Yd.shape
-                Yd, _ = detrender(Yd.reshape(curr_height * curr_width, curr_frames).T) #frames x pixels
-                Yd = Yd.T.reshape(curr_height, curr_width, curr_frames)
+        point1_curr, point2_curr, rho_curr = neighbor_correlations(Yd, indices_curr_2d, robust_corr_values, th,
+                                                                   sign=sign, tol=tol)
+        point1_indices.append(point1_curr)
+        point2_indices.append(point2_curr)
+        correlation_values.append(rho_curr)
 
-            # Get MAD-thresholded movie in-place
-            if not th == 0:
-                Yd = threshold_data_inplace(Yd, th, sign=sign)
-
-            # Permute the movie
-            Yd = Yd.permute(2, 0, 1)
-
-            # Normalize each trace in-place, using robust correlation statistic
-            Yd -= torch.nanmean(Yd, dim=0, keepdim=True)
-            divisor = torch.nansum(Yd * Yd, dim=0, keepdim=True) + dims[2] * (robust_corr_values ** 2)[None, :]
-            divisor = torch.sqrt(divisor)
-            divisor = torch.nan_to_num(divisor, nan=1.0)
-            divisor[divisor < 0] = 1.0
-            final_divisor = divisor.clone()
-
-            # If divisor is 0, that implies that the std of a 0-mean pixel is 0, which means the
-            # pixel is 0 everywhere. In this case, set divisor to 1, so Yd/divisor = 0, as expected
-            final_divisor[divisor < tol] = 1.0  # Temporarily set all small values to 1.
-            torch.reciprocal(final_divisor, out=final_divisor)
-            final_divisor[divisor < tol] = 0.0  ##Now set these small values to 0
-
-            torch.mul(Yd, final_divisor, out=Yd)
-
-            # Vertical pixel correlations
-            rho = torch.nansum(Yd[:, :-1, :] * Yd[:, 1:, :], dim=0)
-            point1_curr = indices_curr_2d[:-1, :].flatten()
-            point2_curr = indices_curr_2d[1:, :].flatten()
-            rho_curr = rho.flatten()
-            point1_indices[
-            progress_index: progress_index + point1_curr.shape[0]
-            ] = point1_curr
-            point2_indices[
-            progress_index: progress_index + point1_curr.shape[0]
-            ] = point2_curr
-            correlation_values[
-            progress_index: progress_index + point1_curr.shape[0]
-            ] = torch.nan_to_num(rho_curr, nan=0.0)
-            progress_index = progress_index + point1_curr.shape[0]
-
-            # Horizontal pixel correlations
-            rho = torch.nansum(Yd[:, :, :-1] * Yd[:, :, 1:], dim=0)
-            point1_curr = indices_curr_2d[:, :-1].flatten()
-            point2_curr = indices_curr_2d[:, 1:].flatten()
-            rho_curr = rho.flatten()
-            point1_indices[
-            progress_index: progress_index + point1_curr.shape[0]
-            ] = point1_curr
-            point2_indices[
-            progress_index: progress_index + point1_curr.shape[0]
-            ] = point2_curr
-            correlation_values[
-            progress_index: progress_index + point1_curr.shape[0]
-            ] = torch.nan_to_num(rho_curr, nan=0.0)
-            progress_index = progress_index + point1_curr.shape[0]
-
-            # Top left and bottom right diagonal correlations
-            rho = torch.nansum(Yd[:, :-1, :-1] * Yd[:, 1:, 1:], dim=0)
-            point1_curr = indices_curr_2d[:-1, :-1].flatten()
-            point2_curr = indices_curr_2d[1:, 1:].flatten()
-            rho_curr = rho.flatten()
-            point1_indices[
-            progress_index: progress_index + point1_curr.shape[0]
-            ] = point1_curr
-            point2_indices[
-            progress_index: progress_index + point1_curr.shape[0]
-            ] = point2_curr
-            correlation_values[
-            progress_index: progress_index + point1_curr.shape[0]
-            ] = torch.nan_to_num(rho_curr, nan=0.0)
-            progress_index = progress_index + point1_curr.shape[0]
-
-            # Bottom left and top right diagonal correlations
-            rho = torch.nansum(Yd[:, 1:, :-1] * Yd[:, :-1, 1:], dim=0)
-            point1_curr = indices_curr_2d[1:, :-1].flatten()
-            point2_curr = indices_curr_2d[:-1, 1:].flatten()
-            rho_curr = rho.flatten()
-            point1_indices[
-            progress_index: progress_index + point1_curr.shape[0]
-            ] = point1_curr
-            point2_indices[
-            progress_index: progress_index + point1_curr.shape[0]
-            ] = point2_curr
-            correlation_values[
-            progress_index: progress_index + point1_curr.shape[0]
-            ] = torch.nan_to_num(rho_curr, nan=0.0)
-            progress_index = progress_index + point1_curr.shape[0]
-
-    avg_corr_img = local_mad_correlation_mat(point1_indices[:progress_index],
-                                             point2_indices[:progress_index],
-                                             correlation_values[:progress_index],
+    avg_corr_img = local_mad_correlation_mat(torch.cat(point1_indices),
+                                             torch.cat(point2_indices),
+                                             torch.cat(correlation_values),
                                              dims)
     return avg_corr_img
 
@@ -1741,71 +1600,6 @@ def show_img(ax, img, vmin=None, vmax=None):
     else:
         format_tile = "%5d"
     plt.colorbar(im, cax=cax, orientation="vertical", spacing="uniform")
-
-
-def local_mad_correlation_mat(
-        dim1_coordinates: torch.tensor,
-        dim2_coordinates: torch.tensor,
-        correlations: torch.tensor,
-        dims: tuple[int, int, ...],
-        order: str = "C",
-) -> np.ndarray:
-    """
-    We MAD-threshold each pixel and compute correlations between neighboring pixels in the superpixel step
-    Start with an index-index-value representation of the correlations (i.e. (3, 4, 0.2) means the corr between pixels 3, 4 is 0.2).
-    The below function removes duplicates. It then computes the average correlation for each pixel "i" with all of its neighbors.
-
-    Args:
-        dim1_coordinates (torch.tensor): Shape (N). Pixel coordinates in the field of view
-        dim2_coordinates (torch.tensor): Shape (N). Pixel coordinates in the field of view
-        correlations (torch.tensor): Shape (N). Correlation values for dim1_coordinates[i], dim2_coordinates[i]
-        dims (tuple): Integer specifying shape of data (field of view dim1, field of view dim2, and maybe frames).
-        order (str): either "F" or "C" indicating how to reshape flattened data
-
-    Returns:
-        correlation_image (np.ndarray): Shape (fov_height, fov_width).
-    """
-    coordinate_pairs = torch.stack((dim1_coordinates, dim2_coordinates), dim=1)
-    sorted_coordinates, _ = torch.sort(coordinate_pairs, dim=1)
-
-    num_pixels_fov = np.prod(dims[:2])
-
-    multiplicity_tracker = 100
-    correlations = (
-            correlations + multiplicity_tracker
-    )  # Now every correlation is between 99 and 101
-
-    correlations_mat = torch.sparse_coo_tensor(
-        sorted_coordinates.T, correlations, (num_pixels_fov, num_pixels_fov)
-    ).coalesce()
-
-    rows, cols = correlations_mat.indices()
-    correlation_sums = correlations_mat.values()
-    multiplicity = torch.round(correlation_sums / multiplicity_tracker)
-    correlation_sums = (
-                               correlation_sums - multiplicity_tracker * multiplicity
-                       ) / multiplicity
-
-    # Now repeat this algorithm again
-    correlation_sums = correlation_sums + multiplicity_tracker
-
-    final_rows = torch.concatenate([rows, cols], dim=0)
-    final_cols = torch.zeros_like(final_rows, device=final_rows.device)
-    final_values = torch.concatenate([correlation_sums, correlation_sums])
-
-    correlations_mat = torch.sparse_coo_tensor(
-        torch.stack([final_rows, final_cols]), final_values, (num_pixels_fov, 1)
-    ).coalesce()
-
-    rows, _ = correlations_mat.indices()
-    final_values = correlations_mat.values()
-    multiplicity = torch.round(final_values / multiplicity_tracker)
-    final_values = (final_values - multiplicity_tracker * multiplicity) / multiplicity
-
-    dense_correlation_mat = torch.zeros(num_pixels_fov, device=rows.device)
-    dense_correlation_mat[rows] = final_values
-
-    return dense_correlation_mat.cpu().numpy().reshape((dims[0], dims[1]), order=order)
 
 
 def prepare_iteration_uv(

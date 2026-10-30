@@ -425,10 +425,6 @@ class Suite2pResults(BaseResults):
         return self._motion_corrected_data
 
     @property
-    def global_residual_correlation_image(self) -> torch.Tensor | None:
-        return None
-
-    @property
     def signals_array(self) -> SignalsArray | None:
         """Across pipelines this term should be a factorized product (spatial components @ temporal components)"""
         return self._signals_array
