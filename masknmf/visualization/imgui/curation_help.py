@@ -15,6 +15,7 @@ from imgui_bundle import icons_fontawesome_6 as fa
 from imgui_bundle import imgui
 from wgpu.utils.imgui import ImguiRenderer
 
+from masknmf.visualization.imgui.clipboard import connect_clipboard
 from masknmf.visualization.imgui.guide import ACCENT, CARD, DIM, EDGE, KEY, PLOT, TEXT, arrow, box, u32
 from masknmf.visualization.imgui.keybinds import DEMIXING
 from masknmf.visualization.imgui.panels import draw_keybinds_button, draw_keybinds_popup
@@ -670,6 +671,7 @@ def main() -> None:
     canvas = RenderCanvas(title="curation help", size=(760, 1000), update_mode="continuous", max_fps=60)
     fit_canvas(canvas)
     renderer = ImguiRenderer(wgpu.utils.get_default_device(), canvas)
+    connect_clipboard(renderer.imgui_context)
     load_fonts()
     renderer.set_gui(scaled(partial(draw_window, {"open": True, "keys": False})))
     canvas.request_draw(renderer.render)

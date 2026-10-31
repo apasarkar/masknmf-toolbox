@@ -35,6 +35,7 @@ dependencies = [
     "simplejpeg",
     "glfw",
     "psutil",
+    "pyperclip",
     "oasis-deconv", ## Latest version that allows clean axonal and somatic tracking
     "roicat[latest] >= 1.7.10",
     "scipy-stubs~=1.15.3",
