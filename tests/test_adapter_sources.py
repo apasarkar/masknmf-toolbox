@@ -1,4 +1,4 @@
-"""suite2p plane folders, caiman files and miniALI .mat files open like results files, through their adapters."""
+"""suite2p plane folders, caiman files, miniALI .mat files and GIAnT runs open like results files, through their adapters."""
 
 import h5py
 import numpy as np
@@ -7,7 +7,7 @@ import scipy.sparse as sp
 
 import masknmf
 from masknmf import cli
-from masknmf.demixing._adapters import CaimanResults, MiniALIResults, Suite2pResults, adapter_for, suite2p_frame_rate
+from masknmf.demixing._adapters import CaimanResults, GiantResults, MiniALIResults, Suite2pResults, adapter_for, suite2p_frame_rate
 from masknmf.demixing._base_results import BaseResults
 from masknmf.io import OpenedResults, load_movie
 
@@ -94,6 +94,58 @@ def write_miniali_recording(folder, frames: int = FRAMES + 4) -> None:
                 entry["frames_requested"] = np.array([[float(frames)]])
             entries.append(entry.ref)
         f.create_dataset("Device_Data", data=np.array(entries, dtype=h5py.ref_dtype)[:, None])
+
+
+GIANT_CHANNELS, GIANT_ACTIVITY_CHANNEL = 2, 2  # activity_channel is 1-based, as the store holds it
+GIANT_SOURCES = ((4, 5), (10, 13))
+
+
+def write_giant_run(folder) -> None:
+    """
+    A GIAnT run folder as subcell writes it: experiment.zarr (zarr format 2), one trial, two sources. The registered
+    movie interleaves the channels in time and holds 10 * frame + channel, so a read shows which planes it took.
+    """
+    import zarr
+
+    rng = np.random.default_rng(4)
+    root = zarr.open_group(str(folder / "experiment.zarr"), mode="w", zarr_format=2)
+    sel_pix = np.zeros((HEIGHT, WIDTH), bool)
+    for r0, c0 in GIANT_SOURCES:
+        sel_pix[r0 - 2:r0 + 3, c0 - 2:c0 + 3] = True
+    rows, cols = np.nonzero(sel_pix)
+    footprints = np.full((rows.size, len(GIANT_SOURCES)), np.nan, np.float32)  # NaN outside each source's subproblem
+    for k, (r0, c0) in enumerate(GIANT_SOURCES):
+        inside = (np.abs(rows - r0) <= 2) & (np.abs(cols - c0) <= 2)
+        footprints[inside, k] = np.exp(-((rows[inside] - r0) ** 2 + (cols[inside] - c0) ** 2) / 2.0)
+        footprints[inside, k] /= footprints[inside, k].sum()
+    summary = root.create_group("summary")
+    summary.attrs.update({"num_sources": len(GIANT_SOURCES), "params": {"activity_channel": GIANT_ACTIVITY_CHANNEL}})
+    summary.create_array("sources/sel_pix", data=sel_pix)
+    summary.create_array("sources/locations_r", data=np.array([r for r, _ in GIANT_SOURCES], np.float64))
+    summary.create_array("sources/locations_c", data=np.array([c for _, c in GIANT_SOURCES], np.float64))
+    trial = root.create_group("trials/trial_001")
+    planes = (10 * np.arange(FRAMES)[:, None] + np.arange(GIANT_CHANNELS)[None, :]).ravel().astype(np.float32)
+    trial.create_array("registered_raw", data=np.broadcast_to(planes, (HEIGHT, WIDTH, planes.size)).copy(), chunks=(HEIGHT, WIDTH, 16))
+    alignment = trial.create_group("alignment")
+    alignment.attrs.update({"num_channels": GIANT_CHANNELS, "frame_time": 0.0025, "align_hz": 50.0})
+    alignment.create_array("motion_r", data=rng.standard_normal(FRAMES))
+    alignment.create_array("motion_c", data=rng.standard_normal(FRAMES))
+    discard = np.zeros(FRAMES, bool)
+    discard[[7, 8]] = True
+    traces = {name: rng.random((len(GIANT_SOURCES), FRAMES)).astype(np.float32) for name in ("denoised", "ls", "events", "F0")}
+    for name in ("denoised", "ls", "events"):
+        traces[name][:, discard] = np.nan
+    extraction = trial.create_group("extraction")
+    for name, data in {"footprints": footprints, "discard_frames": discard, **traces}.items():
+        extraction.create_array(name, data=data)
+
+
+@pytest.fixture
+def giant_run(tmp_path):
+    pytest.importorskip("zarr")
+    folder = tmp_path / "giant_run"
+    write_giant_run(folder)
+    return folder
 
 
 @pytest.fixture
@@ -274,3 +326,64 @@ def test_view_lists_a_miniali_file_and_the_launcher_opens_it(tmp_path, miniali, 
     assert window.problems() == []
     args = cli.build_parser(spec=None).parse_args(window.build_argv())
     assert args.handler is cli.command_view and args.results == [str(miniali)] and args.raw == str(tmp_path / "recording")
+
+
+def test_a_giant_run_is_found_from_its_folder_its_store_or_a_trial(tmp_path, giant_run):
+    trial = giant_run / "experiment.zarr" / "trials" / "trial_001"
+    for path in (giant_run, giant_run / "experiment.zarr", trial):
+        assert GiantResults.expand(path) == [trial] and adapter_for(path) is GiantResults
+    assert adapter_for(tmp_path) is None and adapter_for(trial / "extraction") is None
+    assert GiantResults.describe(giant_run) == "GIAnT: 2 sources, 40 frames, trial_001"
+
+
+def test_a_giant_run_opens_with_its_footprints_traces_shifts_and_activity_channel(giant_run):
+    import zarr
+
+    opened = OpenedResults.open(giant_run)
+    results = opened.results
+    assert isinstance(results, GiantResults) and results.shape == (FRAMES, HEIGHT, WIDTH) and opened.skipped == []
+    assert results.frame_rate == pytest.approx(400.0)
+    store = zarr.open_group(str(giant_run / "experiment.zarr"), mode="r")
+    extraction, alignment = store["trials/trial_001/extraction"], store["trials/trial_001/alignment"]
+
+    # each footprint lands back on its source, summing to one; censored frames are 0 in both traces
+    footprints = results.spatial_demixed.to_dense().numpy().reshape(HEIGHT, WIDTH, -1)
+    for k, (r0, c0) in enumerate(GIANT_SOURCES):
+        assert np.unravel_index(np.argmax(footprints[..., k]), (HEIGHT, WIDTH)) == (r0, c0)
+        assert footprints[..., k].sum() == pytest.approx(1.0)
+    discard = extraction["discard_frames"][:]
+    np.testing.assert_array_equal(results.discard_frames, discard)
+    for name, trace in (("denoised", results.temporal_demixed), ("ls", results.temporal_demixed_raw)):
+        np.testing.assert_array_equal(trace.numpy(), np.nan_to_num(extraction[name][:]).T)
+    assert not results.temporal_demixed[discard].any()
+
+    np.testing.assert_array_equal(opened.shifts, -np.stack([alignment["motion_r"][:], alignment["motion_c"][:]], axis=-1).astype(np.float32))
+    # frame t of the activity channel is stored plane GIANT_CHANNELS * t + (activity_channel - 1)
+    frames = opened.registered[[3, 11]]
+    assert frames.shape == (2, HEIGHT, WIDTH)
+    np.testing.assert_array_equal(frames[:, 0, 0], [31, 111])
+    assert results.residual_array is None and results.fluctuating_background_array is None
+    assert results.signals_array[5].shape == (1, HEIGHT, WIDTH)
+
+
+def test_a_giant_run_drops_a_raw_movie_off_the_registered_canvas(giant_run):
+    opened = OpenedResults.open(giant_run, raw=np.zeros((FRAMES, HEIGHT - 4, WIDTH), np.float32))
+    assert opened.raw is None and "does not match the registered canvas" in opened.skipped[0]
+
+
+def test_view_lists_a_giant_run_and_the_launcher_opens_it(giant_run, capsys):
+    cli.main(["view", str(giant_run), "--list"])
+    assert "GIAnT: 2 sources, 40 frames, trial_001" in capsys.readouterr().out
+
+    from masknmf import launcher
+
+    window = launcher.Launcher()
+    window.page = "open"
+    window.paths_open["source"] = str(giant_run)
+    window.inspect()
+    trial = giant_run / "experiment.zarr" / "trials" / "trial_001"
+    assert window.found["kind"] == "giant" and window.found["files"] == [str(trial)]
+    assert window.found["detail"] == "trial_001: GIAnT: 2 sources, 40 frames, trial_001"
+    assert window.available(key="demixing") and window.problems() == []
+    args = cli.build_parser(spec=None).parse_args(window.build_argv())
+    assert args.handler is cli.command_view and args.results == [str(giant_run)]
