@@ -96,35 +96,48 @@ def write_miniali_recording(folder, frames: int = FRAMES + 4) -> None:
         f.create_dataset("Device_Data", data=np.array(entries, dtype=h5py.ref_dtype)[:, None])
 
 
-GIANT_CHANNELS, GIANT_ACTIVITY_CHANNEL = 2, 2  # activity_channel is 1-based, as the store holds it
+GIANT_CHANNELS, GIANT_ACTIVITY_CHANNEL = 2, 2  # the activity channel is 1-based, as both writers save it
 GIANT_SOURCES = ((4, 5), (10, 13))
+GIANT_MATLAB_STEM = "scan_00001"
+
+
+def giant_footprint_images() -> np.ndarray:
+    """(sources, height, width): a Gaussian on the 5 x 5 box around each of GIANT_SOURCES, summing to one."""
+    rows, cols = np.mgrid[:HEIGHT, :WIDTH]
+    images = np.zeros((len(GIANT_SOURCES), HEIGHT, WIDTH), np.float32)
+    for k, (r0, c0) in enumerate(GIANT_SOURCES):
+        inside = (np.abs(rows - r0) <= 2) & (np.abs(cols - c0) <= 2)
+        images[k][inside] = np.exp(-((rows[inside] - r0) ** 2 + (cols[inside] - c0) ** 2) / 2.0)
+        images[k] /= images[k].sum()
+    return images
+
+
+def giant_registered_planes() -> np.ndarray:
+    """(frames * channels,): 10 * frame + channel, the channels interleaved, so a read shows which planes it took."""
+    return (10 * np.arange(FRAMES)[:, None] + np.arange(GIANT_CHANNELS)[None, :]).ravel().astype(np.float32)
 
 
 def write_giant_run(folder) -> None:
     """
     A GIAnT run folder as subcell writes it: experiment.zarr (zarr format 2), one trial, two sources. The registered
-    movie interleaves the channels in time and holds 10 * frame + channel, so a read shows which planes it took.
+    movie holds giant_registered_planes().
     """
     import zarr
 
     rng = np.random.default_rng(4)
     root = zarr.open_group(str(folder / "experiment.zarr"), mode="w", zarr_format=2)
-    sel_pix = np.zeros((HEIGHT, WIDTH), bool)
-    for r0, c0 in GIANT_SOURCES:
-        sel_pix[r0 - 2:r0 + 3, c0 - 2:c0 + 3] = True
+    images = giant_footprint_images()
+    sel_pix = images.max(axis=0) > 0
     rows, cols = np.nonzero(sel_pix)
-    footprints = np.full((rows.size, len(GIANT_SOURCES)), np.nan, np.float32)  # NaN outside each source's subproblem
-    for k, (r0, c0) in enumerate(GIANT_SOURCES):
-        inside = (np.abs(rows - r0) <= 2) & (np.abs(cols - c0) <= 2)
-        footprints[inside, k] = np.exp(-((rows[inside] - r0) ** 2 + (cols[inside] - c0) ** 2) / 2.0)
-        footprints[inside, k] /= footprints[inside, k].sum()
+    footprints = images[:, rows, cols].T  ## (selected pixels, sources)
+    footprints[footprints == 0] = np.nan  # NaN outside each source's subproblem
     summary = root.create_group("summary")
     summary.attrs.update({"num_sources": len(GIANT_SOURCES), "params": {"activity_channel": GIANT_ACTIVITY_CHANNEL}})
     summary.create_array("sources/sel_pix", data=sel_pix)
     summary.create_array("sources/locations_r", data=np.array([r for r, _ in GIANT_SOURCES], np.float64))
     summary.create_array("sources/locations_c", data=np.array([c for _, c in GIANT_SOURCES], np.float64))
     trial = root.create_group("trials/trial_001")
-    planes = (10 * np.arange(FRAMES)[:, None] + np.arange(GIANT_CHANNELS)[None, :]).ravel().astype(np.float32)
+    planes = giant_registered_planes()
     trial.create_array("registered_raw", data=np.broadcast_to(planes, (HEIGHT, WIDTH, planes.size)).copy(), chunks=(HEIGHT, WIDTH, 16))
     alignment = trial.create_group("alignment")
     alignment.attrs.update({"num_channels": GIANT_CHANNELS, "frame_time": 0.0025, "align_hz": 50.0})
@@ -140,11 +153,56 @@ def write_giant_run(folder) -> None:
         extraction.create_array(name, data=data)
 
 
+def write_giant_matlab_run(folder) -> None:
+    """
+    A single-trial GIAnT-MATLAB run folder as StripRegistration and SILo write it, with the sources of write_giant_run.
+    MATLAB's HDF5 is column-major, so each dataset is saved transposed, the reverse of the shape GIAnT's README gives.
+    The registered tif holds giant_registered_planes(), one page per plane.
+    """
+    import tifffile
+
+    rng = np.random.default_rng(5)
+    (folder / "motion_correction").mkdir(parents=True)
+    (folder / "source_extraction").mkdir()
+    planes = giant_registered_planes()
+    tifffile.imwrite(folder / "motion_correction" / f"{GIANT_MATLAB_STEM}_REGISTERED_RAW.tif",
+                     np.broadcast_to(planes[:, None, None], (planes.size, HEIGHT, WIDTH)))
+    with h5py.File(folder / "motion_correction" / f"{GIANT_MATLAB_STEM}_ALIGNMENTDATA.h5", "w") as f:
+        f["row_major"] = np.zeros((1, 1), np.uint8)
+        f["numChannels"] = np.full((1, 1), GIANT_CHANNELS, np.float64)
+        f["frametime"] = np.full((1, 1), 0.0025)
+
+    discard = np.zeros(FRAMES, bool)
+    discard[[7, 8]] = True
+    traces = {name: np.full((len(GIANT_SOURCES), GIANT_CHANNELS, FRAMES), np.nan, np.float32) for name in ("dF_ls", "dF_denoised")}
+    for trace in traces.values():
+        trace[:, GIANT_ACTIVITY_CHANNEL - 1] = rng.random((len(GIANT_SOURCES), FRAMES))
+        trace[:, :, discard] = np.nan
+    with h5py.File(folder / "source_extraction" / "experiment_summary.h5", "w") as f:
+        f["row_major"] = np.zeros((1, 1), np.uint8)
+        f["params/activityChannel"] = np.full((1, 1), GIANT_ACTIVITY_CHANNEL, np.float64)
+        # SILo's (sources, fastz, rows, cols) with its rows being the tif's columns, so reversed it is the tif's layout
+        f["Path1/sources/spatial/profiles"] = np.moveaxis(giant_footprint_images(), 0, -1)[:, :, None, :]
+        for name, trace in traces.items():
+            f[f"Path1/sources/temporal/{name}"] = trace.T  ## MATLAB's (sources, channels, frames)
+        f["Path1/frame_info/offlineXshifts"] = rng.standard_normal((FRAMES, 1)).T
+        f["Path1/frame_info/offlineYshifts"] = rng.standard_normal((FRAMES, 1)).T
+        f["Path1/frame_info/discard_frames"] = discard.astype(np.int8)[:, None].T
+
+
 @pytest.fixture
 def giant_run(tmp_path):
     pytest.importorskip("zarr")
     folder = tmp_path / "giant_run"
     write_giant_run(folder)
+    return folder
+
+
+@pytest.fixture
+def giant_matlab_run(tmp_path):
+    pytest.importorskip("tifffile")
+    folder = tmp_path / "giant_matlab_full"
+    write_giant_matlab_run(folder)
     return folder
 
 
@@ -333,7 +391,7 @@ def test_a_giant_run_is_found_from_its_folder_its_store_or_a_trial(tmp_path, gia
     for path in (giant_run, giant_run / "experiment.zarr", trial):
         assert GiantResults.expand(path) == [trial] and adapter_for(path) is GiantResults
     assert adapter_for(tmp_path) is None and adapter_for(trial / "extraction") is None
-    assert GiantResults.describe(giant_run) == "GIAnT: 2 sources, 40 frames, trial_001"
+    assert GiantResults.describe(giant_run) == "GIAnT (subcell): 2 sources, 40 frames, trial_001"
 
 
 def test_a_giant_run_opens_with_its_footprints_traces_shifts_and_activity_channel(giant_run):
@@ -373,7 +431,7 @@ def test_a_giant_run_drops_a_raw_movie_off_the_registered_canvas(giant_run):
 
 def test_view_lists_a_giant_run_and_the_launcher_opens_it(giant_run, capsys):
     cli.main(["view", str(giant_run), "--list"])
-    assert "GIAnT: 2 sources, 40 frames, trial_001" in capsys.readouterr().out
+    assert "GIAnT (subcell): 2 sources, 40 frames, trial_001" in capsys.readouterr().out
 
     from masknmf import launcher
 
@@ -383,7 +441,36 @@ def test_view_lists_a_giant_run_and_the_launcher_opens_it(giant_run, capsys):
     window.inspect()
     trial = giant_run / "experiment.zarr" / "trials" / "trial_001"
     assert window.found["kind"] == "giant" and window.found["files"] == [str(trial)]
-    assert window.found["detail"] == "trial_001: GIAnT: 2 sources, 40 frames, trial_001"
+    assert window.found["detail"] == "trial_001: GIAnT (subcell): 2 sources, 40 frames, trial_001"
     assert window.available(key="demixing") and window.problems() == []
     args = cli.build_parser(spec=None).parse_args(window.build_argv())
     assert args.handler is cli.command_view and args.results == [str(giant_run)]
+
+
+def test_a_giant_matlab_run_is_found_from_its_folder_or_its_experiment_summary(tmp_path, giant_matlab_run):
+    for path in (giant_matlab_run, giant_matlab_run / "source_extraction" / "experiment_summary.h5"):
+        assert GiantResults.expand(path) == [giant_matlab_run] and adapter_for(path) is GiantResults
+    assert adapter_for(giant_matlab_run / "motion_correction") is None
+    assert GiantResults.describe(giant_matlab_run) == "GIAnT-MATLAB: 2 sources, 40 frames"
+
+
+def test_a_giant_matlab_run_opens_with_its_profiles_traces_shifts_and_activity_channel(giant_matlab_run):
+    opened = OpenedResults.open(giant_matlab_run)
+    results = opened.results
+    assert isinstance(results, GiantResults) and results.shape == (FRAMES, HEIGHT, WIDTH) and opened.skipped == []
+    assert results.frame_rate == pytest.approx(400.0)
+    with h5py.File(giant_matlab_run / "source_extraction" / "experiment_summary.h5", "r") as f:
+        path = f["Path1"]
+        traces = {name: path[f"sources/temporal/{name}"][:, GIANT_ACTIVITY_CHANNEL - 1, :] for name in ("dF_denoised", "dF_ls")}
+        shifts = -np.stack([path["frame_info/offlineYshifts"][0], path["frame_info/offlineXshifts"][0]], axis=-1).astype(np.float32)
+        discard = path["frame_info/discard_frames"][0].astype(bool)
+
+    np.testing.assert_allclose(results.spatial_demixed.to_dense().numpy().reshape(HEIGHT, WIDTH, -1),
+                               np.moveaxis(giant_footprint_images(), 0, -1))
+    np.testing.assert_array_equal(results.discard_frames, discard)
+    np.testing.assert_array_equal(results.temporal_demixed.numpy(), np.nan_to_num(traces["dF_denoised"]))
+    np.testing.assert_array_equal(results.temporal_demixed_raw.numpy(), np.nan_to_num(traces["dF_ls"]))
+    assert not results.temporal_demixed[discard].any()
+    np.testing.assert_array_equal(opened.shifts, shifts)
+    # frame t of the activity channel is page GIANT_CHANNELS * t + (activityChannel - 1)
+    np.testing.assert_array_equal(opened.registered[[3, 11]][:, 0, 0], [31, 111])
