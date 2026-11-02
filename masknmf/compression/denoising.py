@@ -589,5 +589,5 @@ class CompressionTemporalDenoiser(torch.nn.Module):
                                   padded,
                                   noise_variance_quantile=self.noise_variance_quantile,
                                   input_size=self._input_size,
-                                 input_batch_size=self.input_batch_size)[0]
+                                 input_batch_size=self._input_batch_size)[0]
         return outputs[:, self._padding:outputs.shape[1] - self._padding]

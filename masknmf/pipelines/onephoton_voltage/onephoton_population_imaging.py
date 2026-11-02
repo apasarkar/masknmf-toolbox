@@ -319,7 +319,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                 mean_img = torch.mean(mov[:self.motion_correct_config.num_frames_template], dim=0)
                 corrector = GradientMotionCorrector(template=mean_img)
                 moco_array = corrector.motion_correct(mov)
-                moco_array.output_device=device
+                moco_array.output_device=torch.device('cpu')
                 moco_array.export(results_path)
         if stop_after == "registration":
             return self.finish()
@@ -417,7 +417,7 @@ class OnePhotonCulturePipeline(BasePipeline):
 
         with self.step("raw traces"):
             curr_demix_results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
-                curr_demix_results, moco_array, device=self.torch_device, nonneg=True,
+                curr_demix_results, moco_array, device=self.torch_device, nonneg=False,
                 frame_batch_size=self.frame_batch_size)
 
         if good_frame_indicator is not None:

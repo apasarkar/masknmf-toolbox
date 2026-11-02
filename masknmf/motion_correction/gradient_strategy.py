@@ -14,6 +14,57 @@ from masknmf.arrays.ophys_array import OphysArray
 import copy
 from masknmf.arrays.array_utils import normalize_spatial_indexer, test_spatial_crop_effect
 
+def _axis_indices(indexer, dim: int) -> tuple[np.ndarray, bool]:
+    """
+    Normalize a single-axis indexer into an explicit array of positive indices.
+
+    Returns:
+        (indices, drop_axis). ``drop_axis`` is True for integer indexers, which remove the
+        axis from the result (matching numpy semantics).
+    """
+    if isinstance(indexer, (bool, np.bool_)):
+        raise IndexError("Scalar boolean indices are not supported")
+
+    if isinstance(indexer, (int, np.integer)):
+        i = int(indexer)
+        if i < 0:
+            i += dim
+        if not (0 <= i < dim):
+            raise IndexError(f"Index {indexer} is out of bounds for axis of size {dim}")
+        return np.array([i], dtype=np.int64), True
+
+    if isinstance(indexer, slice):
+        return np.arange(*indexer.indices(dim), dtype=np.int64), False
+
+    if isinstance(indexer, range):
+        return np.asarray(list(indexer), dtype=np.int64), False
+
+    arr = np.asarray(indexer)
+    if arr.dtype == np.bool_:
+        if arr.shape != (dim,):
+            raise IndexError(
+                f"Boolean mask of shape {arr.shape} does not match axis of size {dim}"
+            )
+        return np.nonzero(arr)[0].astype(np.int64), False
+
+    arr = arr.astype(np.int64, copy=True).ravel()
+    arr[arr < 0] += dim
+    if arr.size and (arr.min() < 0 or arr.max() >= dim):
+        raise IndexError(f"Index out of bounds for axis of size {dim}")
+    return arr, False
+
+def _is_contiguous_run(idx: np.ndarray) -> bool:
+    """True if ``idx`` is an ascending run with step 1 (so it can be read as a slice)."""
+    return idx.size > 0 and bool(np.all(np.diff(idx) == 1))
+
+
+def _frame_key(chunk: np.ndarray):
+    """Return a basic slice for a step-1 run (view / sequential read),
+    else the original index array (advanced indexing)."""
+    if _is_contiguous_run(chunk):
+        return slice(int(chunk[0]), int(chunk[-1]) + 1)
+    return chunk
+
 class GradientMotionCorrector(MotionCorrectionStrategy, Serializer):
     """
     This is a motion corrector designed to correct small (<2 pixel) jitter. Primarily for culture imaging data
@@ -395,30 +446,75 @@ class GradientRegistrationArray(BaseRegistrationArray):
 
     def __getitem__(self,
                     item: int | list | np.ndarray | tuple[int | np.ndarray | slice | range]) -> torch.Tensor:
+        """
+        Motion corrected frames, computed in frame batches so compute-device memory is bounded by batch_size
+        (scaled up for spatial crops), never by the size of the request. Each batch is moved to output_device as soon
+        as it is corrected. Matches numpy indexing: integer indices drop their axis.
+        """
 
-        data_subset = torch.as_tensor(self.input_movie._get(item, include_mean=self.include_mean), device=self.output_device, dtype=self.dtype)
         frame_indexer, item = self._parse_indices(item)
+        frames, drop_frames = _axis_indices(frame_indexer, self.shape[0])
 
-        gradient_step_used = self.gradient_steps[frame_indexer, :]
-        if gradient_step_used.ndim == 1:
-            gradient_step_used = gradient_step_used[None, :]
+        spatial = item[1:] if isinstance(item, tuple) else ()
+        spatial = tuple(spatial) + (slice(None),) * (2 - len(spatial))
+        rows, drop_rows = _axis_indices(spatial[0], self.shape[1])
+        cols, drop_cols = _axis_indices(spatial[1], self.shape[2])
 
-        if not self.include_mean:
-            if gradient_step_used.ndim > self._gradient_steps_mean.ndim:
-                grad_sub = self._gradient_steps_mean[None, :]
-            else:
-                grad_sub = self._gradient_steps_mean
-            gradient_step_used = gradient_step_used - grad_sub
+        out = torch.empty((frames.size, rows.size, cols.size), dtype=self.dtype, device=self.output_device)
+        if out.numel() == 0:
+            return self._drop_axes(out, drop_frames, drop_rows, drop_cols)
 
-        # Check if spatial cropping occurred, deal with factorized tensors appropriately
-        spatial = normalize_spatial_indexer(item, self.shape[1:])
-        if test_spatial_crop_effect(spatial, self.shape[1:]):
-            gradient_crop = self.gradient[spatial]
-        else:
-            gradient_crop = self.gradient
+        # Read the bounding box of the requested pixels; strided / fancy / masked spatial selections are applied to
+        # each (small) corrected batch afterwards. This keeps every read to one advanced axis at most (the frames).
+        row_lo, row_hi = int(rows.min()), int(rows.max()) + 1
+        col_lo, col_hi = int(cols.min()), int(cols.max()) + 1
+        row_local = rows - row_lo
+        col_local = cols - col_lo
+        select_rows = not (_is_contiguous_run(row_local) and row_local.size == row_hi - row_lo)
+        select_cols = not (_is_contiguous_run(col_local) and col_local.size == col_hi - col_lo)
+        row_local_t = torch.as_tensor(row_local, device=self.compute_device)
+        col_local_t = torch.as_tensor(col_local, device=self.compute_device)
 
-        grad_movie = gradient_crop.to(self.compute_device) @ gradient_step_used.T.to(self.compute_device)
-        grad_movie = grad_movie.movedim(-1, 0).to(self.output_device)
+        gradient_crop = self.gradient[row_lo:row_hi, col_lo:col_hi].to(self.compute_device)  # (h, w, 2)
 
-        return data_subset - grad_movie
+        # Same greedy rule as the piecewise rigid array: smaller crops get proportionally more frames per batch
+        box_pixels = (row_hi - row_lo) * (col_hi - col_lo)
+        batch_size = max(1, math.floor(self.shape[1] * self.shape[2] * self.batch_size / box_pixels))
 
+        for start in range(0, frames.size, batch_size):
+            chunk = frames[start:start + batch_size]
+
+            block = self.input_movie._get((_frame_key(chunk), slice(row_lo, row_hi), slice(col_lo, col_hi)),
+                                          include_mean=self.include_mean)
+            block = torch.as_tensor(block, device=self.compute_device, dtype=self.dtype)
+            if block.ndim == 2:  # defensive: a single-frame read that dropped the frame axis
+                block = block[None]
+
+            steps = self.gradient_steps[torch.as_tensor(chunk, device=self.gradient_steps.device)]
+            if not self.include_mean:
+                steps = steps - self._gradient_steps_mean
+            steps = steps.to(device=self.compute_device, dtype=self.dtype)
+
+            # (t, h, w) correction written straight into the frame-first layout (no movedim copy). Out of place on
+            # purpose: OphysArray can return the caller's own buffer (positive indicator, float32, same device), and an
+            # in-place subtract would overwrite the raw movie. The extra temporary is one batch, not the request.
+            block = block - torch.einsum("hwk,tk->thw", gradient_crop, steps)
+
+            if select_rows:
+                block = block[:, row_local_t, :]
+            if select_cols:
+                block = block[:, :, col_local_t]
+            out[start:start + chunk.size] = block  # copies to output_device; the device batch is freed next loop
+
+        return self._drop_axes(out, drop_frames, drop_rows, drop_cols)
+
+    @staticmethod
+    def _drop_axes(block: torch.Tensor, drop_frames: bool, drop_rows: bool, drop_cols: bool) -> torch.Tensor:
+        """Collapse axes selected by an integer index, matching numpy."""
+        if drop_cols:
+            block = block[:, :, 0]
+        if drop_rows:
+            block = block[:, 0]
+        if drop_frames:
+            block = block[0]
+        return block
