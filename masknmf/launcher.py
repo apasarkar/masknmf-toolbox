@@ -35,6 +35,7 @@ from masknmf.io import group_name_compression, group_name_demixing, group_names_
 from masknmf.pipelines import scraper
 from masknmf.pipelines._base import BasePipeline
 from masknmf.visualization.imgui import guide
+from masknmf.visualization.imgui.clipboard import connect_clipboard
 from masknmf.visualization.imgui.files import NATIVE_DIALOGS, Picker
 from masknmf.visualization.imgui.scale import DIR_CONFIG, Scaler, fit_canvas, push_font_em
 from masknmf.visualization.imgui.theme import button_colors, tooltip
@@ -1132,6 +1133,7 @@ class Launcher:
         self.loop = loop
         self.dialog = idl.FileDialog(self.config)
         renderer = ImguiRenderer(wgpu.utils.get_default_device(), canvas)
+        connect_clipboard(renderer.imgui_context)
         self.font = load_fonts()
         apply_theme()
         renderer.set_gui(self.draw_window)

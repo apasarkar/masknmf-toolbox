@@ -19,6 +19,7 @@ from typing import Callable, Optional
 
 from imgui_bundle import imgui, implot
 
+from masknmf.visualization.imgui.clipboard import connect_clipboard
 from masknmf.visualization.imgui.keybinds import DESKTOP_SIZE, LARGER, SMALLER, pressed
 from masknmf.visualization.imgui.layout import is_notebook_canvas
 
@@ -218,10 +219,14 @@ def fit_canvas(canvas) -> None:
 
 
 def scale_figure(figure) -> None:
-    """Draw a fastplotlib figure's imgui at SIZE, its window grown to match. Safe to call twice."""
+    """
+    Draw a fastplotlib figure's imgui at SIZE, its window grown to match, with copy and paste through the system
+    clipboard. Safe to call twice.
+    """
     if getattr(figure, "_masknmf_scaled", False):
         return
     figure.imgui_renderer.set_gui(scaled(figure._draw_imgui, figure))
+    connect_clipboard(figure.imgui_renderer.imgui_context)
     figure._masknmf_scaled = True
     if not is_notebook_canvas(figure):
         fit_canvas(figure.canvas)
