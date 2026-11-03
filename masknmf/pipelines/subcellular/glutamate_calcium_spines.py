@@ -50,7 +50,13 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                  device: Literal["auto", "cuda", "cpu"] = "auto",
                  log_level: Literal["debug", "info", "warning"] = "info",
                  device_memory_gb: float | None = None,
-                 host_memory_gb: float | None = None):
+                 host_memory_gb: float | None = None,
+                 reference_temporal_avg_factor: int = 2,
+                 reference_spatial_avg_factor: int = 4):
+        """
+        reference_temporal_avg_factor and reference_spatial_avg_factor set the averaging of the plain PMD compression
+        of the reference channel that the registration template and shifts are estimated on.
+        """
         # both channels are always read into RAM
         super().__init__(output_folder=output_folder, frame_batch_size=frame_batch_size, device=device,
                          log_level=log_level,
@@ -59,6 +65,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                          demixing_config=demixing_config,
                          device_memory_gb=device_memory_gb,
                          host_memory_gb=host_memory_gb)
+        self.reference_temporal_avg_factor = reference_temporal_avg_factor
+        self.reference_spatial_avg_factor = reference_spatial_avg_factor
 
     @classmethod
     def default_configs(cls) -> dict:
@@ -166,8 +174,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             pre_moco_strategy = masknmf.CompressStrategy(block_sizes=self.compress_config.block_sizes,
                                                    max_components=self.compress_config.max_components,
                                                    max_consecutive_failures=self.compress_config.max_consecutive_failures,
-                                                   temporal_avg_factor=2,
-                                                   spatial_avg_factor=4,
+                                                   temporal_avg_factor=self.reference_temporal_avg_factor,
+                                                   spatial_avg_factor=self.reference_spatial_avg_factor,
                                                    device=device,
                                                    device_memory_gb=self.device_memory_gb,
                                                    host_memory_gb=self.host_memory_gb)
