@@ -1,3 +1,4 @@
+import os
 import torch
 import psutil
 import masknmf
@@ -20,27 +21,49 @@ def decompress_csr_rows(crow: torch.Tensor, num_nonzero: int):
     indices = torch.arange(crow.numel() - 1, device=crow.device, dtype=crow.dtype)
     return torch.repeat_interleave(indices, crow.diff(), output_size=num_nonzero)
 
+
 def truncated_random_svd(
         input_matrix: torch.Tensor,
         rank: int,
-        num_oversamples: int = 5,
-        device: str = "cpu"
+        num_oversamples: int | None = None,
+        device: str = "cpu",
+        num_power_iters: int | None = 4,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
+    Randomized truncated SVD (Halko, Martinsson & Tropp 2011, Alg. 4.4: randomized subspace iteration).
+
+    With num_power_iters = 0 this is exactly the previous single-pass sketch. Each power iteration costs two extra
+    passes over input_matrix (one A^T @ Q, one A @ Z) plus two thin QRs; the QR after every multiply keeps the
+    basis numerically orthonormal, so float32 is safe even for many iterations. This is the same scheme used by
+    torch.svd_lowrank(A, q=rank + num_oversamples, niter=num_power_iters).
+
     Assumptions:
     (1) input_matrix has been adequately mean-subtracted (so every column has mean 0, at least over the full dataset)
     (2) rank + num_oversamples is less than all dimensions of input_matrix.
     """
-    num_frames = input_matrix.shape[1]
+    if num_power_iters is None:
+        num_power_iters = 2
+    if num_oversamples is None:
+        num_oversamples = 5
+
+    orig_dtype = input_matrix.dtype
     input_matrix = input_matrix.to(device)
-    random_data = torch.randn(num_frames, rank + num_oversamples, device=device)
-    projected = input_matrix @ random_data
-    q, r = torch.linalg.qr(projected, mode="reduced")
+
+    num_frames = input_matrix.shape[1]
+    sketch_size = min(rank + num_oversamples, *input_matrix.shape)
+    
+    random_data = torch.randn(num_frames, sketch_size, device=device).to(input_matrix.dtype)
+    q, _ = torch.linalg.qr(input_matrix @ random_data, mode="reduced")
+    for _ in range(num_power_iters):
+        z, _ = torch.linalg.qr(input_matrix.T @ q, mode="reduced")
+        q, _ = torch.linalg.qr(input_matrix @ z, mode="reduced")
+
     b = q.T @ input_matrix
     u, s, v = torch.linalg.svd(b, full_matrices=False)
     u_final = q @ u
-    v_final = v
-    return u_final[:, :rank], s[:rank], v_final[:rank, :]
+    return (u_final[:, :rank].to(orig_dtype),
+            s[:rank].to(orig_dtype),
+            v[:rank, :].to(orig_dtype))
 
 
 """
