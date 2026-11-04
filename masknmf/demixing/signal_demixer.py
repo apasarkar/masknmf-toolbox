@@ -25,6 +25,7 @@ from masknmf.demixing.demixing_arrays import (
 )
 from masknmf.demixing.demixing_results import DemixingResults
 from masknmf.demixing.initialization_results import InitializationResults
+from masknmf.demixing.despeckle import despeckle
 
 from .demixing_utils import (
     construct_graph_from_sparse_tensor,
@@ -3477,6 +3478,24 @@ class DemixingState(SignalProcessingState):
 
         self.residual_correlation_image = None
 
+    def despeckle_spatial(self, max_speckle_size: int = 3, connectivity: int = 8, rel_threshold: float = 0.1):
+        """
+        Removes small detached islands from every footprint (see masknmf.demixing.despeckle.despeckle): connected
+        components of nonzero pixels with at most max_speckle_size pixels, unless they hold the footprint's
+        brightest pixel. Islands are counted both over all nonzero pixels and over the pixels >= rel_threshold *
+        the footprint's peak, so a faint halo does not shield bright specks. Pixels at exactly zero are dropped from
+        the support. Traces are not refit here.
+        """
+        num_before = int(self.a._nnz())
+        a_clean, _ = despeckle(self.a, (self.fov_height, self.fov_width),
+                               max_speckle_size=max_speckle_size, connectivity=connectivity,
+                               rel_threshold=rel_threshold)
+        self.a = a_clean.to_sparse_csr()
+        self.mask_ab = torch.sparse_csr_tensor(self.a.crow_indices(), self.a.col_indices(),
+                                               torch.ones_like(self.a.values()), size=self.a.shape)
+        self.update_hals_scheduler()
+        logger.debug(f"despeckle: footprint support went from {num_before} to {int(self.a._nnz())} pixels")
+
     def merge_signals(self, merge_corr_thr, merge_overlap_thr, plot_en):
         (
             self.a,
@@ -3511,7 +3530,10 @@ class DemixingState(SignalProcessingState):
             reassign_background: bool = False,
             detrender: SplineDetrenderBase | None = None,
             extract_multiunit: bool = False,
-            sign: Literal["positive", "negative", "unconstrained"] = "unconstrained"
+            sign: Literal["positive", "negative", "unconstrained"] = "unconstrained",
+            max_speckle_size: int | None = 3,
+            speckle_connectivity: int = 8,
+            speckle_rel_threshold: float = 0.1
     ):
         """
         Function for computing background, spatial and temporal components of neurons. Uses HALS updates to iteratively
@@ -3541,6 +3563,15 @@ class DemixingState(SignalProcessingState):
                 this is useful for e.g. in voltage imaging.
             denoise (list | bool): Indicates whether to run a denoiser at each HALS iteration on the temporal traces.
             plot_en (bool): Indicates whether plotting is enabled; this is only used for debugging purposes.
+            max_speckle_size (int | None): After the last HALS iteration, detached islands of at most this many
+                pixels are removed from each footprint (unless they hold its brightest pixel), and then the
+                background and traces get one more (unconstrained) update. Larger detached pieces are kept.
+                None disables this; turn it off for data whose real signals include 2-3 px detached pieces.
+            speckle_connectivity (int): 4 or 8; how islands are counted. Keep 8 for thin structures, since with 4 a
+                diagonal 1-px-wide process breaks into single pixels.
+            speckle_rel_threshold (float): islands are also counted among only the pixels >= this fraction of the
+                footprint's peak, so a faint halo linking bright specks to the body does not protect them.
+                0.1 matches the cutoff the viewers draw footprints at; 0 counts islands over all nonzero pixels only.
         """
         # Key: precompute_quantities is a setup function which must be run first in this routine
         # self.background_rank = None #Always estimate the background rank each time
@@ -3629,6 +3660,16 @@ class DemixingState(SignalProcessingState):
 
 
                 self.update_hals_scheduler()
+
+        if max_speckle_size:
+            # Clean the final footprints, then refit background and traces (no further spatial update), in the
+            # same order as a HALS iteration. The temporal update is unconstrained, like the loop's last one.
+            self.despeckle_spatial(max_speckle_size, speckle_connectivity, speckle_rel_threshold)
+            self.static_baseline_update()
+            if background_enabled:
+                self.fluctuating_baseline_update(downsampling_factor=background_downsampling_factor)
+            self.static_baseline_update()
+            self.temporal_update(denoise=False, plot_en=plot_en, c_nonneg=False)
 
         ## Finally reassign any signal from the background that belongs to sources:
         if self.factorized_ring_term is not None and reassign_background:

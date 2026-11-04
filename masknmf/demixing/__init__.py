@@ -9,6 +9,7 @@ from masknmf.demixing.initialization_results import InitializationResults
 from masknmf.demixing.curation import update_signals, write_curated, latest_results, results_stem
 from masknmf.demixing.cell_stats import CellStats
 from masknmf.demixing.raw_traces import estimate_temporal_demixed_raw, estimate_temporal_demixed_trend
+from masknmf.demixing.despeckle import despeckle, despeckle_summary, plot_despeckle
 
 __all__ = [
     "SignalsArray",
@@ -30,5 +31,8 @@ __all__ = [
     "results_stem",
     "CellStats",
     "estimate_temporal_demixed_raw",
+    "despeckle",
+    "despeckle_summary",
+    "plot_despeckle",
 ]
 
