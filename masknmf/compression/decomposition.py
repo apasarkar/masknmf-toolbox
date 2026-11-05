@@ -1613,6 +1613,7 @@ def compression_routine(
         # Release the previous tile first: the right-hand side below runs before the assignment, so otherwise
         # two tiles would coexist while the next one loads
         curr_dataset = None
+        current_data_for_fit = None
         curr_dataset = torch.as_tensor(dataset[effective_frame_indexer, dim1_batch_slice, dim2_batch_slice],
                                        device=plan.tile_device, dtype=dtype)
         for k in dim1_batch_start:
@@ -1707,7 +1708,9 @@ def compression_routine(
                 )
                 column_number += local_spatial_basis.shape[2]
 
-    curr_dataset = None  # release the last tile before assembling the results
+    # release the last tile (and the block view into it) before assembling the results
+    curr_dataset = None
+    current_data_for_fit = None
 
     # Construct the spatial_compressed matrix up to this point (the per-block results are in host RAM)
     final_row_indices = torch.concatenate(final_row_indices, dim=0)
