@@ -93,46 +93,43 @@ def spatial_roughness_statistic(spatial_comps: torch.Tensor) -> torch.Tensor:
     """
     Computes spatial roughness statistic, batched over all spatial comps of interest
     Args:
-        spatial_comps (torch.Tensor): shape (fov_height, fov_width, num_components)
+        spatial_comps (torch.Tensor): shape (*, fov_height, fov_width, num_components) where * is a batchable dimension
     Returns:
         stats (torch.tensor): shape (num_components)
     """
+    height, width = spatial_comps.shape[-3], spatial_comps.shape[-2]
+    spatial_dims = (-3, -2)
     # Compute abs(vertical differences) :
-    top_vertical = spatial_comps[:-1, :, :]
-    bottom_vertical = spatial_comps[1:, :, :]
+    top_vertical = spatial_comps[..., :-1, :, :]
+    bottom_vertical = spatial_comps[..., 1:, :, :]
     vertical_diffs = torch.abs(top_vertical - bottom_vertical)
 
     # Compute abs(horizontal differences)
-    left_horizontal = spatial_comps[:, :-1, :]
-    right_horizontal = spatial_comps[:, 1:, :]
+    left_horizontal = spatial_comps[..., :, :-1, :]
+    right_horizontal = spatial_comps[..., :, 1:, :]
     horizontal_diffs = torch.abs(left_horizontal - right_horizontal)
 
     # Compute abs(top left --> bottom right differences)
-    top_left = spatial_comps[:-1, :-1, :]
-    bottom_right = spatial_comps[1:, 1:, :]
+    top_left = spatial_comps[..., :-1, :-1, :]
+    bottom_right = spatial_comps[..., 1:, 1:, :]
     top_bottom_diag_diffs = torch.abs(top_left - bottom_right)
 
     # Compute abs(bottomleft --> topright differences)
-    top_right = spatial_comps[1:, 1:, :]
-    bottom_left = spatial_comps[:-1, :-1, :]
+    top_right = spatial_comps[..., :-1, 1:, :]
+    bottom_left = spatial_comps[..., 1:, :-1, :]
     bottom_top_diag_diffs = torch.abs(top_right - bottom_left)
 
-    total_terms = (
-            torch.prod(torch.tensor(vertical_diffs.shape[:2]))
-            + torch.prod(torch.tensor(horizontal_diffs.shape[:2]))
-            + torch.prod(torch.tensor(top_bottom_diag_diffs.shape[:2]))
-            + torch.prod(torch.tensor(bottom_top_diag_diffs.shape[:2]))
-    )
+    total_terms = (height - 1) * width + height * (width - 1) + 2 * (height - 1) * (width - 1)
 
+    ## indices -3, -2 are the height/width dimensions
     avg_diff = (
-            torch.sum(vertical_diffs, dim=(0, 1))
-            + torch.sum(horizontal_diffs, dim=(0, 1))
-            + torch.sum(top_bottom_diag_diffs, dim=(0, 1))
-            + torch.sum(top_bottom_diag_diffs, dim=(0, 1))
-    )
-    avg_diff /= total_terms
+            torch.sum(vertical_diffs, dim=spatial_dims)
+            + torch.sum(horizontal_diffs, dim=spatial_dims)
+            + torch.sum(top_bottom_diag_diffs, dim=spatial_dims)
+            + torch.sum(bottom_top_diag_diffs, dim=spatial_dims)
+    ) / total_terms
 
-    return avg_diff / torch.mean(torch.abs(spatial_comps), dim=(0, 1))
+    return avg_diff / torch.mean(torch.abs(spatial_comps), dim=spatial_dims)
 
 
 def evaluate_fitness(
