@@ -400,7 +400,9 @@ class OnePhotonCulturePipeline(BasePipeline):
                                           min_brightness = 0.0,
                                           ring_model_start_pt = net_iters + 1,
                                           c_nonneg = False,
-                                          sign = "unconstrained")
+                                          sign = "unconstrained",
+                                          final_refit_radius = 3,  # let neighbouring footprints overlap,
+                                          final_refit_iters = 10)  # then refit A and C jointly, ungated
 
             full_demixer.demix(**asdict(custom_NMF_config))
             curr_demix_results = full_demixer.results
