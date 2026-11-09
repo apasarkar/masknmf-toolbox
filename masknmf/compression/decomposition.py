@@ -75,16 +75,16 @@ def temporal_roughness_statistic(temporal_traces: torch.Tensor) -> torch.Tensor:
     """
     Computes the temporal roughness statistics, batched over all the traces of interest
     Args:
-        temporal_traces (torch.Tensor): shape (num_traces, num_frames).
+        temporal_traces (torch.Tensor): shape (*, num_traces, num_frames), where * describes batchable frames
     Returns:
-        stats (torch.Tensor): shape (num_traces)
+        stats (torch.Tensor): shape (*, num_traces) where * is the same set of batchable dimensions
     """
-    left_term = temporal_traces[:, :-2]
-    right_term = temporal_traces[:, 2:]
-    center_term = temporal_traces[:, 1:-1]
+    left_term = temporal_traces[..., :, :-2]
+    right_term = temporal_traces[..., :, 2:]
+    center_term = temporal_traces[..., :, 1:-1]
 
-    numerator = torch.mean(torch.abs(left_term + right_term - 2 * center_term), dim=1)
-    denominator = torch.mean(torch.abs(temporal_traces), dim=1)
+    numerator = torch.mean(torch.abs(left_term + right_term - 2 * center_term), dim=-1)
+    denominator = torch.mean(torch.abs(temporal_traces), dim=-1)
     denominator[denominator == 0] = 1.0
     return numerator / denominator
 
