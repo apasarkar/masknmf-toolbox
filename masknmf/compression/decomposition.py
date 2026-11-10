@@ -1270,6 +1270,74 @@ def _resolve_memory_budgets(device: str,
     cached_unused = torch.cuda.memory_reserved(torch_device) - torch.cuda.memory_allocated(torch_device)
     return host_budget, int(_AUTO_DEVICE_FRACTION * (free + cached_unused))
 
+
+# Peak memory of one batch, in units of one block's data (num_frames * block_height * block_width * itemsize).
+# Covers the gathered batch itself plus the decomposition's intermediates (centered, weighted, pooled copies,
+# projections, SVD workspaces). Calibrate it with torch.cuda.max_memory_allocated() on one batch.
+_DECOMPOSITION_WORKSPACE_FACTOR = 6.0
+
+
+def _max_span(positions: list[int], num_blocks: int, block_size: int) -> int:
+    """
+    Largest extent, in pixels, of any num_blocks consecutive blocks along one axis. Groups from _tile_groups hold at
+    most num_blocks consecutive positions, so none of them spans more than this.
+    """
+    return max(positions[i + num_blocks - 1] - positions[i]
+               for i in range(len(positions) - num_blocks + 1)) + block_size
+
+
+def _plan_compute_batches(dim1_positions: list[int],
+                          dim2_positions: list[int],
+                          block_sizes: tuple[int, int],
+                          num_frames: int,
+                          itemsize: int,
+                          budget_bytes: int | None,
+                          has_detrender: bool) -> tuple[int, int, bool]:
+    """
+    Chooses how many blocks of one tile, per axis, go into one batch on the compute device. A batch is a rectangular
+    group of blocks, so it is loaded as one slab of the tile and then unfolded into blocks.
+
+    Peak memory of a batch is modeled as
+        region_factor * num_frames * group_height * group_width          (the slab, plus the detrender's copies of it)
+      + workspace_factor * num_blocks * num_frames * block_height * block_width   (gathered blocks + intermediates)
+    times itemsize. The largest batch that fits budget_bytes wins; among equal block counts, the smaller slab wins.
+
+    Args:
+        dim1_positions (list[int]): Block start positions of this tile along dim 1
+        dim2_positions (list[int]): Block start positions of this tile along dim 2
+        block_sizes (tuple[int, int]): Block height and width
+        num_frames (int): Frames per block
+        itemsize (int): Bytes per element of the compute dtype
+        budget_bytes (int | None): Memory available for one batch. None means no limit (one batch per tile).
+        has_detrender (bool): Whether the slab is detrended on the device before unfolding
+    Returns:
+        tuple[int, int, bool]: Blocks per batch along dim 1 and dim 2, and whether that batch fits the budget.
+            If not even one block fits, returns (1, 1, False).
+    """
+    if budget_bytes is None:
+        return len(dim1_positions), len(dim2_positions), True
+
+    block_bytes = num_frames * block_sizes[0] * block_sizes[1] * itemsize
+    region_factor = 3 if has_detrender else 1  # detrender input, trend, and output coexist
+    best, best_key = (1, 1), None
+    for n1 in range(1, len(dim1_positions) + 1):
+        span1 = _max_span(dim1_positions, n1, block_sizes[0])
+        for n2 in range(1, len(dim2_positions) + 1):
+            span2 = _max_span(dim2_positions, n2, block_sizes[1])
+            region_bytes = num_frames * span1 * span2 * itemsize
+            peak_bytes = region_factor * region_bytes + _DECOMPOSITION_WORKSPACE_FACTOR * n1 * n2 * block_bytes
+            if peak_bytes > budget_bytes:
+                break  # cost only grows with n2
+            key = (n1 * n2, -region_bytes)
+            if best_key is None or key > best_key:
+                best, best_key = (n1, n2), key
+        else:
+            continue
+        if n2 == 1:
+            break  # even one column of blocks failed at this n1, so larger n1 fails too
+
+    return best[0], best[1], best_key is not None
+
 def _fast_unfold_routine(data: torch.Tensor,
                          dim1_offset: int,
                          dim2_offset: int,
@@ -1519,6 +1587,11 @@ def compression_routine(
              for dim1_group in _tile_groups(dim_1_iters, plan.data_batching[0])
              for dim2_group in _tile_groups(dim_2_iters, plan.data_batching[1])]
 
+    # Memory for batches: the device budget when computing on a device, the host budget when computing on the CPU
+    compute_budget_bytes = device_budget_bytes if device_budget_bytes is not None else host_budget_bytes
+    itemsize = torch.empty((), dtype=dtype).element_size()
+    warned_batch_fit = False
+
     logger.debug("Running Blockwise Decompositions")
     for dim1_batch_start, dim2_batch_start in progress(tiles, desc="decomposing blocks"):
         ## Now compute the slice into the dataset array required to load this batch
@@ -1533,17 +1606,25 @@ def compression_routine(
         curr_dataset = torch.as_tensor(dataset[effective_frame_indexer, dim1_batch_slice, dim2_batch_slice],
                                        device=plan.tile_device, dtype=dtype)
 
-        plan_gpu = plan_tiles(dim1_batch_start,
-                              dim2_batch_start,
-                              block_sizes,
-                              num_frames=len(frames),
-                              compute_device=device,
-                              host_budget_bytes=host_budget_bytes,
-                              device_budget_bytes=device_budget_bytes)
+        # A tile held where we compute takes memory away from the batches
+        tile_on_compute_device = curr_dataset.device.type == torch.device(device).type
+        batch_budget_bytes = compute_budget_bytes - (curr_dataset.nbytes if tile_on_compute_device else 0)
+        blocks_dim1, blocks_dim2, batch_fits = _plan_compute_batches(dim1_batch_start,
+                                                                     dim2_batch_start,
+                                                                     block_sizes,
+                                                                     num_frames=len(frames),
+                                                                     itemsize=itemsize,
+                                                                     budget_bytes=batch_budget_bytes,
+                                                                     has_detrender=detrender is not None)
+        if not batch_fits and not warned_batch_fit:
+            logger.warning(f"Even one block per batch exceeds the {max(batch_budget_bytes, 0) / _GIGABYTE:.2f} GB "
+                           f"left for batches; processing one block at a time")
+            warned_batch_fit = True
+        logger.debug(f"Batches of {blocks_dim1} x {blocks_dim2} blocks for this tile")
 
         tiles_gpu = [(dim1_gpu_group, dim2_gpu_group)
-                 for dim1_gpu_group in _tile_groups(dim1_batch_start, plan_gpu.data_batching[0])
-                 for dim2_gpu_group in _tile_groups(dim2_batch_start, plan_gpu.data_batching[1])]
+                     for dim1_gpu_group in _tile_groups(dim1_batch_start, blocks_dim1)
+                     for dim2_gpu_group in _tile_groups(dim2_batch_start, blocks_dim2)]
 
         for dim1_gpu_start, dim2_gpu_start in tiles_gpu:
             gpu_slices = (slice(dim1_gpu_start[0] - dataset_slice_lower_bound[0],dim1_gpu_start[-1] - dataset_slice_lower_bound[0] + block_sizes[0]),
