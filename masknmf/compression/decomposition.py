@@ -1341,8 +1341,8 @@ def _resolve_memory_budgets(device: str,
 def _fast_unfold_routine(data: torch.Tensor,
                          dim1_offset: int,
                          dim2_offset: int,
-                         dim1_start_iters: torch.Tensor,
-                         dim2_start_iters: torch.Tensor,
+                         dim1_start_iters: list[int],
+                         dim2_start_iters: list[int],
                          block_sizes: tuple[int, int]):
     slice_list = []
     data_batched = []
@@ -1354,7 +1354,7 @@ def _fast_unfold_routine(data: torch.Tensor,
             slice_list.append(real_data_slice)
             data_batched.append(curr_subset)
 
-    # (num_batches, num_frames, block_height, block_width)
+    # (num_batches, num_channels, block_height, block_width)
     return torch.concatenate(data_batched, dim = 0), slice_list
 
 
@@ -1609,7 +1609,6 @@ def compression_routine(
                               host_budget_bytes=host_budget_bytes,
                               device_budget_bytes=device_budget_bytes,
                               data_batching=data_batching)
-        print(plan_gpu.tile_device)
 
         tiles_gpu = [(dim1_gpu_group, dim2_gpu_group)
                  for dim1_gpu_group in _tile_groups(dim1_batch_start, plan_gpu.data_batching[0])
@@ -1632,7 +1631,7 @@ def compression_routine(
                 curr_spline_basis = curr_spline_basis.reshape(-1, curr_shape[1], curr_shape[2]) #(spline rank, height, width)
                 curr_spline_basis = curr_spline_basis.permute(1, 2, 0)
                 spatial_preprocess_basis[dim1_gpu_start[0]:dim1_gpu_start[-1] +block_sizes[0], dim2_gpu_start[0]:dim2_gpu_start[-1] + block_sizes[1], :] = curr_spline_basis
-                gpu_dataset = gpu_dataset.reshape(-1, curr_shape[1], curr_shape[2]).permute(1,2,0)
+                gpu_dataset = gpu_dataset.reshape(-1, curr_shape[1], curr_shape[2])
 
 
             ##Assumes that gpu_dataset unfolds things in the same
@@ -1683,9 +1682,8 @@ def compression_routine(
                 device=device,
                 subset_noise_std=batched_noise_std
             )
-            batch_weighted_local_basis = block_weights[None, :, :, None] * batch_unweighted_local_spatial_basis
-            batch_weighted_local_basis = batch_weighted_local_basis.cpu()
             batch_unweighted_local_spatial_basis = batch_unweighted_local_spatial_basis.cpu()
+            batch_weighted_local_basis = block_weights_cpu[None, :, :, None] * batch_unweighted_local_spatial_basis
             batch_temporal_basis = batch_temporal_basis.cpu()
             batch_subset_mean = batch_subset_mean.cpu()
             batch_subset_noise_std = batch_subset_noise_std.cpu()
@@ -1741,7 +1739,7 @@ def compression_routine(
                     current_spatial_basis.flatten()
                 )
                 column_number += local_spatial_basis.shape[2]
-                gpu_dataset = None #Always release the dataset at the end
+            gpu_dataset = None #Always release the dataset at the end
 
     # Construct the spatial_compressed matrix up to this point (the per-block results are in host RAM)
     final_row_indices = torch.concatenate(final_row_indices, dim=0)
