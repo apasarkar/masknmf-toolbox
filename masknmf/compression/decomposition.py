@@ -22,6 +22,107 @@ def decompress_csr_rows(crow: torch.Tensor, num_nonzero: int):
     return torch.repeat_interleave(indices, crow.diff(), output_size=num_nonzero)
 
 
+# Batched linear algebra on skinny matrices.
+#
+# torch.linalg.svd / torch.linalg.qr on a batch of skinny matrices (one side <= 32, the other in the thousands)
+# measured at 0.4 - 0.8 ms per matrix on a TITAN RTX: most of the batched decomposition's time. _gram_svd computes
+# the same thin SVD through the eigendecomposition of the small (r x r) Gram matrix, where batched eigh is one kernel,
+# 10 - 20x faster at those shapes. Set _USE_GRAM_LINALG = False to use torch.linalg.svd / qr everywhere.
+_USE_GRAM_LINALG = True
+
+# Gram methods are used only when the small side is at most this (batched eigh is fast up to 32 x 32)
+_GRAM_MAX_RANK = 32
+
+# Below this many rows, torch.linalg.qr on a batch was as fast as the Gram orthonormalization (measured on
+# (53, 64, 25): 2.6 ms for qr; on (53, 6500, 25): 14.7 ms for qr vs 3.4 ms)
+_GRAM_ORTH_MIN_ROWS = 256
+
+
+def _gram_svd(x: torch.Tensor,
+              gram_dtype: torch.dtype = torch.float32,
+              rtol: float | None = None,
+              passes: int = 2) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Thin SVD of a batch of skinny matrices through the eigendecomposition of their small Gram matrix.
+    Same outputs as torch.linalg.svd(x, full_matrices=False): u (*, m, r), s (*, r) descending, vh (*, r, n),
+    with r = min(m, n). Only fast when r <= _GRAM_MAX_RANK.
+
+    For wide x (m <= n): x x^T = u s^2 u^T, so eigh of the r x r Gram matrix gives u and s, and vh = s^-1 u^T x.
+    For tall x: x^T x = v s^2 v^T and u = x v s^-1. The Gram matrix and the products with x are formed in
+    gram_dtype (float32 runs at full speed; float64 is slow on consumer GPUs); the r x r eigh always runs in
+    float64.
+
+    A float32 Gram matrix squares the singular values, so one pass resolves them only to ~sqrt(eps) of the largest.
+    Each extra pass (passes > 1) first rotates x by the Gram eigenvectors, which is exact and divides by nothing,
+    so the next Gram matrix is nearly diagonal and float32 resolves the weak directions too (as in CholeskyQR2).
+    Two float32 passes measured within ~1e-6 (relative to the top singular value) of a float64 SVD.
+
+    For singular values at or below rtol * max singular value (default max(m, n) * eps, the tolerance of
+    torch.linalg.matrix_rank and of _rank_mask), the vectors computed by division (vh for wide x, u for tall x) are
+    returned as zeros; the other side is an arbitrary orthonormal vector, as with torch.linalg.svd.
+    """
+    orig_dtype = x.dtype
+    m, n = x.shape[-2], x.shape[-1]
+    wide = m <= n
+    if rtol is None:
+        rtol = max(m, n) * torch.finfo(orig_dtype).eps
+
+    xr = x.to(gram_dtype)
+    rotation = None  # wide: x = rotation @ xr;  tall: x = xr @ rotation.mT
+    for _ in range(passes - 1):
+        gram = xr @ xr.mT if wide else xr.mT @ xr
+        _, vecs = torch.linalg.eigh(gram.double())
+        vecs = vecs.flip(-1).to(gram_dtype)
+        xr = vecs.mT @ xr if wide else xr @ vecs
+        rotation = vecs if rotation is None else rotation @ vecs
+
+    gram = xr @ xr.mT if wide else xr.mT @ xr                            # (*, r, r)
+    eig_vals, eig_vecs = torch.linalg.eigh(gram.double())                # ascending
+    eig_vals = eig_vals.flip(-1).clamp_min(0)
+    eig_vecs = eig_vecs.flip(-1)
+    s = eig_vals.sqrt()                                                  # (*, r), descending
+    tol = s.amax(dim=-1, keepdim=True) * rtol
+    inv_s = torch.where(s > tol, 1.0 / s.clamp_min(torch.finfo(torch.float64).tiny), torch.zeros_like(s))
+
+    vecs = eig_vecs.to(gram_dtype)
+    inv_s_g = inv_s.to(gram_dtype)
+    if wide:
+        u = vecs                                                         # (*, m, m)
+        vh = (vecs.mT @ xr) * inv_s_g[..., :, None]                      # (*, m, n)
+        if rotation is not None:
+            u = rotation @ u
+    else:
+        u = (xr @ vecs) * inv_s_g[..., None, :]                          # (*, m, n)
+        vh = vecs.mT                                                     # (*, n, n)
+        if rotation is not None:
+            vh = vh @ rotation.mT
+    return u.to(orig_dtype), s.to(orig_dtype), vh.to(orig_dtype)
+
+
+def _svd(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Thin SVD, torch.linalg.svd(x, full_matrices=False) semantics. Uses _gram_svd for skinny matrices when
+    _USE_GRAM_LINALG is set, torch.linalg.svd otherwise.
+    """
+    if _USE_GRAM_LINALG and min(x.shape[-2:]) <= _GRAM_MAX_RANK:
+        return _gram_svd(x)
+    return torch.linalg.svd(x, full_matrices=False)
+
+
+def _orth(y: torch.Tensor) -> torch.Tensor:
+    """
+    Orthonormal basis for the column span of y (*, m, k), m >= k, where only the span matters (randomized SVD).
+
+    With _USE_GRAM_LINALG set, tall matrices (m >= _GRAM_ORTH_MIN_ROWS, k <= _GRAM_MAX_RANK) use a two-pass float32
+    Gram orthonormalization: same span as QR, different basis vectors, and directions below eps of the strongest
+    (the float32 noise floor) come back as zero columns. Everything else uses torch.linalg.qr.
+    """
+    if _USE_GRAM_LINALG and y.shape[-2] >= _GRAM_ORTH_MIN_ROWS and y.shape[-1] <= _GRAM_MAX_RANK:
+        q, _, _ = _gram_svd(y, rtol=torch.finfo(y.dtype).eps, passes=2)
+        return q
+    return torch.linalg.qr(y, mode="reduced")[0]
+
+
 def truncated_random_svd(
         input_matrix: torch.Tensor,
         rank: int,
@@ -62,13 +163,13 @@ def truncated_random_svd(
 
     random_data = torch.randn(*batch_shape, num_frames, sketch_size,
                               device=device, dtype=input_matrix.dtype)
-    q, _ = torch.linalg.qr(input_matrix @ random_data, mode="reduced")
+    q = _orth(input_matrix @ random_data)
     for _ in range(num_power_iters):
-        z, _ = torch.linalg.qr(input_matrix.mT @ q, mode="reduced")
-        q, _ = torch.linalg.qr(input_matrix @ z, mode="reduced")
+        z = _orth(input_matrix.mT @ q)
+        q = _orth(input_matrix @ z)
 
     b = q.mT @ input_matrix
-    u, s, v = torch.linalg.svd(b, full_matrices=False)
+    u, s, v = _svd(b)
     u_final = q @ u
     return (u_final[..., :rank].to(orig_dtype),
             s[..., :rank].to(orig_dtype),
@@ -689,7 +790,7 @@ def _temporal_basis_pca(temporal_basis: torch.Tensor,
             singular vectors; rows past each batch entry's cutoff are zero.
     """
     temporal_basis_meansub = temporal_basis - torch.mean(temporal_basis, dim=-1, keepdim=True)
-    _, sing, right_vec = torch.linalg.svd(temporal_basis_meansub, full_matrices=False)  # (*, K), (*, K, T)
+    _, sing, right_vec = _svd(temporal_basis_meansub)  # (*, K), (*, K, T)
 
     energy = sing ** 2
     total_energy = energy.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(energy.dtype).tiny)
@@ -848,9 +949,7 @@ def blockwise_decomposition_singlepass(
         spatial_basis_fullres = spatial_basis_fullres.reshape((num_batches, fov_height * fov_width, -1))
         spatial_basis_fullres = spatial_basis_fullres * pca_valid[:, None, :]
 
-    spatial_basis_orthogonal, interm_sing_vals, _ = torch.linalg.svd(
-        spatial_basis_fullres, full_matrices=False
-    )  # (B, P, K), (B, K)
+    spatial_basis_orthogonal, interm_sing_vals, _ = _svd(spatial_basis_fullres)  # (B, P, K), (B, K)
     spatial_valid = _rank_mask(interm_sing_vals, spatial_basis_fullres.shape[-2:])
     spatial_basis_orthogonal = spatial_basis_orthogonal * spatial_valid[:, None, :]
 
@@ -860,7 +959,7 @@ def blockwise_decomposition_singlepass(
         final_temporal_projection = (spatial_basis_orthogonal.mT @ (subset_r @ temporal_basis_from_downsample.mT)) @ temporal_basis_from_downsample
     else:
         final_temporal_projection = spatial_basis_orthogonal.mT @ subset_r
-    left, sing, right = torch.linalg.svd(final_temporal_projection, full_matrices=False)  # (B,K,K), (B,K), (B,K,T)
+    left, sing, right = _svd(final_temporal_projection)  # (B,K,K), (B,K), (B,K,T)
     valid = _rank_mask(sing, final_temporal_projection.shape[-2:])  # sorted, so a prefix mask
 
     local_spatial_basis = ((spatial_basis_orthogonal @ left) * valid[:, None, :]).reshape(
@@ -1579,7 +1678,7 @@ def compression_routine(
                       num_frames=len(frames),
                       compute_device=device,
                       host_budget_bytes=host_budget_bytes,
-                      device_budget_bytes=device_budget_bytes,
+                      device_budget_bytes=None if device_budget_bytes is None else device_budget_bytes // 2,
                       data_batching=data_batching,
                       tile_device=tile_device)
     logger.info(plan.describe())
