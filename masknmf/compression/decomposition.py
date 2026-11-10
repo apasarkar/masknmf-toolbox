@@ -685,7 +685,7 @@ def temporal_downsample(tensor: torch.Tensor,
     )
 
     # Reshape back to (num_frames // n, height, width)
-    return downsampled.reshape(num_batches, height, width, num_frames)
+    return downsampled.reshape(num_batches, height, width, -1)
 
 
 def downsample_sparse(sparse_tensor: SparseCSRTensor,
@@ -841,10 +841,6 @@ def blockwise_decomposition_singlepass(
 
     num_batches, num_frames, fov_height, fov_width = video_subset.shape
 
-    # empty_values = torch.zeros((fov_height, fov_width, 1), device=device, dtype=dtype), torch.zeros((1, num_frames),
-    #                                                                                              device=device,
-    #                                                                                              dtype=dtype)
-
     subset = video_subset.to(device).to(dtype)
     if subset_mean is None:
         subset_mean = subset.mean(dim = 1)
@@ -881,7 +877,7 @@ def blockwise_decomposition_singlepass(
         spatiotemporal_pooled_subset = spatial_pooled_subset
 
     spatiotemporal_pooled_subset_r = spatiotemporal_pooled_subset.reshape(
-        (num_batches, -1, spatiotemporal_pooled_subset.shape[2])
+        (num_batches, -1, spatiotemporal_pooled_subset.shape[-1])
     )
 
 
@@ -907,8 +903,8 @@ def blockwise_decomposition_singlepass(
         temporal_basis_from_downsample = _temporal_basis_pca(temporal_projection_from_downsample,
                                                              explained_var_cutoff=0.99)
 
-    subset_weighted_r = subset_weighted.reshape((num_batches, -1, subset_weighted.shape[2]))
-    spatial_basis_fullres = subset_weighted_r @ temporal_basis_from_downsample.T
+    subset_weighted_r = subset_weighted.reshape((num_batches, -1, num_frames))
+    spatial_basis_fullres = subset_weighted_r @ temporal_basis_from_downsample.mT
 
     ## TODO: If/When spatial denoisers are ever useful
     if spatial_denoiser is not None:
@@ -921,20 +917,21 @@ def blockwise_decomposition_singlepass(
     )
 
     # Regress the original (unweighted) data onto this basis
-    subset_r = subset.reshape((-1, subset.shape[2]))
+    subset_r = subset.reshape(num_batches, -1, num_frames)
     if temporal_denoiser is None:
         #In this case, we want to take advantage of the existing
-        final_temporal_projection = (spatial_basis_orthogonal.T @ (subset_r @ temporal_basis_from_downsample.T)) @ temporal_basis_from_downsample
+        final_temporal_projection = (spatial_basis_orthogonal.mT @ (subset_r @ temporal_basis_from_downsample.T)) @ temporal_basis_from_downsample
     else:
-        final_temporal_projection = spatial_basis_orthogonal.T @ subset_r #In this case we want to project onto this basis and re-apply the denoiser
+        final_temporal_projection = spatial_basis_orthogonal.mT @ subset_r #In this case we want to project onto this basis and re-apply the denoiser
     left, sing, right = torch.linalg.svd(final_temporal_projection, full_matrices=False)
     local_spatial_basis = (spatial_basis_orthogonal @ left).reshape(
         (num_batches, fov_height, fov_width, -1)
     )
-    local_temporal_basis = sing[:, None] * right
+    local_temporal_basis = sing[..., None] * right
 
     if temporal_denoiser is not None:
         local_temporal_basis = temporal_denoiser(local_temporal_basis.reshape(-1, num_frames)).reshape(num_batches, -1, num_frames)
+        local_temporal_basis -= torch.mean(local_temporal_basis, dim = -1, keepdim=True)
 
     return local_spatial_basis, local_temporal_basis, subset_mean, subset_noise_std
 
@@ -984,17 +981,14 @@ def blockwise_decomposition_with_rank_selection(
         temporal_roughness_threshold,
     )
 
-    ## Placeholder for testing
-    decisions = decisions[None, :]
-
     decisions = filter_by_failures(decisions, max_consecutive_failures)
 
 
     ## Also eliminate bad components
-    std_dev = local_temporal_basis.std(dim=1)
+    std_dev = local_temporal_basis.std(dim=-1)
     nonzero_temporal = std_dev > 1e-6
 
-    std_dev = local_spatial_basis.std(dim=(0,1))
+    std_dev = local_spatial_basis.std(dim=(1,2))
     nonzero_spatial = std_dev > 1e-6
 
     nonzero_comps = torch.logical_and(nonzero_temporal, nonzero_spatial)
@@ -1045,13 +1039,11 @@ def threshold_heuristic(
     sim_mean = torch.zeros((1, fov_height, fov_width), device=device, dtype=dtype)
     sim_noise_normalizer = torch.ones((1, fov_height, fov_width), device=device, dtype=dtype)
     pixel_weighting = torch.ones((1, fov_height, fov_width), device=device, dtype=dtype)
-    frame_weighting = torch.ones(1, num_frames, device=device, dtype=dtype)
+    frame_weighting = torch.ones(num_frames, device=device, dtype=dtype)
     max_components = num_comps
 
     for k in progress(range(iters), desc="noise thresholds"):
-        sim_data = torch.randn(1, num_frames, fov_height * fov_width, device=device, dtype=dtype).reshape(
-            (num_frames, fov_height, fov_width)
-        )
+        sim_data = torch.randn(1, num_frames, fov_height * fov_width, device=device, dtype=dtype)
 
         spatial, temporal, _, _ = blockwise_decomposition(
             sim_data,
@@ -1359,7 +1351,7 @@ def _fast_unfold_routine(data: torch.Tensor,
 
     for k in dim1_start_iters:
         for j in dim2_start_iters:
-            real_data_slice = (slice(k, k + block_sizes[0]), slice(k, j + block_sizes[1]))
+            real_data_slice = (slice(k, k + block_sizes[0]), slice(j, j + block_sizes[1]))
             curr_subset = data[None, :, k - dim1_offset:k - dim1_offset + block_sizes[0], j - dim2_offset:j - dim2_offset + block_sizes[1]]
             slice_list.append(real_data_slice)
             data_batched.append(curr_subset)
@@ -1471,12 +1463,13 @@ def compression_routine(
 
     overlap = [math.ceil(block_sizes[0] / 2), math.ceil(block_sizes[1] / 2)]
 
-    dataset_mean = torch.zeros(dataset.shape[1], dataset.shape[2]).to(device).to(dtype)
+    dataset_mean = torch.zeros(dataset.shape[1], dataset.shape[2]).to('cpu').to(dtype)
 
     if not compute_normalizer:
         dataset_noise_std = torch.ones(dataset.shape[1], dataset.shape[2]).to(device).to(dtype)
     else:
-        dataset_noise_std = torch.zeros(dataset.shape[1], dataset.shape[2]).to(device).to(dtype)
+        ## There is never any need to bring this to the compute device since we will just write the outputs after data processing is done
+        dataset_noise_std = torch.zeros(dataset.shape[1], dataset.shape[2]).to('cpu').to(dtype)
 
     logger.debug("Loading data to estimate complete spatial basis")
 
@@ -1537,8 +1530,10 @@ def compression_routine(
         construct_weighting_scheme(block_sizes[0], block_sizes[1]).to(device).to(dtype)
     )
 
+    block_weights_cpu = block_weights.cpu()
+
     sparse_indices = torch.arange(
-        fov_height * fov_width, dtype=torch.long, device=device
+        fov_height * fov_width, dtype=torch.long, device='cpu'
     ).reshape((fov_height, fov_width))
 
     column_number = 0
@@ -1546,7 +1541,7 @@ def compression_routine(
     final_column_indices = []
     spatial_overall_values = []
     spatial_overall_unweighted_values = []
-    cumulative_weights = torch.zeros((fov_height, fov_width), dtype=dtype, device=device)
+    cumulative_weights = torch.zeros((fov_height, fov_width), dtype=dtype, device='cpu')
     total_temporal_fit = []
 
     logger.debug("Finding spatiotemporal roughness thresholds")
@@ -1615,8 +1610,7 @@ def compression_routine(
                               compute_device=device,
                               host_budget_bytes=host_budget_bytes,
                               device_budget_bytes=device_budget_bytes,
-                              data_batching=data_batching,
-                              tile_device="device")
+                              data_batching=data_batching)
         print(plan_gpu.tile_device)
         print("tile device")
 
@@ -1625,8 +1619,9 @@ def compression_routine(
                  for dim2_gpu_group in _tile_groups(dim2_batch_start, plan_gpu.data_batching[1])]
 
         for dim1_gpu_start, dim2_gpu_start in tiles_gpu:
-            gpu_slices = (slice(dim1_gpu_start[0],dim1_gpu_start[-1] + block_sizes[0]), slice(dim2_gpu_start[0], dim2_gpu_start[1] + block_sizes[1]))
-            gpu_dataset = curr_dataset[:, glu_slices[0], glu_slices[1]].to(plan_gpu.tile_device)
+            gpu_slices = (slice(dim1_gpu_start[0] - dataset_slice_lower_bound[0],dim1_gpu_start[-1] - dataset_slice_lower_bound[0] + block_sizes[0]),
+                          slice(dim2_gpu_start[0] - dataset_slice_lower_bound[1], dim2_gpu_start[-1] - dataset_slice_lower_bound[1] + block_sizes[1]))
+            gpu_dataset = curr_dataset[:, gpu_slices[0], gpu_slices[1]].to(device)
             ##Assumes that gpu_dataset unfolds things in the same
             gpu_dataset, curr_full_fov_slices = _fast_unfold_routine(gpu_dataset,
                                                dataset_slice_lower_bound[0],
@@ -1634,6 +1629,14 @@ def compression_routine(
                                                dim1_gpu_start,
                                                dim2_gpu_start,
                                                block_sizes)
+
+            pixel_weighting_batched = _fast_unfold_routine(pixel_weighting[None, ...],
+                                                           dataset_slice_lower_bound[0],
+                                                           dataset_slice_lower_bound[1],
+                                                           dim1_gpu_start,
+                                                           dim2_gpu_start,
+                                                           block_sizes
+                                                           )
             if detrender is not None:
                 ## Batch process this
                 curr_shape = gpu_dataset.shape #batches, frames, height, width
@@ -1644,13 +1647,23 @@ def compression_routine(
                     gpu_dataset.reshape(curr_shape[0], -1)
                 )
 
-                curr_spline_basis = curr_spline_basis.reshape(-1, curr_shape[0], curr_shape[2], curr_shape[3]) #(spline rank, num_batches, height, width)
+                curr_spline_basis = curr_spline_basis.reshape(-1, curr_shape[1], curr_shape[2], curr_shape[3]) #(spline rank, num_batches, height, width)
                 curr_spline_basis = curr_spline_basis.permute(2, 3, 1, 0)
                 ## Populate the relevant parts of the detrender's spatial basis
                 for idx, (s1, s2) in enumerate(curr_full_fov_slices):
                     spatial_preprocess_basis[s1, s2, :] = curr_spline_basis[:, :, idx, :]
                 gpu_dataset = gpu_dataset.reshape(curr_shape[1], curr_shape[0], curr_shape[2], curr_shape[3]).permute(1, 0, 2, 3)
 
+            if not compute_normalizer:
+                batched_noise_std = _fast_unfold_routine(dataset_noise_std[None, ...],
+                                                           dataset_slice_lower_bound[0],
+                                                           dataset_slice_lower_bound[1],
+                                                           dim1_gpu_start,
+                                                           dim2_gpu_start,
+                                                           block_sizes
+                                                           )
+            else:
+                batched_noise_std = None
             (
                 batch_unweighted_local_spatial_basis,
                 batch_temporal_basis,
@@ -1659,7 +1672,7 @@ def compression_routine(
                 batch_current_decisions
             ) = blockwise_decomposition_with_rank_selection(
                 gpu_dataset,
-                pixel_weighting[glu_slices[0], glu_slices[1]],
+                pixel_weighting_batched,
                 frame_weighting,
                 max_components,
                 max_consecutive_failures,
@@ -1671,8 +1684,10 @@ def compression_routine(
                 spatial_denoiser=spatial_denoiser,
                 temporal_denoiser=temporal_denoiser,
                 device=device,
-                subset_noise_std=dataset_noise_std[glu_slices[0], glu_slices[1]] if not compute_normalizer else None
+                subset_noise_std=batched_noise_std if not compute_normalizer else None
             )
+            batch_weighted_local_basis = block_weights[None, :, :, None] * batch_unweighted_local_spatial_basis
+            batch_weighted_local_basis = batch_weighted_local_basis.cpu()
             batch_unweighted_local_spatial_basis = batch_unweighted_local_spatial_basis.cpu()
             batch_temporal_basis = batch_temporal_basis.cpu()
             batch_subset_mean = batch_subset_mean.cpu()
@@ -1686,37 +1701,34 @@ def compression_routine(
                 current_temporal_basis = batch_temporal_basis[idx]
                 current_decisions = batch_current_decisions[idx].bool()
                 current_spatial_basis = current_spatial_basis[:,:, current_decisions]
+                local_spatial_basis = batch_weighted_local_basis[idx][:, :, current_decisions]
                 current_temporal_basis = current_temporal_basis[current_decisions, :]
+
+                dataset_mean[slice_dim1, slice_dim2] = batch_subset_mean[idx]
+                if compute_normalizer:
+                    dataset_noise_std[slice_dim1, slice_dim2] = batch_subset_noise_std[idx]
                 if current_temporal_basis.shape[0] == 0:
                     continue
 
-                dataset_mean[slice_dim1, slice_dim2] = batch_subset_mean[idx]
-                dataset_noise_std[slice_dim1, slice_dim2] = batch_subset_noise_std[idx]
-
                 # Results move to host RAM as they are produced; kept on the device they would grow through the
                 # whole run outside any memory budget (they are moved to the CPU at the end regardless)
-                total_temporal_fit.append(local_temporal_basis)
+                total_temporal_fit.append(current_temporal_basis)
 
                 # Weight the spatial components here
-
-                local_spatial_basis = (
-                        current_spatial_basis * block_weights[:, :, None]
-                )
-                current_cumulative_weight = block_weights
-                cumulative_weights[slice_dim1, slice_dim2] += current_cumulative_weight
+                cumulative_weights[slice_dim1, slice_dim2] += block_weights_cpu
 
                 curr_spatial_row_indices = sparse_indices[slice_dim1, slice_dim2][:, :, None]
                 curr_spatial_row_indices = curr_spatial_row_indices + torch.zeros(
-                    (1, 1, local_spatial_basis.shape[2]), device=device, dtype=torch.long
+                    (1, 1, local_spatial_basis.shape[2]), device='cpu', dtype=torch.long
                 )
 
                 curr_spatial_col_indices = torch.zeros_like(
-                    curr_spatial_row_indices, device=device
+                    curr_spatial_row_indices, device='cpu'
                 )
                 addend = torch.arange(
                     column_number,
                     column_number + local_spatial_basis.shape[2],
-                    device=device,
+                    device='cpu',
                     dtype=torch.long,
                 )[None, None, :]
                 curr_spatial_col_indices = curr_spatial_col_indices + addend
@@ -1725,11 +1737,11 @@ def compression_routine(
                 sparse_col_indices_f = curr_spatial_col_indices.flatten()
                 spatial_values_f = local_spatial_basis.flatten()
 
-                final_row_indices.append(sparse_row_indices_f.cpu())
-                final_column_indices.append(sparse_col_indices_f.cpu())
-                spatial_overall_values.append(spatial_values_f.cpu())
+                final_row_indices.append(sparse_row_indices_f)
+                final_column_indices.append(sparse_col_indices_f)
+                spatial_overall_values.append(spatial_values_f)
                 spatial_overall_unweighted_values.append(
-                    current_spatial_basis.flatten().cpu()
+                    current_spatial_basis.flatten()
                 )
                 column_number += local_spatial_basis.shape[2]
                 gpu_dataset = None #Always release the dataset at the end
