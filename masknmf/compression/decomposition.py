@@ -1046,10 +1046,14 @@ def threshold_heuristic(
         iters: int = 250,
         percentile_threshold: float = 5,
         device: str = "cpu",
+        budget_bytes: int | None = None,
 ) -> tuple[float, float]:
     """
     Generates a histogram of spatial and temporal roughness statistics from running the decomposition on random noise.
     This is used to decide how "smooth" the temporal and spatial components need to be in order to contain signal.
+
+    The simulations are independent, so they run in batches through the batched decomposition: as many per batch as
+    fit budget_bytes (see _simulations_per_batch), which turns `iters` small decompositions into a few large ones.
 
     Args:
         dimensions (tuple): Tuple describing the dimensions of the blocks which we will
@@ -1065,6 +1069,9 @@ def threshold_heuristic(
             roughness statistics
         percentile_threshold (float): The threshold we use to decide whether the spatial and temporal roughness stats of
             decomposition are "smooth" enough to contain signal.
+        device (str): The device the simulations run on
+        budget_bytes (int | None): Memory the simulations may use on that device (host RAM when it is the CPU). None
+            uses the same automatic budget as compression_routine (a fraction of the memory available now).
 
     Returns:
         tuple[float, float]: The spatial and temporal "cutoffs" for deciding whether a spatial-temporal decomposition
@@ -1078,15 +1085,29 @@ def threshold_heuristic(
     frame_weighting = torch.ones(num_frames, device=device, dtype=dtype)
     max_components = num_comps
 
+    if budget_bytes is None:
+        host_budget_bytes, device_budget_bytes = _resolve_memory_budgets(device, None, None)
+        budget_bytes = device_budget_bytes if device_budget_bytes is not None else host_budget_bytes
+    simulations_per_batch = _simulations_per_batch(num_frames, fov_height, fov_width,
+                                                   torch.empty((), dtype=dtype).element_size(),
+                                                   budget_bytes, iters)
+    # Spread the simulations evenly over the fewest batches that fit (e.g. 250 at 124 per batch -> 84, 83, 83)
+    num_batches = math.ceil(iters / simulations_per_batch)
+    batch_sizes = [iters // num_batches + (1 if b < iters % num_batches else 0) for b in range(num_batches)]
+    logger.debug(f"Noise thresholds: {iters} simulations in {len(batch_sizes)} batches of up to "
+                 f"{simulations_per_batch}")
+
+    # mean, noise normalizer and pixel weighting have a leading 1, so they broadcast over every simulation in a batch
     spatial_list, temporal_list, valid_list = [], [], []
-    for k in progress(range(iters), desc="noise thresholds"):
-        sim_data = torch.randn(1, num_frames, fov_height, fov_width, device=device, dtype=dtype)
+    for num_simulations in progress(batch_sizes, desc="noise thresholds"):
+        sim_data = torch.randn(num_simulations, num_frames, fov_height, fov_width, device=device, dtype=dtype)
         spatial, temporal, _, _, valid = blockwise_decomposition(
             sim_data, pixel_weighting, frame_weighting, max_components,
             spatial_avg_factor, temporal_avg_factor, dtype,
             spatial_denoiser=spatial_denoiser, temporal_denoiser=temporal_denoiser, device=device,
             subset_mean=sim_mean, subset_noise_std=sim_noise_normalizer,
         )
+        del sim_data  # free this batch before the next one is drawn
         spatial_list.append(spatial_roughness_statistic(spatial).flatten())
         temporal_list.append(temporal_roughness_statistic(temporal).flatten())
         valid_list.append(valid.flatten())
@@ -1100,6 +1121,30 @@ def threshold_heuristic(
     spatial_threshold = np.percentile(spatial_list.flatten(), percentile_threshold)
     temporal_threshold = np.percentile(temporal_list.flatten(), percentile_threshold)
     return spatial_threshold, temporal_threshold
+
+
+def _simulations_per_batch(num_frames: int,
+                           fov_height: int,
+                           fov_width: int,
+                           itemsize: int,
+                           budget_bytes: int,
+                           iters: int) -> int:
+    """
+    How many noise simulations threshold_heuristic runs per batch: the most whose decomposition fits budget_bytes,
+    between 1 and iters.
+
+    One simulation is a (num_frames, fov_height, fov_width) block, and the batched decomposition peaks at about
+    _DECOMPOSITION_WORKSPACE_FACTOR copies of its input (the same model compression_routine sizes its batches with).
+    _DEVICE_HEADROOM_BYTES is kept back for library workspaces and the denoisers' own activations.
+    """
+    per_simulation = _DECOMPOSITION_WORKSPACE_FACTOR * num_frames * fov_height * fov_width * itemsize
+    usable = budget_bytes - _DEVICE_HEADROOM_BYTES
+    if usable < per_simulation:
+        logger.warning(f"The memory budget ({budget_bytes / _GIGABYTE:.2f} GB) is below what one noise simulation "
+                       f"needs (~{(per_simulation + _DEVICE_HEADROOM_BYTES) / _GIGABYTE:.2f} GB); running them one "
+                       f"at a time")
+        return 1
+    return int(min(iters, usable // per_simulation))
 
 
 def construct_weighting_scheme(dim1, dim2) -> torch.Tensor:
@@ -1659,6 +1704,9 @@ def compression_routine(
     total_temporal_fit = []
 
     logger.debug("Finding spatiotemporal roughness thresholds")
+    # Memory for the noise simulations, measured now (nothing large is held yet); the tiles are planned afterwards,
+    # with the budgets measured again
+    sim_host_budget_bytes, sim_device_budget_bytes = _resolve_memory_budgets(device, host_memory_gb, device_memory_gb)
     spatial_roughness_threshold, temporal_roughness_threshold = threshold_heuristic(
         [block_sizes[0], block_sizes[1], window_chunks],
         spatial_avg_factor,
@@ -1670,6 +1718,7 @@ def compression_routine(
         iters=250,
         percentile_threshold=sim_conf,
         device=device,
+        budget_bytes=sim_device_budget_bytes if sim_device_budget_bytes is not None else sim_host_budget_bytes,
     )
 
     if detrender is not None:
