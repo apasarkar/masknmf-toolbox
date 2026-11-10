@@ -17,6 +17,9 @@ class CompressConfig:
     pixel_weighting: np.ndarray | None = None
     frame_weighting: np.ndarray | None = None
     detrender: SplineDetrenderBase | None = None
+    # Where compression holds its tiles: "cpu" (host RAM), "device" (the compute device), or None to let
+    # the planner choose by read cost. "device" suits data already in RAM; None or "cpu" suits data read from disk.
+    tile_device: Literal["cpu", "device"] | None = None
 
 @dataclass
 class CompressDenoiseConfig:
@@ -33,6 +36,9 @@ class CompressDenoiseConfig:
     noise_variance_quantile: float = 0.3
     num_epochs: int = 10
     detrender: SplineDetrenderBase | None = None
+    # Where compression holds its tiles: "cpu" (host RAM), "device" (the compute device), or None to let
+    # the planner choose by read cost. "device" suits data already in RAM; None or "cpu" suits data read from disk.
+    tile_device: Literal["cpu", "device"] | None = None
 
 # every config a pipeline's compression step can take; see MotionCorrectionConfigs
 CompressionConfigs = CompressConfig | CompressDenoiseConfig

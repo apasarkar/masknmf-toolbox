@@ -1204,6 +1204,23 @@ def _axis_groupings(positions: list[int], block_size: int) -> dict[int, tuple[in
     return groupings
 
 
+def _read_tile(dataset, key, tile_device) -> np.ndarray | torch.Tensor:
+    """
+    dataset[key], produced where the tile will be held when the dataset can choose (it has an output_device, as the
+    registration arrays do: they correct frames on the compute device and copy the result to output_device). Without
+    this, a tile corrected on the GPU and held on the GPU is copied GPU -> host -> GPU; with it, it never leaves the
+    GPU, and a tile held in host RAM is still produced in host RAM (never materialized whole on the GPU).
+    """
+    if not hasattr(dataset, "output_device"):
+        return dataset[key]
+    previous = dataset.output_device
+    dataset.output_device = torch.device(tile_device)
+    try:
+        return dataset[key]
+    finally:
+        dataset.output_device = previous
+
+
 def plan_tiles(
         dim1_positions: list[int],
         dim2_positions: list[int],
@@ -1702,7 +1719,8 @@ def compression_routine(
         # Release the previous tile first: the right-hand side below runs before the assignment, so otherwise
         # two tiles would coexist while the next one loads
         curr_dataset = None
-        curr_dataset = torch.as_tensor(dataset[effective_frame_indexer, dim1_batch_slice, dim2_batch_slice],
+        curr_dataset = torch.as_tensor(_read_tile(dataset, (effective_frame_indexer, dim1_batch_slice, dim2_batch_slice),
+                                                  plan.tile_device),
                                        device=plan.tile_device, dtype=dtype)
 
         # A tile held where we compute takes memory away from the batches
