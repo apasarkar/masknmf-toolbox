@@ -896,7 +896,7 @@ def blockwise_decomposition_singlepass(
 
     std_values = torch.std(temporal_projection_from_downsample, dim=2)
 
-    if temporal_denoiser is None or temporal_projection_from_downsample.shape[0] <= 1:
+    if temporal_denoiser is None or temporal_projection_from_downsample.shape[1] <= 1:
         temporal_basis_from_downsample = _temporal_basis_pca(temporal_projection_from_downsample,
                                                              explained_var_cutoff=1.0)
     else:
@@ -920,7 +920,7 @@ def blockwise_decomposition_singlepass(
     subset_r = subset.reshape(num_batches, -1, num_frames)
     if temporal_denoiser is None:
         #In this case, we want to take advantage of the existing
-        final_temporal_projection = (spatial_basis_orthogonal.mT @ (subset_r @ temporal_basis_from_downsample.T)) @ temporal_basis_from_downsample
+        final_temporal_projection = (spatial_basis_orthogonal.mT @ (subset_r @ temporal_basis_from_downsample.mT)) @ temporal_basis_from_downsample
     else:
         final_temporal_projection = spatial_basis_orthogonal.mT @ subset_r #In this case we want to project onto this basis and re-apply the denoiser
     left, sing, right = torch.linalg.svd(final_temporal_projection, full_matrices=False)
@@ -1630,7 +1630,7 @@ def compression_routine(
                                                dim2_gpu_start,
                                                block_sizes)
 
-            pixel_weighting_batched = _fast_unfold_routine(pixel_weighting[None, ...],
+            pixel_weighting_batched, _ = _fast_unfold_routine(pixel_weighting[dim1_batch_slice, dim2_batch_slice][None, gpu_slices[0], gpu_slices[1]],
                                                            dataset_slice_lower_bound[0],
                                                            dataset_slice_lower_bound[1],
                                                            dim1_gpu_start,
@@ -1644,18 +1644,18 @@ def compression_routine(
 
                 # curr_spline_basis shape (spline_rank, num_timeseries)
                 gpu_dataset, curr_spline_basis = detrender(
-                    gpu_dataset.reshape(curr_shape[0], -1)
+                    gpu_dataset.reshape(curr_shape[1], -1)
                 )
 
-                curr_spline_basis = curr_spline_basis.reshape(-1, curr_shape[1], curr_shape[2], curr_shape[3]) #(spline rank, num_batches, height, width)
+                curr_spline_basis = curr_spline_basis.reshape(-1, curr_shape[0], curr_shape[2], curr_shape[3]) #(spline rank, num_batches, height, width)
                 curr_spline_basis = curr_spline_basis.permute(2, 3, 1, 0)
                 ## Populate the relevant parts of the detrender's spatial basis
                 for idx, (s1, s2) in enumerate(curr_full_fov_slices):
                     spatial_preprocess_basis[s1, s2, :] = curr_spline_basis[:, :, idx, :]
-                gpu_dataset = gpu_dataset.reshape(curr_shape[1], curr_shape[0], curr_shape[2], curr_shape[3]).permute(1, 0, 2, 3)
+                gpu_dataset = gpu_dataset.reshape(-1, curr_shape[0], curr_shape[2], curr_shape[3]).permute(1, 0, 2, 3)
 
             if not compute_normalizer:
-                batched_noise_std = _fast_unfold_routine(dataset_noise_std[None, ...],
+                batched_noise_std, _ = _fast_unfold_routine(dataset_noise_std[dim1_batch_slice, dim2_batch_slice][None, gpu_slices[0], gpu_slices[1]],
                                                            dataset_slice_lower_bound[0],
                                                            dataset_slice_lower_bound[1],
                                                            dim1_gpu_start,
@@ -1684,7 +1684,7 @@ def compression_routine(
                 spatial_denoiser=spatial_denoiser,
                 temporal_denoiser=temporal_denoiser,
                 device=device,
-                subset_noise_std=batched_noise_std if not compute_normalizer else None
+                subset_noise_std=batched_noise_std
             )
             batch_weighted_local_basis = block_weights[None, :, :, None] * batch_unweighted_local_spatial_basis
             batch_weighted_local_basis = batch_weighted_local_basis.cpu()
@@ -1786,7 +1786,7 @@ def compression_routine(
         temporal_basis_mean = torch.mean(temporal_preprocess_basis, dim = 1, keepdims = True)
         curr_mean = spatial_preprocess_basis @ temporal_basis_mean
         curr_mean = curr_mean.squeeze(-1)
-        dataset_mean += curr_mean
+        dataset_mean += curr_mean.cpu()
         temporal_preprocess_basis = temporal_preprocess_basis - temporal_basis_mean
         spatial_preprocess_basis = spatial_preprocess_basis.reshape(-1, spatial_preprocess_basis.shape[2])
 
