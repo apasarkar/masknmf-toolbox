@@ -894,8 +894,6 @@ def blockwise_decomposition_singlepass(
             temporal_projection_from_downsample.reshape(-1, num_frames)
         ).reshape(num_batches, rank, num_frames)
 
-    std_values = torch.std(temporal_projection_from_downsample, dim=2)
-
     if temporal_denoiser is None or temporal_projection_from_downsample.shape[1] <= 1:
         temporal_basis_from_downsample = _temporal_basis_pca(temporal_projection_from_downsample,
                                                              explained_var_cutoff=1.0)
@@ -1612,7 +1610,6 @@ def compression_routine(
                               device_budget_bytes=device_budget_bytes,
                               data_batching=data_batching)
         print(plan_gpu.tile_device)
-        print("tile device")
 
         tiles_gpu = [(dim1_gpu_group, dim2_gpu_group)
                  for dim1_gpu_group in _tile_groups(dim1_batch_start, plan_gpu.data_batching[0])
@@ -1622,46 +1619,46 @@ def compression_routine(
             gpu_slices = (slice(dim1_gpu_start[0] - dataset_slice_lower_bound[0],dim1_gpu_start[-1] - dataset_slice_lower_bound[0] + block_sizes[0]),
                           slice(dim2_gpu_start[0] - dataset_slice_lower_bound[1], dim2_gpu_start[-1] - dataset_slice_lower_bound[1] + block_sizes[1]))
             gpu_dataset = curr_dataset[:, gpu_slices[0], gpu_slices[1]].to(device)
+
+            if detrender is not None:
+                ## Batch process this
+                curr_shape = gpu_dataset.shape #frames, height, width
+
+                # curr_spline_basis shape (spline_rank, num_timeseries)
+                gpu_dataset, curr_spline_basis = detrender(
+                    gpu_dataset.reshape(curr_shape[0], -1)
+                )
+
+                curr_spline_basis = curr_spline_basis.reshape(-1, curr_shape[1], curr_shape[2]) #(spline rank, height, width)
+                curr_spline_basis = curr_spline_basis.permute(1, 2, 0)
+                spatial_preprocess_basis[dim1_gpu_start[0]:dim1_gpu_start[-1] +block_sizes[0], dim2_gpu_start[0]:dim2_gpu_start[-1] + block_sizes[1], :] = curr_spline_basis
+                gpu_dataset = gpu_dataset.reshape(-1, curr_shape[1], curr_shape[2]).permute(1,2,0)
+
+
             ##Assumes that gpu_dataset unfolds things in the same
             gpu_dataset, curr_full_fov_slices = _fast_unfold_routine(gpu_dataset,
-                                               dataset_slice_lower_bound[0],
-                                               dataset_slice_lower_bound[1],
+                                               dim1_gpu_start[0],
+                                               dim2_gpu_start[0],
                                                dim1_gpu_start,
                                                dim2_gpu_start,
                                                block_sizes)
 
-            pixel_weighting_batched, _ = _fast_unfold_routine(pixel_weighting[dim1_batch_slice, dim2_batch_slice][None, gpu_slices[0], gpu_slices[1]],
-                                                           dataset_slice_lower_bound[0],
-                                                           dataset_slice_lower_bound[1],
+            pixel_weighting_batched = _fast_unfold_routine(pixel_weighting[dim1_batch_slice, dim2_batch_slice][None, gpu_slices[0], gpu_slices[1]],
+                                                           dim1_gpu_start[0],
+                                                           dim2_gpu_start[0],
                                                            dim1_gpu_start,
                                                            dim2_gpu_start,
                                                            block_sizes
-                                                           )
-            if detrender is not None:
-                ## Batch process this
-                curr_shape = gpu_dataset.shape #batches, frames, height, width
-                gpu_dataset = gpu_dataset.permute(1, 0, 2, 3) #frames, batches, height, width
-
-                # curr_spline_basis shape (spline_rank, num_timeseries)
-                gpu_dataset, curr_spline_basis = detrender(
-                    gpu_dataset.reshape(curr_shape[1], -1)
-                )
-
-                curr_spline_basis = curr_spline_basis.reshape(-1, curr_shape[0], curr_shape[2], curr_shape[3]) #(spline rank, num_batches, height, width)
-                curr_spline_basis = curr_spline_basis.permute(2, 3, 1, 0)
-                ## Populate the relevant parts of the detrender's spatial basis
-                for idx, (s1, s2) in enumerate(curr_full_fov_slices):
-                    spatial_preprocess_basis[s1, s2, :] = curr_spline_basis[:, :, idx, :]
-                gpu_dataset = gpu_dataset.reshape(-1, curr_shape[0], curr_shape[2], curr_shape[3]).permute(1, 0, 2, 3)
+                                                           )[0][:, 0]
 
             if not compute_normalizer:
-                batched_noise_std, _ = _fast_unfold_routine(dataset_noise_std[dim1_batch_slice, dim2_batch_slice][None, gpu_slices[0], gpu_slices[1]],
-                                                           dataset_slice_lower_bound[0],
-                                                           dataset_slice_lower_bound[1],
+                batched_noise_std = _fast_unfold_routine(dataset_noise_std[dim1_batch_slice, dim2_batch_slice][None, gpu_slices[0], gpu_slices[1]],
+                                                           dim1_gpu_start[0],
+                                                           dim2_gpu_start[0],
                                                            dim1_gpu_start,
                                                            dim2_gpu_start,
                                                            block_sizes
-                                                           )
+                                                           )[0][:, 0]
             else:
                 batched_noise_std = None
             (
