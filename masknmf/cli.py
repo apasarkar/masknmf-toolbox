@@ -28,6 +28,9 @@ here enumerates a parameter by hand:
     masknmf train-classifier "sessions/*/results.hdf5" --out cells
     masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classifier
     masknmf track "sessions/*/results.hdf5" --out tracking
+    masknmf run --pipeline two-photon-calcium "training/*.tif" --fs 30 --compress-kind compress --stop-after compression
+    masknmf train-denoiser "training_runs/*/results.hdf5" --out denoiser.pt --epochs 100
+    masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --denoiser denoiser.pt
 """
 
 from typing import Any, Optional
@@ -63,6 +66,7 @@ from masknmf.io import (
     group_names_registration,
     OpenedResults,
     has_group,
+    read_run_record,
     stage_groups,
 )
 from masknmf.multisession import RoicatDataAdapter, RoicatTracker
@@ -919,6 +923,19 @@ def command_train_classifier(args: argparse.Namespace) -> None:
     classifier.save(args.out)
 
 
+def command_train_denoiser(args: argparse.Namespace) -> None:
+    """Train one temporal denoiser on the compressions in several results files and save its weights."""
+    files = expand_results(entries=args.results)
+    for filepath in files:
+        record = read_run_record(filepath)
+        config = None if record is None else record["configs"].get("compress_config")
+        if isinstance(config, dict) and config.get("kind") == "compress-denoise":
+            fail(f"{filepath} was compressed with a denoiser; a denoiser trains on compressions made without one, "
+                 f"so run these with --compress-kind compress --stop-after compression")
+    masknmf.compression.pretrain_denoiser(files, args.out, num_epochs=args.epochs)
+    print(f"saved {args.out}; compress with it through masknmf run ... --denoiser {args.out}")
+
+
 def command_classify(args: argparse.Namespace) -> None:
     """Classify every ROI in each results file; predictions go to its labels sidecar, the labels are left as they are."""
     sessions = demixing_sessions(files=expand_results(entries=args.results))
@@ -1043,6 +1060,20 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
         "--out", required=True, help="where the classifier is saved, as <out>.roicat_classifier and <out>.training.json"
     )
     parser_train.set_defaults(handler=command_train_classifier)
+
+    parser_denoiser = subparsers.add_parser(
+        "train-denoiser", help="train one temporal denoiser on several recordings' compressions, for masknmf run --denoiser"
+    )
+    parser_denoiser.add_argument(
+        "results", nargs="+",
+        help="results .hdf5 files or globs, from runs with --compress-kind compress (no denoiser)",
+    )
+    parser_denoiser.add_argument("--out", required=True, help="where the weights are saved, e.g. denoiser.pt")
+    parser_denoiser.add_argument(
+        "--epochs", default=10, type=int,
+        help="passes over the pooled components; a few short recordings need many more than many long ones; default 10",
+    )
+    parser_denoiser.set_defaults(handler=command_train_denoiser)
 
     parser_classify = subparsers.add_parser(
         "classify", help="classify the ROIs in results files; predictions are saved next to each"

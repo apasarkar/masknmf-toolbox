@@ -120,6 +120,7 @@ PAGES = (
     ("open", fa.ICON_FA_FOLDER_OPEN, "View results", "a results file, run folder or tracking run, in the viewer its stages call for"),
     ("track", fa.ICON_FA_DIAGRAM_PROJECT, "Track sessions", "match ROIs across sessions' results files with ROICaT"),
     ("classify", fa.ICON_FA_TAGS, "Classify ROIs", "label ROIs, train a classifier, classify new sessions"),
+    ("denoiser", fa.ICON_FA_WAVE_SQUARE, "Train denoiser", "one temporal denoiser from several recordings' compressions, for later runs to compress with"),
 )
 # the Overview's step cards: the page a click opens, icon, name
 STEPS = (
@@ -185,6 +186,8 @@ COMMANDS = (
     ("view <tracking folder or manifest>", "the multisession viewer on a tracking run"),
     ("view <results...> --classify [--labels a,b] [--classifier <path>]", "label and classify ROIs, one session per file"),
     ("track <results...> --out <folder> --um-per-pixel <um>", "match ROIs across sessions with ROICaT"),
+    ("train-denoiser <results...> --out <denoiser.pt> --epochs <n>", "one temporal denoiser from several recordings' compressions"),
+    ("run --pipeline <pipeline> <movie> --denoiser <denoiser.pt>", "a run that compresses with those weights and trains nothing"),
 )
 # placeholders until the pipeline classes carry docstrings
 DESCRIPTIONS = {
@@ -569,6 +572,9 @@ class Launcher:
         # Classify ROIs: results rows and the classifier file
         self.paths_classify: dict[str, str] = {"classifier": "", "results_0": ""}
         self.labels = ""
+        # Train denoiser: results rows, the weights file and the training epochs
+        self.paths_denoiser: dict[str, str] = {"out": "", "results_0": ""}
+        self.epochs_denoiser = 10
         self.picker = None
         self.target_picker: Optional[tuple[dict, str]] = None
         self.argv: Optional[list[str]] = None
@@ -974,6 +980,15 @@ class Launcher:
             problems = [] if len(rows) > 0 else ["choose the sessions' results files"]
             problems += [f"not found: {p}" for p in rows if not any(c in p for c in "*?[") and not Path(p).expanduser().exists()]
             return problems
+        if self.page == "denoiser":
+            rows = self.results_given(target=self.paths_denoiser)
+            problems = [] if len(rows) > 0 else ["choose the recordings' results files"]
+            problems += [f"not found: {p}" for p in rows if not any(c in p for c in "*?[") and not Path(p).expanduser().exists()]
+            if self.paths_denoiser["out"].strip() == "":
+                problems.append("choose the file the weights are saved in")
+            if self.epochs_denoiser < 1:
+                problems.append("training needs at least 1 epoch")
+            return problems
         if self.page == "open":
             if self.paths_open["source"].strip() == "":
                 return ["choose a results file, a run folder or a tracking run"]
@@ -1033,6 +1048,8 @@ class Launcher:
             return self.argv_track()
         if self.page == "classify":
             return self.argv_classify()
+        if self.page == "denoiser":
+            return self.argv_denoiser()
         return None
 
     def argv_run(self) -> list[str]:
@@ -1095,6 +1112,11 @@ class Launcher:
             argv += ["--classifier", self.paths_classify["classifier"].strip()]
         return argv
 
+    def argv_denoiser(self) -> list[str]:
+        """The `masknmf train-denoiser` arguments Train denoiser amounts to."""
+        return ["train-denoiser", *self.results_given(target=self.paths_denoiser), "--out", self.paths_denoiser["out"].strip(),
+                "--epochs", str(self.epochs_denoiser)]
+
     def label_primary(self) -> Optional[str]:
         """The footer's action for the page; None on the Overview."""
         if self.page == "run":
@@ -1111,6 +1133,9 @@ class Launcher:
             verb = "Track" if self.page == "track" else "Classify"
             icon = fa.ICON_FA_DIAGRAM_PROJECT if self.page == "track" else fa.ICON_FA_TAGS
             return f"{icon}  {verb} {len(rows)} session{'' if len(rows) == 1 else 's'}"
+        if self.page == "denoiser":
+            rows = self.results_given(target=self.paths_denoiser)
+            return f"{fa.ICON_FA_WAVE_SQUARE}  Train on {len(rows)} recording{'' if len(rows) == 1 else 's'}"
         return None
 
     def quit(self) -> None:
@@ -1273,8 +1298,10 @@ class Launcher:
             self.draw_open()
         elif key == "track":
             self.draw_track()
-        else:
+        elif key == "classify":
             self.draw_classify()
+        else:
+            self.draw_denoiser()
 
     def step(self, n: int, title: str, hint: str) -> None:
         """A numbered step heading with a (?) hint."""
@@ -1774,6 +1801,28 @@ class Launcher:
             self.row(caption="classifier")
             self.draw_path(target=self.paths_classify, key="classifier", filetypes=FILETYPES_CLASSIFIER, folders=False,
                            hint="optional: a .roicat_classifier file")
+            imgui.end_table()
+
+    def draw_denoiser(self) -> None:
+        """The recordings' results files, the training epochs, and the weights file."""
+        em = imgui.get_font_size()
+        self.step(1, "Recordings", "One results .hdf5 per recording, a path or glob per row, from runs whose compress stage "
+                                   "is compress (no denoiser); stopping those runs after compression is enough")
+        if self.begin_form(name="denoiser"):
+            self.draw_results_rows(target=self.paths_denoiser, folders=False)
+            imgui.end_table()
+        imgui.dummy(imgui.ImVec2(0, 0.6 * em))
+        self.step(2, "Denoiser", "Training saves the weights here; a run compresses with them once its compress stage's "
+                                 "filepath_denoiser names the file")
+        if self.begin_form(name="denoiser_out"):
+            self.row(caption="epochs", hint="Passes over the pooled components; a few short recordings need many more than many long ones")
+            imgui.set_next_item_width(hello_imgui.em_size(WIDTH_INPUT_EM))
+            _, self.epochs_denoiser = imgui.input_int("##epochs_denoiser", self.epochs_denoiser, 0, 0)
+            self.row(caption="weights")
+            # a plain field: draw_path marks a file that does not exist yet as not found
+            imgui.set_next_item_width(max(imgui.get_content_region_avail().x, hello_imgui.em_size(12)))
+            _, self.paths_denoiser["out"] = imgui.input_text_with_hint("##weights", "the file training writes, e.g. denoiser.pt",
+                                                                       self.paths_denoiser["out"])
             imgui.end_table()
 
     def draw_stages(self) -> None:
