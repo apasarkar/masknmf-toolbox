@@ -256,6 +256,14 @@ def line_spec(color: tuple, weight: float = 1.0) -> implot.Spec:
     return spec
 
 
+def draw_help(text: str) -> None:
+    """Draws a (?) after the last widget that shows ``text`` while hovered."""
+    imgui.same_line()
+    imgui.text_disabled("(?)")
+    if imgui.is_item_hovered(imgui.HoveredFlags_.for_tooltip | imgui.HoveredFlags_.allow_when_disabled):
+        imgui.set_tooltip(text)
+
+
 def draw_image_and_settings(test: ConvergenceTest, running: bool) -> None:
     """Draws the mean image with the draggable ROI, and the load and trainer settings beside it."""
     em = imgui.get_font_size()
@@ -284,13 +292,19 @@ def draw_image_and_settings(test: ConvergenceTest, running: bool) -> None:
     imgui.begin_disabled(running)
     gigabytes = test.n_frames_load * height * width * 4 / 1e9
     _, test.n_frames_load = imgui.slider_int(f"frames in RAM ({gigabytes:.2f} GB)", test.n_frames_load, 2 * PADDING, len(test.movie))
+    draw_help(text="Frames read from the start of the movie. Each component is cut into 900-frame windows,\nso more frames give more windows and more steps per epoch.")
     _, test.rank = imgui.slider_int("SVD rank", test.rank, 8, 256)
+    draw_help(text="Number of temporal components the network trains on, standing in for the rank PMD finds.\nMore components give more windows and more steps per epoch.")
     _, test.max_epochs = imgui.input_int("max epochs", test.max_epochs, 10)
+    draw_help(text="Passes over all training windows. Steps = epochs x steps per epoch.\nThis is num_epochs on CompressDenoiseStrategy (default 10).")
     _, test.batch_size = imgui.input_int("batch size", test.batch_size, 16)
+    draw_help(text="Windows per optimizer step. Steps per epoch = windows / batch size, rounded up,\nso decreasing it gives more steps per epoch. CompressDenoiseStrategy fixes it at 128.")
     _, test.learning_rate = imgui.input_float("learning rate", test.learning_rate, 0, 0, "%.0e")
+    draw_help(text="Adam step size. CompressDenoiseStrategy fixes it at 1e-4.")
     test.max_epochs, test.batch_size = max(test.max_epochs, 1), max(test.batch_size, 1)
     imgui.end_disabled()
     _, test.tolerance_percent = imgui.slider_float("tolerance (% of raw SD)", test.tolerance_percent, 0.5, 20, "%.1f")
+    draw_help(text="An epoch counts as converged when its trace and every later one differ from the latest\ntrace by less than this. Increasing it reports an earlier epoch.")
     imgui.pop_item_width()
     if running:
         if imgui.button("Stop"):
@@ -300,6 +314,7 @@ def draw_image_and_settings(test: ConvergenceTest, running: bool) -> None:
     imgui.same_line()
     imgui.text_disabled(test.status)
     imgui.text_disabled(f"ROI x {int(test.roi[0])}-{int(test.roi[2])}, y {int(test.roi[1])}-{int(test.roi[3])} px; drag it on the image")
+    imgui.text_disabled(f"train_total_variance_denoiser(components, max_epochs={test.max_epochs}, batch_size={test.batch_size}, learning_rate={test.learning_rate:.0e})")
     imgui.end_group()
 
 
