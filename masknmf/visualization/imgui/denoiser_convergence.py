@@ -329,7 +329,7 @@ def draw_results(test: ConvergenceTest) -> None:
             implot.plot_line(f"epoch {n_epochs} (latest)", frames, test.traces_epochs[-1].astype(np.float64), line_spec(color=(0.3, 0.6, 1.0, 1.0), weight=1.5))
         implot.plot_line("epoch shown", frames, test.traces_epochs[test.epoch_shown - 1].astype(np.float64), line_spec(color=(1.0, 0.35, 0.3, 1.0), weight=1.5))
         implot.end_plot()
-    if implot.begin_plot("##distance", (-1, 9 * em), implot.Flags_.no_legend):
+    if n_epochs > 1 and implot.begin_plot("##distance", (-1, 9 * em), implot.Flags_.no_legend):
         implot.setup_axes("epoch", "% of raw SD", implot.AxisFlags_.auto_fit, implot.AxisFlags_.auto_fit)
         implot.setup_axis_scale(implot.ImAxis_.y1, implot.Scale_.log10)
         ## the latest epoch's distance to itself is 0, which a log axis cannot show
