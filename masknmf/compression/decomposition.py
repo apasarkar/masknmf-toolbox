@@ -818,7 +818,8 @@ def blockwise_decomposition(
         temporal_denoiser: Callable | None = None,
         device: str = "cpu",
         subset_mean: torch.Tensor | None = None,
-        subset_noise_std: torch.Tensor | None = None
+        subset_noise_std: torch.Tensor | None = None,
+        defer_temporal_denoiser: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
 
     first_spatial, first_temporal, subset_mean, subset_noise_std, valid = blockwise_decomposition_singlepass(video_subset,
@@ -832,7 +833,8 @@ def blockwise_decomposition(
                                                                        temporal_denoiser=temporal_denoiser,
                                                                        device=device,
                                                                        subset_mean=subset_mean,
-                                                                       subset_noise_std=subset_noise_std)
+                                                                       subset_noise_std=subset_noise_std,
+                                                                       defer_temporal_denoiser=defer_temporal_denoiser)
 
     return first_spatial, first_temporal, subset_mean, subset_noise_std, valid
 
@@ -849,6 +851,7 @@ def blockwise_decomposition_singlepass(
         device: str = "cpu",
         subset_mean: torch.Tensor | None= None,
         subset_noise_std: torch.Tensor | None = None,
+        defer_temporal_denoiser: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Args:
@@ -864,6 +867,9 @@ def blockwise_decomposition_singlepass(
         device (str | torch.device): The device on which computations occur
         subset_mean (torch.Tensor): Optional mean provided, shape (num_batches, block_height, block_width)
         subset_noise_std (torch.Tensor): Optional estimate of noise standard deviation, shape (num_batches, block_height, block_width)
+        defer_temporal_denoiser (bool): Skip stage 6 (the temporal denoiser on the final temporal basis) and return
+            that basis undenoised, for a caller that denoises only the components it needs (see
+            _denoise_prefix_until_failure). The stage 2 denoiser runs either way.
     """
 
     num_batches, num_frames, fov_height, fov_width = video_subset.shape
@@ -967,8 +973,8 @@ def blockwise_decomposition_singlepass(
     )
     local_temporal_basis = sing[..., None] * right * valid[..., None]
 
-    # Stage 6
-    if temporal_denoiser is not None:
+    # Stage 6 (unless the caller denoises the final temporal basis itself)
+    if temporal_denoiser is not None and not defer_temporal_denoiser:
         local_temporal_basis = temporal_denoiser(
             local_temporal_basis.reshape(-1, num_frames)
         ).reshape(num_batches, -1, num_frames)
@@ -985,6 +991,83 @@ def residual_std_calculation(spatial_decomposition: torch.Tensor,
     resid = data_block - output.permute(2, 0, 1)
     return torch.std(resid, dim = 0)
 
+# Components per block denoised per round by _denoise_prefix_until_failure. Each round costs one CPU/GPU sync and one
+# denoiser call over the blocks still undecided; with ~2 kept components per block most blocks finish in round one.
+_DENOISER_CHUNK_SIZE = 4
+
+
+def _denoise_prefix_until_failure(temporal: torch.Tensor,
+                                  spatial_ok: torch.Tensor,
+                                  valid: torch.Tensor,
+                                  temporal_denoiser: Callable,
+                                  temporal_roughness_threshold: float,
+                                  max_consecutive_failures: int,
+                                  chunk_size: int = _DENOISER_CHUNK_SIZE,
+                                  ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Stage 6 of the decomposition (the temporal denoiser on the final temporal basis) together with the roughness
+    test, run only as far as the decisions can matter.
+
+    filter_by_failures keeps each block's components up to and including the end of its first run of
+    max_consecutive_failures failures and drops everything after, and each component's decision depends on that
+    component alone. So components are denoised in order, chunk_size at a time, each round only for the blocks whose
+    run has not ended. Every component filter_by_failures can keep is denoised exactly as stage 6 would (the denoiser
+    treats each trace independently), so the kept components and their traces match denoising all of them.
+
+    Args:
+        temporal (torch.Tensor): (B, K, T) final temporal basis, not yet denoised
+        spatial_ok (torch.Tensor): (B, K) bool, spatial roughness below its threshold
+        valid (torch.Tensor): (B, K) bool validity mask; not modified
+        temporal_denoiser (Callable): maps (N, T) traces to (N, T) denoised traces
+        temporal_roughness_threshold (float): temporal roughness threshold
+        max_consecutive_failures (int): as in filter_by_failures
+        chunk_size (int): components per block denoised per round
+    Returns:
+        denoised (torch.Tensor): (B, K, T). Components never reached keep their undenoised values; they are always
+            after the end of the first failure run, so filter_by_failures drops them.
+        passes (torch.Tensor): (B, K) bool, spatial_ok & temporal roughness below threshold & valid; False for
+            components never reached
+        valid (torch.Tensor): (B, K) bool, with denoised traces that came back all zero marked invalid, as in stage 6
+    """
+    num_blocks, num_comps, num_frames = temporal.shape
+    device = temporal.device
+    denoised = temporal.clone()
+    valid = valid.clone()
+    passes = torch.zeros(num_blocks, num_comps, dtype=torch.bool, device=device)
+    failure_run = torch.zeros(num_blocks, dtype=torch.long, device=device)
+    active = torch.ones(num_blocks, dtype=torch.bool, device=device)
+
+    for start in range(0, num_comps, chunk_size):
+        stop = min(num_comps, start + chunk_size)
+        rows = active.nonzero().squeeze(1)  # one sync per round: which blocks are still undecided
+        if rows.numel() == 0:
+            break
+
+        chunk_valid = valid[rows, start:stop]                                   # (n, c)
+        x = temporal[rows, start:stop]                                          # (n, c, T)
+        y = temporal_denoiser(x.reshape(-1, num_frames)).reshape(x.shape)
+        y = y * chunk_valid[..., None]                                          # the denoiser's biases un-zero padding
+        y = y - y.mean(dim=-1, keepdim=True)
+        chunk_valid = chunk_valid & (y != 0).any(dim=-1)
+        denoised[rows, start:stop] = y
+        valid[rows, start:stop] = chunk_valid
+
+        ok = ((temporal_roughness_statistic(y) < temporal_roughness_threshold)
+              & spatial_ok[rows, start:stop] & chunk_valid)                     # (n, c)
+        passes[rows, start:stop] = ok
+
+        # Walk the chunk's components in order; a block is done once its failure run reaches the limit
+        run = failure_run[rows]
+        done = torch.zeros_like(run, dtype=torch.bool)
+        for j in range(stop - start):
+            run = torch.where(ok[:, j], torch.zeros_like(run), run + 1)
+            done |= run >= max_consecutive_failures
+        failure_run[rows] = run
+        active[rows] = ~done
+
+    return denoised, passes, valid
+
+
 def blockwise_decomposition_with_rank_selection(
         video_subset: torch.Tensor,
         subset_pixel_weighting: torch.Tensor,
@@ -1000,8 +1083,20 @@ def blockwise_decomposition_with_rank_selection(
         temporal_denoiser: torch.nn.Module | None = None,
         device: str = "cpu",
         subset_mean: torch.Tensor | None = None,
-        subset_noise_std: torch.Tensor = None
+        subset_noise_std: torch.Tensor = None,
+        denoiser_chunk_size: int | None = None,
 ):
+    """
+    Decomposes a batch of blocks and decides which components to keep.
+
+    A component is kept when it is spatially and temporally smooth (roughness below both thresholds) and valid, up to
+    the end of each block's first run of max_consecutive_failures failures (filter_by_failures). With a temporal
+    denoiser, the final temporal basis is denoised only as far as those decisions can reach
+    (_denoise_prefix_until_failure): the kept components and their traces are the same as denoising every component.
+
+    denoiser_chunk_size: components per block denoised per round in that case (default _DENOISER_CHUNK_SIZE).
+    """
+    deferred = temporal_denoiser is not None
     (local_spatial_basis, local_temporal_basis,
      subset_mean, subset_noise_std, valid) = blockwise_decomposition(
         video_subset,
@@ -1015,15 +1110,25 @@ def blockwise_decomposition_with_rank_selection(
         temporal_denoiser=temporal_denoiser,
         device=device,
         subset_mean=subset_mean,
-        subset_noise_std=subset_noise_std
+        subset_noise_std=subset_noise_std,
+        defer_temporal_denoiser=deferred,
     )
 
-    decisions = evaluate_fitness(
-        local_spatial_basis,
-        local_temporal_basis,
-        spatial_roughness_threshold,
-        temporal_roughness_threshold,
-    ) & valid
+    if deferred:
+        # Stage 6 here, only as far as the decisions can reach; same decisions as evaluate_fitness on every component
+        spatial_ok = spatial_roughness_statistic(local_spatial_basis) < spatial_roughness_threshold
+        local_temporal_basis, decisions, valid = _denoise_prefix_until_failure(
+            local_temporal_basis, spatial_ok, valid, temporal_denoiser, temporal_roughness_threshold,
+            max_consecutive_failures,
+            chunk_size=_DENOISER_CHUNK_SIZE if denoiser_chunk_size is None else denoiser_chunk_size)
+        decisions = decisions & valid
+    else:
+        decisions = evaluate_fitness(
+            local_spatial_basis,
+            local_temporal_basis,
+            spatial_roughness_threshold,
+            temporal_roughness_threshold,
+        ) & valid
 
     decisions = filter_by_failures(decisions, max_consecutive_failures)
 
