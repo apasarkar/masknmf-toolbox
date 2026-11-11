@@ -198,7 +198,14 @@ class CompressDenoiseStrategy(CompressStrategy):
                  device_memory_gb: float | None = None,
                  host_memory_gb: float | None = None,
                  tile_device: Literal["cpu", "device"] | None = None,
+                 filepath_denoiser: str | None = None,
                  ):
+        """
+        Args:
+            filepath_denoiser (str | None): weights of a pretrained denoiser, written by
+                masknmf.compression.save_denoiser. When given, compress runs one compression pass with that denoiser:
+                the pass without a denoiser and the training are skipped, and num_epochs is unused.
+        """
 
         super().__init__(block_sizes,
                          frame_range,
@@ -217,6 +224,7 @@ class CompressDenoiseStrategy(CompressStrategy):
                          tile_device=tile_device)
         self._num_epochs = num_epochs
         self._noise_variance_quantile = noise_variance_quantile
+        self._filepath_denoiser = filepath_denoiser
 
     @property
     def num_epochs(self) -> int:
@@ -234,33 +242,45 @@ class CompressDenoiseStrategy(CompressStrategy):
     def noise_variance_quantile(self, new_noise_variance_quantile: float):
         self._noise_variance_quantile = new_noise_variance_quantile
 
+    @property
+    def filepath_denoiser(self) -> str | None:
+        return self._filepath_denoiser
+
+    @filepath_denoiser.setter
+    def filepath_denoiser(self, new_filepath_denoiser: str | None):
+        self._filepath_denoiser = new_filepath_denoiser
+
     def compress(self, dataset: masknmf.ArrayLike | np.ndarray):
 
-        compression_no_denoiser = compression_routine(dataset,
-                                              self.block_sizes,
-                                              frame_range=self.frame_range,
-                                              max_components=self.max_components,
-                                              sim_conf=self._sim_conf,
-                                              max_consecutive_failures=self._max_consecutive_failures,
-                                              spatial_avg_factor=self.spatial_avg_factor,
-                                              temporal_avg_factor=self.temporal_avg_factor,
-                                              compute_normalizer=self._compute_normalizer,
-                                              pixel_weighting=self._pixel_weighting,
-                                              frame_weighting=self._frame_weighting,
-                                              detrender=self.detrender,
-                                              device=self.device,
-                                              device_memory_gb=self.device_memory_gb,
-                                              host_memory_gb=self.host_memory_gb,
-                                              tile_device=self.tile_device
-                                                      )
+        if self.filepath_denoiser is None:
+            compression_no_denoiser = compression_routine(dataset,
+                                                  self.block_sizes,
+                                                  frame_range=self.frame_range,
+                                                  max_components=self.max_components,
+                                                  sim_conf=self._sim_conf,
+                                                  max_consecutive_failures=self._max_consecutive_failures,
+                                                  spatial_avg_factor=self.spatial_avg_factor,
+                                                  temporal_avg_factor=self.temporal_avg_factor,
+                                                  compute_normalizer=self._compute_normalizer,
+                                                  pixel_weighting=self._pixel_weighting,
+                                                  frame_weighting=self._frame_weighting,
+                                                  detrender=self.detrender,
+                                                  device=self.device,
+                                                  device_memory_gb=self.device_memory_gb,
+                                                  host_memory_gb=self.host_memory_gb,
+                                                  tile_device=self.tile_device
+                                                          )
 
-        temporal_compressed_no_denoiser = compression_no_denoiser.temporal_compressed.cpu()
-        masknmf.utils.display(f"rank {temporal_compressed_no_denoiser.shape[0]} before the temporal denoiser")
-        masknmf.utils.display(f"training the temporal denoiser on {temporal_compressed_no_denoiser.shape[0]} components")
-        trained_model, _ = masknmf.compression.denoising.train_total_variance_denoiser(temporal_compressed_no_denoiser,
-                                                                                       max_epochs=self.num_epochs,
-                                                                                       batch_size=128,
-                                                                                       learning_rate=1e-4)
+            temporal_compressed_no_denoiser = compression_no_denoiser.temporal_compressed.cpu()
+            masknmf.utils.display(f"rank {temporal_compressed_no_denoiser.shape[0]} before the temporal denoiser")
+            masknmf.utils.display(f"training the temporal denoiser on {temporal_compressed_no_denoiser.shape[0]} components")
+            trained_model, _ = masknmf.compression.denoising.train_total_variance_denoiser(temporal_compressed_no_denoiser,
+                                                                                           max_epochs=self.num_epochs,
+                                                                                           batch_size=128,
+                                                                                           learning_rate=1e-4)
+        else:
+            masknmf.utils.display(f"using the pretrained temporal denoiser {self.filepath_denoiser}")
+            trained_model = masknmf.compression.denoising.load_denoiser(self.filepath_denoiser)
 
         curr_temporal_denoiser = masknmf.compression.CompressionTemporalDenoiser(trained_model, self.noise_variance_quantile)
 

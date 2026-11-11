@@ -295,6 +295,32 @@ def train_total_variance_denoiser(
     dataset.data = dataset.data.cpu()
     return model, dataset
 
+def save_denoiser(model: TotalVarianceTemporalDenoiser, filepath: str) -> None:
+    """
+    Saves a trained denoiser's weights, to be reused on other recordings with load_denoiser.
+
+    Args:
+        model (TotalVarianceTemporalDenoiser): the trained model, e.g. from train_total_variance_denoiser.
+        filepath (str): where the weights are written, e.g. "denoiser.pt".
+    """
+    torch.save(model.state_dict(), filepath)
+
+
+def load_denoiser(filepath: str) -> TotalVarianceTemporalDenoiser:
+    """
+    Loads a denoiser saved by save_denoiser.
+
+    Args:
+        filepath (str): a file written by save_denoiser.
+
+    Returns:
+        model: the denoiser with the saved weights, on the CPU.
+    """
+    model = TotalVarianceTemporalDenoiser()
+    model.load_state_dict(torch.load(filepath, map_location="cpu", weights_only=True))
+    return model
+
+
 def blind_spot_safe_pad(x: torch.Tensor, pad: int, radius: int) -> torch.Tensor:
     """
     Mirror-pad the last dimension by `pad` samples on each side, without breaking the blind spot.

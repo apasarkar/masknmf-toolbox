@@ -39,6 +39,7 @@ class CompressDenoiseConfig:
     # Where compression holds its tiles: "cpu" (host RAM), "device" (the compute device), or None to let
     # the planner choose by read cost. "device" suits data already in RAM; None or "cpu" suits data read from disk.
     tile_device: Literal["cpu", "device"] | None = None
+    filepath_denoiser: str | None = None  # weights from masknmf.compression.save_denoiser; skips training, num_epochs is unused
 
 # every config a pipeline's compression step can take; see MotionCorrectionConfigs
 CompressionConfigs = CompressConfig | CompressDenoiseConfig
