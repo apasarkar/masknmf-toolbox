@@ -3049,7 +3049,7 @@ class DemixingState(SignalProcessingState):
                                                                            (self.fov_height, self.fov_width),
                                                                            downsampling_factor)
         b_downsample = masknmf.compression.decomposition.spatial_downsample(
-            self.b.reshape(self.fov_height, self.fov_width, 1),
+            self.b.reshape(1, self.fov_height, self.fov_width, 1),
             downsampling_factor).squeeze()
         b_downsample = b_downsample.reshape(b_downsample.shape[0] * b_downsample.shape[1], 1)
 
