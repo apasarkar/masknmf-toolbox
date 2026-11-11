@@ -17,7 +17,7 @@ from typing import *
 from functools import partial
 
 from masknmf._version import __version__
-from masknmf.pipelines.scraper import slugify, config_json_value, config_from_json
+from masknmf.pipelines.scraper import slugify, config_json_value, config_from_json, kind_of
 from masknmf.arrays import ArrayLike, OphysArray
 from masknmf.compression import CompressionArray, CompressStrategy, CompressDenoiseStrategy
 from masknmf.compression.preprocessing import MaximinSplineDetrend, geometric_knot_positions
@@ -640,6 +640,24 @@ class BasePipeline(ABC):
                 self.configs_given.add(name)
 
 
+    @property
+    def denoiser(self) -> str | None:
+        """The pretrained denoiser weights the compression uses; None when it trains its own or has no denoiser."""
+        if not hasattr(self, "compress_config"):
+            raise NotImplementedError(f"{type(self).__name__} has no compress_config")
+        config = self.compress_config
+        return config.filepath_denoiser if isinstance(config, CompressDenoiseConfig) else None
+
+    @denoiser.setter
+    def denoiser(self, value: str | None):
+        """
+        Compress with a pretrained temporal denoiser instead of training one on this movie: the weights file from
+        `masknmf train-denoiser` (masknmf.compression.pretrain_denoiser). None trains one as usual.
+        """
+        if not isinstance(self.compress_config, CompressDenoiseConfig):
+            raise ValueError(f"a denoiser needs a compress-denoise compress_config; it is {kind_of(value=self.compress_config)}")
+        self.compress_config.filepath_denoiser = value
+        self.configs_given.add("compress_config")
 
     @abstractmethod
     def run(self, **kwargs) -> Path:
