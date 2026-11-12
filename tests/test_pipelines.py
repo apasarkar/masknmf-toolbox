@@ -299,6 +299,30 @@ def test_a_curated_file_records_the_nmf_config_its_pass_ran_with(tmp_path):
     assert masknmf.io.read_nmf_config(tmp_path / "results.hdf5") is None
 
 
+def test_cell_radius_sets_the_ring_radius_and_only_raises_the_background_downsampling_factor(tmp_path):
+    from masknmf.pipelines.twophoton_calcium import TwoPhotonCalciumPipeline
+
+    pipeline = TwoPhotonCalciumPipeline(output_folder=tmp_path)
+    assert pipeline.configs_given == set()
+    pipeline.cell_radius = 5
+    assert pipeline.cell_radius == 5
+    assert pipeline.configs_given == {"filtered_demixing_config", "unfiltered_demixing_config"}
+    assert {p.NMFConfig.ring_radius for p in pipeline.demixing_passes()} == {11}
+    assert {p.NMFConfig.background_downsampling_factor for p in pipeline.demixing_passes()} == {30}
+
+    pipeline.cell_radius = 20
+    assert {p.NMFConfig.ring_radius for p in pipeline.demixing_passes()} == {41}
+    assert {p.NMFConfig.background_downsampling_factor for p in pipeline.demixing_passes()} == {40}
+
+    for p in pipeline.demixing_passes():
+        p.NMFConfig.background_downsampling_factor = 15
+    assert pipeline.cell_radius == 20
+    assert {p.NMFConfig.ring_radius for p in pipeline.demixing_passes()} == {41}
+
+    with pytest.raises(ValueError):
+        pipeline.cell_radius = 0
+
+
 def test_an_init_argument_that_is_also_a_settable_property_gets_one_flag(capsys):
     from masknmf import cli
     from masknmf.pipelines.twophoton_calcium import TwoPhotonCalciumPipeline
