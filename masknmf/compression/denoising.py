@@ -22,6 +22,7 @@ from torch.utils.data import DataLoader
 import os
 import sys
 from masknmf.utils import display
+from masknmf.compression.compression_array import CompressionArray
 
 
 class MaskedConv1d(nn.Conv1d):
@@ -294,6 +295,62 @@ def train_total_variance_denoiser(
 
     dataset.data = dataset.data.cpu()
     return model, dataset
+
+def save_denoiser(model: TotalVarianceTemporalDenoiser, filepath: str) -> None:
+    """
+    Saves a trained denoiser's weights, to be reused on other recordings with load_denoiser.
+
+    Args:
+        model (TotalVarianceTemporalDenoiser): the trained model, e.g. from train_total_variance_denoiser.
+        filepath (str): where the weights are written, e.g. "denoiser.pt".
+    """
+    torch.save(model.state_dict(), filepath)
+
+
+def load_denoiser(filepath: str) -> TotalVarianceTemporalDenoiser:
+    """
+    Loads a denoiser saved by save_denoiser.
+
+    Args:
+        filepath (str): a file written by save_denoiser.
+
+    Returns:
+        model: the denoiser with the saved weights, on the CPU.
+    """
+    model = TotalVarianceTemporalDenoiser()
+    model.load_state_dict(torch.load(filepath, map_location="cpu", weights_only=True))
+    return model
+
+
+def pretrain_denoiser(filepaths_results: list[str],
+                      filepath_denoiser: str,
+                      num_epochs: int = 10) -> TotalVarianceTemporalDenoiser:
+    """
+    Trains one denoiser on the compressions of several recordings and saves it with save_denoiser, to compress
+    other recordings of the same kind with (CompressDenoiseStrategy's filepath_denoiser).
+
+    Training is the same as CompressDenoiseStrategy's (batch size 128, learning rate 1e-4), on every recording's
+    temporal components at once. Recordings of different lengths are trimmed to the shortest.
+
+    Args:
+        filepaths_results (list[str]): results .hdf5 files, each holding a compression made without a denoiser
+            (CompressStrategy; CompressConfig in a pipeline).
+        filepath_denoiser (str): where the weights are written, e.g. "denoiser.pt".
+        num_epochs (int): passes over the pooled components. One epoch is one step per 128 windows of 900 frames,
+            so a few short recordings need many more epochs than many long ones.
+
+    Returns:
+        model: the trained denoiser.
+    """
+    traces = [CompressionArray.from_hdf5(filepath).temporal_compressed.cpu() for filepath in filepaths_results]
+    num_frames = min(t.shape[1] for t in traces)
+    traces = torch.cat([t[:, :num_frames] for t in traces])  # (components of every recording, num_frames)
+    display(f"training the temporal denoiser on {traces.shape[0]} components of {len(filepaths_results)} recordings, "
+            f"{num_frames} frames each")
+    model, _ = train_total_variance_denoiser(traces, max_epochs=num_epochs, batch_size=128, learning_rate=1e-4)
+    save_denoiser(model, filepath_denoiser)
+    return model
+
 
 def blind_spot_safe_pad(x: torch.Tensor, pad: int, radius: int) -> torch.Tensor:
     """
