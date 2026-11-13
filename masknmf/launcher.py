@@ -644,6 +644,9 @@ class Launcher:
         # the uniform min brightness control: while checked, every change of its value is set in every demixing pass
         self.uniform_min_brightness_on = False
         self.uniform_min_brightness = 1.0
+        # the cell radius control: while checked, every change of its value is set through the pipeline's cell_radius
+        self.cell_radius_on = False
+        self.cell_radius = 5
         for param in (*self.spec.movie_params, *self.spec.array_params):
             self.paths.setdefault(param.field, "")
 
@@ -1903,6 +1906,7 @@ class Launcher:
             imgui.text_colored(COLOR_TITLE, stage)
             if stage == param_hints.STAGE_DEMIXING and self.spec.cls.demixing_configs is not BasePipeline.demixing_configs:
                 self.draw_uniform_min_brightness()
+                self.draw_cell_radius()
             for section in sections:
                 self.draw_stage(section=section)
 
@@ -1919,8 +1923,29 @@ class Launcher:
         )
         imgui.end_disabled()
         if self.uniform_min_brightness_on and (changed_on or changed_value):
-            pipeline = self.spec.cls(**{section.argument: self.values[section.argument] for section in self.spec.sections})
-            pipeline.min_brightness = self.uniform_min_brightness
+            self.set_meta_parameter(name="min_brightness", value=self.uniform_min_brightness)
+
+    def draw_cell_radius(self) -> None:
+        """A checkbox that, while checked, sets the ring radius and background downsampling of every demixing pass from a soma radius."""
+        changed_on, self.cell_radius_on = imgui.checkbox("cell radius", self.cell_radius_on)
+        if imgui.is_item_hovered():
+            idl.wrapped_tooltip("Typical soma radius in pixels. Sets ring_radius to 2 * radius + 1 in every demixing pass and "
+                                "raises background_downsampling_factor to 2 * radius where it is below that; "
+                                "a pass edited afterwards keeps its own")
+        imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+        imgui.begin_disabled(not self.cell_radius_on)
+        imgui.set_next_item_width(hello_imgui.em_size(WIDTH_INPUT_EM))
+        changed_value, value = imgui.input_int("##cell_radius", self.cell_radius)
+        imgui.end_disabled()
+        # the pipeline's cell_radius setter refuses a radius below 1
+        self.cell_radius = max(1, value)
+        if self.cell_radius_on and (changed_on or changed_value):
+            self.set_meta_parameter(name="cell_radius", value=self.cell_radius)
+
+    def set_meta_parameter(self, name: str, value) -> None:
+        """Set a settable property of the pipeline, which rewrites the stage configs the window holds in place."""
+        pipeline = self.spec.cls(**{section.argument: self.values[section.argument] for section in self.spec.sections})
+        setattr(pipeline, name, value)
 
     def draw_stage(self, section: scraper.Section) -> None:
         """A stage's heading, the config it takes with a reset once it differs from the default, then the config's fields."""
