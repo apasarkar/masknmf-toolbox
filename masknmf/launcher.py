@@ -45,6 +45,8 @@ from masknmf.visualization.imgui.widgets import draw_min_brightness
 FILEPATH_RUN_CONFIGS = DIR_CONFIG / "launcher_configs.json"
 
 PIPELINE_INITIAL = "two-photon-calcium"
+
+NAMES_RESULTS = ("results.hdf5", "results.glutamate.hdf5", "results.calcium.hdf5")
 PAGE_INITIAL = "home"
 
 FILETYPES_MOVIE = [
@@ -822,18 +824,31 @@ class Launcher:
         self.loaded_run = str(folder)
         return None
 
+    def results_loaded(self) -> Optional[Path]:
+        """
+        The loaded run's results file: results.hdf5, or the first channel's file of a run that writes one per channel.
+
+        Returns
+        -------
+        Optional[Path]
+            None when no run is loaded or its folder holds no results file.
+        """
+        if self.loaded_run is None:
+            return None
+        return next((Path(self.loaded_run) / name for name in NAMES_RESULTS if (Path(self.loaded_run) / name).is_file()), None)
+
     def starts_available(self) -> list[str]:
         """
         Where a run of the loaded pipeline can start besides the movie: the loaded run's registration, and its
-        compression, when its results.hdf5 holds them and the pipeline can resume from them.
+        compression, when its results file holds them and the pipeline can resume from them.
 
         Returns
         -------
         list[str]
             "registration" and "compression", as available.
         """
-        filepath = None if self.loaded_run is None else Path(self.loaded_run) / "results.hdf5"
-        if filepath is None or not filepath.is_file() or not any(p.field == "resume" for p in self.spec.run_scalars):
+        filepath = self.results_loaded()
+        if filepath is None or not any(p.field == "resume" for p in self.spec.run_scalars):
             return []
         names = cli.groups_present(filepath_results=str(filepath))
         starts = ["registration"] if any(n in names for n in group_names_registration()) else []
@@ -845,7 +860,7 @@ class Launcher:
     def select_start(self, start: str) -> None:
         """
         Start the run from the movie, or reuse the loaded run's registration or compression: resume from its
-        results.hdf5, the compression reused by its compress config "skip".
+        results file, the compression reused by its compress config "skip".
 
         Parameters
         ----------
@@ -854,7 +869,7 @@ class Launcher:
         """
         self.start_from = start
         resume = next(p for p in self.spec.run_scalars if p.field == "resume")
-        self.texts[resume.name] = "" if start == "movie" else str(Path(self.loaded_run) / "results.hdf5")
+        self.texts[resume.name] = "" if start == "movie" else str(self.results_loaded())
         compress = next((s for s in self.spec.sections if s.argument == "compress_config"), None)
         if compress is None:
             return
