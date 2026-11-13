@@ -29,7 +29,7 @@ from wgpu.utils.imgui import ImguiRenderer
 
 import masknmf
 from masknmf import cli
-from masknmf.demixing._adapters import ADAPTERS, adapter_for, adapter_patterns, adapter_sources
+from masknmf.demixing._adapters import ADAPTERS, adapter_for, adapter_patterns
 from masknmf.demixing.curation import latest_results
 from masknmf.io import group_name_compression, group_name_demixing, group_names_registration, stage_groups
 from masknmf.pipelines import scraper
@@ -138,6 +138,11 @@ STEPS = (
     ("track", fa.ICON_FA_DIAGRAM_PROJECT, "Track"),
     ("classify", fa.ICON_FA_TAGS, "Classify"),
 )
+PIPELINE_NOTES = (
+    "motion correction estimates the shifts; compression applies them, so no registered movie is written",
+    "check each stage's results before trusting the next",
+    "View results opens a run at any stage",
+)
 # the pipeline's flow: a stage, the check that follows it, what the stage does, what it saves, and what to check
 FLOW = (
     (
@@ -219,8 +224,7 @@ VIEWERS = (
         "demixing",
         fa.ICON_FA_LAYER_GROUP,
         "Demixing viewer",
-        "One session's results at any stage: registration, compression, demixing and curation; other pipelines' results "
-        "through their adapters. Several files open one viewer each",
+        "One session's results at any stage, ours or another pipeline's; each file opens its own viewer",
     ),
     (
         "classification",
@@ -1407,13 +1411,10 @@ class Launcher:
         imgui.dummy(imgui.ImVec2(0, imgui.get_text_line_height()))
 
         guide.heading(fa.ICON_FA_GEARS, "Pipeline")
-        draw_wrapped(
-            color=COLOR_DIM,
-            text="A pipeline is a pre-configured profile of the standard stages and their configs. Motion correction "
-            "estimates the shifts on the raw movie; compression applies them while it compresses, so no registered "
-            "movie is ever written. Run a stage, open its results and check it before trusting the next: one demixing viewer "
-            "opens a single session's results at any of the three stages.",
-        )
+        draw_wrapped(text="A pipeline is a preset of these three stages and their configs.", color=COLOR_DIM)
+        for note in PIPELINE_NOTES:
+            imgui.bullet()
+            draw_wrapped(text=note, color=COLOR_DIM)
         imgui.dummy(imgui.ImVec2(0, 0.4 * em))
         # the stages in a row, each with its check under it
         p = imgui.get_cursor_screen_pos()
@@ -1475,8 +1476,8 @@ class Launcher:
             imgui.end_table()
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
-        draw_wrapped(text="a run folder is named by when the run started and its pipeline; a second run in the same "
-                     "second gets _1, _2, ... appended", color=COLOR_DIM)
+        draw_wrapped(text="a run folder is named by its start time and pipeline; runs started in the same second get _1, _2, ...",
+                     color=COLOR_DIM)
         imgui.dummy(imgui.ImVec2(0, 0.4 * em))
         size = 1.4 * em
         imgui.push_font(None, size)
@@ -1496,11 +1497,7 @@ class Launcher:
         imgui.dummy(imgui.ImVec2(w, size + 2.0 * em))
 
         guide.heading(fa.ICON_FA_TERMINAL, "Command line")
-        draw_wrapped(
-            color=COLOR_DIM,
-            text="every action here is a masknmf command: the line it amounts to shows at the bottom before it runs, "
-            "so a run can be repeated or scripted from a shell",
-        )
+        draw_wrapped(text="every action here is a masknmf command, shown in the footer before it runs", color=COLOR_DIM)
         imgui.dummy(imgui.ImVec2(0, 0.2 * em))
         for command, does in COMMANDS:
             imgui.text_colored(COLOR_TITLE, f"masknmf {command}")
@@ -1631,8 +1628,8 @@ class Launcher:
     def draw_open(self) -> None:
         """A path, what it holds, and the viewer that opens it."""
         em = imgui.get_font_size()
-        self.step(1, "Source", "A results .hdf5, a run folder or a tracking run; a curated file opens in place of its original. "
-                               f"Or {adapter_sources()}")
+        self.step(1, "Source", "The viewer opens any of these:\n- a results .hdf5, run folder or tracking run; a curated file "
+                               "opens in place of its original\n" + "\n".join(f"- {cls.source}" for cls in ADAPTERS))
         if self.begin_form(name="open"):
             self.row(caption="path")
             self.draw_path(target=self.paths_open, key="source", filetypes=FILETYPES_RESULTS, folders=True,
@@ -1818,8 +1815,8 @@ class Launcher:
     def draw_denoiser(self) -> None:
         """The recordings' results files, the training epochs, and the weights file."""
         em = imgui.get_font_size()
-        self.step(1, "Recordings", "One results .hdf5 per recording, a path or glob per row, from runs whose compress stage "
-                                   "is compress (no denoiser); stopping those runs after compression is enough")
+        self.step(1, "Recordings", "One results .hdf5 per recording, a path or glob per row, from runs compressed without a "
+                                   "denoiser; they can stop after compression")
         if self.begin_form(name="denoiser"):
             self.draw_results_rows(target=self.paths_denoiser, folders=False)
             imgui.end_table()
