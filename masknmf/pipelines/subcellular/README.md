@@ -26,6 +26,31 @@ results.glutamate.hdf5, results.calcium.hdf5
   global/DemixingResults    whole-dendrite component
 ```
 
+## Stopping after a stage and starting from an earlier run
+
+`stop_after` ends a run after `"registration"`, `"compression"` or `"demixing"`. `resume` starts a new run from an
+earlier run's results; give either channel's file, the other is read from the same folder.
+
+```python
+pipe = GlutamateCalciumSpinePipeline(output_folder="results/")
+registered = pipe.run(glutamate_channel=glu, calcium_channel=calcium, stop_after="registration")
+
+# the stored shifts and retained_frames applied to the movies, then compression with other settings
+pipe = GlutamateCalciumSpinePipeline(output_folder="results/",
+                                     compress_config=CompressDenoiseConfig(block_sizes=(10, 10), num_epochs=100))
+compressed = pipe.run(glutamate_channel=glu, calcium_channel=calcium, stop_after="compression",
+                      resume=registered / "results.glutamate.hdf5")
+
+# the stored compression and mask, then demixing; the movies are only used for the raw traces
+pipe = GlutamateCalciumSpinePipeline(output_folder="results/", compress_config="skip")
+pipe.run(glutamate_channel=glu, calcium_channel=calcium, resume=compressed / "results.glutamate.hdf5")
+```
+
+- A resumed run writes a new run folder and leaves the earlier one as it is.
+- Settings not given are the earlier run's, from its `config.json`.
+- `exclude_initial_frames` and `good_frame_indicator` are not used by a resumed run: the frames are the earlier run's `retained_frames`.
+- `cross_channel_mask` in each results file is the dendrite mask compression and the whole-dendrite component used.
+
 `masknmf.utils.results_files(run)` maps channel to file: `{"calcium": run / "results.calcium.hdf5", ...}`.
 
 ```python
