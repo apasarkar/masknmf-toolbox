@@ -37,7 +37,7 @@ registered = pipe.run(glutamate_channel=glu, calcium_channel=calcium, stop_after
 
 # the stored shifts and retained_frames applied to the movies, then compression with other settings
 pipe = GlutamateCalciumSpinePipeline(output_folder="results/",
-                                     compress_config=CompressDenoiseConfig(block_sizes=(10, 10), num_epochs=100))
+                                     compress_config=CompressDenoiseConfig(block_sizes=(10, 10)))
 compressed = pipe.run(glutamate_channel=glu, calcium_channel=calcium, stop_after="compression",
                       resume=registered / "results.glutamate.hdf5")
 

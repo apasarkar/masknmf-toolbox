@@ -222,7 +222,7 @@ def train_total_variance_denoiser(
         time_series,  # num_timeseries x time_series_length
         learning_rate: float = 1e-2,
         input_size: int = 900,
-        max_epochs: int = 20,
+        num_steps: int = 500,
         batch_size: int = 1,
         devices: int = 1,
         padding: int = 100,
@@ -246,7 +246,6 @@ def train_total_variance_denoiser(
     """
     model = TotalVarianceTemporalDenoiser(
         learning_rate=learning_rate,
-        max_epochs=max_epochs,
     )
 
     use_gpu_data = torch.cuda.is_available() and devices == 1
@@ -276,7 +275,8 @@ def train_total_variance_denoiser(
     previous_cudnn_benchmark = torch.backends.cudnn.benchmark
 
     trainer = pl.Trainer(
-        max_epochs=max_epochs,
+        max_steps=num_steps,
+        max_epochs=-1,
         log_every_n_steps=log_every_n_steps,
         devices=devices,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
@@ -324,20 +324,19 @@ def load_denoiser(filepath: str) -> TotalVarianceTemporalDenoiser:
 
 def pretrain_denoiser(filepaths_results: list[str],
                       filepath_denoiser: str,
-                      num_epochs: int = 10) -> TotalVarianceTemporalDenoiser:
+                      num_steps: int = 500) -> TotalVarianceTemporalDenoiser:
     """
     Trains one denoiser on the compressions of several recordings and saves it with save_denoiser, to compress
     other recordings of the same kind with (CompressDenoiseStrategy's filepath_denoiser).
 
-    Training is the same as CompressDenoiseStrategy's (batch size 128, learning rate 1e-4), on every recording's
+    Training is the same as CompressDenoiseStrategy's (batch size 128, learning rate 1e-3), on every recording's
     temporal components at once. Recordings of different lengths are trimmed to the shortest.
 
     Args:
         filepaths_results (list[str]): results .hdf5 files, each holding a compression made without a denoiser
             (CompressStrategy; CompressConfig in a pipeline).
         filepath_denoiser (str): where the weights are written, e.g. "denoiser.pt".
-        num_epochs (int): passes over the pooled components. One epoch is one step per 128 windows of 900 frames,
-            so a few short recordings need many more epochs than many long ones.
+        num_steps (int): training steps, each on 128 windows of 900 frames.
 
     Returns:
         model: the trained denoiser.
@@ -347,7 +346,7 @@ def pretrain_denoiser(filepaths_results: list[str],
     traces = torch.cat([t[:, :num_frames] for t in traces])  # (components of every recording, num_frames)
     display(f"training the temporal denoiser on {traces.shape[0]} components of {len(filepaths_results)} recordings, "
             f"{num_frames} frames each")
-    model, _ = train_total_variance_denoiser(traces, max_epochs=num_epochs, batch_size=128, learning_rate=1e-4)
+    model, _ = train_total_variance_denoiser(traces, num_steps=num_steps, batch_size=128, learning_rate=1e-3)
     save_denoiser(model, filepath_denoiser)
     return model
 
@@ -407,7 +406,7 @@ class MultivariateTimeSeriesDataset(torch.utils.data.Dataset):
                     f"After filtering, the training data has {updated_num_rows} time series")
 
         self.data = self.data - self.data.mean(dim=1, keepdim=True)
-        self.data /= torch.linalg.norm(self.data, dim=1, keepdim=True)
+        self.data /= self.data.std(dim=1, keepdim=True)
 
 
         self.num_series = self.data.shape[0]
@@ -475,9 +474,9 @@ def denoise_batched(
     traces = traces.to(device).float().clone()
     traces_means = torch.mean(traces, dim=1, keepdim=True)
     traces -= traces_means
-    traces_norms = torch.linalg.norm(traces, dim=1, keepdim=True)
-    traces_norms[traces_norms == 0] = 1
-    traces /= traces_norms
+    traces_stds = traces.std(dim=1, keepdim=True)
+    traces_stds[traces_stds == 0] = 1
+    traces /= traces_stds
 
     # Denoise the entire dataset using the estimated noise variance
     denoised_traces, network_estimates, total_variance_estimates = (
@@ -490,7 +489,7 @@ def denoise_batched(
         )
     )
 
-    denoised_traces *= traces_norms
+    denoised_traces *= traces_stds
     denoised_traces += traces_means
     return (
         denoised_traces,

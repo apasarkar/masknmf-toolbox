@@ -188,7 +188,7 @@ COMMANDS = (
     ("view <tracking folder or manifest>", "the multisession viewer on a tracking run"),
     ("view <results...> --classify [--labels a,b] [--classifier <path>]", "label and classify ROIs, one session per file"),
     ("track <results...> --out <folder> --um-per-pixel <um>", "match ROIs across sessions with ROICaT"),
-    ("train-denoiser <results...> --out <denoiser.pt> --epochs <n>", "one temporal denoiser from several recordings' compressions"),
+    ("train-denoiser <results...> --out <denoiser.pt> --steps <n>", "one temporal denoiser from several recordings' compressions"),
     ("run --pipeline <pipeline> <movie> --denoiser <denoiser.pt>", "a run that compresses with those weights and trains nothing"),
 )
 # placeholders until the pipeline classes carry docstrings
@@ -574,9 +574,9 @@ class Launcher:
         # Classify ROIs: results rows and the classifier file
         self.paths_classify: dict[str, str] = {"classifier": "", "results_0": ""}
         self.labels = ""
-        # Train denoiser: results rows, the weights file and the training epochs
+        # Train denoiser: results rows, the weights file and the training steps
         self.paths_denoiser: dict[str, str] = {"out": "", "results_0": ""}
-        self.epochs_denoiser = 10
+        self.steps_denoiser = 500
         self.picker = None
         self.target_picker: Optional[tuple[dict, str]] = None
         self.argv: Optional[list[str]] = None
@@ -1001,8 +1001,8 @@ class Launcher:
             problems += [f"not found: {p}" for p in rows if not any(c in p for c in "*?[") and not Path(p).expanduser().exists()]
             if self.paths_denoiser["out"].strip() == "":
                 problems.append("choose the file the weights are saved in")
-            if self.epochs_denoiser < 1:
-                problems.append("training needs at least 1 epoch")
+            if self.steps_denoiser < 1:
+                problems.append("training needs at least 1 step")
             return problems
         if self.page == "open":
             if self.paths_open["source"].strip() == "":
@@ -1130,7 +1130,7 @@ class Launcher:
     def argv_denoiser(self) -> list[str]:
         """The `masknmf train-denoiser` arguments Train denoiser amounts to."""
         return ["train-denoiser", *self.results_given(target=self.paths_denoiser), "--out", self.paths_denoiser["out"].strip(),
-                "--epochs", str(self.epochs_denoiser)]
+                "--steps", str(self.steps_denoiser)]
 
     def label_primary(self) -> Optional[str]:
         """The footer's action for the page; None on the Overview."""
@@ -1819,7 +1819,7 @@ class Launcher:
             imgui.end_table()
 
     def draw_denoiser(self) -> None:
-        """The recordings' results files, the training epochs, and the weights file."""
+        """The recordings' results files, the training steps, and the weights file."""
         em = imgui.get_font_size()
         self.step(1, "Recordings", "One results .hdf5 per recording, a path or glob per row, from runs whose compress stage "
                                    "is compress (no denoiser); stopping those runs after compression is enough")
@@ -1830,9 +1830,9 @@ class Launcher:
         self.step(2, "Denoiser", "Training saves the weights here; a run compresses with them once its compress stage's "
                                  "filepath_denoiser names the file")
         if self.begin_form(name="denoiser_out"):
-            self.row(caption="epochs", hint="Passes over the pooled components; a few short recordings need many more than many long ones")
+            self.row(caption="steps", hint="Training steps, each on 128 windows of 900 frames")
             imgui.set_next_item_width(hello_imgui.em_size(WIDTH_INPUT_EM))
-            _, self.epochs_denoiser = imgui.input_int("##epochs_denoiser", self.epochs_denoiser, 0, 0)
+            _, self.steps_denoiser = imgui.input_int("##steps_denoiser", self.steps_denoiser, 0, 0)
             self.row(caption="weights")
             # a plain field: draw_path marks a file that does not exist yet as not found
             imgui.set_next_item_width(max(imgui.get_content_region_avail().x, hello_imgui.em_size(12)))
