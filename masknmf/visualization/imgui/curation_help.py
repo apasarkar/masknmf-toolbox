@@ -184,9 +184,9 @@ TOOLS = (
     ("tool", "description"),
     (
         "draw (a)",
-        "one region at a time, a polygon on any panel: every signal in view whose center is on the switch's "
-        "side of it is selected, live as it is drawn or dragged; a or esc drops it, the selection stays, and so "
-        "does a click or table pick that edits the selection by hand",
+        "selects every signal whose center is on the switch's side (inside/outside) of a polygon drawn on any panel"
+        "\n- updates live while drawing or dragging"
+        "\n- a, esc or a hand pick drops the polygon; the selection stays",
     ),
     ("freehand", "the region drawn in one stroke, not yet implemented"),
     (
@@ -435,13 +435,6 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
             if DEFAULTS[j] == name:
                 dl.add_circle_filled(center, 0.25 * em, u32(ACCENT))
     imgui.dummy(imgui.ImVec2(mw, mh))
-    imgui.same_line(0, em)
-    imgui.text_colored(
-        DIM,
-        "up to three panels, any movie in each: the Panels button above the tabs, or a right-click on a "
-        "panel, picks what it shows; the zoom and the drawn rois stay when it switches. They open on raw, "
-        "compressed+denoised and signals, and the frame slider runs all three.",
-    )
     table("panels", PANELS)
 
     heading(fa.ICON_FA_ARROWS_UP_DOWN_LEFT_RIGHT, "Motion correction shifts")
@@ -557,12 +550,14 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     plot(dl, w - fw - 1.4 * em, "Traces (mode: selection)", PIXEL_LINE, ph, frame, SELECTED)
     label = "pixel avg (40, 61)"
     dl.add_text(imgui.ImVec2(px.x + w - fw - 2 * em - imgui.calc_text_size(label).x, px.y + 1.5 * em), u32(GROUP[2]), label)
-    imgui.text_colored(
-        DIM,
-        "Toggle pixel traces (p) and click an empty pixel: its 5x5 compressed average joins the plot as "
-        "pixel avg (r, c), grouped like a signal and marked in the table. Check for activity the demixer missed "
-        "before drawing a roi there; ctrl+click or Delete drops it, p off clears them all",
-    )
+    imgui.text_colored(DIM, "Pixel traces (p): click an empty pixel to plot its 5x5 compressed average as pixel avg (r, c).")
+    for line in (
+        "use it to check for activity the demixer missed before drawing a roi",
+        "it groups like a signal and is marked in the table",
+        "ctrl+click or Delete drops one; p off clears all",
+    ):
+        imgui.bullet()
+        imgui.text_colored(DIM, line)
     table("overlay", OVERLAY)
 
     heading(fa.ICON_FA_SLIDERS, "Selection tools")

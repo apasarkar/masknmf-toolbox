@@ -1854,9 +1854,10 @@ class SingleSessionDemixingVis:
             self._armed = False
             self._drop_region()
         tooltip(
-            "Apply to selection: the signals on the switch's side of the range become the selection, as ctrl+a does "
-            "for the table, and follow the lines as they move; Delete marks them and records the filter. Editing "
-            "the selection by hand switches this off"
+            "Apply to selection: select the signals on the switch's side of the range"
+            "\n- follows the range lines as they move"
+            "\n- Delete marks them and records the filter"
+            "\n- editing the selection by hand turns this off"
         )
         imgui.same_line(0, g.gap)
         flipped, self._filter_outside = draw_switch("filter", self._filter_outside, "inside", "outside", self._filter_select)
@@ -1980,17 +1981,18 @@ class SingleSessionDemixingVis:
                         fa.ICON_FA_EYE_DROPPER,
                         self._pixel_traces,
                         lambda: self._set_pixel_traces(not self._pixel_traces),
-                        "Quick pixel trace: click an empty pixel to add the compressed movie's 5x5 average there to "
-                        "the plot, grouped with whatever is shown, and to the top of the signals table, marked. "
-                        "Demix and export ignore it; delete drops it (p)",
+                        "Quick pixel trace (p): click an empty pixel to plot its 5x5 compressed average"
+                        "\n- grouped with what is plotted, and listed at the top of the signals table"
+                        "\n- Demix and export ignore it; Delete drops it",
                     ),
                     (
                         fa.ICON_FA_CHART_LINE,
                         self._show_traces,
                         self._toggle_show_traces,
-                        "Show selected traces: plot whatever is selected, a signal's four averages, or one line per "
-                        "group member - a grouped signal's demixed trace, a pixel average's or drawn roi's "
-                        "compressed average. Off, selecting only highlights, however big the selection",
+                        "Show selected traces: plot the selection"
+                        "\n- one signal: its four averages"
+                        "\n- a group: one line per member (demixed trace for signals, compressed average for pixels and rois)"
+                        "\n- off: selecting only highlights",
                     ),
                 ]
             if isinstance(self.demixing_results, masknmf.DemixingResults) and self.demixing_results.temporal_demixed_raw is not None:
@@ -2135,9 +2137,10 @@ class SingleSessionDemixingVis:
             self._min_brightness_cache = value
             self._nmf_config.min_brightness = value
         help_mark(
-            "the brightness a signal must reach to survive the pass: its peak pixel weight times its peak trace "
-            "value, in units of the pixel noise, ramped up to this over the pass's iterations. "
-            "starts at the value of the pass that produced these results."
+            "Minimum brightness a signal needs to survive the pass."
+            "\n- brightness = peak pixel weight times peak trace value, in pixel-noise units"
+            "\n- the threshold ramps up to this over the pass's iterations"
+            "\n- starts at the value of the pass that made these results"
         )
 
         imgui.spacing()
