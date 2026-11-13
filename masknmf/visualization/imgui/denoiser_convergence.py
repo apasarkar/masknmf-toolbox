@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["numpy", "torch", "imgui-bundle>=1.92.801", "tifffile"]
+# ///
 """
 Convergence test for the temporal denoiser, as one imgui dialog.
 
@@ -7,6 +11,7 @@ of the selected pixels after every epoch. The network, loss, windowing and fusio
 masknmf/compression/denoising.py, so this file needs only numpy, torch and imgui_bundle.
 
     python denoiser_convergence.py movie.npy
+    uv run denoiser_convergence.py            (a local path or a URL; no movie opens a simulated one)
 """
 
 from typing import Any, List, Optional
@@ -375,9 +380,23 @@ def run(movie: Any) -> ConvergenceTest:
     return test
 
 
+def simulate_movie(n_frames: int = 4000, height: int = 96, width: int = 96, n_cells: int = 30, seed: int = 0) -> np.ndarray:
+    """Simulates Gaussian cells with exponentially decaying calcium transients under shot noise. Shape (n_frames, height, width)."""
+    rng = np.random.default_rng(seed=seed)
+    centers = rng.uniform(low=8, high=min(height, width) - 8, size=(n_cells, 2))
+    yy, xx = np.mgrid[:height, :width]
+    footprints = np.exp(-((yy[None] - centers[:, 0, None, None]) ** 2 + (xx[None] - centers[:, 1, None, None]) ** 2) / (2 * 3.0**2))
+    spikes = rng.random(size=(n_cells, n_frames)) < 0.005
+    kernel_decay = np.exp(-np.arange(200) / 30.0)
+    calcium = np.stack([np.convolve(row, kernel_decay)[:n_frames] for row in spikes])  ## (n_cells, n_frames)
+    return rng.poisson(lam=20 + 30 * np.einsum("ct,chw->thw", calcium, footprints)).astype(np.float32)
+
+
 if __name__ == "__main__":
-    filepath_movie = sys.argv[1]
-    if filepath_movie.endswith(".npy"):
+    filepath_movie = sys.argv[1] if len(sys.argv) > 1 else None
+    if filepath_movie is None:
+        run(movie=simulate_movie())
+    elif filepath_movie.endswith(".npy"):
         run(movie=np.load(filepath_movie, mmap_mode="r"))
     else:
         import tifffile
