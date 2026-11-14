@@ -45,6 +45,8 @@ from masknmf.visualization.imgui.widgets import draw_min_brightness
 FILEPATH_RUN_CONFIGS = DIR_CONFIG / "launcher_configs.json"
 
 PIPELINE_INITIAL = "two-photon-calcium"
+
+NAMES_RESULTS = ("results.hdf5", "results.glutamate.hdf5", "results.calcium.hdf5")
 PAGE_INITIAL = "home"
 
 FILETYPES_MOVIE = [
@@ -186,7 +188,7 @@ COMMANDS = (
     ("view <tracking folder or manifest>", "the multisession viewer on a tracking run"),
     ("view <results...> --classify [--labels a,b] [--classifier <path>]", "label and classify ROIs, one session per file"),
     ("track <results...> --out <folder> --um-per-pixel <um>", "match ROIs across sessions with ROICaT"),
-    ("train-denoiser <results...> --out <denoiser.pt> --epochs <n>", "one temporal denoiser from several recordings' compressions"),
+    ("train-denoiser <results...> --out <denoiser.pt> --steps <n>", "one temporal denoiser from several recordings' compressions"),
     ("run --pipeline <pipeline> <movie> --denoiser <denoiser.pt>", "a run that compresses with those weights and trains nothing"),
 )
 # placeholders until the pipeline classes carry docstrings
@@ -572,9 +574,9 @@ class Launcher:
         # Classify ROIs: results rows and the classifier file
         self.paths_classify: dict[str, str] = {"classifier": "", "results_0": ""}
         self.labels = ""
-        # Train denoiser: results rows, the weights file and the training epochs
+        # Train denoiser: results rows, the weights file and the training steps
         self.paths_denoiser: dict[str, str] = {"out": "", "results_0": ""}
-        self.epochs_denoiser = 10
+        self.steps_denoiser = 500
         self.picker = None
         self.target_picker: Optional[tuple[dict, str]] = None
         self.argv: Optional[list[str]] = None
@@ -615,9 +617,19 @@ class Launcher:
         self.start_from = "movie"
         # the uniform min brightness control: while checked, every change of its value is set in every demixing pass
         self.uniform_min_brightness_on = False
-        self.uniform_min_brightness = 1.0
+        self.uniform_min_brightness = self.min_brightness_first_pass()
         for param in (*self.spec.movie_params, *self.spec.array_params):
             self.paths.setdefault(param.field, "")
+
+    def min_brightness_first_pass(self) -> float:
+        """Returns the min brightness of the pipeline's first demixing pass, where the uniform control starts; 0 when it is off."""
+        if self.spec.cls.demixing_configs is BasePipeline.demixing_configs:
+            return 0.0
+        pipeline = self.spec.cls(**{section.argument: self.values[section.argument] for section in self.spec.sections})
+        passes = pipeline.demixing_passes()
+        if len(passes) == 0 or passes[0].NMFConfig.min_brightness is None:
+            return 0.0
+        return float(passes[0].NMFConfig.min_brightness)
 
     def select_kind(self, section: scraper.Section, kind: str) -> None:
         """Give a section another config, at the pipeline's default when it is the default's kind."""
@@ -650,6 +662,9 @@ class Launcher:
                 self.texts[param.name] = text_default(param=param)
         for section in self.spec.sections:
             self.reset_section(section=section)
+        self.start_from = "movie"
+        self.uniform_min_brightness_on = False
+        self.uniform_min_brightness = self.min_brightness_first_pass()
 
     def select_nested(self, config: Any, name: str, kind: str, default: Any, path: str) -> None:
         """
@@ -822,18 +837,31 @@ class Launcher:
         self.loaded_run = str(folder)
         return None
 
+    def results_loaded(self) -> Optional[Path]:
+        """
+        The loaded run's results file: results.hdf5, or the first channel's file of a run that writes one per channel.
+
+        Returns
+        -------
+        Optional[Path]
+            None when no run is loaded or its folder holds no results file.
+        """
+        if self.loaded_run is None:
+            return None
+        return next((Path(self.loaded_run) / name for name in NAMES_RESULTS if (Path(self.loaded_run) / name).is_file()), None)
+
     def starts_available(self) -> list[str]:
         """
         Where a run of the loaded pipeline can start besides the movie: the loaded run's registration, and its
-        compression, when its results.hdf5 holds them and the pipeline can resume from them.
+        compression, when its results file holds them and the pipeline can resume from them.
 
         Returns
         -------
         list[str]
             "registration" and "compression", as available.
         """
-        filepath = None if self.loaded_run is None else Path(self.loaded_run) / "results.hdf5"
-        if filepath is None or not filepath.is_file() or not any(p.field == "resume" for p in self.spec.run_scalars):
+        filepath = self.results_loaded()
+        if filepath is None or not any(p.field == "resume" for p in self.spec.run_scalars):
             return []
         names = cli.groups_present(filepath_results=str(filepath))
         starts = ["registration"] if any(n in names for n in group_names_registration()) else []
@@ -845,7 +873,7 @@ class Launcher:
     def select_start(self, start: str) -> None:
         """
         Start the run from the movie, or reuse the loaded run's registration or compression: resume from its
-        results.hdf5, the compression reused by its compress config "skip".
+        results file, the compression reused by its compress config "skip".
 
         Parameters
         ----------
@@ -854,7 +882,7 @@ class Launcher:
         """
         self.start_from = start
         resume = next(p for p in self.spec.run_scalars if p.field == "resume")
-        self.texts[resume.name] = "" if start == "movie" else str(Path(self.loaded_run) / "results.hdf5")
+        self.texts[resume.name] = "" if start == "movie" else str(self.results_loaded())
         compress = next((s for s in self.spec.sections if s.argument == "compress_config"), None)
         if compress is None:
             return
@@ -986,8 +1014,8 @@ class Launcher:
             problems += [f"not found: {p}" for p in rows if not any(c in p for c in "*?[") and not Path(p).expanduser().exists()]
             if self.paths_denoiser["out"].strip() == "":
                 problems.append("choose the file the weights are saved in")
-            if self.epochs_denoiser < 1:
-                problems.append("training needs at least 1 epoch")
+            if self.steps_denoiser < 1:
+                problems.append("training needs at least 1 step")
             return problems
         if self.page == "open":
             if self.paths_open["source"].strip() == "":
@@ -1115,7 +1143,7 @@ class Launcher:
     def argv_denoiser(self) -> list[str]:
         """The `masknmf train-denoiser` arguments Train denoiser amounts to."""
         return ["train-denoiser", *self.results_given(target=self.paths_denoiser), "--out", self.paths_denoiser["out"].strip(),
-                "--epochs", str(self.epochs_denoiser)]
+                "--steps", str(self.steps_denoiser)]
 
     def label_primary(self) -> Optional[str]:
         """The footer's action for the page; None on the Overview."""
@@ -1804,7 +1832,7 @@ class Launcher:
             imgui.end_table()
 
     def draw_denoiser(self) -> None:
-        """The recordings' results files, the training epochs, and the weights file."""
+        """The recordings' results files, the training steps, and the weights file."""
         em = imgui.get_font_size()
         self.step(1, "Recordings", "One results .hdf5 per recording, a path or glob per row, from runs whose compress stage "
                                    "is compress (no denoiser); stopping those runs after compression is enough")
@@ -1815,9 +1843,9 @@ class Launcher:
         self.step(2, "Denoiser", "Training saves the weights here; a run compresses with them once its compress stage's "
                                  "filepath_denoiser names the file")
         if self.begin_form(name="denoiser_out"):
-            self.row(caption="epochs", hint="Passes over the pooled components; a few short recordings need many more than many long ones")
+            self.row(caption="steps", hint="Training steps, each on 128 windows of 900 frames")
             imgui.set_next_item_width(hello_imgui.em_size(WIDTH_INPUT_EM))
-            _, self.epochs_denoiser = imgui.input_int("##epochs_denoiser", self.epochs_denoiser, 0, 0)
+            _, self.steps_denoiser = imgui.input_int("##steps_denoiser", self.steps_denoiser, 0, 0)
             self.row(caption="weights")
             # a plain field: draw_path marks a file that does not exist yet as not found
             imgui.set_next_item_width(max(imgui.get_content_region_avail().x, hello_imgui.em_size(12)))

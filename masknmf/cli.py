@@ -29,7 +29,7 @@ here enumerates a parameter by hand:
     masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classifier
     masknmf track "sessions/*/results.hdf5" --out tracking
     masknmf run --pipeline two-photon-calcium "training/*.tif" --fs 30 --compress-kind compress --stop-after compression
-    masknmf train-denoiser "training_runs/*/results.hdf5" --out denoiser.pt --epochs 100
+    masknmf train-denoiser "training_runs/*/results.hdf5" --out denoiser.pt --steps 500
     masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --denoiser denoiser.pt
 """
 
@@ -932,7 +932,7 @@ def command_train_denoiser(args: argparse.Namespace) -> None:
         if isinstance(config, dict) and config.get("kind") == "compress-denoise":
             fail(f"{filepath} was compressed with a denoiser; a denoiser trains on compressions made without one, "
                  f"so run these with --compress-kind compress --stop-after compression")
-    masknmf.compression.pretrain_denoiser(files, args.out, num_epochs=args.epochs)
+    masknmf.compression.pretrain_denoiser(files, args.out, num_steps=args.steps)
     print(f"saved {args.out}; compress with it through masknmf run ... --denoiser {args.out}")
 
 
@@ -1070,8 +1070,8 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     )
     parser_denoiser.add_argument("--out", required=True, help="where the weights are saved, e.g. denoiser.pt")
     parser_denoiser.add_argument(
-        "--epochs", default=10, type=int,
-        help="passes over the pooled components; a few short recordings need many more than many long ones; default 10",
+        "--steps", default=500, type=int,
+        help="training steps, each on 128 windows of 900 frames; default 500",
     )
     parser_denoiser.set_defaults(handler=command_train_denoiser)
 

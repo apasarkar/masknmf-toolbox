@@ -464,7 +464,22 @@ class BasePipeline(ABC):
             shift_mask[:, :exclude_border_radius] = 0
             shift_mask[-1 * exclude_border_radius:, :] = 0
             shift_mask[:, -1 * exclude_border_radius:] = 0
+        self.record_retained_frames(results_path, data)
         return moco_data, shift_mask
+
+    def record_retained_frames(self, results_path: str, data: np.ndarray | ArrayLike) -> None:
+        """
+        Write retained_frames, the raw frame of every frame of data, to results_path when data is an OphysArray that
+        leaves frames out. The registration and compression hold only those frames; viewers line them up with the
+        raw movie through it.
+        """
+        if not isinstance(data, OphysArray) or data.good_frames is None or data.good_frames.all():
+            return
+        with h5py.File(results_path, "a") as f:
+            if "retained_frames" in f:
+                del f["retained_frames"]
+            f["retained_frames"] = data.frame_indices
+            f["retained_frames"].attrs["num_raw_frames"] = data.good_frames.shape[0]
     
     def _filtered_reference(self, data: ArrayLike, config: MotionCorrectionFilterConfig) -> FilteredArray:
         """Define a lazy transformation of the input dataset that we use to compute per-frame shifts, and we

@@ -56,6 +56,72 @@ def test_a_results_file_opens_with_the_movie_beside_it_its_registration_and_shif
     assert opened.skipped == []
 
 
+def test_shifts_of_a_run_that_left_frames_out_land_on_the_frames_it_registered(movie, tmp_path):
+    num_excluded = 20
+    corrector = masknmf.RigidMotionCorrector(max_shifts=(2, 2), device="cpu")
+    corrector.compute_template(movie[num_excluded:])
+    registration = corrector.motion_correct(movie[num_excluded:])
+    registration.export(tmp_path / "results.hdf5")
+    masknmf.CompressStrategy(block_sizes=(16, 16), device="cpu").compress(movie).export(tmp_path / "results.hdf5")
+
+    opened = OpenedResults.open(tmp_path / "results.hdf5")
+    assert opened.shifts is None and "not used" in opened.skipped[-1]
+
+    with h5py.File(tmp_path / "results.hdf5", "a") as f:
+        f["retained_frames"] = np.arange(num_excluded, movie.shape[0])
+    opened = OpenedResults.open(tmp_path / "results.hdf5")
+    assert opened.shifts.shape == (movie.shape[0], 2)
+    assert np.isnan(opened.shifts[:num_excluded]).all()
+    np.testing.assert_array_equal(opened.shifts[num_excluded:], registration.shifts.cpu().numpy())
+    assert not any("shifts" in line for line in opened.skipped)
+
+
+def test_a_run_that_left_frames_out_opens_with_its_registered_movie_on_the_raw_frames(movie, tmp_path):
+    num_excluded = 20
+    corrector = masknmf.RigidMotionCorrector(max_shifts=(2, 2), device="cpu")
+    corrector.compute_template(movie[num_excluded:])
+    registration = corrector.motion_correct(movie[num_excluded:])
+    registration.export(tmp_path / "results.hdf5")
+    masknmf.CompressStrategy(block_sizes=(16, 16), device="cpu").compress(movie).export(tmp_path / "results.hdf5")
+    tifffile.imwrite(tmp_path / "movie.tif", movie)
+    with h5py.File(tmp_path / "results.hdf5", "a") as f:
+        f["retained_frames"] = np.arange(num_excluded, movie.shape[0])
+        f["retained_frames"].attrs["num_raw_frames"] = movie.shape[0]
+
+    opened = OpenedResults.open(tmp_path / "results.hdf5")
+    assert opened.skipped == []
+    assert isinstance(opened.registered, masknmf.arrays.RetainedFramesArray)
+    assert tuple(opened.registered.shape) == movie.shape
+    frames = np.array([0, num_excluded - 1, num_excluded, 150, movie.shape[0] - 1])
+    shown = opened.registered[frames]
+    np.testing.assert_allclose(shown[:2], movie[frames[:2]])
+    np.testing.assert_allclose(shown[2:], registration[frames[2:] - num_excluded].cpu().numpy(), atol=1e-5)
+    np.testing.assert_allclose(opened.registered[num_excluded - 2:num_excluded + 2][2:], registration[:2].cpu().numpy(), atol=1e-5)
+
+
+def test_results_holding_only_the_kept_frames_open_with_the_raw_movie_cut_to_them(movie, tmp_path):
+    num_excluded = 20
+    corrector = masknmf.RigidMotionCorrector(max_shifts=(2, 2), device="cpu")
+    corrector.compute_template(movie[num_excluded:])
+    registration = corrector.motion_correct(movie[num_excluded:])
+    registration.export(tmp_path / "results.hdf5")
+    masknmf.CompressStrategy(block_sizes=(16, 16), device="cpu").compress(registration).export(tmp_path / "results.hdf5")
+    tifffile.imwrite(tmp_path / "movie.tif", movie)
+
+    opened = OpenedResults.open(tmp_path / "results.hdf5")
+    assert opened.raw is None and "not used" in opened.skipped[0]
+
+    with h5py.File(tmp_path / "results.hdf5", "a") as f:
+        f["retained_frames"] = np.arange(num_excluded, movie.shape[0])
+        f["retained_frames"].attrs["num_raw_frames"] = movie.shape[0]
+    opened = OpenedResults.open(tmp_path / "results.hdf5")
+    assert opened.skipped == []
+    assert tuple(opened.raw.shape) == (movie.shape[0] - num_excluded, *movie.shape[1:])
+    np.testing.assert_allclose(opened.raw[:3].cpu().numpy(), movie[num_excluded:num_excluded + 3])
+    assert isinstance(opened.registered, masknmf.RigidRegistrationArray)
+    assert opened.shifts.shape == (movie.shape[0] - num_excluded, 2)
+
+
 def test_a_given_raw_movie_that_does_not_line_up_is_skipped_by_open_and_raises_in_resolve(run, movie):
     opened = OpenedResults.open(run / "results.hdf5", raw=movie[:100])
     assert opened.raw_source == run / "movie.tif"

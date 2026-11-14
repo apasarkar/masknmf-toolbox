@@ -57,7 +57,7 @@ def test_a_saved_denoiser_loads_with_the_same_weights(tmp_path):
 
 def test_pretraining_on_results_files_saves_weights_the_strategy_compresses_with(movie, filepaths_results, tmp_path, monkeypatch):
     filepath = str(tmp_path / "denoiser.pt")
-    model = masknmf.compression.pretrain_denoiser(filepaths_results, filepath, num_epochs=1)
+    model = masknmf.compression.pretrain_denoiser(filepaths_results, filepath, num_steps=1)
     loaded = masknmf.compression.load_denoiser(filepath)
     for name, weights in model.state_dict().items():
         assert torch.equal(weights.cpu(), loaded.state_dict()[name])
@@ -84,7 +84,7 @@ def test_a_pipeline_takes_the_weights_from_its_config_or_its_denoiser_property(t
 
 def test_the_command_line_trains_on_results_files_and_run_takes_the_weights(filepaths_results, tmp_path):
     filepath = str(tmp_path / "denoiser.pt")
-    cli.main(["train-denoiser", *filepaths_results, "--out", filepath, "--epochs", "1"])
+    cli.main(["train-denoiser", *filepaths_results, "--out", filepath, "--steps", "1"])
     assert masknmf.compression.load_denoiser(filepath) is not None
 
     spec = cli.spec_for(slug="two-photon-calcium")
@@ -111,12 +111,12 @@ def test_the_launcher_page_builds_a_train_denoiser_command(tmp_path):
     render_frames(window=window)
     assert window.paths_denoiser["results_1"] == ""
     window.paths_denoiser["out"] = str(tmp_path / "denoiser.pt")
-    window.epochs_denoiser = 50
+    window.steps_denoiser = 50
     assert window.problems() == []
     args = cli.build_parser(spec=None).parse_args(window.build_argv())
     assert args.handler is cli.command_train_denoiser
     assert args.results == [str(tmp_path / "*" / "results.hdf5")]
-    assert args.out == str(tmp_path / "denoiser.pt") and args.epochs == 50
+    assert args.out == str(tmp_path / "denoiser.pt") and args.steps == 50
 
 
 def test_the_launcher_run_page_passes_the_weights_in_its_config(tmp_path, monkeypatch):
