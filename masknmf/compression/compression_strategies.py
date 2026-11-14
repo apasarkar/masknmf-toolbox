@@ -193,7 +193,7 @@ class CompressDenoiseStrategy(CompressStrategy):
                  frame_weighting: np.ndarray | torch.Tensor | None = None,
                  device: Literal["auto", "cpu", "cuda"] = "auto",
                  noise_variance_quantile: float = 0.3,
-                 num_epochs: int = 10,
+                 num_steps: int = 500,
                  detrender: SplineDetrenderBase | None = None,
                  device_memory_gb: float | None = None,
                  host_memory_gb: float | None = None,
@@ -204,7 +204,7 @@ class CompressDenoiseStrategy(CompressStrategy):
         Args:
             filepath_denoiser (str | None): weights of a pretrained denoiser, written by
                 masknmf.compression.save_denoiser. When given, compress runs one compression pass with that denoiser:
-                the pass without a denoiser and the training are skipped, and num_epochs is unused.
+                the pass without a denoiser and the training are skipped, and num_steps is unused.
         """
 
         super().__init__(block_sizes,
@@ -222,17 +222,17 @@ class CompressDenoiseStrategy(CompressStrategy):
                          device_memory_gb=device_memory_gb,
                          host_memory_gb=host_memory_gb,
                          tile_device=tile_device)
-        self._num_epochs = num_epochs
+        self._num_steps = num_steps
         self._noise_variance_quantile = noise_variance_quantile
         self._filepath_denoiser = filepath_denoiser
 
     @property
-    def num_epochs(self) -> int:
-        return self._num_epochs
+    def num_steps(self) -> int:
+        return self._num_steps
 
-    @num_epochs.setter
-    def num_epochs(self, new_num_epochs: int):
-        self._num_epochs = new_num_epochs
+    @num_steps.setter
+    def num_steps(self, new_num_steps: int):
+        self._num_steps = new_num_steps
 
     @property
     def noise_variance_quantile(self) -> float:
@@ -275,9 +275,9 @@ class CompressDenoiseStrategy(CompressStrategy):
             masknmf.utils.display(f"rank {temporal_compressed_no_denoiser.shape[0]} before the temporal denoiser")
             masknmf.utils.display(f"training the temporal denoiser on {temporal_compressed_no_denoiser.shape[0]} components")
             trained_model, _ = masknmf.compression.denoising.train_total_variance_denoiser(temporal_compressed_no_denoiser,
-                                                                                           max_epochs=self.num_epochs,
+                                                                                           num_steps=self.num_steps,
                                                                                            batch_size=128,
-                                                                                           learning_rate=1e-4)
+                                                                                           learning_rate=1e-3)
         else:
             masknmf.utils.display(f"using the pretrained temporal denoiser {self.filepath_denoiser}")
             trained_model = masknmf.compression.denoising.load_denoiser(self.filepath_denoiser)
