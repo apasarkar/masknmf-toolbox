@@ -316,11 +316,12 @@ class OnePhotonCulturePipeline(BasePipeline):
             moco_array = mov
         else:
             with self.step("motion correction"):
-                mean_img = torch.mean(mov[:self.motion_correct_config.num_frames_template], dim=0)
+                mean_img = torch.mean(mov[:min(self.motion_correct_config.num_frames_template, mov.shape[0])], dim=0)
                 corrector = GradientMotionCorrector(template=mean_img)
                 moco_array = corrector.motion_correct(mov)
                 moco_array.output_device=torch.device('cpu')
                 moco_array.export(results_path)
+        self.record_retained_frames(results_path, mov)
         if stop_after == "registration":
             return self.finish()
 
