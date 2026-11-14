@@ -40,12 +40,17 @@ class SourceRightClickMenu(ui.StandardRightClickMenu):
         super().update()
 
 
+def switch_height() -> float:
+    """The toggle of :func:`draw_switch`: a text line and a little, so it sits inside a row of framed widgets."""
+    return round(imgui.get_font_size() * 1.15)
+
+
 def switch_width(left: str, right: str) -> float:
     """What :func:`draw_switch` takes."""
     return (
         imgui.calc_text_size(left).x
         + imgui.calc_text_size(right).x
-        + imgui.get_frame_height() * imgui_toggle.ToggleConfig().width_ratio
+        + switch_height() * imgui_toggle.ToggleConfig().width_ratio
         + 2 * imgui.get_style().item_inner_spacing.x
     )
 
@@ -72,7 +77,11 @@ def draw_switch(key: str, value: bool, left: str, right: str, live: bool = True)
         (imgui.Col_.text, lit if live else dim),
     ):
         imgui.push_style_color(color, to_vec4(rgb))
+    # the toggle is as tall as its frame: a thinner frame, which imgui centers on the row's text
+    padding = imgui.get_style().frame_padding
+    imgui.push_style_var(imgui.StyleVar_.frame_padding, imgui.ImVec2(padding.x, (switch_height() - imgui.get_font_size()) / 2))
     flipped, value = imgui_toggle.toggle(f"##switch_{key}", value, imgui_toggle.ToggleFlags_.animated)
+    imgui.pop_style_var()
     imgui.pop_style_color(5)
     imgui.same_line(0, inner)
     imgui.text_colored(lit if live and value else dim, right)

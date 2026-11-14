@@ -184,7 +184,7 @@ TOOLS = (
     ("tool", "description"),
     (
         "draw (a)",
-        "selects every signal whose center is on the switch's side (inside/outside) of a polygon drawn on any panel"
+        "selects every signal whose center is on the switch's side (in / out) of a polygon drawn on any panel"
         "\n- updates live while drawing or dragging"
         "\n- a, esc or a hand pick drops the polygon; the selection stays",
     ),
@@ -202,7 +202,7 @@ TOOLS = (
     ("merge", "the grouped signals into one, not yet implemented"),
     ("center (f)", "every panel on the selected signal, following it as the selection moves"),
     (
-        "inside / outside",
+        "in / out",
         "the switches: which side of the region it takes (inside by default) and which side of the range the "
         "filter takes (outside by default), each lit while its tool drives the selection",
     ),
@@ -564,9 +564,9 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
     imgui.dummy(imgui.ImVec2(0, 0.6 * em))
     p = imgui.get_cursor_screen_pos()
     bw, bh, bgap = 4.6 * em, 2.2 * em, 0.6 * em
-    # the row centered: the buttons, then the side switch, outside picked and lit as while the region or the
+    # the row centered: the buttons, then the side switch, out picked and lit as while the region or the
     # filter drives the selection
-    switch_w = imgui.calc_text_size("inside").x + 3.4 * em + imgui.calc_text_size("outside").x
+    switch_w = imgui.calc_text_size("in").x + 3.4 * em + imgui.calc_text_size("out").x
     x = p.x + (w - len(TOOL_BUTTONS) * (bw + bgap) - em - switch_w) / 2
     for icon, name, color in TOOL_BUTTONS:
         box(dl, x, p.y, bw, bh, icon, color, 0.18 if color in (KEY, ACCENT) else 0.0)
@@ -574,13 +574,13 @@ def draw_curation_help(is_open: bool, keys_open: bool) -> tuple[bool, bool]:
         dl.add_text(imgui.ImVec2(x + (bw - size.x) / 2, p.y + bh + 0.3 * em), u32(DIM), name)
         x += bw + bgap
     x += em
-    dl.add_text(imgui.ImVec2(x, p.y + 0.55 * em), u32(DIM), "inside")
-    x += imgui.calc_text_size("inside").x + 0.5 * em
+    dl.add_text(imgui.ImVec2(x, p.y + 0.55 * em), u32(DIM), "in")
+    x += imgui.calc_text_size("in").x + 0.5 * em
     pill = imgui.ImVec2(x, p.y + 0.45 * em), imgui.ImVec2(x + 2.4 * em, p.y + 1.65 * em)
     dl.add_rect_filled(*pill, u32(ACCENT, 0.35), 0.6 * em)
     dl.add_rect(*pill, u32(ACCENT), 0.6 * em)
     dl.add_circle_filled(imgui.ImVec2(x + 1.8 * em, p.y + 1.05 * em), 0.45 * em, u32(TEXT))
-    dl.add_text(imgui.ImVec2(x + 2.9 * em, p.y + 0.55 * em), u32(TEXT), "outside")
+    dl.add_text(imgui.ImVec2(x + 2.9 * em, p.y + 0.55 * em), u32(TEXT), "out")
     imgui.dummy(imgui.ImVec2(w, bh + 1.6 * em))
     imgui.dummy(imgui.ImVec2(0, 0.6 * em))
     imgui.text_colored(
