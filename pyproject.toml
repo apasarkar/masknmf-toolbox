@@ -61,6 +61,9 @@ dev = [
 
 
 
+[tool.ruff]
+line-length = 88
+
 [project.scripts]
 masknmf = "masknmf.cli:main"
 

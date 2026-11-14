@@ -4,16 +4,10 @@ import masknmf
 import pytest
 
 
-def test_rigid_motion_gpu():
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="no cuda"))])
+def test_rigid_motion(device):
     x = (np.random.rand(4, 32, 32) * 4096).astype(np.int16)
-    rigid = masknmf.RigidMotionCorrector(max_shifts=(3, 3))
+    rigid = masknmf.RigidMotionCorrector(max_shifts=(3, 3), device=device)
     rigid.compute_template(x)
-    out = masknmf.RegistrationArray(x, rigid)[:]
-    assert out.shape == x.shape
-
-def test_rigid_motion_cpu():
-    x = (np.random.rand(4, 32, 32) * 4096).astype(np.int16)
-    rigid = masknmf.RigidMotionCorrector(max_shifts=(3, 3))
-    rigid.compute_template(x)
-    out = masknmf.RegistrationArray(x, rigid)[:]
+    out = rigid.motion_correct(x)[:]
     assert out.shape == x.shape
