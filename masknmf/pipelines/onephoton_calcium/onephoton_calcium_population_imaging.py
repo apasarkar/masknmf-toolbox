@@ -140,6 +140,7 @@ class OnePhotonCalciumPipeline(BasePipeline):
             frame_rate: float,
             indicator_polarity: Literal["positive", "negative"] = "positive",
             good_frame_indicator: torch.Tensor | np.ndarray | None = None,
+            pixel_mask: np.ndarray | None = None,
             exclude_border_radius: int = 0,
             remove_intermediates: bool = False,
             stop_after: Literal["registration", "compression", "demixing"] = "demixing",
@@ -151,6 +152,7 @@ class OnePhotonCalciumPipeline(BasePipeline):
             frame_rate (float): frames per second; sets the detrenders' windows
             indicator_polarity (Literal["positive", "negative"]): Whether the indicator is positively or negatively tuned
             good_frame_indicator (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
+            pixel_mask (np.ndarray | None): Boolean (height, width), True on the pixels to use. The rest are ignored by the registration and the compression's spatial basis; masknmf mask draws one
             exclude_border_radius (int): Pixels at each fov edge that are ignored when compressing
             remove_intermediates (bool): Drop the CompressionArray group once demixing is done
             stop_after: the last stage to run: "registration" writes the shifts and template and ends,
@@ -188,7 +190,8 @@ class OnePhotonCalciumPipeline(BasePipeline):
                                                         results_path,
                                                         filter_config=self.motion_correct_filter_config,
                                                         exclude_border_radius=exclude_border_radius,
-                                                        stored=stored)
+                                                        stored=stored,
+                                                        pixel_mask=pixel_mask)
         if stop_after == "registration":
             return self.finish()
 

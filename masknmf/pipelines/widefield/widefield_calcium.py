@@ -62,6 +62,7 @@ class WidefieldSinglechannelPipeline(BasePipeline):
             data: np.ndarray | ArrayLike,
             indicator_polarity: Literal["positive", "negative"] = "positive",
             good_frame_indicator: torch.Tensor | np.ndarray | list | None = None,
+            pixel_mask: np.ndarray | None = None,
             exclude_border_radius: int = 0,
             stop_after: Literal["registration", "compression"] = "compression",
             resume: str | Path | None = None) -> Path:
@@ -69,7 +70,8 @@ class WidefieldSinglechannelPipeline(BasePipeline):
         Uses the API to run rigid motion correction, compression (with denoising). With stop_after "registration" the
         run ends once the shifts and template are written; resume, an earlier results file, is copied into the new
         run folder and its registration applied instead of estimating one, and the settings not given, all but
-        stop_after, are that run's, from the config.json beside it.
+        stop_after, are that run's, from the config.json beside it. pixel_mask, boolean (height, width), is True on the
+        pixels to use; the rest are ignored by the registration and the compression's spatial basis.
         """
         ends_at_registration = stop_after == "registration" or isinstance(self.compress_config, str)
         if ends_at_registration and isinstance(self.motion_correct_config, str) and resume is None:
@@ -89,7 +91,8 @@ class WidefieldSinglechannelPipeline(BasePipeline):
                                                     self.motion_correct_config,
                                                     results_path,
                                                     exclude_border_radius=exclude_border_radius,
-                                                    stored=stored)
+                                                    stored=stored,
+                                                    pixel_mask=pixel_mask)
         if ends_at_registration:
             return self.finish()
 

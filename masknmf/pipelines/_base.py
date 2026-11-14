@@ -417,13 +417,18 @@ class BasePipeline(ABC):
                        results_path: str,
                        filter_config: MotionCorrectionFilterConfig | None = None,
                        exclude_border_radius: int = 0,
-                       stored: type[BaseRegistrationArray] | None = None) -> tuple[np.ndarray | ArrayLike, np.ndarray]:
+                       stored: type[BaseRegistrationArray] | None = None,
+                       pixel_mask: np.ndarray | None = None) -> tuple[np.ndarray | ArrayLike, np.ndarray]:
         """
         Register data with a rigid (the default when config is None) or piecewise rigid corrector and export it to
         results_path, or pass it through for "skip". With stored, the registration array class resume copied into
         results_path, that registration is applied to data instead. Also returns a pixel weighting that is 0 where
-        the shifts moved pixels in from outside the fov and on the outer exclude_border_radius pixels.
+        the shifts moved pixels in from outside the fov and on the outer exclude_border_radius pixels. pixel_mask,
+        boolean of shape (height, width), is True on the pixels to use: the rest get weight 0 in the registration
+        and in the returned weighting.
         """
+        if pixel_mask is not None and pixel_mask.shape != tuple(data.shape[1:]):
+            raise ValueError(f"pixel_mask has shape {pixel_mask.shape}; the movie's frames are {tuple(data.shape[1:])}")
         if stored is not None:
             logger.info(f"applying the stored {stored.__name__}")
             moco_data = stored.from_hdf5(results_path, input_movie=data, device=self.device)
@@ -434,15 +439,19 @@ class BasePipeline(ABC):
             display("Not Running Motion Correction")
             moco_data = data
         else:
-            if config is None or isinstance(config, RigidMotionCorrectionConfig):
-                moco_strategy = RigidMotionCorrector(**asdict(RigidMotionCorrectionConfig() if config is None else config),
-                                                     device=self.device, batch_size=self.frame_batch_size)
-            elif isinstance(config, PiecewiseRigidMotionCorrectionConfig):
-                kwargs = asdict(config)
+            if config is None:
+                config = RigidMotionCorrectionConfig()
+            if not isinstance(config, (RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig)):
+                raise ValueError("Invalid MotionCorrectionConfig input")
+            kwargs = asdict(config)
+            if pixel_mask is not None:
+                weighting = pixel_mask.astype("float")
+                kwargs["pixel_weighting"] = weighting if config.pixel_weighting is None else config.pixel_weighting * weighting
+            if isinstance(config, RigidMotionCorrectionConfig):
+                moco_strategy = RigidMotionCorrector(**kwargs, device=self.device, batch_size=self.frame_batch_size)
+            else:
                 moco_strategy = PiecewiseRigidMotionCorrector(**kwargs, device=self.device,
                                                               batch_size=self.frame_batch_size)
-            else:
-                raise ValueError("Invalid MotionCorrectionConfig input")
             with self.step("motion correction"):
                 if filter_config is None:
                     reference_data = data
@@ -464,6 +473,8 @@ class BasePipeline(ABC):
             shift_mask[:, :exclude_border_radius] = 0
             shift_mask[-1 * exclude_border_radius:, :] = 0
             shift_mask[:, -1 * exclude_border_radius:] = 0
+        if pixel_mask is not None:
+            shift_mask = shift_mask * pixel_mask
         return moco_data, shift_mask
     
     def _filtered_reference(self, data: ArrayLike, config: MotionCorrectionFilterConfig) -> FilteredArray:

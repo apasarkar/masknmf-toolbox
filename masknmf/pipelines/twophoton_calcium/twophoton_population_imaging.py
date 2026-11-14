@@ -79,6 +79,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             exclude_border_radius: int = 0,
             indicator_polarity: Literal["positive", "negative"] = "positive",
             good_frame_indicator: torch.Tensor | np.ndarray | None = None,
+            pixel_mask: np.ndarray | None = None,
             remove_intermediates: bool = False,
             stop_after: Literal["registration", "compression", "demixing"] = "demixing",
             resume: str | Path | None = None) -> Path:
@@ -93,6 +94,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                     exclude_border_radius (int): The number of pixels in border radius to exclude
                     indicator_polarity (Literal["positive", "negative"]): Whether the indicator is positively or negatively tuned
                     good_frame_indicator (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
+                    pixel_mask (np.ndarray | None): Boolean (height, width), True on the pixels to use. The rest are ignored by the registration and the compression's spatial basis; masknmf mask draws one
                     remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
                         results carry the pmd); the registration shifts stay
                     stop_after: the last stage to run: "registration" writes the shifts and template and ends,
@@ -130,7 +132,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                                                         self.motion_correct_config,
                                                         results_path,
                                                         exclude_border_radius=exclude_border_radius,
-                                                        stored=stored)
+                                                        stored=stored,
+                                                        pixel_mask=pixel_mask)
         if stop_after == "registration":
             return self.finish()
 
