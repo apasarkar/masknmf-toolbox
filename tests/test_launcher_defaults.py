@@ -165,6 +165,38 @@ def test_resets_restore_the_defaults():
     assert_untouched(window=window)
 
 
+def test_cell_radius_rewrites_the_demixing_passes_the_window_shows():
+    window = launcher.Launcher(slug_initial="one-photon-calcium")
+    window.set_meta_parameter(name="cell_radius", value=8)
+    passes = [p for name in ("filtered_demixing_config", "unfiltered_demixing_config")
+              for p in window.values[name].DemixingConfigs]
+    assert [p.NMFConfig.ring_radius for p in passes] == [17, 17, 17, 17]
+    assert [p.NMFConfig.background_downsampling_factor for p in passes] == [30, 30, 50, 50]
+    assert len(window.modified()) == 4
+    render_frames(window=window)
+    assert "--config" in window.argv_run()
+    window.reset_all()
+    assert_untouched(window=window)
+
+
+def test_lowering_the_cell_radius_lowers_the_background_downsampling_it_raised():
+    window = launcher.Launcher(slug_initial="two-photon-calcium")
+    passes = [p for name in ("filtered_demixing_config", "unfiltered_demixing_config")
+              for p in window.values[name].DemixingConfigs]
+    assert window.cell_radius == 10
+    window.cell_radius_on = True
+    window.cell_radius = 25
+    window.set_cell_radius(checked_now=True)
+    assert {p.NMFConfig.background_downsampling_factor for p in passes} == {50}
+    window.cell_radius = 8
+    window.set_cell_radius(checked_now=False)
+    assert {p.NMFConfig.ring_radius for p in passes} == {17}
+    assert {p.NMFConfig.background_downsampling_factor for p in passes} == {30}
+    window.reset_all()
+    assert not window.cell_radius_on
+    assert_untouched(window=window)
+
+
 def test_awkward_defaults_render_unchanged_and_unmodified(odd_registry):
     window = launcher.Launcher(slug_initial="odd")
     assert_untouched(window=window)
