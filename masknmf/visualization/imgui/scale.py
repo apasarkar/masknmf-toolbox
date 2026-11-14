@@ -4,7 +4,7 @@ How big the viewers draw text and panels: the UI scale and the text size File > 
 
 GLFW reports a content scale of 1 on some HiDPI setups (Hyprland with ``xwayland:force_zero_scaling``, for one, where
 imgui_bundle's X11 GLFW runs through XWayland), so the canvas never learns the monitor is scaled and draws 14 px text
-on a 2x panel. Left on auto, the UI scale is the desktop's (``GDK_SCALE``, else Hyprland's largest monitor scale) over
+on a 2x panel. Left on auto, the UI scale is the desktop's (Hyprland's largest monitor scale, else ``GDK_SCALE``) over
 the pixel ratio the canvas already draws at, so a canvas the OS scales properly stays at 1. ``MASKNMF_UI_SCALE``
 overrides the saved scale for one run.
 """
@@ -72,19 +72,38 @@ def number(value) -> Optional[float]:
     return value if value > 0 else None
 
 
+def hyprland_scale() -> Optional[float]:
+    """
+    The scale Hyprland leaves to its XWayland windows, which is what GLFW windows are here (imgui_bundle loads an X11
+    GLFW): the largest monitor scale with ``xwayland:force_zero_scaling`` on, 1 with it off, when Hyprland stretches
+    them itself. None when hyprctl does not answer.
+    """
+    try:
+        answers = [
+            json.loads(subprocess.run(["hyprctl", *query, "-j"], capture_output=True, text=True, timeout=2).stdout)
+            for query in (["getoption", "xwayland:force_zero_scaling"], ["monitors"])
+        ]
+        zero_scaling, monitors = answers
+        # NOTE: Hyprland 0.5x answers {"bool": true}, older ones {"int": 1}
+        if not (zero_scaling.get("bool") or zero_scaling.get("int")):
+            return 1.0
+        return max(float(m.get("scale", 1)) for m in monitors)
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
+        return None
+
+
 @lru_cache(maxsize=1)
 def desktop_scale() -> float:
-    """The desktop's scale as far as the environment tells: GDK_SCALE, then Hyprland's largest monitor scale."""
-    scale = number(os.environ.get("GDK_SCALE"))
-    if scale is not None:
-        return scale
+    """
+    The desktop's scale as far as the environment tells: Hyprland's for its XWayland windows, else GDK_SCALE.
+
+    Hyprland comes first: GDK_SCALE is a whole number, 1 at a monitor scale of 1.25.
+    """
     if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
-        try:
-            out = subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True, timeout=2).stdout
-            return max(float(m.get("scale", 1)) for m in json.loads(out))
-        except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
-            pass
-    return 1.0
+        scale = hyprland_scale()
+        if scale is not None:
+            return scale
+    return number(os.environ.get("GDK_SCALE")) or 1.0
 
 
 def initial_size() -> Size:

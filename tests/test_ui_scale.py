@@ -1,6 +1,7 @@
 """The UI scale: where it starts, what it saves, and how an imgui context, its edge windows and its fonts follow it."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from imgui_bundle import imgui
@@ -8,6 +9,8 @@ from rendercanvas.offscreen import RenderCanvas
 
 from masknmf import launcher
 from masknmf.visualization.imgui import scale
+
+DESKTOP_SCALE = scale.desktop_scale.__wrapped__  # the settings fixture replaces scale.desktop_scale
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +29,25 @@ def test_auto_is_the_desktop_scale_over_the_pixel_ratio():
     assert scale.auto_scale(2.0) == 1.0
     # a canvas drawn finer than the desktop is never shrunk
     assert scale.auto_scale(3.0) == 1.0
+
+
+@pytest.mark.parametrize(
+    ("zero_scaling", "expected"),
+    [('{"option": "xwayland:force_zero_scaling", "bool": true}', 1.25), ('{"option": "xwayland:force_zero_scaling", "int": 0}', 1.0)],
+)
+def test_hyprland_scale_comes_before_gdk_scale(monkeypatch, zero_scaling, expected):
+    """GDK_SCALE is 1 at a monitor scale of 1.25; Hyprland only leaves XWayland windows unscaled with zero scaling on."""
+    answers = {"getoption": zero_scaling, "monitors": '[{"scale": 1.0}, {"scale": 1.25}]'}
+    monkeypatch.setenv("HYPRLAND_INSTANCE_SIGNATURE", "test")
+    monkeypatch.setenv("GDK_SCALE", "1")
+    monkeypatch.setattr(scale.subprocess, "run", lambda command, **kwargs: SimpleNamespace(stdout=answers[command[1]]))
+    assert DESKTOP_SCALE() == expected
+
+
+def test_gdk_scale_is_the_desktop_scale_off_hyprland(monkeypatch):
+    monkeypatch.delenv("HYPRLAND_INSTANCE_SIGNATURE", raising=False)
+    monkeypatch.setenv("GDK_SCALE", "2")
+    assert DESKTOP_SCALE() == 2.0
 
 
 def test_initial_size_takes_the_env_over_the_saved_and_clamps(settings, monkeypatch):
