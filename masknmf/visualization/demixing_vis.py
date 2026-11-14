@@ -144,7 +144,7 @@ class SingleSessionDemixingVis:
     which filter removed which signals into the curated file's description. The Curation tab's "color by"
     colors the masks and the table's ids by a column's rank instead of by signal id.
     draw (the Curation tab's polygon button, a) puts one region on any panel: a polygon that selects every signal
-    in view whose center falls inside it (or outside, per its own switch): they form the group, highlighted in the
+    in view whose center falls inside it (or outside, per its own in / out switch): they form the group, highlighted in the
     panels and the table, and the selection follows the polygon as it is drawn and later dragged (its traces,
     when shown, plot once it settles). Add ROI (r) keeps the region as a drawn roi. The button again, esc, or a
     click or table pick that edits the selection by hand drops it and keeps the selection, so Delete (or the
@@ -1812,7 +1812,17 @@ class SingleSessionDemixingVis:
         right = imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x
         slider_w = min(0.7 * imgui.get_window_width(), right - g.cell_x[0] - g.mark_w)
         g.row("filter")
-        imgui.set_next_item_width(g.w)
+        inner = imgui.get_style().item_inner_spacing.x
+        count = f"{len(order.order)} / {order.n_items}"
+        tail_w = (
+            imgui.get_frame_height() + inner + imgui.calc_text_size("apply").x
+            + g.gap + switch_width("in", "out") + g.mark_w
+            + g.gap + imgui.calc_text_size(count).x
+        )
+        # the column picker gives the rest of its row room, down to 5 em; with less, the rest goes under it
+        room = imgui.get_content_region_avail().x - tail_w - g.gap
+        wraps = room < em(5)
+        imgui.set_next_item_width(g.w if wraps else min(g.w, room))
         glow = self._filter_select
         if glow:
             for color, value in (
@@ -1839,12 +1849,12 @@ class SingleSessionDemixingVis:
             order.rebuild()
             self._filter_select = False
         tooltip("Filter column: the range below spans it (del is 0 or 1); picking one puts the range back at its full span")
-        imgui.same_line(0, g.gap)
-        inner = imgui.get_style().item_inner_spacing.x
-        need = imgui.get_frame_height() + inner + imgui.calc_text_size("apply").x + g.gap + switch_width("inside", "outside") + g.mark_w
-        if imgui.get_content_region_avail().x < need:
-            imgui.new_line()
-            imgui.same_line(g.cell_x[0])
+        if wraps:
+            imgui.same_line(0, g.gap)
+            right_aligned_text(count)
+            imgui.set_cursor_pos_x(g.cell_x[0])
+        else:
+            imgui.same_line(0, g.gap)
         # a selection edited by hand is no longer the filter's: the checkbox switches itself off
         if self._filter_select and {k for k in self._group if isinstance(k, int)} != self._filter_side:
             self._filter_select = False
@@ -1860,10 +1870,11 @@ class SingleSessionDemixingVis:
             "\n- editing the selection by hand turns this off"
         )
         imgui.same_line(0, g.gap)
-        flipped, self._filter_outside = draw_switch("filter", self._filter_outside, "inside", "outside", self._filter_select)
-        help_mark("which side of the range the filter selects, lit while it drives the selection")
-        imgui.same_line(0, g.gap)
-        right_aligned_text(f"{len(order.order)} / {order.n_items}")
+        flipped, self._filter_outside = draw_switch("filter", self._filter_outside, "in", "out", self._filter_select)
+        help_mark("in or out of the range: the side the filter selects, lit while it drives the selection")
+        if not wraps:
+            imgui.same_line(0, g.gap)
+            right_aligned_text(count)
         g.row("range")
         moved = draw_range_filter(order, "_signals", slider_w)
         if moved:
@@ -2089,10 +2100,10 @@ class SingleSessionDemixingVis:
         tooltip(f"Export: the {len(self._rois)} drawn roi(s) to a .npz, a window with a typed path, browse for the native dialog")
         # the side switch under the row, centered: grey but flippable until the region drives the selection
         imgui.dummy(imgui.ImVec2(0, em(0.4)))
-        row_w = switch_width("inside", "outside") + em(0.3) + imgui.calc_text_size("(?)").x
+        row_w = switch_width("in", "out") + em(0.3) + imgui.calc_text_size("(?)").x
         imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + max((imgui.get_content_region_avail().x - row_w) / 2, 0))
-        _, self._region_outside = draw_switch("region", self._region_outside, "inside", "outside", selecting)
-        help_mark("which side of the region is selected, lit while it drives the selection")
+        _, self._region_outside = draw_switch("region", self._region_outside, "in", "out", selecting)
+        help_mark("in or out of the region: the side that is selected, lit while it drives the selection")
 
         w = imgui.get_frame_height() * 1.6
         section("DEMIX")
