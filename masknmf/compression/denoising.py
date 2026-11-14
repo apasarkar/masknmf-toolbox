@@ -329,7 +329,7 @@ def pretrain_denoiser(filepaths_results: list[str],
     Trains one denoiser on the compressions of several recordings and saves it with save_denoiser, to compress
     other recordings of the same kind with (CompressDenoiseStrategy's filepath_denoiser).
 
-    Training is the same as CompressDenoiseStrategy's (batch size 128, learning rate 1e-3), on every recording's
+    Training is the same as CompressDenoiseStrategy's (batch size 128, learning rate 1e-4), on every recording's
     temporal components at once. Recordings of different lengths are trimmed to the shortest.
 
     Args:
@@ -346,7 +346,7 @@ def pretrain_denoiser(filepaths_results: list[str],
     traces = torch.cat([t[:, :num_frames] for t in traces])  # (components of every recording, num_frames)
     display(f"training the temporal denoiser on {traces.shape[0]} components of {len(filepaths_results)} recordings, "
             f"{num_frames} frames each")
-    model, _ = train_total_variance_denoiser(traces, num_steps=num_steps, batch_size=128, learning_rate=1e-3)
+    model, _ = train_total_variance_denoiser(traces, num_steps=num_steps, batch_size=128, learning_rate=1e-4)
     save_denoiser(model, filepath_denoiser)
     return model
 
