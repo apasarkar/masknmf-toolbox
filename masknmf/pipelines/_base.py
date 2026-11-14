@@ -7,6 +7,7 @@ import functools
 import inspect
 import json
 import logging
+import operator
 import os
 import threading
 import time
@@ -659,7 +660,37 @@ class BasePipeline(ABC):
             raise ValueError("min_brightness cannot be negative")
         for p, v in zip(passes, values):
             p.NMFConfig.min_brightness = v
-        # a resumed run replaces every config not in configs_given with the earlier run's; mark the ones changed here
+        self.mark_demixing_configs_given()
+
+    @property
+    def cell_radius(self) -> int | list[int]:
+        """
+        The soma radius in pixels that the ring radius of every demixing pass corresponds to (ring_radius // 2), or
+        each pass's in the order they run when they differ. It describes somatic data only.
+        """
+        values = [p.NMFConfig.ring_radius // 2 for p in self.demixing_passes()]
+        return values[0] if len(set(values)) == 1 else values
+
+    @cell_radius.setter
+    def cell_radius(self, value: int):
+        """
+        Set the typical soma radius in pixels. This is for somatic data only; use 20 for dendritic data. Every
+        demixing pass gets a ring radius just over the cell diameter (2 * value + 1), and its
+        background_downsampling_factor is raised to the cell diameter (2 * value) when it is below that.
+        background_downsampling_factor is otherwise left as it is, so set it on the NMFConfig afterwards to tune it
+        on its own. Both values are read only by a pass that fits the ring background (ring_model_start_pt set and
+        below maxiter), so a pass with the background updates off runs the same.
+        """
+        value = operator.index(value)
+        if value < 1:
+            raise ValueError("cell_radius must be at least 1 pixel")
+        for p in self.demixing_passes():
+            p.NMFConfig.ring_radius = 2 * value + 1
+            p.NMFConfig.background_downsampling_factor = max(p.NMFConfig.background_downsampling_factor, 2 * value)
+        self.mark_demixing_configs_given()
+
+    def mark_demixing_configs_given(self):
+        """Add the demixing configs to configs_given; a resumed run replaces every config not in it with the earlier run's."""
         configs_changed = self.demixing_configs if isinstance(self.demixing_configs, list) else [self.demixing_configs]
         for name in self.default_configs():
             if any(getattr(self, name) is config for config in configs_changed if not isinstance(config, str)):
