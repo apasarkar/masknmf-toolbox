@@ -4,6 +4,7 @@ from .ophys_array import OphysArray
 from .static_array import StaticArray
 from .array_utils import normalize_spatial_indexer
 from .linear_combination_array import LinearCombinationArray
+from .retained_frames_array import RetainedFramesArray
 
 __all__ = ["TiffArray",
            "TiffSeriesLoader",
@@ -14,4 +15,5 @@ __all__ = ["TiffArray",
            "SwitchableArray",
            "OphysArray",
            "StaticArray",
-           "LinearCombinationArray"]
+           "LinearCombinationArray",
+           "RetainedFramesArray"]
