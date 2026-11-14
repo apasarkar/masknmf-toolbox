@@ -117,10 +117,10 @@ HINTS: dict[type, dict[str, Hint]] = {
     CompressDenoiseConfig: {
         **HINTS_COMPRESS,
         "noise_variance_quantile": Hint("Noise quantile", tier="stable"),
-        "num_epochs": Hint("Denoiser epochs", "Training epochs of the temporal denoiser.", "stable"),
+        "num_steps": Hint("Denoiser steps", "Training steps of the temporal denoiser.", "stable"),
         "filepath_denoiser": Hint(
             "Denoiser weights",
-            "Weights from masknmf.compression.save_denoiser; training is skipped, so Denoiser epochs is unused.",
+            "Weights from masknmf.compression.save_denoiser; training is skipped, so Denoiser steps is unused.",
         ),
     },
     SpatialHighpassConfig: {
