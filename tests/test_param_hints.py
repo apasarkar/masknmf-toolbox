@@ -21,8 +21,10 @@ def test_every_hint_names_a_field_of_its_config(cls_config):
     assert set(param_hints.HINTS[cls_config]) <= fields, set(param_hints.HINTS[cls_config]) - fields
 
 
-def test_every_runtime_hint_names_an_argument_of_the_base_pipeline():
+def test_every_runtime_hint_names_an_argument_of_a_pipeline():
     arguments = set(inspect.signature(BasePipeline.__init__).parameters)
+    for cls_pipeline in scraper.pipeline_registry().values():
+        arguments |= set(inspect.signature(cls_pipeline.__init__).parameters)
     assert set(param_hints.HINTS_RUNTIME) <= arguments, set(param_hints.HINTS_RUNTIME) - arguments
 
 

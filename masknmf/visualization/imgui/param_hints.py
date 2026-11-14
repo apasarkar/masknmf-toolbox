@@ -215,6 +215,12 @@ HINTS_RUNTIME = {
     "load_into_ram": Hint("Load into RAM", "Read the whole movie into RAM before processing."),
     "device_memory_gb": Hint("GPU memory (GB)", "The memory the compute device may use, in GB."),
     "host_memory_gb": Hint("Host memory (GB)", "The memory the host may use, in GB."),
+    "reference_temporal_avg_factor": Hint(
+        "Reference temporal avg", "Frames averaged in the reference channel's compression, which registration is estimated on."
+    ),
+    "reference_spatial_avg_factor": Hint(
+        "Reference spatial avg", "Pixels averaged per axis in the reference channel's compression, which registration is estimated on."
+    ),
 }
 
 
