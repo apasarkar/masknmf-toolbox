@@ -321,6 +321,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                 moco_array = corrector.motion_correct(mov)
                 moco_array.output_device=torch.device('cpu')
                 moco_array.export(results_path)
+        self.record_retained_frames(results_path, mov)
         if stop_after == "registration":
             return self.finish()
 
