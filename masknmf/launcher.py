@@ -29,12 +29,12 @@ from wgpu.utils.imgui import ImguiRenderer
 
 import masknmf
 from masknmf import cli
-from masknmf.demixing._adapters import ADAPTERS, adapter_for, adapter_patterns, adapter_sources
+from masknmf.demixing._adapters import ADAPTERS, adapter_for, adapter_patterns
 from masknmf.demixing.curation import latest_results
 from masknmf.io import group_name_compression, group_name_demixing, group_names_registration, stage_groups
 from masknmf.pipelines import scraper
 from masknmf.pipelines._base import BasePipeline
-from masknmf.visualization.imgui import guide
+from masknmf.visualization.imgui import guide, param_hints
 from masknmf.visualization.imgui.clipboard import connect_clipboard
 from masknmf.visualization.imgui.files import NATIVE_DIALOGS, Picker
 from masknmf.visualization.pixel_mask import default_mask_path
@@ -86,6 +86,10 @@ COLORS_DEFAULTS = (
     imgui.ImVec4(0.70, 0.42, 0.14, 1.0),
     imgui.ImVec4(0.50, 0.28, 0.08, 1.0),
 )
+COLORS_CLOSE = (
+    imgui.ImVec4(0.55, 0.13, 0.13, 1.0),
+    imgui.ImVec4(0.65, 0.18, 0.18, 1.0),
+)
 THEME = idl.Theme.dark().replace(
     accent=(guide.ACCENT.x, guide.ACCENT.y, guide.ACCENT.z, 1.0),
     accent_hover=(0.50, 0.75, 1.00, 1.0),
@@ -105,6 +109,10 @@ SIZE_MIN = (62 * FONT_SIZE, 44 * FONT_SIZE)
 WIDTH_INPUT_EM = 7.5
 WIDTH_RAIL_EM = 13
 WIDTH_CAPTION_EM = 12.5
+
+# the Parameters popup: its id, and the narrowest and widest a stage column gets
+POPUP_PARAMETERS = "###parameters"
+WIDTH_COLUMN_EM = (19.0, 27.0)
 
 NO_DEFAULT = object()
 
@@ -132,6 +140,11 @@ STEPS = (
     ("open", fa.ICON_FA_DRAW_POLYGON, "Curate"),
     ("track", fa.ICON_FA_DIAGRAM_PROJECT, "Track"),
     ("classify", fa.ICON_FA_TAGS, "Classify"),
+)
+PIPELINE_NOTES = (
+    "motion correction estimates the shifts; compression applies them, so no registered movie is written",
+    "check each stage's results before trusting the next",
+    "View results opens a run at any stage",
 )
 # the pipeline's flow: a stage, the check that follows it, what the stage does, what it saves, and what to check
 FLOW = (
@@ -214,8 +227,7 @@ VIEWERS = (
         "demixing",
         fa.ICON_FA_LAYER_GROUP,
         "Demixing viewer",
-        "One session's results at any stage: registration, compression, demixing and curation; other pipelines' results "
-        "through their adapters. Several files open one viewer each",
+        "One session's results at any stage, ours or another pipeline's; each file opens its own viewer",
     ),
     (
         "classification",
@@ -459,11 +471,29 @@ def draw_wrapped(text: str, color: Optional[imgui.ImVec4] = None) -> None:
 
 
 def same_line_if_fits(width: float) -> None:
-    """Continue the line when an item width wide still fits before the window's right edge."""
+    """Continue the line when an item width wide still fits before the right edge of the window or table cell."""
     spacing = imgui.get_style().item_spacing.x
-    right = imgui.get_window_pos().x + imgui.get_window_size().x - imgui.get_style().window_padding.x
+    ## NOTE: after an item the cursor sits at the next line's start, so cursor + avail is the right edge of the work
+    ## rect, which in a table is the cell rather than the window
+    right = imgui.get_cursor_screen_pos().x + imgui.get_content_region_avail().x
     if imgui.get_item_rect_max().x + spacing + width <= right:
         imgui.same_line()
+
+
+def draw_boxed(text: str, color: Optional[imgui.ImVec4] = None) -> None:
+    """Text in a thin box, marking a value to look at first."""
+    if color is None:
+        imgui.text(text)
+    else:
+        imgui.text_colored(color, text)
+    pad = imgui.ImVec2(0.25 * imgui.get_font_size(), 0.1 * imgui.get_font_size())
+    corner_min, corner_max = imgui.get_item_rect_min(), imgui.get_item_rect_max()
+    imgui.get_window_draw_list().add_rect(
+        imgui.ImVec2(corner_min.x - pad.x, corner_min.y - pad.y),
+        imgui.ImVec2(corner_max.x + pad.x, corner_max.y + pad.y),
+        guide.u32(color or guide.TEXT, 0.7),
+        3.0,
+    )
 
 
 def draw_hint(text: str) -> None:
@@ -472,12 +502,6 @@ def draw_hint(text: str) -> None:
     imgui.text_disabled("(?)")
     if imgui.is_item_hovered():
         idl.wrapped_tooltip(text)
-
-
-def draw_subsection(text: str, hint: str) -> None:
-    """A light blue subsection heading with a (?) hint."""
-    imgui.text_colored(COLOR_SUBSECTION, text)
-    draw_hint(text=hint)
 
 
 def draw_divider() -> None:
@@ -584,6 +608,10 @@ class Launcher:
         self.mask_editor: Optional[tuple[Any, str, str, float]] = None
         self.message_mask = ""
         self.argv: Optional[list[str]] = None
+        # set to open the Parameters popup on the next frame of Run pipeline; the popup's height outside its columns
+        # (title, runtime, buttons) as last drawn, which caps how tall a column grows before it scrolls
+        self.parameters_requested = False
+        self.height_chrome_parameters = 0.0
         self.canvas = None
         self.loop = None
         self.dialog: Optional[idl.FileDialog] = None
@@ -1460,13 +1488,10 @@ class Launcher:
         imgui.dummy(imgui.ImVec2(0, imgui.get_text_line_height()))
 
         guide.heading(fa.ICON_FA_GEARS, "Pipeline")
-        draw_wrapped(
-            color=COLOR_DIM,
-            text="A pipeline is a pre-configured profile of the standard stages and their configs. Motion correction "
-            "estimates the shifts on the raw movie; compression applies them while it compresses, so no registered "
-            "movie is ever written. Run a stage, open its results and check it before trusting the next: one demixing viewer "
-            "opens a single session's results at any of the three stages.",
-        )
+        draw_wrapped(text="A pipeline is a preset of these three stages and their configs.", color=COLOR_DIM)
+        for note in PIPELINE_NOTES:
+            imgui.bullet()
+            draw_wrapped(text=note, color=COLOR_DIM)
         imgui.dummy(imgui.ImVec2(0, 0.4 * em))
         # the stages in a row, each with its check under it
         p = imgui.get_cursor_screen_pos()
@@ -1528,8 +1553,8 @@ class Launcher:
             imgui.end_table()
 
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
-        draw_wrapped(text="a run folder is named by when the run started and its pipeline; a second run in the same "
-                     "second gets _1, _2, ... appended", color=COLOR_DIM)
+        draw_wrapped(text="a run folder is named by its start time and pipeline; runs started in the same second get _1, _2, ...",
+                     color=COLOR_DIM)
         imgui.dummy(imgui.ImVec2(0, 0.4 * em))
         size = 1.4 * em
         imgui.push_font(None, size)
@@ -1549,11 +1574,7 @@ class Launcher:
         imgui.dummy(imgui.ImVec2(w, size + 2.0 * em))
 
         guide.heading(fa.ICON_FA_TERMINAL, "Command line")
-        draw_wrapped(
-            color=COLOR_DIM,
-            text="every action here is a masknmf command: the line it amounts to shows at the bottom before it runs, "
-            "so a run can be repeated or scripted from a shell",
-        )
+        draw_wrapped(text="every action here is a masknmf command, shown in the footer before it runs", color=COLOR_DIM)
         imgui.dummy(imgui.ImVec2(0, 0.2 * em))
         for command, does in COMMANDS:
             imgui.text_colored(COLOR_TITLE, f"masknmf {command}")
@@ -1677,32 +1698,20 @@ class Launcher:
         imgui.dummy(imgui.ImVec2(0, 0.6 * em))
         rows = self.modified()
         self.step(3, "Parameters", "Optional: every stage's settings and the runtime")
-        if imgui.collapsing_header(f"{fa.ICON_FA_SLIDERS}  Stage configs###parameters"):
-            with (
-                imgui_ctx.push_style_var(imgui.StyleVar_.item_spacing, hello_imgui.em_to_vec2(0.55, 0.3)),
-                imgui_ctx.push_style_var(imgui.StyleVar_.frame_padding, hello_imgui.em_to_vec2(0.35, 0.18)),
-            ):
-                imgui.indent(em)
-                imgui.spacing()
-                with button_colors(COLORS_DEFAULTS[0], COLORS_DEFAULTS[1]):
-                    imgui.begin_disabled(len(rows) == 0)
-                    if imgui.button(f"{fa.ICON_FA_ARROW_ROTATE_LEFT}  Defaults"):
-                        self.reset_all()
-                    imgui.end_disabled()
-                tooltip("Every value is at its default" if len(rows) == 0 else "Reset every parameter; movies and paths stay")
-                draw_divider()
-                self.draw_stages()
-                draw_divider()
-                self.draw_runtime()
-                draw_divider()
-                self.draw_modified()
-                imgui.unindent(em)
+        if imgui.button(f"{fa.ICON_FA_SLIDERS}  Parameters"):
+            self.parameters_requested = True
+        tooltip(f"Every stage's config and the runtime of {spec.slug}")
+        imgui.same_line()
+        self.draw_defaults(changed=len(rows) > 0)
+        imgui.spacing()
+        self.draw_modified()
+        self.draw_parameters()
 
     def draw_open(self) -> None:
         """A path, what it holds, and the viewer that opens it."""
         em = imgui.get_font_size()
-        self.step(1, "Source", "A results .hdf5, a run folder or a tracking run; a curated file opens in place of its original. "
-                               f"Or {adapter_sources()}")
+        self.step(1, "Source", "The viewer opens any of these:\n- a results .hdf5, run folder or tracking run; a curated file "
+                               "opens in place of its original\n" + "\n".join(f"- {cls.source}" for cls in ADAPTERS))
         if self.begin_form(name="open"):
             self.row(caption="path")
             self.draw_path(target=self.paths_open, key="source", filetypes=FILETYPES_RESULTS, folders=True,
@@ -1888,8 +1897,8 @@ class Launcher:
     def draw_denoiser(self) -> None:
         """The recordings' results files, the training steps, and the weights file."""
         em = imgui.get_font_size()
-        self.step(1, "Recordings", "One results .hdf5 per recording, a path or glob per row, from runs whose compress stage "
-                                   "is compress (no denoiser); stopping those runs after compression is enough")
+        self.step(1, "Recordings", "One results .hdf5 per recording, a path or glob per row, from runs compressed without a "
+                                   "denoiser; they can stop after compression")
         if self.begin_form(name="denoiser"):
             self.draw_results_rows(target=self.paths_denoiser, folders=False)
             imgui.end_table()
@@ -1906,6 +1915,112 @@ class Launcher:
             _, self.paths_denoiser["out"] = imgui.input_text_with_hint("##weights", "the file training writes, e.g. denoiser.pt",
                                                                        self.paths_denoiser["out"])
             imgui.end_table()
+
+    def draw_defaults(self, changed: bool) -> None:
+        """An orange Defaults button resetting every parameter, disabled while nothing has changed."""
+        with button_colors(COLORS_DEFAULTS[0], COLORS_DEFAULTS[1]):
+            imgui.begin_disabled(not changed)
+            if imgui.button(f"{fa.ICON_FA_ARROW_ROTATE_LEFT}  Defaults"):
+                self.reset_all()
+            imgui.end_disabled()
+        tooltip("Reset every parameter; movies and paths stay" if changed else "Every value is at its default")
+
+    def stage_columns(self) -> list[tuple[str, list[scraper.Section]]]:
+        """Returns the Parameters popup's columns: each stage the pipeline has, in order, with its sections."""
+        by_stage: dict[str, list[scraper.Section]] = {}
+        for section in self.spec.sections:
+            by_stage.setdefault(param_hints.stage_of(section=section), []).append(section)
+        return [(stage, by_stage[stage]) for stage in param_hints.STAGES_ORDER if stage in by_stage]
+
+    def draw_parameters(self) -> None:
+        """The Parameters popup: a column per stage, the runtime under them, then Defaults and Close."""
+        if self.parameters_requested:
+            imgui.open_popup(POPUP_PARAMETERS)
+            self.parameters_requested = False
+        em = imgui.get_font_size()
+        style = imgui.get_style()
+        viewport = imgui.get_main_viewport()
+        columns = self.stage_columns()
+        room = viewport.size.x * 0.96 - 2 * style.window_padding.x - (len(columns) - 1) * style.item_spacing.x
+        width_column = min(max(room / len(columns), WIDTH_COLUMN_EM[0] * em), WIDTH_COLUMN_EM[1] * em)
+        height_column = viewport.size.y * 0.94 - self.height_chrome_parameters
+        ## NOTE: centered every frame, since an auto-resized popup is 0 wide on the frame it appears
+        imgui.set_next_window_pos(viewport.get_center(), imgui.Cond_.always, imgui.ImVec2(0.5, 0.5))
+        imgui.set_next_window_size_constraints(imgui.ImVec2(0, 0), imgui.ImVec2(viewport.size.x * 0.96, viewport.size.y * 0.94))
+        flags = imgui.WindowFlags_.always_auto_resize | imgui.WindowFlags_.no_saved_settings | imgui.WindowFlags_.no_move
+        opened, visible = imgui.begin_popup_modal(f"{self.spec.slug} parameters{POPUP_PARAMETERS}", True, flags)
+        if not opened:
+            return
+        if not visible or (imgui.is_key_pressed(imgui.Key.escape) and not imgui.is_any_item_active()):
+            imgui.close_current_popup()
+        y_columns = imgui.get_cursor_pos_y()
+        for i, (stage, sections) in enumerate(columns):
+            if i > 0:
+                imgui.same_line()
+            self.draw_column(stage=stage, sections=sections, width=width_column, height_max=height_column)
+        height_columns = imgui.get_cursor_pos_y() - y_columns
+        draw_divider()
+        self.draw_runtime(columns=max(2, len(columns)))
+        draw_divider()
+        self.draw_defaults(changed=len(self.modified()) > 0)
+        imgui.same_line()
+        imgui.set_cursor_pos_x(imgui.get_window_width() - style.window_padding.x - self.width_frame(text="Close"))
+        with button_colors(COLORS_CLOSE[0], COLORS_CLOSE[1]):
+            if imgui.button("Close##parameters"):
+                imgui.close_current_popup()
+        self.height_chrome_parameters = imgui.get_cursor_pos_y() + style.window_padding.y + style.popup_border_size - height_columns
+        imgui.end_popup()
+
+    def draw_column(self, stage: str, sections: list[scraper.Section], width: float, height_max: float) -> None:
+        """One stage's column: its name, then each of its sections; it scrolls once taller than height_max."""
+        flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_use_window_padding
+        padding = imgui.get_style().window_padding
+        imgui.set_next_window_size_constraints(imgui.ImVec2(width, 0), imgui.ImVec2(width, height_max))
+        ## NOTE: whole-pixel padding, since imgui truncates an auto-fit height and a scaled padding such as 8.4 px
+        ## leaves every column 0.8 px short of its content and so scrolling
+        with (
+            imgui_ctx.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(round(padding.x), round(padding.y))),
+            imgui_ctx.begin_child(f"##column_{stage}", imgui.ImVec2(width, 0), flags),
+        ):
+            imgui.text_colored(COLOR_TITLE, stage)
+            if stage == param_hints.STAGE_DEMIXING and self.spec.cls.demixing_configs is not BasePipeline.demixing_configs:
+                self.draw_uniform_min_brightness()
+                self.draw_cell_radius()
+            for section in sections:
+                self.draw_stage(section=section)
+
+    def draw_uniform_min_brightness(self) -> None:
+        """A checkbox that, while checked, sets its min brightness in every demixing pass."""
+        changed_on, self.uniform_min_brightness_on = imgui.checkbox("uniform min brightness", self.uniform_min_brightness_on)
+        if imgui.is_item_hovered():
+            idl.wrapped_tooltip("Sets this value in every demixing pass; a pass edited afterwards keeps its own")
+        imgui.begin_disabled(not self.uniform_min_brightness_on)
+        width_box = hello_imgui.em_size(WIDTH_INPUT_EM)
+        width_slider = imgui.get_content_region_avail().x - width_box - imgui.get_style().item_inner_spacing.x
+        changed_value, self.uniform_min_brightness = draw_min_brightness(
+            "uniform_min_brightness", self.uniform_min_brightness, width_slider, width_box
+        )
+        imgui.end_disabled()
+        if self.uniform_min_brightness_on and (changed_on or changed_value):
+            self.set_meta_parameter(name="min_brightness", value=self.uniform_min_brightness)
+
+    def draw_cell_radius(self) -> None:
+        """A checkbox that, while checked, sets the ring radius and background downsampling of every demixing pass from a soma radius."""
+        changed_on, self.cell_radius_on = imgui.checkbox("cell radius", self.cell_radius_on)
+        if imgui.is_item_hovered():
+            idl.wrapped_tooltip("Typical soma radius in pixels, for somatic data; use 20 for dendritic data. Sets ring_radius "
+                                "to 2 * radius + 1 in every demixing pass and raises background_downsampling_factor to "
+                                "2 * radius where it is below that; a pass edited afterwards keeps its own. "
+                                "Only passes that fit the ring background use either value")
+        imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+        imgui.begin_disabled(not self.cell_radius_on)
+        imgui.set_next_item_width(hello_imgui.em_size(WIDTH_INPUT_EM))
+        changed_value, value = imgui.input_int("##cell_radius", self.cell_radius)
+        imgui.end_disabled()
+        # the pipeline's cell_radius setter refuses a radius below 1
+        self.cell_radius = max(1, value)
+        if self.cell_radius_on and (changed_on or changed_value):
+            self.set_cell_radius(checked_now=changed_on)
 
     def set_meta_parameter(self, name: str, value) -> None:
         """Set a settable property of the pipeline, which rewrites the stage configs the window holds in place."""
@@ -1925,110 +2040,101 @@ class Launcher:
             p.NMFConfig.background_downsampling_factor = factor
         pipeline.cell_radius = self.cell_radius
 
-    def draw_stages(self) -> None:
-        """One bordered box per pipeline stage."""
-        draw_subsection(
-            text="Pipeline stages",
-            hint="Each stage's config and its values; changes show orange",
-        )
-        imgui.spacing()
-        if self.spec.cls.demixing_configs is not BasePipeline.demixing_configs:
-            changed_on, self.uniform_min_brightness_on = imgui.checkbox("uniform min brightness", self.uniform_min_brightness_on)
-            if imgui.is_item_hovered():
-                idl.wrapped_tooltip("Sets this value in every demixing pass; a pass edited afterwards keeps its own")
-            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
-            imgui.begin_disabled(not self.uniform_min_brightness_on)
-            changed_value, self.uniform_min_brightness = draw_min_brightness(
-                "uniform_min_brightness", self.uniform_min_brightness, hello_imgui.em_size(12), hello_imgui.em_size(WIDTH_INPUT_EM)
-            )
-            imgui.end_disabled()
-            if self.uniform_min_brightness_on and (changed_on or changed_value):
-                self.set_meta_parameter(name="min_brightness", value=self.uniform_min_brightness)
-            changed_on, self.cell_radius_on = imgui.checkbox("cell radius", self.cell_radius_on)
-            if imgui.is_item_hovered():
-                idl.wrapped_tooltip("Typical soma radius in pixels, for somatic data; use 20 for dendritic data. Sets ring_radius "
-                                    "to 2 * radius + 1 in every demixing pass and raises background_downsampling_factor to "
-                                    "2 * radius where it is below that; a pass edited afterwards keeps its own. "
-                                    "Only passes that fit the ring background use either value")
-            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
-            imgui.begin_disabled(not self.cell_radius_on)
-            imgui.set_next_item_width(hello_imgui.em_size(WIDTH_INPUT_EM))
-            changed_value, value = imgui.input_int("##cell_radius", self.cell_radius)
-            imgui.end_disabled()
-            # the pipeline's cell_radius setter refuses a radius below 1
-            self.cell_radius = max(1, value)
-            if self.cell_radius_on and (changed_on or changed_value):
-                self.set_cell_radius(checked_now=changed_on)
-            imgui.spacing()
-        for section in self.spec.sections:
-            self.draw_stage(section=section)
-
     def draw_stage(self, section: scraper.Section) -> None:
-        """A stage's box: which config it takes, a reset once it differs from the default, then the config's fields."""
-        flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_use_window_padding
-        with imgui_ctx.begin_child(f"##stage_{section.name}", imgui.ImVec2(0, 0), flags):
-            imgui.text_colored(COLOR_TITLE, title_of(section=section))
-            if not same(self.values[section.argument], section.default):
-                same_line_if_fits(width=self.width_frame(text="Reset stage"))
-                if imgui.small_button(f"Reset stage##{section.name}"):
-                    self.reset_section(section=section)
-                if imgui.is_item_hovered():
-                    idl.wrapped_tooltip(f"Back to {label_of(kind=section.default_kind, section=section)} with the pipeline's values")
-            kinds = section.kinds_buildable
-            value = self.values[section.argument]
-            kind = scraper.kind_of(value=value)
-            labels = [label_of(kind=k, section=section) for k in kinds]
-            changed_kind = kind != section.default_kind
-            if changed_kind:
-                imgui.push_style_color(imgui.Col_.text, COLOR_MODIFIED)
-            imgui.set_next_item_width(max(self.width_combo(items=labels), hello_imgui.em_size(WIDTH_INPUT_EM)))
-            edited, index = imgui.combo(f"##kind_{section.name}", kinds.index(kind), labels)
-            if changed_kind:
-                imgui.pop_style_color()
-            if edited:
-                self.select_kind(section=section, kind=kinds[index])
-            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
-            draw_wrapped(text="config", color=COLOR_MODIFIED if changed_kind else None)
-            imgui.separator()
-            value = self.values[section.argument]
-            if isinstance(value, str):
-                draw_wrapped(text="Skipped.", color=COLOR_DIM)
-                return
-            default = section.default if type(section.default) is type(value) else NO_DEFAULT
-            self.draw_config(config=value, default=default, path=section.argument)
+        """A stage's heading, the config it takes with a reset once it differs from the default, then the config's fields."""
+        imgui.spacing()
+        imgui.separator_text(title_of(section=section))
+        kinds = section.kinds_buildable
+        value = self.values[section.argument]
+        kind = scraper.kind_of(value=value)
+        labels = [label_of(kind=k, section=section) for k in kinds]
+        changed_kind = kind != section.default_kind
+        if changed_kind:
+            imgui.push_style_color(imgui.Col_.text, COLOR_MODIFIED)
+        imgui.set_next_item_width(max(self.width_combo(items=labels), hello_imgui.em_size(WIDTH_INPUT_EM)))
+        edited, index = imgui.combo(f"##kind_{section.name}", kinds.index(kind), labels)
+        if changed_kind:
+            imgui.pop_style_color()
+        if edited:
+            self.select_kind(section=section, kind=kinds[index])
+        imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+        imgui.text_colored(COLOR_MODIFIED if changed_kind else COLOR_DIM, "config")
+        if not same(self.values[section.argument], section.default):
+            same_line_if_fits(width=self.width_frame(text="Reset stage"))
+            if imgui.small_button(f"Reset stage##{section.name}"):
+                self.reset_section(section=section)
+            if imgui.is_item_hovered():
+                idl.wrapped_tooltip(f"Back to {label_of(kind=section.default_kind, section=section)} with the pipeline's values")
+        value = self.values[section.argument]
+        if isinstance(value, str):
+            draw_wrapped(text="Skipped.", color=COLOR_DIM)
+            return
+        default = section.default if type(section.default) is type(value) else NO_DEFAULT
+        self.draw_config(config=value, default=default, path=section.argument)
 
     def draw_config(self, config: Any, default: Any, path: str) -> None:
         """
-        A config's fields: nested configs under their name, lists of configs one box per item, editable
-        values with a widget, and values only Python can set shown read-only when they are set.
+        A config's fields: important and normal ones in order, then folds holding its advanced and its stable ones,
+        each fold orange and counting its changes once any differ from the default.
 
         Args:
             config (Any): The config dataclass being edited
             default (Any): The pipeline's default at the same place, or NO_DEFAULT when it has none
             path (str): Where config sits, naming its fields' widgets and errors
         """
-        hints = scraper.resolve_hints(cls=type(config))
-        params = {param.field: param for param in scraper.scrape_dataclass(cls_config=type(config), name_section=path)}
-        for field in dataclasses.fields(config):
-            if not field.init:
+        cls_config = type(config)
+        params = {param.field: param for param in scraper.scrape_dataclass(cls_config=cls_config, name_section=path)}
+        fields = [field for field in dataclasses.fields(config) if field.init]
+        tiers = {field.name: param_hints.tier_of(cls_config=cls_config, name=field.name) for field in fields}
+        for field in fields:
+            if tiers[field.name] in ("important", "normal"):
+                self.draw_config_field(config=config, param=params[field.name], default=default, path=path)
+        for tier, title in (("advanced", "Advanced"), ("stable", "Stable")):
+            folded = [field.name for field in fields if tiers[field.name] == tier]
+            if len(folded) == 0:
                 continue
-            annotation = hints.get(field.name, field.type)
-            current = getattr(config, field.name)
-            default_field = NO_DEFAULT if default is NO_DEFAULT else getattr(default, field.name)
-            path_field = f"{path}.{field.name}"
-            members, allows_none = scraper.annotation_members(annotation=annotation)
-            configs = [m for m in members if dataclasses.is_dataclass(m)]
-            classes_item = [scraper.item_dataclass_of(annotation=m) for m in members]
-            classes_item = [c for c in classes_item if c is not None]
-            if len(configs) > 0 or dataclasses.is_dataclass(current):
-                self.draw_nested(config=config, name=field.name, configs=configs, allows_none=allows_none,
-                                 default=default_field, path=path_field)
-            elif len(classes_item) > 0:
-                self.draw_items(config=config, name=field.name, cls_item=classes_item[0], default=default_field, path=path_field)
-            elif params[field.name].settable:
-                self.draw_field(config=config, param=params[field.name], default=default_field, path=path_field)
-            elif current is not None:
-                draw_wrapped(text=f"{field.name}: {text_of(value=current)} (set from Python)", color=COLOR_DIM)
+            changed = 0 if default is NO_DEFAULT else sum(not same(getattr(config, n), getattr(default, n)) for n in folded)
+            color = COLOR_MODIFIED if changed > 0 else COLOR_DIM if tier == "stable" else None
+            if color is not None:
+                imgui.push_style_color(imgui.Col_.text, color)
+            opened = imgui.tree_node(f"{title}{f' ({changed} changed)' if changed > 0 else ''}###{tier}_{path}")
+            if color is not None:
+                imgui.pop_style_color()
+            if tier == "stable" and imgui.is_item_hovered():
+                idl.wrapped_tooltip("Values the masknmf authors mark as stable; change them only with a reason")
+            if opened:
+                for name in folded:
+                    self.draw_config_field(config=config, param=params[name], default=default, path=path)
+                imgui.tree_pop()
+
+    def draw_config_field(self, config: Any, param: scraper.Param, default: Any, path: str) -> None:
+        """
+        One field of a config: a nested config under its name, a list of configs as tabs, an editable value with
+        a widget, or a value only Python can set shown read-only when it is set.
+
+        Args:
+            config (Any): The config dataclass holding the field
+            param (Param): The field, as scraper.scrape_dataclass describes it
+            default (Any): The pipeline's default config at the same place as config, or NO_DEFAULT
+            path (str): Where config sits
+        """
+        name = param.field
+        current = getattr(config, name)
+        default_field = NO_DEFAULT if default is NO_DEFAULT else getattr(default, name)
+        path_field = f"{path}.{name}"
+        members, allows_none = scraper.annotation_members(annotation=param.annotation)
+        configs = [m for m in members if dataclasses.is_dataclass(m)]
+        classes_item = [scraper.item_dataclass_of(annotation=m) for m in members]
+        classes_item = [c for c in classes_item if c is not None]
+        if len(configs) > 0 or dataclasses.is_dataclass(current):
+            self.draw_nested(config=config, name=name, configs=configs, allows_none=allows_none,
+                             default=default_field, path=path_field)
+        elif len(classes_item) > 0:
+            self.draw_items(config=config, name=name, cls_item=classes_item[0], default=default_field, path=path_field)
+        elif param.settable:
+            self.draw_field(config=config, param=param, default=default_field, path=path_field)
+        elif current is not None:
+            draw_wrapped(text=f"{name}: {text_of(value=current)} (set from Python)", color=COLOR_DIM)
 
     def draw_nested(self, config: Any, name: str, configs: list, allows_none: bool, default: Any, path: str) -> None:
         """
@@ -2054,6 +2160,8 @@ class Launcher:
         if kind not in kinds:
             kinds.append(kind)
         modified = default is not NO_DEFAULT and kind != kind_or_none(value=default)
+        hint = param_hints.hint_for(cls_config=type(config), name=name)
+        title = name if hint is None else hint.label
         imgui.spacing()
         if len(kinds) > 1:
             labels = [f"{k} (default)" if default is not NO_DEFAULT and k == kind_or_none(value=default) else k for k in kinds]
@@ -2064,13 +2172,13 @@ class Launcher:
             if modified:
                 imgui.pop_style_color()
             imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
-            draw_wrapped(text=name, color=COLOR_MODIFIED if modified else COLOR_SUBSECTION)
+            draw_wrapped(text=title, color=COLOR_MODIFIED if modified else COLOR_SUBSECTION)
             if edited:
                 self.select_nested(config=config, name=name, kind=kinds[index], default=default, path=path)
             if modified and self.draw_reset(path=path, text_default=kind_or_none(value=default)):
                 self.reset_field(config=config, name=name, default=default, path=path)
         else:
-            imgui.text_colored(COLOR_SUBSECTION, name)
+            imgui.text_colored(COLOR_SUBSECTION, title)
         current = getattr(config, name)
         if dataclasses.is_dataclass(current):
             imgui.indent(hello_imgui.em_size(0.8))
@@ -2080,8 +2188,9 @@ class Launcher:
 
     def draw_items(self, config: Any, name: str, cls_item: type, default: Any, path: str) -> None:
         """
-        A list of configs, such as a multipass config's passes: a box per item with a remove button,
-        then a button adding a copy of the last item, or a fresh one when the list is empty or None.
+        A list of configs, such as a multipass config's passes: a tab per item, orange once it differs from the
+        default and closable while another is left, then a + tab adding a copy of the last item, or a fresh one
+        when the list is empty or None.
 
         Args:
             config (Any): The config holding the list
@@ -2092,27 +2201,34 @@ class Launcher:
         """
         items = getattr(config, name)
         defaults = default if isinstance(default, list) else []
-        flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.auto_resize_y | imgui.ChildFlags_.always_use_window_padding
         if items is None or len(items) == 0:
             draw_wrapped(text=f"{name}: none" if items is None else f"{name}: no passes", color=COLOR_DIM)
+        if not imgui.begin_tab_bar(f"##tabs_{path}", imgui.TabBarFlags_.fitting_policy_scroll):
+            return
         removed = None
         for i, item in enumerate(items or []):
-            with imgui_ctx.begin_child(f"##{path}[{i}]", imgui.ImVec2(0, 0), flags):
-                added = i >= len(defaults)
-                imgui.text_colored(COLOR_MODIFIED if added else COLOR_SUBSECTION, f"Pass {i + 1}{' (added)' if added else ''}")
-                if len(items) > 1:
-                    same_line_if_fits(width=self.width_frame(text="Remove"))
-                    if imgui.small_button(f"Remove##{path}[{i}]"):
-                        removed = i
+            added = i >= len(defaults)
+            modified = added or not same(item, defaults[i])
+            if modified:
+                imgui.push_style_color(imgui.Col_.text, COLOR_MODIFIED)
+            label = f"Pass {i + 1}{' (added)' if added else ''}###{path}[{i}]"
+            selected, kept = imgui.begin_tab_item(label, True if len(items) > 1 else None)
+            if modified:
+                imgui.pop_style_color()
+            if kept is False:
+                removed = i
+            if selected:
                 self.draw_config(config=item, default=NO_DEFAULT if added else defaults[i], path=f"{path}[{i}]")
-        if removed is not None:
-            del items[removed]
-            self.forget(path=path)
-        if imgui.button(f"{fa.ICON_FA_PLUS}  Add pass##{path}"):
+                imgui.end_tab_item()
+        if imgui.tab_item_button(f"{fa.ICON_FA_PLUS}##add_{path}", imgui.TabItemFlags_.trailing | imgui.TabItemFlags_.no_tooltip):
             fresh = copy.deepcopy(items[-1]) if items else scraper.build_default(cls_config=cls_item)
             setattr(config, name, [*(items or []), fresh])
         if imgui.is_item_hovered():
             idl.wrapped_tooltip("Adds a pass copying the last one")
+        imgui.end_tab_bar()
+        if removed is not None:
+            del items[removed]
+            self.forget(path=path)
 
     def draw_field(self, config: Any, param: scraper.Param, default: Any, path: str) -> None:
         """
@@ -2161,16 +2277,21 @@ class Launcher:
         if modified:
             imgui.pop_style_color()
 
-        imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+        hint = param_hints.hint_for(cls_config=type(config), name=name)
         error = self.errors.get(path)
-        if error is not None:
-            draw_wrapped(text=name, color=COLOR_ERROR)
-        elif modified:
-            draw_wrapped(text=name, color=COLOR_MODIFIED)
+        color = COLOR_ERROR if error is not None else COLOR_MODIFIED if modified else None
+        if hint is not None and hint.tier == "important":
+            imgui.same_line(0, imgui.get_style().item_inner_spacing.x + 0.3 * imgui.get_font_size())
+            draw_boxed(text=hint.label, color=color)
         else:
-            draw_wrapped(text=name)
+            imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+            draw_wrapped(text=name if hint is None else hint.label, color=color)
         if imgui.is_item_hovered():
-            idl.wrapped_tooltip(error or name if default is NO_DEFAULT else error or f"pipeline default: {text_of(value=default) or 'none'}")
+            lines = [error] if error is not None else []
+            if hint is not None and hint.tooltip != "":
+                lines.append(hint.tooltip)
+            lines.append(name if default is NO_DEFAULT else f"{name}, pipeline default {text_of(value=default) or 'none'}")
+            idl.wrapped_tooltip("\n".join(lines))
         if modified and self.draw_reset(path=path, text_default=text_of(value=default) or "none"):
             self.reset_field(config=config, name=name, default=default, path=path)
 
@@ -2221,12 +2342,15 @@ class Launcher:
         self.errors.pop(path, None)
         setattr(config, name, list(value) if isinstance(current, list) and isinstance(value, tuple) else value)
 
-    def draw_runtime(self) -> None:
-        """The constructor arguments that are neither configs nor folders."""
-        draw_subsection(text="Runtime", hint="Where and how the pipeline computes.")
-        imgui.spacing()
+    def draw_runtime(self, columns: int) -> None:
+        """The constructor arguments that are neither configs nor folders, in a table columns wide."""
+        imgui.text_colored(COLOR_TITLE, "Runtime")
+        if not imgui.begin_table("##runtime", columns, imgui.TableFlags_.sizing_stretch_same):
+            return
         for param in self.params_runtime():
+            imgui.table_next_column()
             self.draw_param(param=param)
+        imgui.end_table()
 
     def draw_modified(self) -> None:
         """Every changed value beside its default."""
@@ -2362,16 +2486,17 @@ class Launcher:
         if changed_before:
             imgui.pop_style_color()
 
+        hint = param_hints.HINTS_RUNTIME.get(param.field)
         if named:
             imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
-            if error is not None:
-                draw_wrapped(text=param.field, color=COLOR_ERROR)
-            elif self.is_modified(param=param):
-                draw_wrapped(text=param.field, color=COLOR_MODIFIED)
-            else:
-                draw_wrapped(text=param.field)
+            color = COLOR_ERROR if error is not None else COLOR_MODIFIED if self.is_modified(param=param) else None
+            draw_wrapped(text=param.field if hint is None else hint.label, color=color)
         if imgui.is_item_hovered():
-            idl.wrapped_tooltip(error or param.description)
+            lines = [error] if error is not None else []
+            if hint is not None and hint.tooltip != "":
+                lines.append(hint.tooltip)
+            lines.append(f"{param.field}: {param.description}")
+            idl.wrapped_tooltip("\n".join(lines))
         if self.is_modified(param=param) and self.draw_reset(path=key, text_default=text_default(param=param) or "none"):
             self.texts[key] = text_default(param=param)
 

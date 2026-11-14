@@ -132,6 +132,45 @@ def test_drawing_the_untouched_window_changes_nothing(slug):
     assert_untouched(window=window)
 
 
+def record_stage(original, drawn: list, section: scraper.Section) -> None:
+    """Launcher.draw_stage, noting the name of each section drawn."""
+    drawn.append(section.name)
+    original(section=section)
+
+
+def tree_node_open(original, label: str) -> bool:
+    """imgui.tree_node opened, so the advanced and stable folds draw their fields."""
+    imgui.set_next_item_open(True)
+    return original(label)
+
+
+def draw_parameters_popup(window: launcher.Launcher, monkeypatch) -> list[str]:
+    """Draw Run pipeline with the Parameters popup and its folds open, returning the sections it drew."""
+    window.page = "run"
+    window.parameters_requested = True
+    drawn = []
+    monkeypatch.setattr(window, "draw_stage", partial(record_stage, window.draw_stage, drawn))
+    monkeypatch.setattr(imgui, "tree_node", partial(tree_node_open, imgui.tree_node))
+    render_frames(window=window)
+    return drawn
+
+
+@pytest.mark.parametrize("slug", SLUGS)
+def test_drawing_the_parameters_popup_changes_nothing(slug, monkeypatch):
+    window = launcher.Launcher(slug_initial=slug)
+    drawn = draw_parameters_popup(window=window, monkeypatch=monkeypatch)
+    assert set(drawn) == {section.name for section in window.spec.sections}
+    assert_untouched(window=window)
+
+
+def test_the_parameters_popup_puts_configs_from_elsewhere_in_an_other_column(odd_registry, monkeypatch):
+    window = launcher.Launcher(slug_initial="odd")
+    assert [stage for stage, _ in window.stage_columns()] == ["Other"]
+    drawn = draw_parameters_popup(window=window, monkeypatch=monkeypatch)
+    assert set(drawn) == {"stage", "empty"}
+    assert_untouched(window=window)
+
+
 @pytest.mark.parametrize("slug", SLUGS)
 def test_params_json_through_config_reproduces_the_defaults(slug, tmp_path, monkeypatch):
     out = io.StringIO()
