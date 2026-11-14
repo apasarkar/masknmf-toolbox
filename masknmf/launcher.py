@@ -1276,7 +1276,7 @@ class Launcher:
 
     def draw_body(self) -> None:
         """The rail and the page side by side, filling the room above the footer; Esc goes to the Overview, then quits."""
-        if imgui.is_key_pressed(imgui.Key.escape) and not imgui.is_any_item_active() and not imgui.is_popup_open("", imgui.PopupFlags_.any_popup_id):
+        if imgui.is_key_pressed(imgui.Key.escape, repeat=False) and not imgui.is_any_item_active() and not imgui.is_popup_open("", imgui.PopupFlags_.any_popup_id):
             if self.page == "home":
                 self.quit()
             else:

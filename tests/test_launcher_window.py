@@ -8,6 +8,7 @@ import sys
 import time
 
 import numpy as np
+from imgui_bundle import imgui
 import pytest
 from rendercanvas.offscreen import RenderCanvas
 
@@ -96,3 +97,20 @@ def test_a_pick_lands_though_the_dialog_helper_never_exits(window, tmp_path, mon
         time.sleep(0.02)
     picker.kill()
     assert window.paths_open["source"] == str(filepath_results)
+
+
+def test_escape_held_in_the_parameters_popup_closes_only_the_popup(window):
+    window.page = "run"
+    window.parameters_requested = True
+    draw(window=window, frames=4)
+    assert imgui.is_popup_open("", imgui.PopupFlags_.any_popup_id)
+
+    window.canvas.submit_event({"event_type": "key_down", "key": "Escape", "modifiers": ()})
+    window.canvas._process_events()
+    # past imgui's key repeat delay, when a held key reads as pressed again
+    for _ in range(30):
+        draw(window=window, frames=1)
+        time.sleep(0.03)
+    assert not imgui.is_popup_open("", imgui.PopupFlags_.any_popup_id)
+    assert window.page == "run"
+    assert not window.canvas.get_closed()
