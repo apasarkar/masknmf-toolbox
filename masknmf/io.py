@@ -203,6 +203,36 @@ def find_raw_movie(path: str | Path) -> tuple[ArrayLike | None, Path] | None:
     return None if beside is None else (TiffArray(str(beside)), beside)
 
 
+def shifts_at_raw_frames(shifts: np.ndarray, path: str | Path, num_frames: int) -> np.ndarray | None:
+    """
+    Shifts of a run that registered a subset of its frames, placed at the raw frames they belong to.
+
+    Parameters
+    ----------
+    shifts : np.ndarray
+        Shape (retained frames, ...).
+    path : str | Path
+        The results file; its ``retained_frames`` dataset holds the raw index of each registered frame.
+    num_frames : int
+        Frames of the raw movie.
+
+    Returns
+    -------
+    np.ndarray | None
+        Shape (num_frames, ...), NaN at the frames the run left out. None when the file has no
+        ``retained_frames`` with one index per shift.
+    """
+    with h5py.File(path, "r") as f:
+        if "retained_frames" not in f:
+            return None
+        retained = f["retained_frames"][()]
+    if retained.shape[0] != shifts.shape[0] or retained.max() >= num_frames:
+        return None
+    placed = np.full((num_frames, *shifts.shape[1:]), np.nan, dtype=shifts.dtype)
+    placed[retained] = shifts
+    return placed
+
+
 def stage_groups(path: str | Path) -> list[str]:
     """
     List the masknmf stages a results file holds.
@@ -469,6 +499,9 @@ class OpenedResults:
                     template = strategy["template"][()]
         if shifts is not None:
             shifts = np.asarray(shifts.cpu() if isinstance(shifts, torch.Tensor) else shifts, np.float32)
+            if shifts.shape[0] != shape[0] and shifts_source is not None:
+                placed = shifts_at_raw_frames(shifts=shifts, path=shifts_source, num_frames=shape[0])
+                shifts = shifts if placed is None else placed
             if shifts.shape[0] != shape[0]:
                 if not found_shifts:
                     raise ValueError(f"{shifts.shape[0]} shifts for {shape[0]} frames")
