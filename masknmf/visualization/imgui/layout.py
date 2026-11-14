@@ -50,6 +50,12 @@ def _handle_rect(window, thickness):
     )
 
 
+def _collapsed_size(window, thickness) -> int:
+    """The handle's strip, below the main menu bar when the window carries one: the bar covers the window's top."""
+    menu = imgui.get_frame_height() if window.window_flags & imgui.WindowFlags_.menu_bar else 0.0
+    return round(thickness + menu)
+
+
 def draw_edge_handle(window) -> None:
     """
     Resize / collapse handle for a "top" or "left" edge window, which fastplotlib
@@ -78,7 +84,7 @@ def draw_edge_handle(window) -> None:
     if hovered and imgui.is_mouse_double_clicked(0):
         if not window._collapsed:
             window._old_size = window.size
-            window.size = int(thickness)
+            window.size = _collapsed_size(window, thickness)
             window._collapsed = True
         else:
             window.size = int(window._old_size or window.size)
