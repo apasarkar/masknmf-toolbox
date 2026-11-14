@@ -646,7 +646,8 @@ class Launcher:
         self.uniform_min_brightness = 1.0
         # the cell radius control: while checked, every change of its value is set through the pipeline's cell_radius
         self.cell_radius_on = False
-        self.cell_radius = 5
+        self.cell_radius = 10
+        self.downsampling_before_cell_radius = []
         for param in (*self.spec.movie_params, *self.spec.array_params):
             self.paths.setdefault(param.field, "")
 
@@ -681,6 +682,7 @@ class Launcher:
                 self.texts[param.name] = text_default(param=param)
         for section in self.spec.sections:
             self.reset_section(section=section)
+        self.cell_radius_on = False
 
     def select_nested(self, config: Any, name: str, kind: str, default: Any, path: str) -> None:
         """
@@ -1929,9 +1931,10 @@ class Launcher:
         """A checkbox that, while checked, sets the ring radius and background downsampling of every demixing pass from a soma radius."""
         changed_on, self.cell_radius_on = imgui.checkbox("cell radius", self.cell_radius_on)
         if imgui.is_item_hovered():
-            idl.wrapped_tooltip("Typical soma radius in pixels. Sets ring_radius to 2 * radius + 1 in every demixing pass and "
-                                "raises background_downsampling_factor to 2 * radius where it is below that; "
-                                "a pass edited afterwards keeps its own")
+            idl.wrapped_tooltip("Typical soma radius in pixels, for somatic data; use 20 for dendritic data. Sets ring_radius "
+                                "to 2 * radius + 1 in every demixing pass and raises background_downsampling_factor to "
+                                "2 * radius where it is below that; a pass edited afterwards keeps its own. "
+                                "Only passes that fit the ring background use either value")
         imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
         imgui.begin_disabled(not self.cell_radius_on)
         imgui.set_next_item_width(hello_imgui.em_size(WIDTH_INPUT_EM))
@@ -1940,12 +1943,25 @@ class Launcher:
         # the pipeline's cell_radius setter refuses a radius below 1
         self.cell_radius = max(1, value)
         if self.cell_radius_on and (changed_on or changed_value):
-            self.set_meta_parameter(name="cell_radius", value=self.cell_radius)
+            self.set_cell_radius(checked_now=changed_on)
 
     def set_meta_parameter(self, name: str, value) -> None:
         """Set a settable property of the pipeline, which rewrites the stage configs the window holds in place."""
         pipeline = self.spec.cls(**{section.argument: self.values[section.argument] for section in self.spec.sections})
         setattr(pipeline, name, value)
+
+    def set_cell_radius(self, checked_now: bool) -> None:
+        """
+        Set the pipeline's cell_radius over the background downsampling factors the passes had when the control was
+        checked, so that lowering the radius lowers the factors it had raised.
+        """
+        pipeline = self.spec.cls(**{section.argument: self.values[section.argument] for section in self.spec.sections})
+        passes = pipeline.demixing_passes()
+        if checked_now or len(self.downsampling_before_cell_radius) != len(passes):
+            self.downsampling_before_cell_radius = [p.NMFConfig.background_downsampling_factor for p in passes]
+        for p, factor in zip(passes, self.downsampling_before_cell_radius):
+            p.NMFConfig.background_downsampling_factor = factor
+        pipeline.cell_radius = self.cell_radius
 
     def draw_stage(self, section: scraper.Section) -> None:
         """A stage's heading, the config it takes with a reset once it differs from the default, then the config's fields."""

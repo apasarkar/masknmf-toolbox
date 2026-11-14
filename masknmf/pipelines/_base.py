@@ -7,6 +7,7 @@ import functools
 import inspect
 import json
 import logging
+import operator
 import os
 import threading
 import time
@@ -638,8 +639,8 @@ class BasePipeline(ABC):
     @property
     def cell_radius(self) -> int | list[int]:
         """
-        The cell radius in pixels that the ring radius of every demixing pass corresponds to (ring_radius // 2), or
-        each pass's in the order they run when they differ.
+        The soma radius in pixels that the ring radius of every demixing pass corresponds to (ring_radius // 2), or
+        each pass's in the order they run when they differ. It describes somatic data only.
         """
         values = [p.NMFConfig.ring_radius // 2 for p in self.demixing_passes()]
         return values[0] if len(set(values)) == 1 else values
@@ -647,11 +648,14 @@ class BasePipeline(ABC):
     @cell_radius.setter
     def cell_radius(self, value: int):
         """
-        Set the typical somatic radius in pixels. Every demixing pass gets a ring radius just over the cell diameter
-        (2 * value + 1), and its background_downsampling_factor is raised to the cell diameter (2 * value) when it
-        is below that. background_downsampling_factor is otherwise left as it is, so set it on the NMFConfig
-        afterwards to tune it on its own.
+        Set the typical soma radius in pixels. This is for somatic data only; use 20 for dendritic data. Every
+        demixing pass gets a ring radius just over the cell diameter (2 * value + 1), and its
+        background_downsampling_factor is raised to the cell diameter (2 * value) when it is below that.
+        background_downsampling_factor is otherwise left as it is, so set it on the NMFConfig afterwards to tune it
+        on its own. Both values are read only by a pass that fits the ring background (ring_model_start_pt set and
+        below maxiter), so a pass with the background updates off runs the same.
         """
+        value = operator.index(value)
         if value < 1:
             raise ValueError("cell_radius must be at least 1 pixel")
         for p in self.demixing_passes():

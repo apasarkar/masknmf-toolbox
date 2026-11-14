@@ -321,6 +321,8 @@ def test_cell_radius_sets_the_ring_radius_and_only_raises_the_background_downsam
 
     with pytest.raises(ValueError):
         pipeline.cell_radius = 0
+    with pytest.raises(TypeError):
+        pipeline.cell_radius = 7.5
 
 
 def test_an_init_argument_that_is_also_a_settable_property_gets_one_flag(capsys):
