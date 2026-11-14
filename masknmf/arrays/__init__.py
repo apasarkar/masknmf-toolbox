@@ -4,6 +4,7 @@ from .ophys_array import OphysArray
 from .static_array import StaticArray
 from .array_utils import normalize_spatial_indexer
 from .linear_combination_array import LinearCombinationArray
+from .interleaved_array import InterleavedChannelArray, load_interleaved_binary
 
 __all__ = ["TiffArray",
            "TiffSeriesLoader",
@@ -14,4 +15,6 @@ __all__ = ["TiffArray",
            "SwitchableArray",
            "OphysArray",
            "StaticArray",
-           "LinearCombinationArray"]
+           "LinearCombinationArray",
+           "InterleavedChannelArray",
+           "load_interleaved_binary"]

@@ -19,6 +19,7 @@ from masknmf.utils import display
 from masknmf.compression import *
 from masknmf.motion_correction import *
 from masknmf.demixing import *
+from masknmf.hemocorrection import *
 from masknmf import io
 from masknmf.visualization import *
 from masknmf.diagnostics import *

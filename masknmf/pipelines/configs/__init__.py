@@ -1,5 +1,6 @@
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, PiecewiseRigidMotionCorrectionConfig, GradientMotionCorrectionConfig, MotionCorrectionConfigs, SpatialHighpassMotionCorrectionConfig, MotionCorrectionFilterConfig
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig, CompressionConfigs
+from masknmf.pipelines.configs.hemocorrection_configs import PixelwiseHemocorrectionConfig, HemocorrectionConfigs
 from masknmf.pipelines.configs.demixing_configs import SpatialHighpassConfig, GlobalSignalFilterConfig, CompressedFilterConfigs, SuperpixelInitConfig, CustomInitConfig, NMFConfig, SinglepassDemixingConfig, MultipassDemixingConfig, SpatialHighpassConfigs, MultipassDemixingConfigs
 
 
@@ -20,5 +21,7 @@ __all__ = [
     "SpatialHighpassConfigs",
     "MultipassDemixingConfigs",
     "GlobalSignalFilterConfig",
-    "CompressedFilterConfigs"
+    "CompressedFilterConfigs",
+    "PixelwiseHemocorrectionConfig",
+    "HemocorrectionConfigs"
 ]
