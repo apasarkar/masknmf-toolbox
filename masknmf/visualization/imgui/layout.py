@@ -34,7 +34,7 @@ def resolve_time_reference(num_frames, frame_timings=None, ref_range=None, axis=
 HANDLE_THICKNESS = 14.0
 _HANDLE_TOOLTIP = "Drag to resize, double click to expand/collapse"
 _HANDLE_CURSORS = {"top": "ns_resize", "left": "ew_resize"}
-_MIN_RENDER_AREA = 150
+MIN_RENDER_AREA = 150
 
 
 def _handle_rect(window, thickness):
@@ -50,7 +50,7 @@ def _handle_rect(window, thickness):
     )
 
 
-def _collapsed_size(window, thickness) -> int:
+def collapsed_size(window, thickness) -> int:
     """The handle's strip, below the main menu bar when the window carries one: the bar covers the window's top."""
     menu = imgui.get_frame_height() if window.window_flags & imgui.WindowFlags_.menu_bar else 0.0
     return round(thickness + menu)
@@ -84,7 +84,7 @@ def draw_edge_handle(window) -> None:
     if hovered and imgui.is_mouse_double_clicked(0):
         if not window._collapsed:
             window._old_size = window.size
-            window.size = _collapsed_size(window, thickness)
+            window.size = collapsed_size(window, thickness)
             window._collapsed = True
         else:
             window.size = int(window._old_size or window.size)
@@ -104,9 +104,9 @@ def draw_edge_handle(window) -> None:
         # inboard edge, so a positive drag grows the window
         delta = drag.y if location == "top" else drag.x
         imgui.reset_mouse_drag_delta(0)
-        # never grow into the last _MIN_RENDER_AREA px of the canvas
+        # never grow into the last MIN_RENDER_AREA px of the canvas
         _, _, render_w, render_h = window._figure.get_pygfx_render_area()
-        room = (render_h if location == "top" else render_w) - _MIN_RENDER_AREA
+        room = (render_h if location == "top" else render_w) - MIN_RENDER_AREA
         delta = min(delta, max(room, 0.0))
         if delta:
             window.size = max(30, round(window.size + delta))

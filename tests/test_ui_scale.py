@@ -50,6 +50,50 @@ def test_gdk_scale_is_the_desktop_scale_off_hyprland(monkeypatch):
     assert DESKTOP_SCALE() == 2.0
 
 
+def edge_window(location: str, size: int) -> SimpleNamespace:
+    return SimpleNamespace(location=location, size=size, window_flags=0, _separator_thickness=14.0)
+
+
+class Figure:
+    """What fit_windows reads of a figure: the canvas size, the edge windows and three panels side by side."""
+
+    def __init__(self, size: tuple[int, int], windows: dict):
+        self.canvas = SimpleNamespace(get_logical_size=lambda: size)
+        self.size = size
+        self.imgui_windows = windows
+
+    def get_pygfx_render_area(self) -> tuple:
+        used = {location: 0 if w is None else w.size for location, w in self.imgui_windows.items()}
+        width = self.size[0] - used["left"] - used["right"]
+        height = self.size[1] - used["top"] - used["bottom"]
+        return used["left"], used["top"], max(width, 1), max(height, 1)
+
+    def __iter__(self):
+        _, _, width, height = self.get_pygfx_render_area()
+        return iter([SimpleNamespace(frame=SimpleNamespace(rect=(0, 0, width / 3, height)))] * 3)
+
+
+def test_edge_windows_give_way_to_the_panels_and_grow_back():
+    windows = {"top": edge_window("top", 440), "bottom": edge_window("bottom", 100), "left": None, "right": edge_window("right", 441)}
+    scaler = scale.Scaler(Figure((700, 420), windows))
+    scaler.fit_windows()
+    # 150 px for the one row and for each of the three columns; the bottom controls keep their height
+    assert (windows["top"].size, windows["bottom"].size, windows["right"].size) == (170, 100, 250)
+    scaler.figure = Figure((2000, 1200), windows)
+    scaler.fit_windows()
+    assert (windows["top"].size, windows["right"].size) == (440, 441)
+
+
+def test_a_resized_edge_window_keeps_its_new_size():
+    windows = {"top": edge_window("top", 440), "bottom": None, "left": None, "right": None}
+    scaler = scale.Scaler(Figure((700, 420), windows))
+    scaler.fit_windows()
+    windows["top"].size = 60
+    scaler.figure = Figure((2000, 1200), windows)
+    scaler.fit_windows()
+    assert windows["top"].size == 60
+
+
 def test_initial_size_takes_the_env_over_the_saved_and_clamps(settings, monkeypatch):
     settings.write_text(json.dumps({"ui_scale": 1.5, "text_size": 9}))
     assert scale.initial_size() == scale.Size(ui_scale=1.5, text_size=scale.RANGE_TEXT[1])

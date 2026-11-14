@@ -13,7 +13,7 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -21,7 +21,7 @@ from imgui_bundle import imgui, implot
 
 from masknmf.visualization.imgui.clipboard import connect_clipboard
 from masknmf.visualization.imgui.keybinds import DESKTOP_SIZE, LARGER, SMALLER, pressed
-from masknmf.visualization.imgui.layout import is_notebook_canvas
+from masknmf.visualization.imgui.layout import MIN_RENDER_AREA, collapsed_size, is_notebook_canvas
 
 DIR_CONFIG = Path.home() / ".config" / "masknmf"
 FILEPATH_SETTINGS = DIR_CONFIG / "settings.json"
@@ -160,7 +160,8 @@ def push_font_em(x: float, font: Optional[imgui.ImFont] = None) -> None:
 class Scaler:
     """
     Keeps one imgui context's style, fonts and, given its figure, edge windows at SIZE: the new UI scale's sizes are
-    the default style's times the scale, and edge windows grow or shrink by the step from the last one.
+    the default style's times the scale, and edge windows, sized for the text they hold, grow or shrink by the step
+    of the UI scale times the text size from the last one.
     """
 
     implot_scale = 1.0  # implot's style is one for every context
@@ -168,6 +169,7 @@ class Scaler:
     def __init__(self, figure=None):
         self.figure = figure
         self.applied = 1.0
+        self.text_size = 1.0
 
     def __call__(self) -> None:
         scale = ui_scale(imgui.get_io().display_framebuffer_scale.x)
@@ -175,8 +177,9 @@ class Scaler:
         scale = ui_scale(imgui.get_io().display_framebuffer_scale.x)
         if scale != self.applied:
             self.rescale_style(scale)
-            self.rescale_windows(scale / self.applied)
-            self.applied = scale
+        if (scale, SIZE.text_size) != (self.applied, self.text_size):
+            self.rescale_windows(scale / self.applied, SIZE.text_size / self.text_size)
+            self.applied, self.text_size = scale, SIZE.text_size
         imgui.get_style().font_scale_main = scale * SIZE.text_size
         self.rescale_implot(scale)
 
@@ -191,8 +194,9 @@ class Scaler:
         scaled.font_scale_dpi = style.font_scale_dpi
         imgui.get_current_context().style = scaled
 
-    def rescale_windows(self, ratio: float) -> None:
-        """The figure's edge windows and subplot toolbars, by ratio."""
+    def rescale_windows(self, ratio_scale: float, ratio_text: float) -> None:
+        """The figure's edge windows and subplot toolbars by both ratios, their handles by the UI scale's alone."""
+        ratio = ratio_scale * ratio_text
         if self.figure is None:
             return
         windows = list(self.figure.imgui_windows.values())
@@ -201,10 +205,47 @@ class Scaler:
         for window in windows:
             if window is None or window.size is None:
                 continue
-            window._separator_thickness *= ratio
+            window._separator_thickness *= ratio_scale
             if getattr(window, "_old_size", None):
                 window._old_size = round(window._old_size * ratio)
+            wanted = getattr(window, "_masknmf_wanted", None)
+            shrunk = wanted is not None and window.size == window._masknmf_fitted
             window.size = max(1, round(window.size * ratio))
+            if shrunk:
+                # fit_windows holds the window under its size for lack of room: that size follows the scale too
+                window._masknmf_wanted, window._masknmf_fitted = round(wanted * ratio), window.size
+
+    def fit_windows(self) -> None:
+        """
+        Shrink the figure's edge windows, largest first, until MIN_RENDER_AREA px of the canvas, times the UI scale and
+        the text size, are left to each row and column of panels; they grow back to the size they were given once
+        there is room.
+
+        With less, a subplot's viewport gets a negative size, every draw raises before imgui runs, and the window stops
+        updating: a UI scale or text size too big for the window, or a tiling desktop making the window small, froze it.
+        """
+        figure = self.figure
+        # the sizes the panels' toolbars are drawn at, which new ones only become once the gui has run
+        room = MIN_RENDER_AREA * self.applied * self.text_size
+        area = figure.get_pygfx_render_area()
+        rects = [subplot.frame.rect for subplot in figure]  ## (x, y, width, height) each
+        for locations, axis in ((("left", "right"), 0), (("top", "bottom"), 1)):
+            windows = [figure.imgui_windows[location] for location in locations]
+            windows = [w for w in windows if w is not None and w.size is not None]
+            # the panels side by side on this axis, from the smallest one's share of the render area
+            count = max(round(area[2 + axis] / max(min(rect[2 + axis] for rect in rects), 1.0)), 1)
+            # NOTE: the NDWidget's bottom controls set their own height every frame, so shrinking them does not last
+            fixed = sum(w.size for w in windows if w.location == "bottom")
+            windows = [w for w in windows if w.location != "bottom"]
+            # a size other than the one last set here was set by hand, by a collapse or by the UI scale: it is the one wanted
+            wanted = {id(w): w._masknmf_wanted if w.size == getattr(w, "_masknmf_fitted", None) else w.size for w in windows}
+            excess = sum(wanted.values()) + fixed + room * count - figure.canvas.get_logical_size()[axis]
+            for window in sorted(windows, key=lambda w: wanted[id(w)], reverse=True):
+                floor = collapsed_size(window, window._separator_thickness)
+                cut = max(min(excess, wanted[id(window)] - floor), 0)
+                excess -= cut
+                window._masknmf_wanted = wanted[id(window)]
+                window._masknmf_fitted = window.size = round(wanted[id(window)] - cut)
 
     @classmethod
     def rescale_implot(cls, scale: float) -> None:
@@ -218,15 +259,14 @@ class Scaler:
         cls.implot_scale = scale
 
 
+def draw_scaled(scaler: Scaler, gui: Callable[[], None]) -> None:
+    scaler()
+    gui()
+
+
 def scaled(gui: Callable[[], None], figure=None) -> Callable[[], None]:
     """gui, run after its context is brought to SIZE; hand this to ImguiRenderer.set_gui."""
-    scaler = Scaler(figure)
-
-    def draw() -> None:
-        scaler()
-        gui()
-
-    return draw
+    return partial(draw_scaled, Scaler(figure), gui)
 
 
 def fit_canvas(canvas) -> None:
@@ -244,7 +284,11 @@ def scale_figure(figure) -> None:
     """
     if getattr(figure, "_masknmf_scaled", False):
         return
-    figure.imgui_renderer.set_gui(scaled(figure._draw_imgui, figure))
+    scaler = Scaler(figure)
+    figure.imgui_renderer.set_gui(partial(draw_scaled, scaler, figure._draw_imgui))
+    # an animation runs before the panels render, which is where a negative viewport raises
+    # NOTE: a partial, since fastplotlib hands a figure to any animation that takes an argument, a bound method included
+    figure.add_animations(partial(Scaler.fit_windows, scaler))
     connect_clipboard(figure.imgui_renderer.imgui_context)
     figure._masknmf_scaled = True
     if not is_notebook_canvas(figure):
