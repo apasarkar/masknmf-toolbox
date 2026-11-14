@@ -2024,6 +2024,9 @@ def compression_routine(
                 column_number += local_spatial_basis.shape[2]
             gpu_dataset = None #Always release the dataset at the end
 
+    # release the last tile before assembling the results
+    curr_dataset = None
+
     # Construct the spatial_compressed matrix up to this point (the per-block results are in host RAM)
     final_row_indices = torch.concatenate(final_row_indices, dim=0)
     final_column_indices = torch.concatenate(final_column_indices, dim=0)
