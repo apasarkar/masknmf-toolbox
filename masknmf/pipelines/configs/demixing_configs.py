@@ -38,7 +38,7 @@ class NMFConfig:
     plot_en: bool = False
     reassign_background: bool = True
     detrender: Optional[SplineDetrenderBase] = None
-    sign: str = "unconstrained"
+    sign: Literal["positive", "negative", "unconstrained"] = "unconstrained"
     max_speckle_size: Optional[int] = 3  # after the last HALS iteration, drop detached islands of <= this many px, then refit traces; None = off
     speckle_connectivity: int = 8  # 4 or 8, how islands are counted
     speckle_rel_threshold: float = 0.1  # also count islands among only pixels >= this fraction of peak, so a faint halo doesn't shield specks
