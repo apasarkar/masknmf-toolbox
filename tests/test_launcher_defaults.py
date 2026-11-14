@@ -10,6 +10,7 @@ import dataclasses
 import io
 import json
 import logging
+import time
 from functools import partial
 from pathlib import Path
 from typing import Literal, Optional
@@ -273,3 +274,39 @@ def test_switching_pipeline_from_a_card_mid_frame_draws_on(monkeypatch):
     render_frames(window=window)
     assert window.spec.slug == "widefield-singlechannel"
     assert_untouched(window=window)
+
+
+class ExitedProcess:
+    """The pixel mask editor's process after its window closed."""
+
+    returncode = 0
+
+    def poll(self):
+        return self.returncode
+
+
+def test_launcher_fills_the_row_only_after_apply(tmp_path):
+    window = launcher.Launcher()
+    assert "pixel_mask" in window.paths
+    filepath = tmp_path / "movie_pixel_mask.npy"
+
+    window.mask_editor = (ExitedProcess(), "pixel_mask", str(filepath), time.time())
+    window.poll_mask_editor()
+    assert window.paths["pixel_mask"] == "" and window.mask_editor is None
+
+    opened = time.time() - 1
+    np.save(filepath, np.ones((4, 4), dtype=bool))
+    window.mask_editor = (ExitedProcess(), "pixel_mask", str(filepath), opened)
+    window.poll_mask_editor()
+    assert window.paths["pixel_mask"] == str(filepath)
+    argv = window.argv_run()
+    assert argv[argv.index("--pixel-mask") + 1] == str(filepath)
+
+
+def test_each_movie_of_a_two_movie_pipeline_has_its_own_mask_row():
+    window = launcher.Launcher(slug_initial="glutamate-calcium-spine")
+    window.paths["glutamate_channel"] = "glu.tif"
+    assert window.movie_for_mask(key="glutamate_pixel_mask") == "glu.tif"
+    assert window.movie_for_mask(key="calcium_pixel_mask") == ""
+    window.paths["calcium_channel"] = "ca.tif"
+    assert window.movie_for_mask(key="calcium_pixel_mask") == "ca.tif"

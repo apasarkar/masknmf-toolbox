@@ -37,6 +37,7 @@ from masknmf.pipelines._base import BasePipeline
 from masknmf.visualization.imgui import guide
 from masknmf.visualization.imgui.clipboard import connect_clipboard
 from masknmf.visualization.imgui.files import NATIVE_DIALOGS, Picker
+from masknmf.visualization.pixel_mask import default_mask_path
 from masknmf.visualization.imgui.scale import DIR_CONFIG, Scaler, fit_canvas, push_font_em
 from masknmf.visualization.imgui.theme import button_colors, tooltip
 from masknmf.visualization.imgui.widgets import draw_min_brightness
@@ -577,6 +578,9 @@ class Launcher:
         self.epochs_denoiser = 10
         self.picker = None
         self.target_picker: Optional[tuple[dict, str]] = None
+        # the pixel mask editor's process, the row it fills, the file it saves and when it opened
+        self.mask_editor: Optional[tuple[Any, str, str, float]] = None
+        self.message_mask = ""
         self.argv: Optional[list[str]] = None
         self.canvas = None
         self.loop = None
@@ -1212,6 +1216,58 @@ class Launcher:
         self.picker = None
         self.target_picker = None
 
+    def movie_for_mask(self, key: str) -> str:
+        """
+        The movie a pixel mask row is drawn on: for <name>_pixel_mask the movie argument starting with <name>, for
+        a plain pixel_mask the first movie given. "" while that movie has no path.
+        """
+        prefix = key.removesuffix("pixel_mask")
+        if prefix == "":
+            movies = self.movies_given()
+            return movies[0] if len(movies) > 0 else ""
+        return next(self.paths[p.field].strip() for p in self.spec.movie_params if p.field.startswith(prefix))
+
+    def open_mask_editor(self, key: str) -> None:
+        """Open the pixel mask editor on the movie of the row key, in a process of its own."""
+        movie = self.movie_for_mask(key=key)
+        filepath_out = default_mask_path(filepath_movie=movie)
+        argv = ["mask", movie, "--out", filepath_out]
+        if is_hdf5(filepath=movie):
+            argv += ["--dataset", self.dataset.strip()]
+        process = cli.launch_viewer(argv=argv, filepath_log=DIR_CONFIG / "mask_editor.log")
+        self.mask_editor = (process, key, filepath_out, time.time())
+        self.message_mask = ""
+
+    def poll_mask_editor(self) -> None:
+        """Once the editor's window closes, fill its pixel mask row with the file Apply saved."""
+        if self.mask_editor is None:
+            return
+        process, key, filepath_out, time_opened = self.mask_editor
+        if process.poll() is None:
+            return
+        if process.returncode != 0:
+            self.message_mask = f"the mask editor stopped with an error; see {DIR_CONFIG / 'mask_editor.log'}"
+        path = Path(filepath_out)
+        if path.exists() and path.stat().st_mtime >= time_opened:
+            self.paths[key] = filepath_out
+        self.mask_editor = None
+
+    def draw_mask_button(self, key: str) -> None:
+        """The button that opens the pixel mask editor for the row key, ahead of the row's path field."""
+        movie = self.movie_for_mask(key=key)
+        ready = movie != "" and Path(movie).expanduser().exists()
+        imgui.begin_disabled(not ready or self.mask_editor is not None)
+        if imgui.button(f"{fa.ICON_FA_PAINTBRUSH}  Draw##{key}"):
+            self.open_mask_editor(key=key)
+        imgui.end_disabled()
+        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+            idl.wrapped_tooltip(
+                "The editor is open; Apply there fills its row" if self.mask_editor is not None
+                else "Threshold and paint the pixels to leave out; Apply fills this row" if ready
+                else "Choose the movie first"
+            )
+        imgui.same_line(0, imgui.get_style().item_inner_spacing.x)
+
     def draw_header(self) -> None:
         """The name and version, then what masknmf does."""
         em = imgui.get_font_size()
@@ -1247,6 +1303,7 @@ class Launcher:
             self.draw_content()
         imgui.pop_style_var()
         self.poll_picker()
+        self.poll_mask_editor()
 
     def draw_rail(self) -> None:
         """One button per page, the current one lit, then the recent paths."""
@@ -1578,8 +1635,13 @@ class Launcher:
                 _, self.dataset = imgui.input_text_with_hint("##dataset", "required", self.dataset)
             for param in spec.array_params:
                 self.row(caption=f"{param.field.replace('_', ' ')} (.npy)")
+                is_mask = param.field.endswith("pixel_mask")
+                if is_mask:
+                    self.draw_mask_button(key=param.field)
                 self.draw_path(target=self.paths, key=param.field, filetypes=FILETYPES_ARRAY, folders=False,
                                hint="required" if param.required else "optional")
+                if is_mask and self.mask_editor is None and self.message_mask != "":
+                    draw_wrapped(text=f"{fa.ICON_FA_CIRCLE_INFO}  {self.message_mask}", color=COLOR_WARN)
             for param in self.params_folder():
                 self.row(caption="output folder")
                 self.draw_path(target=self.texts, key=param.name, filetypes=None, folders=True, hint="beside the movie")

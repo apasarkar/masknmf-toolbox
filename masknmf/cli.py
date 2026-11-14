@@ -769,7 +769,10 @@ def launch_viewer(argv: list[str], filepath_log: Path) -> subprocess.Popen:
         {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {"start_new_session": True}
     )
     # unbuffered, so an error lands in the log after the output before it
-    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    # the checkout this process imported first on the path, so the child does not pick up another installed masknmf
+    dir_package = str(Path(masknmf.__file__).resolve().parents[1])
+    pythonpath = os.pathsep.join(filter(None, [dir_package, os.environ.get("PYTHONPATH", "")]))
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": pythonpath}
     with filepath_log.open("a", encoding="utf-8") as out:
         return subprocess.Popen(
             [python, "-m", "masknmf.cli", *argv], stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, env=env, **detach
@@ -936,6 +939,17 @@ def command_train_denoiser(args: argparse.Namespace) -> None:
     print(f"saved {args.out}; compress with it through masknmf run ... --denoiser {args.out}")
 
 
+def command_mask(args: argparse.Namespace) -> None:
+    """Open the pixel mask editor on a movie; Apply saves the mask for masknmf run --pixel-mask."""
+    from masknmf.visualization.pixel_mask import edit_pixel_mask
+
+    filepath = edit_pixel_mask(filepath_movie=args.movie, filepath_out=args.out, dataset=args.dataset, num_frames=args.frames)
+    if filepath is None:
+        print("closed without Apply; no mask saved")
+    else:
+        print(f"saved {filepath}; use it through masknmf run ... --pixel-mask {filepath}")
+
+
 def command_classify(args: argparse.Namespace) -> None:
     """Classify every ROI in each results file; predictions go to its labels sidecar, the labels are left as they are."""
     sessions = demixing_sessions(files=expand_results(entries=args.results))
@@ -1082,6 +1096,15 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_classify.add_argument("--classifier", required=True, help="a .roicat_classifier from masknmf train-classifier")
     parser_classify.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     parser_classify.set_defaults(handler=command_classify)
+
+    parser_mask = subparsers.add_parser(
+        "mask", help="draw a pixel mask on a movie's mean and SD images, for masknmf run --pixel-mask"
+    )
+    parser_mask.add_argument("movie", help="a .tif/.tiff file, a folder of tiffs, or an .h5/.hdf5 file")
+    parser_mask.add_argument("--dataset", default=None, help="the dataset holding the movie in an hdf5 file")
+    parser_mask.add_argument("--out", default=None, help="where the mask is saved; default <movie>_pixel_mask.npy beside the movie")
+    parser_mask.add_argument("--frames", default=400, type=int, help="evenly spaced frames the images are computed from; default 400")
+    parser_mask.set_defaults(handler=command_mask)
 
     parser_track = subparsers.add_parser("track", help="track ROIs across sessions with ROICaT")
     parser_track.add_argument(
