@@ -649,13 +649,23 @@ class Launcher:
         self.start_from = "movie"
         # the uniform min brightness control: while checked, every change of its value is set in every demixing pass
         self.uniform_min_brightness_on = False
-        self.uniform_min_brightness = 1.0
+        self.uniform_min_brightness = self.min_brightness_first_pass()
         # the cell radius control: while checked, every change of its value is set through the pipeline's cell_radius
         self.cell_radius_on = False
         self.cell_radius = 10
         self.downsampling_before_cell_radius = []
         for param in (*self.spec.movie_params, *self.spec.array_params):
             self.paths.setdefault(param.field, "")
+
+    def min_brightness_first_pass(self) -> float:
+        """Returns the min brightness of the pipeline's first demixing pass, where the uniform control starts; 0 when it is off."""
+        if self.spec.cls.demixing_configs is BasePipeline.demixing_configs:
+            return 0.0
+        pipeline = self.spec.cls(**{section.argument: self.values[section.argument] for section in self.spec.sections})
+        passes = pipeline.demixing_passes()
+        if len(passes) == 0 or passes[0].NMFConfig.min_brightness is None:
+            return 0.0
+        return float(passes[0].NMFConfig.min_brightness)
 
     def select_kind(self, section: scraper.Section, kind: str) -> None:
         """Give a section another config, at the pipeline's default when it is the default's kind."""
@@ -689,6 +699,9 @@ class Launcher:
         for section in self.spec.sections:
             self.reset_section(section=section)
         self.cell_radius_on = False
+        self.start_from = "movie"
+        self.uniform_min_brightness_on = False
+        self.uniform_min_brightness = self.min_brightness_first_pass()
 
     def select_nested(self, config: Any, name: str, kind: str, default: Any, path: str) -> None:
         """

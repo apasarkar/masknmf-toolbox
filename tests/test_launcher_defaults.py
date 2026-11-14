@@ -23,6 +23,7 @@ from imgui_bundle import imgui
 from masknmf import cli, launcher
 from masknmf.pipelines import scraper
 from masknmf.pipelines._base import BasePipeline
+from masknmf.pipelines.configs.demixing_configs import NMFConfig
 
 SLUGS = sorted(scraper.pipeline_registry())
 
@@ -388,3 +389,23 @@ def test_each_movie_of_a_two_movie_pipeline_has_its_own_mask_row():
     assert window.movie_for_mask(key="calcium_pixel_mask") == ""
     window.paths["calcium_channel"] = "ca.tif"
     assert window.movie_for_mask(key="calcium_pixel_mask") == "ca.tif"
+
+
+def test_the_uniform_min_brightness_control_starts_at_the_pipelines_own_and_defaults_unchecks_it():
+    spines = launcher.Launcher(slug_initial="glutamate-calcium-spine")
+    assert spines.uniform_min_brightness == 0.0
+    window = launcher.Launcher(slug_initial="two-photon-calcium")
+    assert window.uniform_min_brightness == 1.0
+    window.uniform_min_brightness_on = True
+    window.uniform_min_brightness = 3.0
+    window.start_from = "registration"
+    window.reset_all()
+    assert not window.uniform_min_brightness_on
+    assert window.uniform_min_brightness == 1.0
+    assert window.start_from == "movie"
+
+
+def test_the_nmf_signal_sign_is_a_choice():
+    params = scraper.scrape_dataclass(cls_config=NMFConfig, name_section="nmf")
+    sign = next(p for p in params if p.field == "sign")
+    assert tuple(sign.choices) == ("positive", "negative", "unconstrained")
