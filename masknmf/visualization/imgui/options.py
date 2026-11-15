@@ -76,7 +76,7 @@ def draw_size_options() -> None:
     picked = size_slider("Text size", "text_size", scale.SIZE.text_size, scale.RANGE_TEXT, "%.2fx")
     if picked is not None:
         scale.set_text_size(picked)
-    help_mark("Text only, on top of the UI scale.")
+    help_mark("Text, on top of the UI scale; the docked panels grow with it to hold it.")
     imgui.text_disabled(f"Saved in {scale.FILEPATH_SETTINGS}")
 
 
