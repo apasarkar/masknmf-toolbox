@@ -1,5 +1,6 @@
 """The raw traces the glutamate/calcium pipeline stores beside each demixing result."""
 
+import h5py
 import numpy as np
 import pytest
 
@@ -34,11 +35,25 @@ def test_every_demixing_result_stores_raw_traces_that_the_compressed_movie_turns
         glutamate if with_glutamate else None, calcium)
     for channel in ["glutamate", "calcium"] if with_glutamate else ["calcium"]:
         path = run / f"results.{channel}.hdf5"
-        compressed = np.asarray(masknmf.CompressionArray.from_hdf5(path)[:])
+        compressed = np.asarray(masknmf.CompressionArray.from_hdf5(path)[:])  # good frames only
+        with h5py.File(path, "r") as f:
+            retained = f["retained_frames"][()]
         for prefix in ["", "global"]:
-            results = masknmf.DemixingResults.from_hdf5(path, prefix=prefix)
+            results = masknmf.DemixingResults.from_hdf5(path, prefix=prefix)  # infilled to the raw frame count
             assert results.temporal_demixed_raw.shape == results.temporal_demixed.shape
             assert np.isfinite(results.temporal_demixed_raw.numpy()).all()
+            # put the compressed frames back at their raw frame indices so movie, background and traces line up
+            movie = np.zeros((results.temporal_demixed.shape[0],) + compressed.shape[1:], dtype=np.float32)
+            movie[retained] = compressed
+            untouched = movie.copy()
             # the raw movie differs from the compressed one only by the noise compression removed
-            from_compressed = masknmf.demixing.estimate_temporal_demixed_raw(results, compressed, device="cpu")
-            np.testing.assert_allclose(from_compressed.numpy(), results.temporal_demixed.numpy(), atol=1e-4)
+            from_compressed = masknmf.demixing.estimate_temporal_demixed_raw(results, movie, device="cpu").numpy()
+            np.testing.assert_array_equal(movie, untouched)  # the caller's movie is not modified
+            # raw traces carry each signal's share of the mean image: the least-squares projection of
+            # mean_image / noise_variance_image onto the footprints, one constant per signal
+            footprints = results.spatial_demixed.to_dense().numpy()
+            normalizer = results.noise_variance_image.numpy().ravel().copy()
+            normalizer[normalizer <= 0] = 1.0
+            baseline = np.linalg.lstsq(footprints, results.mean_image.numpy().ravel() / normalizer, rcond=None)[0]
+            np.testing.assert_allclose(from_compressed[retained] - baseline, results.temporal_demixed.numpy()[retained],
+                                       atol=1e-3)
