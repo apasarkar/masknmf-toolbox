@@ -248,7 +248,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                 The pipeline takes the compressed data and filters to suppress background and identify signal. After demixing
                 this filtered data, it returns to the unfiltered data to further demix.
                 Args:
-                    data (Union[np.ndarray, LazyFrameLoader, ArrayLike]): The raw (frames, height, width) data stack
+                    data (np.ndarray | LazyFrameLoader | ArrayLike): The raw (frames, height, width) data stack
                     frame_rate (float): The frame rate in Hz
                     active_frames (np.ndarray): Indicates frames where activity can occur (this is a hard constraint imposed for e.g.
                         if there is an optogenetic stimulus
@@ -259,10 +259,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                         results carry the pmd)
                     stop_after: the last stage to run: "registration" writes the shifts and template and ends,
                         "compression" ends once the compression is written, "demixing" runs everything
-                    resume: an earlier results file copied into the new run folder: its registration is applied to
-                        data instead of estimating one, and with compress_config "skip" its compression is reused too.
-                        The settings not given, all but stop_after, are that run's, from the config.json beside it.
-                        The earlier file is left as it is
+                    resume (str | Path | None): path to a previous results file or it's parent folder.
 
                 The raw-scale footprints and the denoised and raw-regressed traces over all frames are written to the
                 RawScaleEstimates group as a, c_denoised and c_raw.
@@ -310,7 +307,9 @@ class OnePhotonCulturePipeline(BasePipeline):
             data = self.read_into_ram(data)
         mov = self._construct_ophys_array(data,
                                           indicator_polarity=indicator_polarity,
-                                          good_frame_indicator=good_frame_indicator)
+                                          good_frame_indicator=good_frame_indicator,
+                                          results_path=results_path)
+        mov.export(results_path)
         if stored is not None:
             display(f"Replaying the stored {stored.__name__}")
             moco_array = stored.from_hdf5(results_path, input_movie=mov, device=device)
@@ -324,7 +323,6 @@ class OnePhotonCulturePipeline(BasePipeline):
                 moco_array = corrector.motion_correct(mov)
                 moco_array.output_device=torch.device('cpu')
                 moco_array.infill_bad_frames().export(results_path)
-        mov.export(results_path)
         if stop_after == "registration":
             return self.finish()
 
