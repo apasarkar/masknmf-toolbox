@@ -587,7 +587,7 @@ class SingleSessionDemixingVis:
             self._fluctuating_background_array = (
                 self.demixing_results.fluctuating_background_array
             )
-            self._residual_array = self.demixing_results.residual_array
+            self._residual_array = self.demixing_results.demixed_residual_array
             self._ac_array = self.demixing_results.signals_array
             # an all-zero background term means the demixer never fit one
             if self._is_masknmf_result:

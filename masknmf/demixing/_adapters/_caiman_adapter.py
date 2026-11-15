@@ -365,7 +365,7 @@ class CaimanResults(BaseResults):
                                                         self._temporal_demixed)
         self._ring_model = None
         self._background_array = None
-        self._residual_array = None
+        self._raw_residual_array = None
         if residual_components not in ("all", "accepted"):
             raise ValueError("residual_components must be 'all' or 'accepted'")
         self._A_f_accepted = A_f_accepted
@@ -379,7 +379,7 @@ class CaimanResults(BaseResults):
                 raise ValueError("a movie was given, but the file has no ring-model background ")
             self._ring_model = _CaimanRingModel(movie, W, b0, A_f_all, C_all, self._fov_shape)
             self._background_array = CaimanBackgroundArray(self._ring_model, self._background_mean_zero)
-            self._residual_array = CaimanResidualArray(self._ring_model, self._A_f_residual, self._C_residual)
+            self._raw_residual_array = CaimanResidualArray(self._ring_model, self._A_f_residual, self._C_residual)
 
         self._device = torch.device("cpu")
         self.to(device)
@@ -432,8 +432,16 @@ class CaimanResults(BaseResults):
         return self._background_array
 
     @property
-    def residual_array(self) -> CaimanResidualArray | None:
-        return self._residual_array
+    def raw_residual_array(self) -> CaimanResidualArray | None:
+        return self._raw_residual_array
+
+    @property
+    def demixed_residual_array(self) -> CaimanResidualArray | None:
+        """
+        For caiman, demixing occurs with respect to the raw (motion corrected) dataset, so this is just an alias for
+        raw residual array
+        """
+        return self._raw_residual_array
 
     def _compute_roi_averages(self) -> dict[str, np.ndarray]:
         """Each signal's footprint-weighted average (weights sum to one) of the movie, of the movie's background and

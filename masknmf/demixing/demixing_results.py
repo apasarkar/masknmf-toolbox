@@ -3,6 +3,8 @@ from typing import *
 import logging
 import h5py
 import numpy as np
+
+import masknmf
 from masknmf import display
 from masknmf.arrays.linear_combination_array import LinearCombinationArray
 from masknmf.compression import CompressionArray, TrendArray
@@ -93,6 +95,7 @@ class DemixingResults(Serializer, BaseResults):
             temporal_demixed_raw: torch.Tensor | None = None,
             temporal_demixed_trend: torch.Tensor | None = None,
             device: torch.device | str ="cpu",
+            motion_corrected_movie: ArrayLike | None = None,
             **kwargs
     ):
         """
@@ -132,8 +135,6 @@ class DemixingResults(Serializer, BaseResults):
                 re-estimated from the registered raw movie, with no compression or denoising
             temporal_demixed_trend (torch.Tensor | None): shape (number of frames, number of neural signals).
             device (str): 'cpu' or 'cuda'. used to manage where the tensors reside
-            good_frame_indicator (torch.Tensor | None): A 1D boolean indicator, describing which timepoints from the raw data
-                were processed (good frames) and which were ignored.
         """
         self._device = device
         self._shape = tuple(shape)
@@ -243,6 +244,8 @@ class DemixingResults(Serializer, BaseResults):
 
         # Move all tracked tensors to desired location so everything is on one device
         self.to(self._device)
+        self._raw_residual_array = None
+        self._motion_corrected_array = None
 
     def export(self, path: str | Path, prefix: str = "", overwrite: bool = False):
         """
@@ -404,7 +407,6 @@ class DemixingResults(Serializer, BaseResults):
             raise ValueError(
                 f"temporal_demixed_raw has shape {tuple(value.shape)}, temporal_demixed {tuple(self.temporal_demixed.shape)}")
         self.flyweight.temporal_demixed_trend = None if value is None else value.to(self._device).float()
-
 
     @property
     def shape(self):
@@ -694,7 +696,7 @@ class DemixingResults(Serializer, BaseResults):
         return self._static_background_array
 
     @property
-    def residual_array(self) -> LinearCombinationArray:
+    def demixed_residual_array(self) -> LinearCombinationArray:
         if self._residual_array is None:
             data_list = [self.compression_array,
                          self.fluctuating_background_array,
@@ -703,6 +705,39 @@ class DemixingResults(Serializer, BaseResults):
             self._residual_array = LinearCombinationArray(data_list,
                                                           alphas=[1, -1, -1, -1])
         return self._residual_array
+
+    @property
+    def motion_corrected_array(self):
+        """
+        This is the motion corrected array used in the data processing
+        """
+        return self._motion_corrected_array
+
+    @motion_corrected_array.setter
+    def motion_corrected_array(self, motion_array: ArrayLike):
+        if motion_array.shape != self.shape:
+            raise ValueError("Shapes of the demixing results and the motion array must agree")
+        self._motion_corrected_array = motion_array
+
+    @property
+    def raw_residual_array(self) -> ArrayLike | None:
+        """
+        The final decomposition here is:
+        motion corrected - raw data scale signal array - raw data scale fluctuating background
+        """
+        if self.motion_corrected_array is None:
+            return None
+        if self._raw_residual_array is None:
+            raw_scale_signals = masknmf.SignalsArray.from_tensors(self.shape[1:],
+                                                                  self.spatial_demixed_raw,
+                                                                  self.temporal_demixed_raw)
+            raw_scale_background = masknmf.FluctuatingBackgroundArray.from_tensors(self.shape[1:],
+                                                                                   self.spatial_compressed,
+                                                                                   self.factorized_background_term1,
+                                                                                   self.factorized_background_term2,
+                                                                                   normalizer=normalizer,
+                                                                                   rescale = True)
+            self._raw_residual_array = masknmf.LinearCombinationArray([self.motion_corrected_array, raw_scale_signals, raw_scale_background])
 
     @property
     def colorful_signals_array(self) -> ColorfulSignalsArray:

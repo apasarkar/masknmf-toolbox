@@ -174,7 +174,7 @@ def plot_ith_roi(
         results.fluctuating_background_array, p1, p2, normalize=False
     )
     signal_roi_avg = np.mean(a[a > 0]) * results.temporal_demixed[:, i].cpu().numpy()
-    residual_roi_avg = get_roi_avg(results.residual_array, p1, p2, normalize=False)
+    residual_roi_avg = get_roi_avg(results.demixed_residual_array, p1, p2, normalize=False)
 
     lb_dim1 = max(int(np.amin(p1)) - radius, 0)
     ub_dim1 = min(int(np.amax(p1)) + radius, d1)
@@ -182,7 +182,7 @@ def plot_ith_roi(
     ub_dim2 = min(int(np.amax(p2)) + radius, d2)
 
     # Spatial Footprint
-    residual_data = results.residual_array[:, lb_dim1:ub_dim1, lb_dim2:ub_dim2]
+    residual_data = results.demixed_residual_array[:, lb_dim1:ub_dim1, lb_dim2:ub_dim2]
     residual_img = to_numpy(residual_data.std(dim=0, correction=0))
 
     mean_pmd_img = to_numpy(results.compression_array[:, lb_dim1:ub_dim1, lb_dim2:ub_dim2].std(dim=0, correction=0))

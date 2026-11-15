@@ -17,7 +17,7 @@ class BaseResults:
     source = ""  # names what the adapter opens, in the CLI and launcher help
     raw_source = ""  # names what --raw must be, when the adapter cannot open without it
     patterns = ()  # file dialog patterns beyond *.h5 *.hdf5
-    _global_residual_correlation_image: torch.Tensor | None = None
+    _raw_residual_correlation_image: torch.Tensor | None = None
 
     def __init__(self):
         pass
@@ -56,16 +56,16 @@ class BaseResults:
         raise NotImplementedError
 
     @property
-    def global_residual_correlation_image(self) -> torch.Tensor | None:
+    def raw_residual_correlation_image(self) -> torch.Tensor | None:
         """
         Each pixel's mean correlation with its eight neighbours in the residual movie, after MAD thresholding;
         ``None`` without a residual movie. Computed from ``residual_array`` on first access, one pass in pixel tiles.
         """
-        if self.residual_array is None:
+        if self.raw_residual_array is None:
             return None
-        if self._global_residual_correlation_image is None:
-            self._global_residual_correlation_image = local_correlation_image(self.residual_array)
-        return self._global_residual_correlation_image
+        if self._raw_residual_correlation_image is None:
+            self._raw_residual_correlation_image = local_correlation_image(self.raw_residual_array)
+        return self._raw_residual_correlation_image
 
     @property
     def signals_array(self) -> SignalsArray | None:
@@ -98,7 +98,12 @@ class BaseResults:
         return None
 
     @property
-    def residual_array(self) -> ArrayLike | None:
+    def raw_residual_array(self) -> ArrayLike | None:
+        """
+        This is the residual with respect to the motion corrected (raw) movie:
+        Motion Correction - Signals - Background - Any other terms
+        By default this is not implemented
+        """
         raise NotImplementedError
 
     @property

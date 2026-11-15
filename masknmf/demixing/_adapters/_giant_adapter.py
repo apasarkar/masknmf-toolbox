@@ -342,9 +342,15 @@ class GiantResults(BaseResults):
         return None
 
     @property
-    def residual_array(self) -> None:
+    def raw_residual_array(self) -> None:
         """None: the residual needs B, which neither writer saves."""
         return None
+
+    @property
+    def demixed_residual_array(self) -> None:
+        """
+        None for now, needs to be populated
+        """
 
     @property
     def fluctuating_background_roi_averages(self) -> None:
