@@ -8,11 +8,9 @@ from typing import Sequence
 import h5py
 import numpy as np
 
-from masknmf.compression import CompressionArray
 from masknmf.demixing.demixing_results import DemixingResults
 from masknmf.utils import get_timestamp
 from masknmf.demixing.signal_demixer import SignalDemixer
-from masknmf.motion_correction import BaseRegistrationArray
 
 
 def update_signals(
@@ -94,8 +92,9 @@ def write_curated(
     """
     Write ``results`` to a new ``<stem>.<timestamp>.curated.hdf5`` beside ``path``, the stem being the results
     file it descends from (``results.hdf5 -> results.<timestamp>.curated.hdf5``); the file at ``path`` is never
-    changed. The registration in ``path``, its shifts and template, is copied into the new file, so it opens with
-    the same registered movie, and so is its compression, so a run can resume from the new file. The new file's
+    changed. Every group of ``path`` that ``results`` does not write itself is copied into the new file: the
+    registration and compression, so it opens with the same registered movie and a run can resume from it, the
+    good frames, and a pipeline's other results. The new file's
     ``description`` attribute says what was done, and which range filter removed which signals: each of ``filters``
     has a ``column``, a ``range`` (lo, hi), ``outside`` (which side of the range it took) and the ``signals`` it
     marked. ``nmf_config``, the NMFConfig (or its dict) the pass ran with, is kept in the new file's ``nmf_config``
@@ -114,12 +113,9 @@ def write_curated(
         if flt["signals"]
     )
     with h5py.File(path, "r") as source, h5py.File(out, "a") as f:
-        for cls in BaseRegistrationArray.__subclasses__():
-            for name in (cls.__name__, cls._strategy_cls.__name__):
-                if name in source:
-                    source.copy(source[name], f, name=name)
-        if CompressionArray.__name__ in source:
-            source.copy(source[CompressionArray.__name__], f, name=CompressionArray.__name__)
+        for name in source:
+            if name not in f:
+                source.copy(source[name], f, name=name)
         f.attrs["description"] = (
             f"Demixing results after curation: {len(drop)} signal(s) removed"
             + (f" ({by_filter})" if by_filter else "")

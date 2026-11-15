@@ -159,9 +159,9 @@ class StubResults:
             file.create_group(masknmf.DemixingResults.__name__)
 
 
-def test_a_curated_file_keeps_the_registration_and_compression_so_a_run_resumes_from_it(tmp_path):
+def test_a_curated_file_keeps_every_group_the_curated_results_do_not_write(tmp_path):
     names = {"RigidMotionCorrector", "RigidRegistrationArray", masknmf.CompressionArray.__name__,
-             masknmf.DemixingResults.__name__}
+             masknmf.DemixingResults.__name__, "OphysArray", "global", "cross_channel_mask"}
     with h5py.File(tmp_path / "results.hdf5", "w") as file:
         for name in names:
             file.create_group(name)

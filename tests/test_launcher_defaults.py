@@ -270,13 +270,37 @@ def test_start_from_a_loaded_runs_compression_resumes_it_and_back_to_the_movie_r
     window = launcher.Launcher()
     assert window.load_run(source=str(folder)) is None
     assert window.starts_available() == ["registration", "compression"]
+    window.texts["stop-after"] = "compression"
     window.select_start(start="compression")
+    assert window.texts["stop-after"] == "demixing"
     argv = window.argv_run()
     assert argv[argv.index("--resume") + 1] == str(folder / "results.hdf5") and "--config" in argv
     assert window.values["compress_config"] == "skip"
     window.select_start(start="movie")
     assert launcher.same(window.values["compress_config"], cls.default_configs()["compress_config"])
     assert "--resume" not in window.argv_run()
+
+
+def test_the_raw_movie_field_fills_with_the_movie_named_after_the_results_file(tmp_path):
+    for channel in ("glutamate", "calcium"):
+        (tmp_path / f"{channel}.tif").touch()
+    cls = scraper.pipeline_registry()["glutamate-calcium-spine"]
+    pipeline = cls(output_folder=str(tmp_path), device="cpu")
+    folder = pipeline.create_run_folder()
+    pipeline.inputs = {f"{channel}_channel": {"path": str(tmp_path / f"{channel}.tif")} for channel in ("glutamate", "calcium")}
+    pipeline.write_config()
+    logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
+    pipeline.log_handler.close()
+    for channel in ("glutamate", "calcium"):
+        (folder / f"results.{channel}.hdf5").touch()
+
+    for channel in ("glutamate", "calcium"):
+        window = launcher.Launcher()
+        window.fill_raw(source=str(folder / f"results.{channel}.hdf5"))
+        assert window.paths_open["raw"] == str(tmp_path / f"{channel}.tif")
+    window = launcher.Launcher()
+    window.fill_raw(source=str(folder))
+    assert window.paths_open["raw"] == ""
 
 
 def click_card(original, slug: str, label: str, *args, **kwargs) -> bool:
