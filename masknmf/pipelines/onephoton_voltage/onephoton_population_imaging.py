@@ -238,7 +238,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             frame_rate: float,
             active_frames: np.ndarray | None = None,
             indicator_polarity: Literal["positive", "negative"] = "negative",
-            good_frame_indicator: torch.Tensor | np.ndarray | list | None = None,
+            good_frames: torch.Tensor | np.ndarray | list | None = None,
             remove_intermediates: bool = False,
             stop_after: Literal["registration", "compression", "demixing"] = "demixing",
             resume: str | Path | None = None) -> Path:
@@ -253,7 +253,7 @@ class OnePhotonCulturePipeline(BasePipeline):
                     active_frames (np.ndarray): Indicates frames where activity can occur (this is a hard constraint imposed for e.g.
                         if there is an optogenetic stimulus
                     indicator_polarity (Literal["positive", "negative"]): Whether the indicator is positively or negatively tuned
-                    good_frame_indicator (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
+                    good_frames (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
 
                     remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
                         results carry the pmd)
@@ -283,10 +283,10 @@ class OnePhotonCulturePipeline(BasePipeline):
         if not active.size == int(data.shape[0]):
             raise ValueError("Active must be a 1D boolean vector whose length is equal to number of frames in the data")
 
-        if good_frame_indicator is not None:
-            good = torch.as_tensor(good_frame_indicator).cpu().numpy().astype(bool)
+        if good_frames is not None:
+            good = torch.as_tensor(good_frames).cpu().numpy().astype(bool)
             if good.size != int(data.shape[0]):
-                raise ValueError("good_frame_indicator must be a 1D boolean vector whose length is equal to number of frames in the data")
+                raise ValueError("good_frames must be a 1D boolean vector whose length is equal to number of frames in the data")
             active_in_good = active[good]  # use for `v = ...` and expand_traces_to_all_frames
             demixed_frames = active & good  # use for DemixingResults.infill_bad_frames
         else:
@@ -294,8 +294,8 @@ class OnePhotonCulturePipeline(BasePipeline):
 
         resume, base = self.resume_source(resume, reuse_compression)
         good_frames_resumed = masknmf.io.read_good_frames(resume)
-        if good_frame_indicator is None and good_frames_resumed is not None and not good_frames_resumed.all():
-            raise ValueError(f"{resume} left frames out; pass the same good_frame_indicator to resume it")
+        if good_frames is None and good_frames_resumed is not None and not good_frames_resumed.all():
+            raise ValueError(f"{resume} left frames out; pass the same good_frames to resume it")
         self.run_config = {"frame_rate": frame_rate, "indicator_polarity": indicator_polarity,
                            "remove_intermediates": remove_intermediates, "stop_after": stop_after,
                            "resume": None if resume is None else str(resume)}
@@ -307,7 +307,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             data = self.read_into_ram(data)
         mov = self._construct_ophys_array(data,
                                           indicator_polarity=indicator_polarity,
-                                          good_frame_indicator=good_frame_indicator,
+                                          good_frames=good_frames,
                                           results_path=results_path)
         mov.export(results_path)
         if stored is not None:
@@ -330,7 +330,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             ## Add the run-specific frame weighting to a copy of the config, so the pipeline's own is untouched
             if self.compress_config.frame_weighting is not None:
                 config_weighting = np.asarray(self.compress_config.frame_weighting)
-                if good_frame_indicator is not None:
+                if good_frames is not None:
                     config_weighting = config_weighting[good]
                 frame_weighting = config_weighting * active_in_good.astype(config_weighting.dtype)
             else:
@@ -424,11 +424,11 @@ class OnePhotonCulturePipeline(BasePipeline):
                 curr_demix_results, moco_array, device=self.torch_device, nonneg=False,
                 frame_batch_size=self.frame_batch_size)
 
-        if good_frame_indicator is not None:
+        if good_frames is not None:
 
             #This expands from good frames to all frames
             curr_demix_results = masknmf.DemixingResults.infill_bad_frames(curr_demix_results,
-                                                                           good_frame_indicator=demixed_frames)
+                                                                           good_frames=demixed_frames)
 
 
         curr_demix_results.export(results_path)

@@ -10,6 +10,7 @@ import logging
 import os
 import threading
 import time
+import warnings
 import h5py
 import numpy as np
 import torch
@@ -64,6 +65,11 @@ class RecordsFailure:
         return self if pipeline is None else functools.partial(self, pipeline)
 
     def __call__(self, pipeline, *args, **kwargs):
+        if "good_frame_indicator" in kwargs:
+            if "good_frames" in kwargs:
+                raise TypeError("pass good_frames only; good_frame_indicator is its deprecated name")
+            warnings.warn("good_frame_indicator is deprecated; use good_frames", DeprecationWarning, stacklevel=2)
+            kwargs["good_frames"] = kwargs.pop("good_frame_indicator")
         # a folder left from an earlier run of the same pipeline is not this run's
         pipeline.run_folder = None
         try:
@@ -582,28 +588,28 @@ class BasePipeline(ABC):
     def _construct_ophys_array(self,
                                data: ArrayLike,
                                indicator_polarity: Literal["positive", "negative"],
-                               good_frame_indicator: torch.Tensor | np.ndarray | list | None,
+                               good_frames: torch.Tensor | np.ndarray | list | None,
                                results_path: str | None = None):
         """
         Wrap data in the OphysArray the run works on: the positively tuned view of its good frames.
 
-        If good_frame_indicator is None, the good frames stored in results_path are used; resume copies them there
-        from the earlier run. A good_frame_indicator that differs from the stored good frames raises, because the
+        If good_frames is None, the good frames stored in results_path are used; resume copies them there
+        from the earlier run. A good_frames that differs from the stored good frames raises, because the
         stored registration fits the stored ones.
         """
         if indicator_polarity.lower() not in {"positive", "negative"}:
             raise ValueError("indicator polarity can only be positive or negative")
         good_frames_stored = read_good_frames(results_path)
-        if good_frame_indicator is None:
-            good_frame_indicator = good_frames_stored
+        if good_frames is None:
+            good_frames = good_frames_stored
         elif good_frames_stored is not None and not np.array_equal(
-                torch.as_tensor(good_frame_indicator).cpu().numpy().astype(bool), good_frames_stored):
-            raise ValueError(f"good_frame_indicator differs from the good frames the resumed run stored in {results_path}")
+                torch.as_tensor(good_frames).cpu().numpy().astype(bool), good_frames_stored):
+            raise ValueError(f"good_frames differs from the good frames the resumed run stored in {results_path}")
         ophys_output = OphysArray(data,
                                   negative_indicator = True if indicator_polarity.lower() == "negative" else False,
                                   include_mean = True,
                                   device=self.torch_device,
-                                  good_frames = good_frame_indicator)
+                                  good_frames = good_frames)
         return ophys_output
 
     @property

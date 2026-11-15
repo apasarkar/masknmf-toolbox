@@ -371,7 +371,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
         """
         Args:
             input_movie (OphysArray): Shape (num_frames, fov_height, fov_width). num_frames is the number of frames that are
-                actually analyzed (specified by good_frame_indicator in the OPhysArray constructor).
+                actually analyzed (specified by good_frames in the OPhysArray constructor).
             gradient_steps (torch.Tensor): Shape (num_frames, 2). The per-frame gradient steps required to motion correct
                 the input movie.
             gradient (torch.Tensor): Shape (num_pixels, 2) or (height, width, 2). The gradients in both spatial dimensions. If flattened, the gradient

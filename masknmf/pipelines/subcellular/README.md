@@ -48,7 +48,7 @@ pipe.run(glutamate_channel=glu, calcium_channel=calcium, resume=compressed / "re
 
 - A resumed run writes a new run folder and leaves the earlier one as it is.
 - Settings not given are the earlier run's, from its `config.json`.
-- `exclude_initial_frames` and `good_frame_indicator` are not used by a resumed run: the frames are the earlier run's `good_frames`.
+- `exclude_initial_frames` and `good_frames` are not used by a resumed run: the frames are the earlier run's `good_frames`.
 - `cross_channel_mask` in each results file is the dendrite mask compression and the whole-dendrite component used.
 
 `masknmf.utils.results_files(run)` maps channel to file: `{"calcium": run / "results.calcium.hdf5", ...}`.
