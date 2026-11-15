@@ -101,7 +101,8 @@ def estimate_temporal_demixed_raw(results: DemixingResults,
         # as_tensor shares memory with a cpu numpy movie, so the first step must not be in place
         data  = data / noise_variance_image[None, :, :]
         data -= fluctuating_background[slice(start_pt, end_pt)]
-        data -= baseline_image[None, :, :] #Here you want to incorporate the baseline, no need to subtract it anymore
+
+        #Here you want to incorporate the static baseline into the temporal traces, no need to subtract it anymore
 
         data = data.reshape(-1, fov_height*fov_width) # (num_frames, num_pixels)
 
