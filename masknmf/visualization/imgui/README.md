@@ -5,7 +5,7 @@ Reusable GUI-layer building blocks shared by the interactive viewers
 
 ## Modules
 
-- `widgets.py` — imgui `EdgeWindow` panels. `CheckboxWindow` (was `ROIManager` in `interactive_guis.py`); `draw_switch` / `switch_width`: a two-way labelled toggle on `imgui_toggle`, the side in use lit while live, a click on either word picks it; behind the filter's and the region's inside / outside and the masks' weighting.
+- `widgets.py` — imgui `EdgeWindow` panels. `CheckboxWindow` (was `ROIManager` in `interactive_guis.py`); `draw_switch` / `switch_width`: a two-way labelled toggle on `imgui_toggle`, the side in use lit while live, a click on either word picks it; behind the filter's and the region's in / out and the masks' weighting.
 - `picking.py` — data-space picking. `component_at_pixel` (was duplicated as `CurationVis._neuron_at` and `MultiSessionDemixingVis.neuron_selection`), `contours_to_bbox` / `zoom_to_bbox` (from `multisession_vis.py`).
 - `layout.py` — figure-level helpers. `resolve_time_reference` (frame_timings/ref_range block that was triplicated across curation/demixing/motion), `is_notebook_canvas` (canvas-class check in `show()` dispatch) and `draw_edge_handle` (resize/collapse handle for top/left edge windows, which fastplotlib only has for bottom/right).
 - `table.py` — `RoiOrder` (filter / sort / cursor over per-item columns) and `draw_roi_table` (clipped sortable table with ctrl / shift multi-select callbacks), `draw_range_slider` (two grabs on one frame) and `draw_range_filter` (it over `RoiOrder.range_column`).
@@ -13,7 +13,7 @@ Reusable GUI-layer building blocks shared by the interactive viewers
 - `keybinds.py` — every viewer's keys in one place: `Bind` rows (key, modifiers, label, action) in the `DEMIXING` and `CLASSIFICATION` tables, `pressed` for the handlers, `LABEL_KEYS`; the popup and the help pages list the same rows, so a custom mapping goes here.
 - `curation_help.py`, `classification_help.py` — the viewers' help pages: diagrams, tables and the keybinds button; each runs standalone with `python -m`.
 - `guide.py` — the palette and draw-list primitives the guide pages and the launcher's Overview share: `box`, `arrow`, `arrow_down`, `heading`, `card_button`, `u32`.
-- `files.py` — `PathPrompt` / `draw_path_prompt`: every path a viewer asks for (load results, cell stats, export, classifier) goes through this typed-path window with the native dialog as a browse shortcut, so it works from a notebook on another machine; `mbo_utilities.gui._files` mirrors it.
+- `files.py` — `PathPrompt` / `draw_path_prompt`: every path a viewer asks for (load results, cell stats, export, classifier) goes through this typed-path window with the native dialog as a browse shortcut, so it works from a notebook on another machine; `mbo_utilities.gui._files` mirrors it. `Picker` draws the dialog: portable-file-dialogs on windows and macos, zenity or kdialog on linux, and `portal_dialog.py` (xdg-desktop-portal through libgio, no D-Bus package) where neither is installed, as on Omarchy.
 - `options.py` — File > Options: `OPTIONS`, the settings the viewers share for the session (the Static images / Full FOV viewer as a separate OS window), `draw_options_popup` and `draw_options_menu` (a menu bar holding only File > options, for a panel with no File menu of its own).
 - `trace_plot.py` — `TracePlot`: stacked implot panels docked on top of a figure, playhead linked to the NDWidget time index, stimulus marks/spans, double-click pick.
 - `movie_player.py` — `MoviePlayer`: imgui transport bar over a lazy (T, H, W) array.
