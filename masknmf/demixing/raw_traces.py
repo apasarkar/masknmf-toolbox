@@ -78,20 +78,30 @@ def estimate_temporal_demixed_raw(results: DemixingResults,
     num_frames, fov_height, fov_width = movie.shape
     fluctuating_background = results.fluctuating_background_array
     baseline_image = results.baseline_image #(fov_height, fov_width)
-    mean_image = results.mean_image
     noise_variance_image = results.noise_variance_image.clone()
     noise_variance_image[noise_variance_image <= 0] = 1.0
     c_new = results.temporal_demixed.clone()
+
+    """
+    Demixing runs in a compressed + denoised subspace: 
+    
+    (1 / Noise Std) * (Movie - Mean), a pixelwise noise whitened motion corrected movie
+    The following routine incorporates all the photon information into each time series, yielding a time series for each
+    
+    Step 1: Compute Movie / Noise_Std
+    Step 2: Subtract fluctuating background
+    Step 3: Regress what remains onto "a" (spatial footprints) to get the temporal footprints. Use alteranting least squares,
+        starting with "c" (temporal_demixed) obtained from demixing
+    """
     for k in range(num_iters):
         start_pt = frame_batch_size * k
         end_pt = min(start_pt + frame_batch_size, movie.shape[0])
         data = torch.as_tensor(movie[start_pt:end_pt, :, :], device=device,
                                dtype=torch.float32)
         # as_tensor shares memory with a cpu numpy movie, so the first step must not be in place
-        data = data - mean_image[None, :, :]
         data /= noise_variance_image[None, :, :]
         data -= fluctuating_background[slice(start_pt, end_pt)]
-        data -= baseline_image[None, :, :]
+        data -= baseline_image[None, :, :] #Here you want to incorporate the baseline, no need to subtract it anymore
 
         data = data.reshape(-1, fov_height*fov_width) # (num_frames, num_pixels)
 
