@@ -385,12 +385,6 @@ class DemixingResults(Serializer, BaseResults):
         return self.flyweight.multiunit_basis_term2
 
     @property
-    def spatial_demixed_raw(self) -> torch.Tensor:
-        if not hasattr(self.flyweight, "spatial_demixed_raw", None):
-            self.flyweight.spatial_demixed_raw = self._compute_spatial_demixed_raw().to(self._device)
-        return self.flyweight.spatial_demixed_raw
-
-    @property
     def temporal_demixed_raw(self) -> None | torch.Tensor:
         return self.flyweight.temporal_demixed_raw
 
@@ -465,14 +459,19 @@ class DemixingResults(Serializer, BaseResults):
     def spatial_demixed(self) -> torch.Tensor:
         return self.flyweight.spatial_demixed
 
-    def _compute_spatial_demixed_raw(self):
-        row, col = self.spatial_demixed.indices()
-        vals = self.spatial_indices.values()
-        flattened_noise_image = self.noise_variance_image.flatten().to(self.spatial_demixed.device).float()
-        new_vals = vals * flattened_noise_image[row]
-        return torch.sparse_coo_tensor(torch.stack([row, col]),
-                                                  new_vals,
-                                                  size=self.spatial_indices.shape).coalesce()
+    def _compute_spatial_demixed_raw(self) -> torch.Tensor:
+        a = self.spatial_demixed.coalesce()
+        row, col = a.indices()
+        noise = self.noise_variance_image.flatten().to(a.device).float().clone()
+        noise[noise <= 0] = 1.0  # same guard as estimate_temporal_demixed_raw
+        return torch.sparse_coo_tensor(torch.stack([row, col]), a.values() * noise[row],
+                                       size=a.shape, device=a.device).coalesce()
+
+    @property
+    def spatial_demixed_raw(self) -> torch.Tensor:
+        if getattr(self.flyweight, "spatial_demixed_raw", None) is None:
+            self.flyweight.spatial_demixed_raw = self._compute_spatial_demixed_raw()
+        return self.flyweight.spatial_demixed_raw
 
     @property
     def temporal_demixed(self) -> torch.Tensor:
