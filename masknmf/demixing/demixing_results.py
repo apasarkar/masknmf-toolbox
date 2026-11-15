@@ -60,7 +60,7 @@ class DemixingResults(Serializer, BaseResults):
                        "standard_correlation_images",
                        "residual_correlation_images",
                        "multiunit_background_array",
-                       "trend_array"
+                       "trend_array",
                        ]
     def __init__(
             self,
@@ -385,6 +385,12 @@ class DemixingResults(Serializer, BaseResults):
         return self.flyweight.multiunit_basis_term2
 
     @property
+    def spatial_demixed_raw(self) -> torch.Tensor:
+        if not hasattr(self.flyweight, "spatial_demixed_raw", None):
+            self.flyweight.spatial_demixed_raw = self._compute_spatial_demixed_raw().to(self._device)
+        return self.flyweight.spatial_demixed_raw
+
+    @property
     def temporal_demixed_raw(self) -> None | torch.Tensor:
         return self.flyweight.temporal_demixed_raw
 
@@ -458,6 +464,15 @@ class DemixingResults(Serializer, BaseResults):
     @property
     def spatial_demixed(self) -> torch.Tensor:
         return self.flyweight.spatial_demixed
+
+    def _compute_spatial_demixed_raw(self):
+        row, col = self.spatial_demixed.indices()
+        vals = self.spatial_indices.values()
+        flattened_noise_image = self.noise_variance_image.flatten().to(self.spatial_demixed.device).float()
+        new_vals = vals * flattened_noise_image[row]
+        return torch.sparse_coo_tensor(torch.stack([row, col]),
+                                                  new_vals,
+                                                  size=self.spatial_indices.shape).coalesce()
 
     @property
     def temporal_demixed(self) -> torch.Tensor:
