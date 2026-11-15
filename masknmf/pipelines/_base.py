@@ -422,6 +422,8 @@ class BasePipeline(ABC):
         results_path, that registration is applied to data instead. Also returns a pixel weighting that is 0 where
         the shifts moved pixels in from outside the fov and on the outer exclude_border_radius pixels.
         """
+        # written before the registration: its shifts cover every raw frame and are only readable with the mask
+        data.export(results_path)
         if stored is not None:
             logger.info(f"applying the stored {stored.__name__}")
             moco_data = stored.from_hdf5(results_path, input_movie=data, device=self.device)
@@ -462,7 +464,6 @@ class BasePipeline(ABC):
             shift_mask[:, :exclude_border_radius] = 0
             shift_mask[-1 * exclude_border_radius:, :] = 0
             shift_mask[:, -1 * exclude_border_radius:] = 0
-        data.export(results_path)
         return moco_data, shift_mask
 
     def _filtered_reference(self, data: ArrayLike, config: MotionCorrectionFilterConfig) -> FilteredArray:
@@ -587,12 +588,17 @@ class BasePipeline(ABC):
         Wrap data in the OphysArray the run works on: the positively tuned view of its good frames.
 
         If good_frame_indicator is None, the good frames stored in results_path are used; resume copies them there
-        from the earlier run.
+        from the earlier run. A good_frame_indicator that differs from the stored good frames raises, because the
+        stored registration fits the stored ones.
         """
         if indicator_polarity.lower() not in {"positive", "negative"}:
             raise ValueError("indicator polarity can only be positive or negative")
+        good_frames_stored = read_good_frames(results_path)
         if good_frame_indicator is None:
-            good_frame_indicator = read_good_frames(results_path)
+            good_frame_indicator = good_frames_stored
+        elif good_frames_stored is not None and not np.array_equal(
+                torch.as_tensor(good_frame_indicator).cpu().numpy().astype(bool), good_frames_stored):
+            raise ValueError(f"good_frame_indicator differs from the good frames the resumed run stored in {results_path}")
         ophys_output = OphysArray(data,
                                   negative_indicator = True if indicator_polarity.lower() == "negative" else False,
                                   include_mean = True,
