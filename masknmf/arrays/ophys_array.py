@@ -42,7 +42,8 @@ class OphysArray(ArrayLike):
                  include_mean: bool = True,
                  device='cpu',
                  batch_size: int = 200,
-                 good_frames: np.ndarray | torch.Tensor | list | None = None):
+                 good_frames: np.ndarray | torch.Tensor | list | None = None,
+                 mean_image: np.ndarray | torch.Tensor | None = None):
         """
         Args:
             dataset (masknmf.ArrayLike): Shape (num_frames, height, width)
@@ -55,6 +56,8 @@ class OphysArray(ArrayLike):
             good_frames (np.ndarray | torch.Tensor | list | None): Optional 1D binary vector of length dataset.shape[0].
                 Only frames labeled 1 are exposed: shape[0] becomes good_frames.sum(), and all temporal indexing
                 and the mean image refer to this temporally cropped movie. None keeps every frame.
+            mean_image (np.ndarray | torch.Tensor | None): Mean over the good frames, shape (height, width), from an
+                earlier pass over this dataset with these good_frames. None computes it when it is first needed.
         """
         self._dataset = dataset
         self._device = device
@@ -63,7 +66,7 @@ class OphysArray(ArrayLike):
         self._include_mean = include_mean
         self._infill = False
         self._set_good_frames(good_frames)
-        self._mean_image = None
+        self._mean_image = None if mean_image is None else torch.as_tensor(mean_image, dtype=self.dtype, device=device)
         self._mean_lock = threading.Lock()
         if negative_indicator or not include_mean:
             self._get_mean()  # every frame read will need it, so pay for it now rather than on the first frame
@@ -145,13 +148,16 @@ class OphysArray(ArrayLike):
 
     def export(self, path: str | Path) -> None:
         """
-        Write good_frames and the indicator polarity to the OphysArray group of the hdf5 file at path.
+        Write good_frames, the indicator polarity and the mean image to the OphysArray group of the hdf5 file at path.
 
-        An existing group is replaced. masknmf.io.read_good_frames and the registration arrays' from_hdf5 read it.
+        The mean image is written only if it has been computed, which a negative indicator always has. An existing
+        group is replaced. masknmf.io.read_good_frames and the registration arrays' from_hdf5 read it.
         """
         good_frames = np.ones(self._dataset.shape[0], dtype=bool) if self._good_frames is None else self._good_frames
-        save_dict({"good_frames": good_frames, "negative_indicator": int(self._negative_indicator)},
-                  filename=path, group=type(self).__name__, exists_ok=True)
+        group = {"good_frames": good_frames, "negative_indicator": int(self._negative_indicator)}
+        if self._mean_image is not None:
+            group["mean_image"] = self._mean_image.cpu().numpy()
+        save_dict(group, filename=path, group=type(self).__name__, exists_ok=True)
 
     @property
     def batch_size(self) -> int:

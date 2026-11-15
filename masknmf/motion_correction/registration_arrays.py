@@ -135,10 +135,7 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
             )
         with h5py.File(path, "r") as f:
             has_strategy = cls._strategy_cls.__name__ in f
-            good_frames = negative_indicator = None
-            if OphysArray.__name__ in f:
-                good_frames = f[OphysArray.__name__]["good_frames"][()].astype(bool)
-                negative_indicator = bool(f[OphysArray.__name__]["negative_indicator"][()])
+            has_ophys = OphysArray.__name__ in f
         if has_strategy:
             kwargs_strategy = load_dict(path, cls._strategy_cls.__name__)
             if device is not None:
@@ -150,10 +147,15 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
             if device is not None:
                 kwargs.setdefault("compute_device", device) ##Tricky: above, strategy has a settable device property, for registration array it is compute_device
         reg_arr_dict = load_dict(path, cls.__name__)
-        if good_frames is not None:
+        if has_ophys:
             # the stored shifts cover every raw frame
+            ophys_dict = load_dict(path, OphysArray.__name__)
+            good_frames = ophys_dict["good_frames"].astype(bool)
             if not isinstance(input_movie, OphysArray) and input_movie.shape[0] == good_frames.shape[0]:
-                input_movie = OphysArray(input_movie, negative_indicator=negative_indicator, good_frames=good_frames).infilled()
+                input_movie = OphysArray(input_movie,
+                                         negative_indicator=bool(ophys_dict["negative_indicator"]),
+                                         good_frames=good_frames,
+                                         mean_image=ophys_dict.get("mean_image")).infilled()
             elif input_movie.shape[0] == int(good_frames.sum()):
                 for name in cls._per_frame:
                     if name in reg_arr_dict:

@@ -18,6 +18,7 @@ from masknmf.demixing._base_results import BaseResults
 from masknmf.motion_correction import BaseRegistrationArray, GradientRegistrationArray, PiecewiseRigidRegistrationArray, RigidRegistrationArray
 from masknmf._version import __version__
 from masknmf.utils import get_timestamp, TIMESTAMP_FORMAT
+from masknmf.utils._serialization import load_dict
 
 __all__ = [
     "SUFFIXES_HDF5",
@@ -203,6 +204,29 @@ def find_raw_movie(path: str | Path) -> tuple[ArrayLike | None, Path] | None:
     return None if beside is None else (TiffArray(str(beside)), beside)
 
 
+def read_ophys_group(path: str | Path | None) -> dict:
+    """
+    Return the ``OphysArray`` group a run stored in its results file.
+
+    Parameters
+    ----------
+    path : str | Path | None
+        A results file.
+
+    Returns
+    -------
+    dict
+        ``good_frames`` (boolean, shape (raw frames,)), ``negative_indicator`` (bool) and, if the run computed it,
+        ``mean_image`` (height, width). Empty when path is None or the file has no ``OphysArray`` group.
+    """
+    if path is None or not has_group(path, OphysArray.__name__):
+        return {}
+    group = load_dict(path, OphysArray.__name__)
+    group["good_frames"] = np.asarray(group["good_frames"]).astype(bool)
+    group["negative_indicator"] = bool(group["negative_indicator"])
+    return group
+
+
 def read_good_frames(path: str | Path | None) -> np.ndarray | None:
     """
     Return the boolean mask of the raw frames a run kept.
@@ -217,10 +241,7 @@ def read_good_frames(path: str | Path | None) -> np.ndarray | None:
     np.ndarray | None
         Boolean, shape (raw frames,). None when the file has no ``OphysArray`` group.
     """
-    if path is None or not has_group(path, OphysArray.__name__):
-        return None
-    with h5py.File(path, "r") as f:
-        return f[OphysArray.__name__]["good_frames"][()].astype(bool)
+    return read_ophys_group(path).get("good_frames")
 
 
 def crop_to_good_frames(movie: ArrayLike | np.ndarray | None, good_frames: np.ndarray | None, num_frames_results: int):

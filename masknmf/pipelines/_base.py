@@ -29,7 +29,7 @@ from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorre
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig, SinglepassDemixingConfig, SuperpixelInitConfig
 from masknmf.utils import display, get_timestamp, TIMESTAMP_FORMAT, torch_select_device
-from masknmf.io import REGISTRATION_ARRAYS, has_group, drop_group, create_run_folder, log_to, read_good_frames, write_run_config
+from masknmf.io import REGISTRATION_ARRAYS, has_group, drop_group, create_run_folder, log_to, read_ophys_group, write_run_config
 from masknmf.motion_correction.registration_arrays import FilteredArray
 from masknmf.motion_correction.spatial_filters import compute_highpass_filter_kernel, image_filter
 
@@ -595,21 +595,22 @@ class BasePipeline(ABC):
 
         If good_frames is None, the good frames stored in results_path are used; resume copies them there
         from the earlier run. A good_frames that differs from the stored good frames raises, because the
-        stored registration fits the stored ones.
+        stored registration fits the stored ones. A stored mean image is reused instead of read from data again.
         """
         if indicator_polarity.lower() not in {"positive", "negative"}:
             raise ValueError("indicator polarity can only be positive or negative")
-        good_frames_stored = read_good_frames(results_path)
+        stored = read_ophys_group(results_path)
         if good_frames is None:
-            good_frames = good_frames_stored
-        elif good_frames_stored is not None and not np.array_equal(
-                torch.as_tensor(good_frames).cpu().numpy().astype(bool), good_frames_stored):
+            good_frames = stored.get("good_frames")
+        elif "good_frames" in stored and not np.array_equal(
+                torch.as_tensor(good_frames).cpu().numpy().astype(bool), stored["good_frames"]):
             raise ValueError(f"good_frames differs from the good frames the resumed run stored in {results_path}")
         ophys_output = OphysArray(data,
                                   negative_indicator = True if indicator_polarity.lower() == "negative" else False,
                                   include_mean = True,
                                   device=self.torch_device,
-                                  good_frames = good_frames)
+                                  good_frames = good_frames,
+                                  mean_image = stored.get("mean_image"))
         return ophys_output
 
     @property
