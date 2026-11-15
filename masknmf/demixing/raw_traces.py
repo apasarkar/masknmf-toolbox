@@ -99,7 +99,7 @@ def estimate_temporal_demixed_raw(results: DemixingResults,
         data = torch.as_tensor(movie[start_pt:end_pt, :, :], device=device,
                                dtype=torch.float32)
         # as_tensor shares memory with a cpu numpy movie, so the first step must not be in place
-        data /= noise_variance_image[None, :, :]
+        data  = data / noise_variance_image[None, :, :]
         data -= fluctuating_background[slice(start_pt, end_pt)]
         data -= baseline_image[None, :, :] #Here you want to incorporate the baseline, no need to subtract it anymore
 
