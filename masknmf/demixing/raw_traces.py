@@ -63,8 +63,8 @@ def estimate_temporal_demixed_raw(results: DemixingResults,
                                   frame_batch_size: int = 300) -> torch.Tensor | None:
     """
     temporal_demixed re-estimated from the registered raw movie with the spatial footprints, background and baseline
-    of results held fixed, so it carries no compression or denoising. Shape (number of frames, number of signals),
-    in temporal_demixed units. None when there is no movie to go back to.
+    of results held fixed, so it carries no compression or denoising. Shape (number of frames, number of signals)
+    at the data scale of the noise whitened motion corrected movie
     """
     results.to(device)
     if movie is None:
