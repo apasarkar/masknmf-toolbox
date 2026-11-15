@@ -113,7 +113,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             glutamate_channel: np.ndarray | ArrayLike | None,
             calcium_channel: np.ndarray | ArrayLike | None,
             exclude_initial_frames: int = 200,
-            good_frame_indicator: torch.Tensor | np.ndarray | None = None,
+            good_frames: torch.Tensor | np.ndarray | None = None,
             glutamate_pixel_mask: np.ndarray | None = None,
             calcium_pixel_mask: np.ndarray | None = None,
             stop_after: Literal["registration", "compression", "demixing"] = "demixing",
@@ -128,10 +128,10 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         Args:
             glutamate_channel (np.ndarray | ArrayLike | None):
             calcium_channel (np.ndarray | ArrayLike | None):
-            exclude_initial_frames (int): the first frames, marked bad on top of good_frame_indicator
-            good_frame_indicator (torch.Tensor | np.ndarray | None): 1D bool over the raw frames, shared by both
+            exclude_initial_frames (int): the first frames, marked bad on top of good_frames
+            good_frames (torch.Tensor | np.ndarray | None): 1D bool over the raw frames, shared by both
                 channels. Only good frames are registered, compressed and demixed; the demixing results are infilled
-                with zeros at the bad frames so they keep the raw frame count. retained_frames holds the good ones
+                with zeros at the bad frames so they keep the raw frame count. The results file's OphysArray group holds this indicator
             glutamate_pixel_mask (np.ndarray | None): Boolean (height, width), True on the pixels to use. The rest
                 of the glutamate channel are zeroed before compression, on top of the automatic SD mask; masknmf mask
                 draws one
@@ -140,8 +140,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 "compression" once their compressions are, "demixing" runs everything. A demixing_config "skip" ends
                 the run after compression too; a motion_correct_config "skip" compresses the channels as recorded
             resume: either channel's results file of an earlier run; the other channel's file is read from the same
-                folder. Its registration and retained_frames are copied into the new run folder and applied to the
-                channels given, so exclude_initial_frames and good_frame_indicator are not used, and the run goes
+                folder. Its registration and good frames are copied into the new run folder and applied to the
+                channels given, so exclude_initial_frames and good_frames are not used, and the run goes
                 on from compression. With compress_config "skip" its compression and mask are copied too and the run
                 goes on from demixing, on the channels the earlier run holds; a channel given is then only used for
                 the raw traces, which a channel left None goes without. The settings not given, all but stop_after,
@@ -187,28 +187,25 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         movie_given = glutamate_channel if calcium_channel is None else calcium_channel
         if resume is not None:
             # the stored shifts fit the frames the earlier run kept
-            with h5py.File(next(iter(paths_resumed.values())), "r") as f:
-                retained_frames = f["retained_frames"][()]
-                num_raw_frames = f["retained_frames"].attrs.get("num_raw_frames")
-            if num_raw_frames is None and movie_given is None:
-                raise ValueError(f"{resume} does not record its raw frame count; give a channel's movie")
-            good_frames = np.zeros(movie_given.shape[0] if num_raw_frames is None else int(num_raw_frames), dtype=bool)
-            good_frames[retained_frames] = True
+            path_resumed = next(iter(paths_resumed.values()))
+            good_frames = masknmf.io.read_good_frames(path_resumed)
+            if good_frames is None:
+                raise ValueError(f"{path_resumed} stores no good frames; it predates the OphysArray group and needs migrating")
         else:
-            if good_frame_indicator is None:
+            if good_frames is None:
                 good_frames = np.ones(movie_given.shape[0], dtype=bool)
             else:
-                good_frames = torch.as_tensor(good_frame_indicator).cpu().numpy().astype(bool)
+                good_frames = torch.as_tensor(good_frames).cpu().numpy().astype(bool)
             good_frames[:exclude_initial_frames] = False
 
         if glutamate_channel is not None:
             glu = self._construct_ophys_array(self.read_into_ram(glutamate_channel), indicator_polarity="positive",
-                                              good_frame_indicator=good_frames)
+                                              good_frames=good_frames)
         else:
             glu = None
         if calcium_channel is not None:
             calcium = self._construct_ophys_array(self.read_into_ram(calcium_channel), indicator_polarity="positive",
-                                                  good_frame_indicator=good_frames)
+                                                  good_frames=good_frames)
         else:
             calcium = None
 
@@ -216,13 +213,12 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             reference_input = calcium
         else:
             reference_input = glu
-        retained_frames = np.flatnonzero(good_frames)
         results_paths = {"glutamate": glu_path, "calcium": ca_path}
-        for name, channel in (("glutamate", glu), ("calcium", calcium)):
-            if channel is not None or name in paths_resumed:
-                with h5py.File(results_paths[name], "w") as f:
-                    f["retained_frames"] = retained_frames
-                    f["retained_frames"].attrs["num_raw_frames"] = good_frames.shape[0]
+        if resume is None:
+            # BasePipeline.resume copies the earlier run's OphysArray group
+            for name, channel in (("glutamate", glu), ("calcium", calcium)):
+                if channel is not None:
+                    channel.export(results_paths[name])
 
         registers = resume is None and not isinstance(self.motion_correct_config, str)
         if resume is not None:
@@ -266,7 +262,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             with self.step("glutamate motion correction"):
                 glu_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
                                                           target_movie=glu)
-                glu_moco_array.export(glu_path)
+                glu_moco_array.infill_bad_frames().export(glu_path)
                 glu_moco_array_dense = glu_moco_array[:].cpu().numpy() #Loads it all into RAM
         else:
             glu_moco_array = None
@@ -278,7 +274,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             with self.step("calcium motion correction"):
                 calcium_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
                                                               target_movie=calcium)
-                calcium_moco_array.export(ca_path)
+                calcium_moco_array.infill_bad_frames().export(ca_path)
                 calcium_moco_array_dense = calcium_moco_array[:].cpu().numpy() #Loads it all into RAM
         else:
             calcium_moco_array = None
@@ -349,7 +345,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
             glu_pmd_demixer_results = self.run_multipass(glu_pmd_demixer, self.demixing_config, "glutamate spine demixing")
             # saved now so a failure in the steps after it still leaves the spines; written again with raw traces
-            masknmf.DemixingResults.infill_bad_frames(glu_pmd_demixer_results, good_frame_indicator=good_frames).export(glu_path)
+            masknmf.DemixingResults.infill_bad_frames(glu_pmd_demixer_results, good_frames=good_frames).export(glu_path)
 
             ## Now pull out "whole dendrite" events. Can refactor this to a helper function to keep the "run" function readable
             glu_pmd_demixer_global= masknmf.demixing.signal_demixer.SignalDemixer(
@@ -369,8 +365,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                     for results in (glu_pmd_demixer_results, glu_global_results):
                         results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
                             results, glu_video, device=device, nonneg=True, frame_batch_size=self.frame_batch_size)
-            masknmf.DemixingResults.infill_bad_frames(glu_pmd_demixer_results, good_frame_indicator=good_frames).export(glu_path, overwrite=True)
-            masknmf.DemixingResults.infill_bad_frames(glu_global_results, good_frame_indicator=good_frames).export(glu_path, prefix="global")
+            masknmf.DemixingResults.infill_bad_frames(glu_pmd_demixer_results, good_frames=good_frames).export(glu_path, overwrite=True)
+            masknmf.DemixingResults.infill_bad_frames(glu_global_results, good_frames=good_frames).export(glu_path, prefix="global")
 
             if pmd_ca is not None:
                 ## Pull out the spatial/temporal footprints from the glutamate movie
@@ -404,8 +400,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                         for results in (ca_results, ca_global_results):
                             results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
                                 results, calcium_video, device=device, nonneg=True, frame_batch_size=self.frame_batch_size)
-                masknmf.DemixingResults.infill_bad_frames(ca_results, good_frame_indicator=good_frames).export(ca_path)
-                masknmf.DemixingResults.infill_bad_frames(ca_global_results, good_frame_indicator=good_frames).export(ca_path, prefix="global")
+                masknmf.DemixingResults.infill_bad_frames(ca_results, good_frames=good_frames).export(ca_path)
+                masknmf.DemixingResults.infill_bad_frames(ca_global_results, good_frames=good_frames).export(ca_path, prefix="global")
 
 
         else: #In this case there is only a calcium channel
@@ -415,7 +411,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
             ca_pmd_demixer_results = self.run_multipass(ca_pmd_demixer, self.demixing_config, "calcium spine demixing")
             # saved now so a failure in the steps after it still leaves the spines; written again with raw traces
-            masknmf.DemixingResults.infill_bad_frames(ca_pmd_demixer_results, good_frame_indicator=good_frames).export(ca_path)
+            masknmf.DemixingResults.infill_bad_frames(ca_pmd_demixer_results, good_frames=good_frames).export(ca_path)
 
 
             ## Now pull out "whole dendrite" events. Can refactor this to a helper function to keep the "run" function readable
@@ -435,8 +431,8 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                     for results in (ca_pmd_demixer_results, ca_global_results):
                         results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
                             results, calcium_video, device=device, nonneg=True, frame_batch_size=self.frame_batch_size)
-            masknmf.DemixingResults.infill_bad_frames(ca_pmd_demixer_results, good_frame_indicator=good_frames).export(ca_path, overwrite=True)
-            masknmf.DemixingResults.infill_bad_frames(ca_global_results, good_frame_indicator=good_frames).export(ca_path, prefix="global")
+            masknmf.DemixingResults.infill_bad_frames(ca_pmd_demixer_results, good_frames=good_frames).export(ca_path, overwrite=True)
+            masknmf.DemixingResults.infill_bad_frames(ca_global_results, good_frames=good_frames).export(ca_path, prefix="global")
 
         return self.finish()
 

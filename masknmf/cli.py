@@ -500,6 +500,9 @@ def command_run(args: argparse.Namespace) -> None:
         filepath_config_resumed = Path(resume).expanduser().resolve().parent / "config.json"
         if filepath_config_resumed.is_file():
             inputs_file = read_config_file(filepath=str(filepath_config_resumed)).get("inputs", {})
+    unknown = set(inputs_file) - {p.field for p in (*spec.movie_params, *spec.array_params)}
+    if len(unknown) > 0:
+        fail(f"the config file records inputs {', '.join(sorted(unknown))}, which {spec.slug} does not take")
     for param in (*spec.movie_params, *spec.array_params):
         positional = param.kind == "movie" and len(spec.movie_params) == 1
         if getattr(args, param.field, None) or param.field not in inputs_file:

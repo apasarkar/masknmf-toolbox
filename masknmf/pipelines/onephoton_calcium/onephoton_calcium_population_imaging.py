@@ -139,7 +139,7 @@ class OnePhotonCalciumPipeline(BasePipeline):
             data: np.ndarray | ArrayLike | None,
             frame_rate: float,
             indicator_polarity: Literal["positive", "negative"] = "positive",
-            good_frame_indicator: torch.Tensor | np.ndarray | None = None,
+            good_frames: torch.Tensor | np.ndarray | None = None,
             pixel_mask: np.ndarray | None = None,
             exclude_border_radius: int = 0,
             remove_intermediates: bool = False,
@@ -151,7 +151,7 @@ class OnePhotonCalciumPipeline(BasePipeline):
             data: The raw (frames, height, width) movie
             frame_rate (float): frames per second; sets the detrenders' windows
             indicator_polarity (Literal["positive", "negative"]): Whether the indicator is positively or negatively tuned
-            good_frame_indicator (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
+            good_frames (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
             pixel_mask (np.ndarray | None): Boolean (height, width), True on the pixels to use. The rest are ignored by the registration and the compression's spatial basis; masknmf mask draws one
             exclude_border_radius (int): Pixels at each fov edge that are ignored when compressing
             remove_intermediates (bool): Drop the CompressionArray group once demixing is done
@@ -184,7 +184,8 @@ class OnePhotonCalciumPipeline(BasePipeline):
                 data = self.read_into_ram(data)
             data = self._construct_ophys_array(data,
                                                indicator_polarity=indicator_polarity,
-                                               good_frame_indicator=good_frame_indicator)
+                                               good_frames=good_frames,
+                                               results_path=results_path)
             moco_data, shift_mask = self.motion_correct(data,
                                                         self.motion_correct_config,
                                                         results_path,
@@ -252,9 +253,10 @@ class OnePhotonCalciumPipeline(BasePipeline):
                     final_results, moco_data, device=self.torch_device,
                     nonneg=True, frame_batch_size=self.frame_batch_size)
 
-        if good_frame_indicator is not None:
+        good_frames = masknmf.io.read_good_frames(results_path)
+        if good_frames is not None and not good_frames.all():
             final_results = masknmf.DemixingResults.infill_bad_frames(final_results,
-                                                                  good_frame_indicator=good_frame_indicator)
+                                                                  good_frames=good_frames)
         final_results.export(results_path)
         if remove_intermediates:
             self.drop_compression(results_path)

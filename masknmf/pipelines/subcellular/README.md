@@ -13,13 +13,13 @@ pipe.run(glutamate_channel=glu, calcium_channel=calcium)
 
 Writes `results/<YYYYMMDD_HHMMSS>_glutamate-calcium-spine/results.<channel>.hdf5`, one file per channel.
 - Either channel may be `None`; its file is then absent.
-- `run` drops the first 200 frames (`exclude_initial_frames`);
-- every output has `frames - 200` frames.
-- the `retained_frames` dataset lists the raw frame indices that were kept; index the raw stack with it.
+- `run` leaves out the first 200 frames (`exclude_initial_frames`);
+- the registration and demixing results keep the raw frame count, with zeros at the frames left out; the compression holds `frames - 200` frames.
+- `OphysArray/good_frames` is a boolean over the raw frames, True at the frames that were kept; index the raw stack with it.
 
 ```
 results.glutamate.hdf5, results.calcium.hdf5
-  retained_frames
+  OphysArray                good_frames, negative_indicator
   RigidRegistrationArray, RigidMotionCorrector
   CompressionArray
   DemixingResults           spines
@@ -35,7 +35,7 @@ earlier run's results; give either channel's file, the other is read from the sa
 pipe = GlutamateCalciumSpinePipeline(output_folder="results/")
 registered = pipe.run(glutamate_channel=glu, calcium_channel=calcium, stop_after="registration")
 
-# the stored shifts and retained_frames applied to the movies, then compression with other settings
+# the stored shifts and good frames applied to the movies, then compression with other settings
 pipe = GlutamateCalciumSpinePipeline(output_folder="results/",
                                      compress_config=CompressDenoiseConfig(block_sizes=(10, 10)))
 compressed = pipe.run(glutamate_channel=glu, calcium_channel=calcium, stop_after="compression",
@@ -48,22 +48,21 @@ pipe.run(glutamate_channel=glu, calcium_channel=calcium, resume=compressed / "re
 
 - A resumed run writes a new run folder and leaves the earlier one as it is.
 - Settings not given are the earlier run's, from its `config.json`.
-- `exclude_initial_frames` and `good_frame_indicator` are not used by a resumed run: the frames are the earlier run's `retained_frames`.
+- `exclude_initial_frames` and `good_frames` are not used by a resumed run: the frames are the earlier run's `good_frames`.
 - `cross_channel_mask` in each results file is the dendrite mask compression and the whole-dendrite component used.
 
 `masknmf.utils.results_files(run)` maps channel to file: `{"calcium": run / "results.calcium.hdf5", ...}`.
 
 ```python
 from pathlib import Path
-import h5py
 import numpy as np
+import tifffile
 import masknmf
 
 run = Path("results/20260908T112158_glutamate-calcium-spine")
 results = masknmf.utils.results_files(run)["calcium"]
-with h5py.File(results, "r") as f:
-    retained_frames = f["retained_frames"][()]
-calcium = tifffile.imread("red.tif")[retained_frames]
+good_frames = masknmf.io.read_good_frames(results)  # boolean over the raw frames
+calcium = tifffile.imread("red.tif")[good_frames]
 timings = np.arange(calcium.shape[0]) / 19.66  # optional seconds axis
 ```
 

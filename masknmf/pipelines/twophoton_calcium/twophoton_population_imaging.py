@@ -78,7 +78,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             frame_rate: float,
             exclude_border_radius: int = 0,
             indicator_polarity: Literal["positive", "negative"] = "positive",
-            good_frame_indicator: torch.Tensor | np.ndarray | None = None,
+            good_frames: torch.Tensor | np.ndarray | None = None,
             pixel_mask: np.ndarray | None = None,
             remove_intermediates: bool = False,
             stop_after: Literal["registration", "compression", "demixing"] = "demixing",
@@ -93,7 +93,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                     frame_rate (float): The frame rate in Hz
                     exclude_border_radius (int): The number of pixels in border radius to exclude
                     indicator_polarity (Literal["positive", "negative"]): Whether the indicator is positively or negatively tuned
-                    good_frame_indicator (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
+                    good_frames (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
                     pixel_mask (np.ndarray | None): Boolean (height, width), True on the pixels to use. The rest are ignored by the registration and the compression's spatial basis; masknmf mask draws one
                     remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
                         results carry the pmd); the registration shifts stay
@@ -127,7 +127,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                 data = self.read_into_ram(data)
             data = self._construct_ophys_array(data,
                                                indicator_polarity=indicator_polarity,
-                                               good_frame_indicator=good_frame_indicator)
+                                               good_frames=good_frames,
+                                               results_path=results_path)
             moco_data, shift_mask = self.motion_correct(data,
                                                         self.motion_correct_config,
                                                         results_path,
@@ -210,9 +211,10 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             latest_demix_results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
                 latest_demix_results, moco_data, device=self.torch_device, nonneg=True, frame_batch_size=self.frame_batch_size)
 
-        if good_frame_indicator is not None:
+        good_frames = masknmf.io.read_good_frames(results_path)
+        if good_frames is not None and not good_frames.all():
             latest_demix_results = masknmf.DemixingResults.infill_bad_frames(latest_demix_results,
-                                                                  good_frame_indicator=good_frame_indicator)
+                                                                  good_frames=good_frames)
 
         latest_demix_results.export(results_path)
         if remove_intermediates:

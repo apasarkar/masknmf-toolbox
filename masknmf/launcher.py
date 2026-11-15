@@ -848,6 +848,10 @@ class Launcher:
             return f"{filepath.name} names no masknmf pipeline"
         configs = loaded["configs"]
         self.select_pipeline(index=self.slugs.index(slug))
+        unknown = set(loaded.get("inputs", {})) - {p.field for p in (*self.spec.movie_params, *self.spec.array_params)}
+        if len(unknown) > 0:
+            self.select_pipeline(index=self.index_pipeline)
+            return f"{filepath.name} records inputs {', '.join(sorted(unknown))}, which {slug} does not take"
         try:
             for section in self.spec.sections:
                 if section.argument in configs:
