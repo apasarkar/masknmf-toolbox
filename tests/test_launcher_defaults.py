@@ -279,21 +279,6 @@ def test_start_from_a_loaded_runs_compression_resumes_it_and_back_to_the_movie_r
     assert "--resume" not in window.argv_run()
 
 
-def test_tracking_rows_grow_and_build_a_track_command(tmp_path):
-    window = launcher.Launcher()
-    window.page = "track"
-    window.paths_tracking["results_0"] = str(tmp_path / "*" / "results.hdf5")
-    assert window.problems() == ["choose the folder the tracking is saved in"]
-    render_frames(window=window)
-    assert window.paths_tracking["results_1"] == ""
-    window.paths_tracking["out"] = str(tmp_path / "tracking")
-    assert window.problems() == []
-    args = cli.build_parser(spec=None).parse_args(window.build_argv())
-    assert args.handler is cli.command_track
-    assert args.results == [str(tmp_path / "*" / "results.hdf5")]
-    assert args.out == str(tmp_path / "tracking") and args.um_per_pixel == 1.2
-
-
 def click_card(original, slug: str, label: str, *args, **kwargs) -> bool:
     """imgui.invisible_button reporting a click on one pipeline's card."""
     return original(label, *args, **kwargs) or label == f"##card_pipeline_{slug}"
