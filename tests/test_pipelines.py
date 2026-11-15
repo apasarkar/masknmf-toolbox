@@ -229,7 +229,7 @@ def test_stop_after_registration_writes_the_shifts_and_resume_applies_them(tmp_p
     pipeline = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path), device="cpu")
     folder = pipeline.run(movie, frame_rate=30, stop_after="registration")
     with h5py.File(folder / "results.hdf5") as file:
-        assert set(file) == {"RigidMotionCorrector", "RigidRegistrationArray"}
+        assert set(file) == {"OphysArray", "RigidMotionCorrector", "RigidRegistrationArray"}
         shifts = file["RigidRegistrationArray/shifts"][()]
     config = json.loads((folder / "config.json").read_text())
     assert config["configs"]["stop_after"] == "registration" and config["run"]["status"] == "done"
@@ -250,7 +250,7 @@ def test_one_photon_saves_its_gradient_registration_and_applies_it_on_resume(tmp
     pipeline = masknmf.OnePhotonCulturePipeline(output_folder=str(tmp_path), device="cpu")
     folder = pipeline.run(movie, frame_rate=30, indicator_polarity="positive", active_frames=active, stop_after="registration")
     with h5py.File(folder / "results.hdf5") as file:
-        assert set(file) == {"GradientMotionCorrector", "GradientRegistrationArray"}
+        assert set(file) == {"GradientMotionCorrector", "GradientRegistrationArray", "OphysArray"}
         steps = file["GradientRegistrationArray/gradient_steps"][()]
     resumed = pipeline.run(movie, frame_rate=30, indicator_polarity="positive", active_frames=active,
                             stop_after="registration", resume=folder / "results.hdf5")
