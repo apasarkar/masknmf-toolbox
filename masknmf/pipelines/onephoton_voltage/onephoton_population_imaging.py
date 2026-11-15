@@ -296,6 +296,9 @@ class OnePhotonCulturePipeline(BasePipeline):
             active_in_good, demixed_frames = active, active
 
         resume, base = self.resume_source(resume, reuse_compression)
+        good_frames_resumed = masknmf.io.read_good_frames(resume)
+        if good_frame_indicator is None and good_frames_resumed is not None and not good_frames_resumed.all():
+            raise ValueError(f"{resume} left frames out; pass the same good_frame_indicator to resume it")
         self.run_config = {"frame_rate": frame_rate, "indicator_polarity": indicator_polarity,
                            "remove_intermediates": remove_intermediates, "stop_after": stop_after,
                            "resume": None if resume is None else str(resume)}
@@ -320,8 +323,8 @@ class OnePhotonCulturePipeline(BasePipeline):
                 corrector = GradientMotionCorrector(template=mean_img)
                 moco_array = corrector.motion_correct(mov)
                 moco_array.output_device=torch.device('cpu')
-                moco_array.export(results_path)
-        self.record_retained_frames(results_path, mov)
+                moco_array.infill_bad_frames().export(results_path)
+        mov.export(results_path)
         if stop_after == "registration":
             return self.finish()
 

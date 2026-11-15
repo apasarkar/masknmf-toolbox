@@ -10,7 +10,7 @@ import h5py
 import numpy as np
 import torch
 
-from masknmf.arrays import ArrayLike, Hdf5Array, OphysArray, RetainedFramesArray, TiffArray, TiffSeriesLoader
+from masknmf.arrays import ArrayLike, Hdf5Array, OphysArray, TiffArray, TiffSeriesLoader
 from masknmf.compression import CompressionArray
 from masknmf.demixing import DemixingResults, results_stem
 from masknmf.demixing.curation import ATTR_NMF_CONFIG
@@ -203,30 +203,24 @@ def find_raw_movie(path: str | Path) -> tuple[ArrayLike | None, Path] | None:
     return None if beside is None else (TiffArray(str(beside)), beside)
 
 
-def read_good_frames(path: str | Path, num_frames_results: int) -> np.ndarray | None:
+def read_good_frames(path: str | Path | None) -> np.ndarray | None:
     """
-    The frames of the raw movie a run kept, for a run that left frames out.
+    Return the boolean mask of the raw frames a run kept.
 
     Parameters
     ----------
-    path : str | Path
-        The results file; its ``retained_frames`` dataset holds the raw index of each frame the run registered.
-    num_frames_results : int
-        Frames of the results, taken as the raw frame count when the file does not record one.
+    path : str | Path | None
+        A results file. The mask is ``good_frames`` in its ``OphysArray`` group.
 
     Returns
     -------
     np.ndarray | None
-        Boolean, shape (raw frames,). None when the file has no ``retained_frames``.
+        Boolean, shape (raw frames,). None when the file has no ``OphysArray`` group.
     """
+    if path is None or not has_group(path, OphysArray.__name__):
+        return None
     with h5py.File(path, "r") as f:
-        if "retained_frames" not in f:
-            return None
-        retained = f["retained_frames"][()]
-        num_frames = int(f["retained_frames"].attrs.get("num_raw_frames", num_frames_results))
-    good_frames = np.zeros(num_frames, dtype=bool)
-    good_frames[retained] = True
-    return good_frames
+        return f[OphysArray.__name__]["good_frames"][()].astype(bool)
 
 
 def crop_to_good_frames(movie: ArrayLike | np.ndarray | None, good_frames: np.ndarray | None, num_frames_results: int):
@@ -375,8 +369,7 @@ class OpenedResults:
             else:
                 results = CompressionArray.from_hdf5(path)
             shape = tuple(int(n) for n in results.shape)
-            raw = crop_to_good_frames(movie=raw, good_frames=read_good_frames(path, num_frames_results=shape[0]),
-                                      num_frames_results=shape[0])
+            raw = crop_to_good_frames(movie=raw, good_frames=read_good_frames(path), num_frames_results=shape[0])
             if raw is not None and tuple(raw.shape) != shape:
                 # e.g. the glutamate pipeline drops a movie's first frames
                 skipped.append(f"raw movie shape {tuple(raw.shape)} does not match results shape {shape}; not used")
@@ -386,14 +379,11 @@ class OpenedResults:
             stored = next(name for name in group_names_registration() if name in groups)
             with h5py.File(path, "r") as f:
                 frames = f[stored]["shifts"].shape[0]
-            good_frames = read_good_frames(path, num_frames_results=frames)
-            raw = crop_to_good_frames(movie=raw, good_frames=good_frames, num_frames_results=frames)
             if raw is not None and raw.shape[0] != frames:
                 skipped.append(f"raw movie has {raw.shape[0]} frames, {stored} has {frames}; not used")
                 raw = raw_source = None
             if raw is None and (found := find_raw_movie(path)) is not None:
                 movie, source = found
-                movie = crop_to_good_frames(movie=movie, good_frames=good_frames, num_frames_results=frames)
                 if movie is None:
                     skipped.append(f'Raw movie "{source}" could not be displayed with data loaders')
                 elif movie.shape[0] == frames:
@@ -402,7 +392,8 @@ class OpenedResults:
                     skipped.append(f"{source} has {movie.shape[0]} frames, {stored} has {frames}; not used")
             if raw is None:
                 raise ValueError(f"{path} holds only {stored}; pass the raw movie it was computed from")
-            opened = cls.resolve(REGISTRATION_ARRAYS[stored].from_hdf5(path, input_movie=raw, device=device), path)
+            registration = REGISTRATION_ARRAYS[stored].from_hdf5(path, input_movie=raw, device=device)
+            opened = cls.resolve(registration, path, raw=raw)
         return replace(opened, raw_source=raw_source or opened.raw_source, skipped=skipped + opened.skipped)
 
     @classmethod
@@ -449,7 +440,7 @@ class OpenedResults:
         path = Path(path) if path is not None else None
         shape = tuple(int(n) for n in results.shape)
         is_registration = isinstance(results, BaseRegistrationArray)
-        good_frames = read_good_frames(path, num_frames_results=shape[0]) if path is not None and path.is_file() else None
+        good_frames = read_good_frames(path)
         skipped = []
         if registered is not None and is_registration:
             raise ValueError("registered= applies only to compression or demixing results; a registration array is already the registered movie")
@@ -483,13 +474,9 @@ class OpenedResults:
         if registered is None and isinstance(results, BaseResults):
             registered = results.registered_array
         if registered is None and raw is not None and stored is not None:
-            if frames == shape[0]:
+            if frames == shape[0] or (good_frames is not None and (int(good_frames.sum()), good_frames.shape[0]) == (shape[0], frames)):
+                # the stored shifts cover every raw frame; the results cover every raw frame or only the kept ones
                 registered = REGISTRATION_ARRAYS[stored].from_hdf5(path, input_movie=raw, device=device)
-            elif good_frames is not None and good_frames.shape[0] == shape[0] and int(good_frames.sum()) == frames:
-                # the run registered the good frames and infilled its results to the raw count: the frames it left
-                # out show as recorded
-                kept = REGISTRATION_ARRAYS[stored].from_hdf5(path, input_movie=OphysArray(raw, negative_indicator=False, good_frames=good_frames), device=device)
-                registered = RetainedFramesArray(retained_movie=kept, retained_frames=np.flatnonzero(good_frames), fallback=raw)
             else:
                 skipped.append(f"{stored} in {path} has {frames} frames, the results have {shape[0]}; registered movie not computed")
 
@@ -519,12 +506,10 @@ class OpenedResults:
                     template = strategy["template"][()]
         if shifts is not None:
             shifts = np.asarray(shifts.cpu() if isinstance(shifts, torch.Tensor) else shifts, np.float32)
-            good_shifts = read_good_frames(shifts_source, num_frames_results=shape[0]) if shifts_source is not None else None
-            if good_shifts is not None and good_shifts.shape[0] == shape[0] and int(good_shifts.sum()) == shifts.shape[0] != shape[0]:
-                # NaN at the frames the run left out
-                placed = np.full((shape[0], *shifts.shape[1:]), np.nan, dtype=np.float32)
-                placed[good_shifts] = shifts
-                shifts = placed
+            good_shifts = read_good_frames(shifts_source)
+            if good_shifts is not None and good_shifts.shape[0] == shifts.shape[0] != shape[0] == int(good_shifts.sum()):
+                # the results hold only the kept frames, so the shifts are cut to match
+                shifts = shifts[good_shifts]
             if shifts.shape[0] != shape[0]:
                 if not found_shifts:
                     raise ValueError(f"{shifts.shape[0]} shifts for {shape[0]} frames")

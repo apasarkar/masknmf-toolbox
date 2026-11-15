@@ -6,7 +6,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 import torch
-from masknmf.utils._serialization import load_dict, save_dict
+from masknmf.utils._serialization import save_dict
 from masknmf.utils.display import progress
 
 from masknmf.arrays.array_interfaces import ArrayLike
@@ -26,8 +26,8 @@ class OphysArray(ArrayLike):
         - include_mean=False returns the mean-subtracted movie (the positive view minus mean_image).
         - good_frames crops the movie in time. Only frames labeled 1 exist as far as this array is concerned:
           shape, all temporal indexing and the mean image refer to the cropped movie.
-        - infill=True puts the cropped movie back on the dataset's frame axis: shape and temporal indexing are the
-          dataset's, and the frames labeled 0 read as zeros, as infill_bad_frames does for compression and demixing.
+        - infilled() returns the cropped movie on the dataset's frame axis: shape and temporal indexing are the
+          dataset's, and the frames labeled 0 read as zeros.
 
     The mean image costs a full pass over the data, so it is only computed when the view depends on it:
         - At construction, if negative_indicator=True or include_mean=False.
@@ -42,8 +42,7 @@ class OphysArray(ArrayLike):
                  include_mean: bool = True,
                  device='cpu',
                  batch_size: int = 200,
-                 good_frames: np.ndarray | torch.Tensor | list | None = None,
-                 infill: bool = False):
+                 good_frames: np.ndarray | torch.Tensor | list | None = None):
         """
         Args:
             dataset (masknmf.ArrayLike): Shape (num_frames, height, width)
@@ -56,15 +55,13 @@ class OphysArray(ArrayLike):
             good_frames (np.ndarray | torch.Tensor | list | None): Optional 1D binary vector of length dataset.shape[0].
                 Only frames labeled 1 are exposed: shape[0] becomes good_frames.sum(), and all temporal indexing
                 and the mean image refer to this temporally cropped movie. None keeps every frame.
-            infill (bool): If True, the frames labeled 0 stay on the frame axis and read as zeros: shape[0] is
-                dataset.shape[0]. The mean image is still the mean of the frames labeled 1.
         """
         self._dataset = dataset
         self._device = device
         self._batch_size = batch_size
         self._negative_indicator = negative_indicator
         self._include_mean = include_mean
-        self._infill = infill
+        self._infill = False
         self._set_good_frames(good_frames)
         self._mean_image = None
         self._mean_lock = threading.Lock()
@@ -132,29 +129,29 @@ class OphysArray(ArrayLike):
 
     @property
     def infill(self) -> bool:
-        """True if the frames good_frames labels 0 are on the frame axis and read as zeros"""
+        """True if this is the infilled view: the dataset's frame axis, with zeros at the frames labeled 0."""
         return self._infill
 
     def infilled(self) -> "OphysArray":
-        """This movie on the dataset's frame axis, zeros at the frames good_frames labels 0. Shares the data and the mean image."""
+        """
+        Return this movie on the dataset's frame axis, with zeros at the frames good_frames labels 0.
+
+        The copy shares the data and the mean image, which stays the mean of the frames labeled 1.
+        """
         infilled = copy.copy(self)
         infilled._infill = True
         infilled._shape = (int(self._dataset.shape[0]), *self._shape[1:])
         return infilled
 
     def export(self, path: str | Path) -> None:
-        """Write good_frames and the indicator polarity to the OphysArray group of the hdf5 file at path, replacing it."""
+        """
+        Write good_frames and the indicator polarity to the OphysArray group of the hdf5 file at path.
+
+        An existing group is replaced. masknmf.io.read_good_frames and the registration arrays' from_hdf5 read it.
+        """
         good_frames = np.ones(self._dataset.shape[0], dtype=bool) if self._good_frames is None else self._good_frames
         save_dict({"good_frames": good_frames, "negative_indicator": int(self._negative_indicator)},
                   filename=path, group=type(self).__name__, exists_ok=True)
-
-    @classmethod
-    def from_hdf5(cls, path: str | Path, dataset: ArrayLike, **kwargs) -> "OphysArray":
-        """dataset with the good_frames and indicator polarity stored in path; kwargs go to the constructor and override them."""
-        stored = load_dict(path, cls.__name__)
-        stored = {"good_frames": np.asarray(stored["good_frames"]).astype(bool),
-                  "negative_indicator": bool(stored["negative_indicator"])}
-        return cls(dataset, **{**stored, **kwargs})
 
     @property
     def batch_size(self) -> int:
@@ -274,11 +271,11 @@ class OphysArray(ArrayLike):
         good = np.atleast_1d(self._good_frames[frame_indexer])
         if good.all():
             return view
-        # out of place: view can be the dataset's own memory
+        # multiply out of place: view can share memory with the dataset
         return view * torch.as_tensor(good, device=view.device).reshape(-1, *([1] * (view.ndim - 1)))
 
     def _positive_view(self, data_subset: torch.Tensor, spatial: tuple, include_mean: bool) -> torch.Tensor:
-        """data_subset, frames read at the spatial crop, as the positively tuned view, with or without its mean."""
+        """Return the frames in data_subset, read at the spatial crop, as the positively tuned view."""
         if not self.negative_indicator and include_mean:
             return data_subset  # already the positive view with its baseline: no mean needed
 

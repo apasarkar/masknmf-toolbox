@@ -182,7 +182,8 @@ class OnePhotonCalciumPipeline(BasePipeline):
                 data = self.read_into_ram(data)
             data = self._construct_ophys_array(data,
                                                indicator_polarity=indicator_polarity,
-                                               good_frame_indicator=good_frame_indicator)
+                                               good_frame_indicator=good_frame_indicator,
+                                               results_path=results_path)
             moco_data, shift_mask = self.motion_correct(data,
                                                         self.motion_correct_config,
                                                         results_path,
@@ -249,9 +250,10 @@ class OnePhotonCalciumPipeline(BasePipeline):
                     final_results, moco_data, device=self.torch_device,
                     nonneg=True, frame_batch_size=self.frame_batch_size)
 
-        if good_frame_indicator is not None:
+        good_frames = masknmf.io.read_good_frames(results_path)
+        if good_frames is not None and not good_frames.all():
             final_results = masknmf.DemixingResults.infill_bad_frames(final_results,
-                                                                  good_frame_indicator=good_frame_indicator)
+                                                                  good_frame_indicator=good_frames)
         final_results.export(results_path)
         if remove_intermediates:
             self.drop_compression(results_path)
