@@ -1020,8 +1020,9 @@ class SingleSessionDemixingVis:
             ]
             if self._show_raw_trace and results.temporal_demixed_raw is not None:
                 raw = scale * results.temporal_demixed_raw[:, k]
+                raw -= torch.mean(raw)
                 # before the signal line so the signal draws over it
-                lines.insert(0 if traces[0] is None else 1, ("raw", raw.cpu().numpy(), _RAW_LINE_COLOR))
+                lines.insert(0 if traces[0] is None else 1, ("raw (mean 0)", raw.cpu().numpy(), _RAW_LINE_COLOR))
         else:
             self._selected_signals = None
             self._clear_traces()

@@ -61,60 +61,72 @@ def estimate_temporal_demixed_raw(results: DemixingResults,
                                   movie: np.ndarray | ArrayLike | None,
                                   device: torch.device | str,
                                   nonneg: bool = True,
-                                  frame_batch_size: int = 300) -> torch.Tensor | None:
+                                  frame_batch_size: int = 300,
+                                  num_iters: int = 10) -> torch.Tensor | None:
     """
     temporal_demixed re-estimated from the registered raw movie with the spatial footprints, background and baseline
     of results held fixed, so it carries no compression or denoising. Shape (number of frames, number of signals)
     at the data scale of the noise whitened motion corrected movie
+
+    For each batch of frames this solves  min_c || movie / noise - background - a c ||^2  by HALS,
+    starting from temporal_demixed. Everything the regression needs from the movie is a^T (movie / noise), a
+    (signals, frames) matrix, so each batch costs one sparse product with the movie; the background enters as
+    (a^T U) term1 term2, and the HALS sweeps then only touch (signals, frames) matrices:
+
+        c[block] += (a^T movie / noise - a^T background - (a^T a)[block] c) / ||a_block||^2
     """
+    if hasattr(movie, "output_device"):
+        original_device = movie.output_device
+        movie.output_device = torch.device(device)
+    else:
+        original_device = None
+
     results.to(device)
     if movie is None:
         return None
-    num_iters = math.ceil(movie.shape[0] / frame_batch_size)
-
-    blocks = _compute_hals_schedule(results.spatial_demixed,
-                                    device,
-                                    frame_batch_size=200)  ##TODO: set this in a principled way later
-
     num_frames, fov_height, fov_width = movie.shape
-    fluctuating_background = results.fluctuating_background_array
-    baseline_image = results.baseline_image #(fov_height, fov_width)
-    noise_variance_image = results.noise_variance_image.clone()
-    noise_variance_image[noise_variance_image <= 0] = 1.0
+    clip = torch.relu if nonneg else (lambda x: x)
+
+    a = results.spatial_demixed.coalesce().float()                            # (pixels, signals)
+    rows, cols = a.indices()
+    noise = results.noise_variance_image.flatten().to(a.device).float().clone()
+    noise[noise <= 0] = 1.0
+
+    # Per run, not per batch: everything below depends on the footprints and background factors only
+    at_div_noise = torch.sparse_coo_tensor(torch.stack([cols, rows]), a.values() / noise[rows],
+                                          size=(a.shape[1], a.shape[0])).coalesce().to_sparse_csr()  # (a / noise)^T
+    a_csr = a.to_sparse_csr()
+    ata = torch.sparse.mm(a_csr.t().to_sparse_csr(), a_csr).to_sparse_csr()  # (signals, signals)
+    a_sq_norm = _fast_a_squared_norm(a_csr)
+    blocks = _compute_hals_schedule(results.spatial_demixed, device, frame_batch_size=200)
+    ata_rows = [csr_index_select_rows(ata, block) for block in blocks]
+    norm_rows = [a_sq_norm[block][:, None] for block in blocks]
+
+    term1, term2 = results.factorized_background_term1, results.factorized_background_term2
+    if term1 is not None and term2 is not None:
+        # a^T (U term1 term2[:, frames]); U and term1 are fixed, so a^T U term1 is (signals, background rank)
+        at_u = torch.sparse.mm(a.t().coalesce(), results.spatial_compressed.coalesce().float())
+        at_background = (at_u.to_dense() if at_u.is_sparse else at_u) @ term1.float()
+    else:
+        at_background = None
+
     c_new = results.temporal_demixed.clone()
+    for start_pt in range(0, num_frames, frame_batch_size):
+        end_pt = min(start_pt + frame_batch_size, num_frames)
+        data = torch.as_tensor(movie[start_pt:end_pt], device=device, dtype=torch.float32)
+        rhs = torch.sparse.mm(at_div_noise, data.reshape(end_pt - start_pt, -1).T)  # (signals, frames)
+        if at_background is not None:
+            rhs -= at_background @ term2[:, start_pt:end_pt].float()
 
-    """
-    Demixing runs in a compressed + denoised subspace: 
-    
-    (1 / Noise Std) * (Movie - Mean), a pixelwise noise whitened motion corrected movie
-    The following routine incorporates all the photon information into each time series, yielding a time series for each
-    
-    Step 1: Compute Movie / Noise_Std
-    Step 2: Subtract fluctuating background
-    Step 3: Regress what remains onto "a" (spatial footprints) to get the temporal footprints. Use alteranting least squares,
-        starting with "c" (temporal_demixed) obtained from demixing
-    """
-    for k in range(num_iters):
-        start_pt = frame_batch_size * k
-        end_pt = min(start_pt + frame_batch_size, movie.shape[0])
-        data = torch.as_tensor(movie[start_pt:end_pt, :, :], device=device,
-                               dtype=torch.float32)
-        # as_tensor shares memory with a cpu numpy movie, so the first step must not be in place
-        data  = data / noise_variance_image[None, :, :]
-        data -= fluctuating_background[slice(start_pt, end_pt)]
+        c = c_new[start_pt:end_pt].T.contiguous()                                # (signals, frames)
+        for _ in range(num_iters):
+            for block, ata_block, norm in zip(blocks, ata_rows, norm_rows):
+                c[block] = clip(c[block] + (rhs[block] - torch.sparse.mm(ata_block, c)) / norm)
+        c_new[start_pt:end_pt] = c.T
 
-        #Here you want to incorporate the static baseline into the temporal traces, no need to subtract it anymore
-
-        data = data.reshape(-1, fov_height*fov_width) # (num_frames, num_pixels)
-
-        c_new[start_pt:end_pt, :] = hals_multi_iter_raw(blocks,
-                                                    data,
-                                                    results.spatial_demixed.to_sparse_csr(),
-                                                    c_new[start_pt:end_pt, :],
-                                                    nonneg=nonneg)
-
+    if hasattr(movie, "output_device"):
+        movie.output_device = torch.device(original_device)
     return c_new
-
 
 
 def estimate_raw_residual_correlation_image(results: DemixingResults,
