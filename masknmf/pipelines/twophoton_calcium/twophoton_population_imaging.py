@@ -118,7 +118,9 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                            "resume": None if resume is None else str(resume)}
         results_path = self.results_path(base)
         stored = None if resume is None else self.resume(resume, results_path, reuse_compression)
-        # a resumed run without the raw movie has no registered movie to re-estimate raw traces from
+        if data is None:
+            data = self.recorded_movie(resume)
+        # a resumed run whose movie is not given and not recorded has no registered movie to estimate raw traces from
         moco_data = None
         if data is not None:
             if self.load_into_ram:

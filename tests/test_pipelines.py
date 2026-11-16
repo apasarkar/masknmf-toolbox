@@ -259,6 +259,35 @@ def test_one_photon_saves_its_gradient_registration_and_applies_it_on_resume(tmp
     close_log(pipeline)
 
 
+def test_a_resumed_run_without_a_movie_reads_the_one_its_config_records_and_skips_raw_traces_when_it_is_gone(tmp_path):
+    rng = np.random.default_rng(0)
+    yy, xx = np.mgrid[:64, :64]
+    cells = np.array([np.exp(-((yy - y) ** 2 + (xx - x) ** 2) / 10.0) for y, x in rng.uniform(8, 56, (12, 2))])
+    kernel = np.exp(-np.arange(100) / 20.0)
+    traces = np.stack([np.convolve((rng.random(1500) < 0.01) * 3.0, kernel)[:1500] for _ in cells], axis=1)
+    movie = (100 + 60 * np.einsum("tk,kyx->tyx", traces, cells) + rng.normal(0, 5, (1500, 64, 64))).astype(np.float32)
+    filepath_movie = tmp_path / "movie.hdf5"
+    with h5py.File(filepath_movie, "w") as file:
+        file["mov"] = movie
+
+    pipeline = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path / "runs"), device="cpu")
+    pipeline.inputs = {"data": {"path": str(filepath_movie), "dataset": "mov"}}
+    first = pipeline.run(masknmf.io.load_movie(filepath_movie, "mov"), frame_rate=30)
+    raw_first = masknmf.DemixingResults.from_hdf5(first / "results.hdf5").temporal_demixed_raw
+    close_log(pipeline)
+
+    resumed = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path / "runs"), compress_config="skip", device="cpu")
+    with_movie = resumed.run(None, frame_rate=30, resume=first / "results.hdf5")
+    raw_resumed = masknmf.DemixingResults.from_hdf5(with_movie / "results.hdf5").temporal_demixed_raw
+    assert raw_resumed is not None and raw_resumed.shape[0] == raw_first.shape[0]
+    close_log(resumed)
+
+    filepath_movie.unlink()
+    without_movie = resumed.run(None, frame_rate=30, resume=first / "results.hdf5")
+    assert masknmf.DemixingResults.from_hdf5(without_movie / "results.hdf5").temporal_demixed_raw is None
+    close_log(resumed)
+
+
 def test_stop_after_refuses_runs_with_nothing_to_write(tmp_path):
     movie = np.zeros((4, 16, 16), dtype=np.float32)
     skipped = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path), motion_correct_config="skip")
