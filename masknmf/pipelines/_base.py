@@ -30,7 +30,7 @@ from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorre
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig, SinglepassDemixingConfig, SuperpixelInitConfig
 from masknmf.utils import display, get_timestamp, TIMESTAMP_FORMAT, torch_select_device
-from masknmf.io import REGISTRATION_ARRAYS, has_group, drop_group, create_run_folder, log_to, read_ophys_group, write_run_config
+from masknmf.io import REGISTRATION_ARRAYS, has_group, drop_group, create_run_folder, log_to, read_ophys_group, write_run_config, recorded_raw_movie, load_movie
 from masknmf.motion_correction.registration_arrays import FilteredArray
 from masknmf.motion_correction.spatial_filters import compute_highpass_filter_kernel, image_filter
 
@@ -396,6 +396,17 @@ class BasePipeline(ABC):
         self.timings = {name: timing for name, timing in earlier.get("timings", {}).items() if name in steps}
         self.write_config()
         return stored
+
+    def recorded_movie(self, resume: Path | None) -> ArrayLike | None:
+        """
+        Returns the movie the config.json beside the earlier results file records as that run's input, opened lazily.
+        None when resume is None, the config records no movie, or the recorded file is gone.
+        """
+        entry = None if resume is None else recorded_raw_movie(resume)
+        if entry is None or not Path(entry["path"]).exists():
+            return None
+        logger.info(f"no movie given; reading the resumed run's movie {entry['path']}")
+        return load_movie(entry["path"], entry.get("dataset"))
 
     def read_into_ram(self, data: np.ndarray | ArrayLike) -> np.ndarray:
         """

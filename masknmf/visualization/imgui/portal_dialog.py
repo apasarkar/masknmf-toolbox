@@ -46,7 +46,7 @@ class GError(ctypes.Structure):
 
 
 def portal_available() -> bool:
-    """Whether a session bus, libgio and the portal's service file are there; nothing is started to find out."""
+    """Returns True when a session bus, libgio and the portal's service file are present; starts nothing to find out."""
     if not os.environ.get("DBUS_SESSION_BUS_ADDRESS") or ctypes.util.find_library("gio-2.0") is None:
         return False
     dirs_data = [os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")]

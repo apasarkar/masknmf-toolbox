@@ -36,7 +36,7 @@ SEPARATOR_PICKS = "\x1f"
 
 
 def linux_backend() -> Optional[str]:
-    """What draws a dialog on this linux machine: a helper on PATH, else the desktop portal, else None."""
+    """Returns the dialog backend of this linux machine: a helper on PATH, else the desktop portal, else None."""
     if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
         return None
     helper = next((name for name in HELPERS_LINUX if shutil.which(name)), None)
@@ -46,7 +46,7 @@ def linux_backend() -> Optional[str]:
 
 
 def native_dialogs_available() -> bool:
-    """Whether a file dialog can appear where this process runs: always on windows and macos, on linux with a display and a helper or the desktop portal."""
+    """Returns True when a file dialog can appear: always on windows and macos, on linux with a display and a helper or the desktop portal."""
     return sys.platform in ("win32", "darwin") or linux_backend() is not None
 
 

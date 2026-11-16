@@ -257,7 +257,7 @@ def test_a_suite2p_plane_opens_with_its_data_bin_as_the_residuals_movie_and_its_
     assert opened.results.shape == (FRAMES, HEIGHT, WIDTH)
     assert opened.results.spatial_demixed.shape[1] == 2
     assert opened.shifts.shape == (FRAMES, 2) and opened.shifts.dtype == np.float32
-    assert opened.results.residual_array is not None and opened.results.residual_array.shape == (FRAMES, HEIGHT, WIDTH)
+    assert opened.results.raw_residual_array is not None and opened.results.raw_residual_array.shape == (FRAMES, HEIGHT, WIDTH)
     assert opened.raw is None and opened.registered is None and opened.skipped == []
     assert opened.path == plane and opened.results.frame_rate == 7.5
     # stat.npy names the same plane
@@ -268,7 +268,7 @@ def test_a_suite2p_plane_without_data_bin_opens_without_a_residual(tmp_path):
     folder = tmp_path / "plane0"
     write_suite2p_plane(folder, with_bin=False)
     opened = OpenedResults.open(folder)
-    assert opened.results.residual_array is None and opened.skipped == []
+    assert opened.results.raw_residual_array is None and opened.skipped == []
     with pytest.raises(ValueError, match="take no prefix"):
         OpenedResults.open(folder, prefix="global")
 
@@ -280,14 +280,14 @@ def test_a_caiman_file_opens_with_its_accepted_components_and_a_matching_raw_mov
     movie = np.zeros((FRAMES, HEIGHT, WIDTH), np.float32)
     # a file without a ring model keeps the movie as the raw panel and says why there is no residual
     opened = OpenedResults.open(caiman_path, raw=movie)
-    assert opened.raw is movie and opened.results.residual_array is None
+    assert opened.raw is movie and opened.results.raw_residual_array is None
     assert len(opened.skipped) == 1 and "ring-model" in opened.skipped[0]
     opened = OpenedResults.open(caiman_path, raw=np.zeros((FRAMES + 1, HEIGHT, WIDTH), np.float32))
     assert opened.raw is None and "does not match" in opened.skipped[0]
     path_ring = tmp_path / "cnmfe.hdf5"
     write_caiman_file(path_ring, with_ring_model=True)
     opened = OpenedResults.open(path_ring, raw=movie)
-    assert opened.results.residual_array is not None and opened.skipped == []
+    assert opened.results.raw_residual_array is not None and opened.skipped == []
 
 
 def test_view_lists_suite2p_planes_and_caiman_files_beside_results_files(tmp_path, caiman_path, capsys):
@@ -360,7 +360,7 @@ def test_a_miniali_file_opens_with_its_recording_folder_and_drops_the_frames_pas
     assert opened.results.num_frames_raw == FRAMES + 4 and opened.results.num_frames_analyzed == FRAMES
     assert opened.raw is opened.results.raw_array and opened.raw_source == tmp_path / "recording"
     assert opened.shifts.shape == (FRAMES, 2) and isinstance(opened.registered, masknmf.GradientRegistrationArray)
-    assert opened.results.residual_array.shape == (FRAMES, HEIGHT, WIDTH) and opened.skipped == []
+    assert opened.results.raw_residual_array.shape == (FRAMES, HEIGHT, WIDTH) and opened.skipped == []
     with pytest.raises(ValueError, match="need the raw movie"):
         OpenedResults.open(miniali)
     with pytest.raises(ValueError, match="the results 40"):
@@ -420,7 +420,7 @@ def test_a_giant_run_opens_with_its_footprints_traces_shifts_and_activity_channe
     frames = opened.registered[[3, 11]]
     assert frames.shape == (2, HEIGHT, WIDTH)
     np.testing.assert_array_equal(frames[:, 0, 0], [31, 111])
-    assert results.residual_array is None and results.fluctuating_background_array is None
+    assert results.raw_residual_array is None and results.fluctuating_background_array is None
     assert results.signals_array[5].shape == (1, HEIGHT, WIDTH)
 
 

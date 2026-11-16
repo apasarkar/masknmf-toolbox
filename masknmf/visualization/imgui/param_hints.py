@@ -89,7 +89,7 @@ HINTS_COMPRESS = {
     "compute_normalizer": Hint("Noise normalizer", tier="advanced"),
     "tile_device": Hint(
         "Tile device",
-        "Where compression holds its tiles: cpu (host RAM), device (the compute device), or none to let the planner "
+        "Compression holds its tiles on cpu (host RAM) or on device (the compute device); none lets the planner "
         "choose by read cost. device suits data already in RAM; none or cpu suits data read from disk.",
         "advanced",
     ),

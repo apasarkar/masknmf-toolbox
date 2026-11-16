@@ -240,6 +240,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             indicator_polarity: Literal["positive", "negative"] = "negative",
             good_frames: torch.Tensor | np.ndarray | list | None = None,
             remove_intermediates: bool = False,
+            compute_raw_correlation: bool = False,
             stop_after: Literal["registration", "compression", "demixing"] = "demixing",
             resume: str | Path | None = None) -> Path:
         """
@@ -257,6 +258,8 @@ class OnePhotonCulturePipeline(BasePipeline):
 
                     remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
                         results carry the pmd)
+                    compute_raw_correlation (bool): also store raw_residual_correlation_image, the local correlation
+                        image of the registered movie minus the raw-scale signals and background. Skipped when the run has no movie
                     stop_after: the last stage to run: "registration" writes the shifts and template and ends,
                         "compression" ends once the compression is written, "demixing" runs everything
                     resume (str | Path | None): path to a previous results file or it's parent folder.
@@ -297,7 +300,8 @@ class OnePhotonCulturePipeline(BasePipeline):
         if good_frames is None and good_frames_resumed is not None and not good_frames_resumed.all():
             raise ValueError(f"{resume} left frames out; pass the same good_frames to resume it")
         self.run_config = {"frame_rate": frame_rate, "indicator_polarity": indicator_polarity,
-                           "remove_intermediates": remove_intermediates, "stop_after": stop_after,
+                           "remove_intermediates": remove_intermediates,
+                           "compute_raw_correlation": compute_raw_correlation, "stop_after": stop_after,
                            "resume": None if resume is None else str(resume)}
         results_path = self.results_path(base)
         stored = None if resume is None else self.resume(resume, results_path, reuse_compression)
@@ -423,6 +427,10 @@ class OnePhotonCulturePipeline(BasePipeline):
             curr_demix_results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
                 curr_demix_results, moco_array, device=self.torch_device, nonneg=False,
                 frame_batch_size=self.frame_batch_size)
+        if compute_raw_correlation:
+            with self.step("raw residual correlation image"):
+                curr_demix_results.raw_residual_correlation_image = masknmf.demixing.estimate_raw_residual_correlation_image(
+                    curr_demix_results, moco_array)
 
         if good_frames is not None:
 

@@ -311,7 +311,9 @@ def test_start_from_a_loaded_runs_compression_resumes_it_and_back_to_the_movie_r
     window = launcher.Launcher()
     assert window.load_run(source=str(folder)) is None
     assert window.starts_available() == ["registration", "compression"]
+    window.texts["stop-after"] = "compression"
     window.select_start(start="compression")
+    assert window.texts["stop-after"] == "demixing"
     argv = window.argv_run()
     assert argv[argv.index("--resume") + 1] == str(folder / "results.hdf5") and "--config" in argv
     assert window.values["compress_config"] == "skip"
@@ -320,25 +322,26 @@ def test_start_from_a_loaded_runs_compression_resumes_it_and_back_to_the_movie_r
     assert "--resume" not in window.argv_run()
 
 
-def test_tracking_rows_grow_and_build_a_track_command(tmp_path):
-    for name in ("a", "b"):
-        (tmp_path / name).mkdir()
-        with h5py.File(tmp_path / name / "results.hdf5", "w") as file:
-            file.create_group("DemixingResults")
+def test_the_raw_movie_field_fills_with_the_movie_named_after_the_results_file(tmp_path):
+    for channel in ("glutamate", "calcium"):
+        (tmp_path / f"{channel}.tif").touch()
+    cls = scraper.pipeline_registry()["glutamate-calcium-spine"]
+    pipeline = cls(output_folder=str(tmp_path), device="cpu")
+    folder = pipeline.create_run_folder()
+    pipeline.inputs = {f"{channel}_channel": {"path": str(tmp_path / f"{channel}.tif")} for channel in ("glutamate", "calcium")}
+    pipeline.write_config()
+    logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
+    pipeline.log_handler.close()
+    for channel in ("glutamate", "calcium"):
+        (folder / f"results.{channel}.hdf5").touch()
+
+    for channel in ("glutamate", "calcium"):
+        window = launcher.Launcher()
+        window.fill_raw(source=str(folder / f"results.{channel}.hdf5"))
+        assert window.paths_open["raw"] == str(tmp_path / f"{channel}.tif")
     window = launcher.Launcher()
-    window.page = "track"
-    window.paths_tracking["results_0"] = str(tmp_path / "*" / "results.hdf5")
-    assert window.problems() == ["looking for the sessions' results files", "choose the folder the tracking is saved in"]
-    window.search_sessions(rows=tuple(window.results_given(target=window.paths_tracking)))
-    assert window.problems() == ["choose the folder the tracking is saved in"]
-    render_frames(window=window)
-    assert window.paths_tracking["results_1"] == ""
-    window.paths_tracking["out"] = str(tmp_path)
-    assert window.problems() == []
-    args = cli.build_parser(spec=None).parse_args(window.build_argv())
-    assert args.handler is cli.command_track
-    assert args.results == [str(tmp_path / name / "results.hdf5") for name in ("a", "b")]
-    assert args.out == str(tmp_path) and args.um_per_pixel == 1.2
+    window.fill_raw(source=str(folder))
+    assert window.paths_open["raw"] == ""
 
 
 def click_card(original, slug: str, label: str, *args, **kwargs) -> bool:

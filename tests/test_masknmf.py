@@ -1,7 +1,8 @@
 import numpy as np
-import torch
-import masknmf
 import pytest
+import torch
+
+import masknmf
 
 
 @pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="no cuda"))])
@@ -11,3 +12,4 @@ def test_rigid_motion(device):
     rigid.compute_template(x)
     out = rigid.motion_correct(x)[:]
     assert out.shape == x.shape
+    assert np.isfinite(np.asarray(out)).all()

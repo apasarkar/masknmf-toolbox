@@ -31,7 +31,7 @@ import masknmf
 from masknmf import cli
 from masknmf.demixing._adapters import ADAPTERS, adapter_for, adapter_patterns
 from masknmf.demixing.curation import latest_results
-from masknmf.io import group_name_compression, group_name_demixing, group_names_registration, stage_groups
+from masknmf.io import group_name_compression, group_name_demixing, group_names_registration, recorded_raw_movie, stage_groups
 from masknmf.pipelines import scraper
 from masknmf.pipelines._base import BasePipeline
 from masknmf.visualization.imgui import guide, param_hints
@@ -924,6 +924,10 @@ class Launcher:
         self.start_from = start
         resume = next(p for p in self.spec.run_scalars if p.field == "resume")
         self.texts[resume.name] = "" if start == "movie" else str(self.results_loaded())
+        stop_after = next((p for p in self.spec.run_scalars if p.field == "stop_after"), None)
+        if stop_after is not None and start != "movie":
+            # NOTE: the loaded run's stop_after would end the resumed run where it starts
+            self.texts[stop_after.name] = text_default(param=stop_after)
         compress = next((s for s in self.spec.sections if s.argument == "compress_config"), None)
         if compress is None:
             return
@@ -944,18 +948,21 @@ class Launcher:
         self.found = self.describe(source=source)
 
     def fill_raw(self, source: str) -> None:
-        """The raw movie the run read, from the config.json beside its results, while the field is empty."""
+        """
+        Fill the raw movie field, while it is empty, with the movie the run read. A results file of a run that
+        read several movies gets the one named after it; the folder of such a run is left empty, and the viewer
+        finds the raw movie of each results file it opens.
+        """
         path = Path(source).expanduser()
-        folder = path if path.is_dir() else path.parent
-        if (folder / "config.json").is_file() and self.paths_open["raw"].strip() == "":
+        if path.exists() and self.paths_open["raw"].strip() == "":
             try:
-                inputs = json.loads((folder / "config.json").read_text()).get("inputs", {})
+                # a folder has no channel in its name, so it gets a movie only when the run read one
+                movie = recorded_raw_movie(path / "results.hdf5" if path.is_dir() else path)
             except (OSError, ValueError):
-                inputs = {}
-            movie = next((v for v in inputs.values() if isinstance(v, dict) and not str(v.get("path", "")).lower().endswith(".npy")), None)
+                movie = None
             if movie is not None and Path(movie["path"]).expanduser().exists():
                 self.paths_open["raw"] = movie["path"]
-                self.dataset_raw = movie.get("dataset", "")
+                self.dataset_raw = movie.get("dataset") or ""
 
     def describe(self, source: str) -> dict[str, Any]:
         """What a path holds, for the Found card."""

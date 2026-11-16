@@ -30,6 +30,7 @@ __all__ = [
     "load_movie",
     "movie_beside",
     "find_raw_movie",
+    "recorded_raw_movie",
     "stage_groups",
     "OpenedResults",
     "has_group",
@@ -182,6 +183,20 @@ def read_nmf_config(path: str | Path) -> dict | None:
     return None if record is None else last_nmf_config(record=record)
 
 
+def recorded_raw_movie(path: str | Path) -> dict | None:
+    """
+    The movie the config.json beside the results file ``path`` records among the run's inputs, as its entry there
+    (``path`` and, for hdf5, ``dataset``). A run that read several movies (``results.calcium.hdf5``) gives the input
+    named after the results file. None when there is no config.json or no input matches.
+    """
+    inputs = (read_run_record(path) or {}).get("inputs", {})
+    movies = {name: entry for name, entry in inputs.items()
+              if isinstance(entry, dict) and "path" in entry and Path(entry["path"]).suffix.lower() != ".npy"}
+    channel = results_stem(path).partition(".")[2]
+    name = next((n for n in movies if len(movies) == 1 or (channel and n.startswith(channel))), None)
+    return None if name is None else movies[name]
+
+
 def find_raw_movie(path: str | Path) -> tuple[ArrayLike | None, Path] | None:
     """
     The raw movie of the run a results file belongs to, and where it is: the movie the config.json beside ``path``
@@ -189,15 +204,11 @@ def find_raw_movie(path: str | Path) -> tuple[ArrayLike | None, Path] | None:
     A run that read several movies (``results.calcium.hdf5``) uses the input named after the results file.
     The movie is None when the recorded file is not one :func:`load_movie` reads.
     """
-    inputs = (read_run_record(path) or {}).get("inputs", {})
-    movies = {name: entry for name, entry in inputs.items()
-              if isinstance(entry, dict) and "path" in entry and Path(entry["path"]).suffix.lower() != ".npy"}
-    channel = results_stem(path).partition(".")[2]
-    name = next((n for n in movies if len(movies) == 1 or (channel and n.startswith(channel))), None)
-    if name is not None and Path(movies[name]["path"]).exists():
-        source = Path(movies[name]["path"])
+    entry = recorded_raw_movie(path)
+    if entry is not None and Path(entry["path"]).exists():
+        source = Path(entry["path"])
         try:
-            return load_movie(source, movies[name].get("dataset")), source
+            return load_movie(source, entry.get("dataset")), source
         except Exception:
             return None, source
     beside = movie_beside(path)
