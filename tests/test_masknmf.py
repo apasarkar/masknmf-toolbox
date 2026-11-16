@@ -1,19 +1,11 @@
 import numpy as np
-import torch
 import masknmf
-import pytest
 
 
-def test_rigid_motion_gpu():
-    x = (np.random.rand(4, 32, 32) * 4096).astype(np.int16)
-    rigid = masknmf.RigidMotionCorrector(max_shifts=(3, 3))
+def test_rigid_motion_registers_an_integer_movie():
+    x = (np.random.default_rng(0).random((4, 32, 32)) * 4096).astype(np.int16)
+    rigid = masknmf.RigidMotionCorrector(max_shifts=(3, 3), device="cpu")
     rigid.compute_template(x)
-    out = masknmf.RegistrationArray(x, rigid)[:]
+    out = rigid.motion_correct(x)[:]
     assert out.shape == x.shape
-
-def test_rigid_motion_cpu():
-    x = (np.random.rand(4, 32, 32) * 4096).astype(np.int16)
-    rigid = masknmf.RigidMotionCorrector(max_shifts=(3, 3))
-    rigid.compute_template(x)
-    out = masknmf.RegistrationArray(x, rigid)[:]
-    assert out.shape == x.shape
+    assert np.isfinite(np.asarray(out)).all()

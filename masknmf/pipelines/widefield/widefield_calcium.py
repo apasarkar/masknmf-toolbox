@@ -4,6 +4,7 @@ from masknmf.arrays import LazyFrameLoader, ArrayLike
 from masknmf.pipelines._base import BasePipeline
 from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorrectionConfig, MotionCorrectionConfigs
 from masknmf.compression import CompressionArray
+from masknmf.io import read_good_frames
 from masknmf.pipelines.configs.compression_configs import CompressDenoiseConfig, CompressionConfigs
 import torch
 from typing import *
@@ -61,7 +62,7 @@ class WidefieldSinglechannelPipeline(BasePipeline):
     def run(self,
             data: np.ndarray | ArrayLike,
             indicator_polarity: Literal["positive", "negative"] = "positive",
-            good_frame_indicator: torch.Tensor | np.ndarray | list | None = None,
+            good_frames: torch.Tensor | np.ndarray | list | None = None,
             exclude_border_radius: int = 0,
             stop_after: Literal["registration", "compression"] = "compression",
             resume: str | Path | None = None) -> Path:
@@ -84,7 +85,8 @@ class WidefieldSinglechannelPipeline(BasePipeline):
             data = self.read_into_ram(data)
         data = self._construct_ophys_array(data,
                                            indicator_polarity=indicator_polarity,
-                                           good_frame_indicator=good_frame_indicator)
+                                           good_frames=good_frames,
+                                           results_path=results_path)
         moco_data, shift_mask = self.motion_correct(data,
                                                     self.motion_correct_config,
                                                     results_path,
@@ -97,9 +99,10 @@ class WidefieldSinglechannelPipeline(BasePipeline):
 
         with self.step("compression"):
             compressed_results = compress_strategy.compress(moco_data)
-            if good_frame_indicator is not None:
+            good_frames = read_good_frames(results_path)
+            if good_frames is not None and not good_frames.all():
                 compressed_results = CompressionArray.infill_bad_frames(compressed_results,
-                                                                                good_frame_indicator=good_frame_indicator,
+                                                                                good_frames=good_frames,
                                                                                 device='cpu')
             compressed_results.export(results_path)
         return self.finish()

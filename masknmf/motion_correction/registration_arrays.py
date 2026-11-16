@@ -5,6 +5,7 @@ import numpy as np
 
 import torch
 from masknmf.arrays.array_interfaces import LazyFrameLoader, ArrayLike
+from masknmf.arrays.ophys_array import OphysArray
 from masknmf.utils import Serializer
 from pathlib import Path
 from abc import ABC, abstractmethod
@@ -16,6 +17,7 @@ from masknmf.motion_correction.strategies import MotionCorrectionStrategy
 class BaseRegistrationArray(ArrayLike, Serializer, ABC):
     _strategy_cls: type = None
     _default_batch_size: int = 200
+    _per_frame: tuple[str, ...] = ("shifts",)  # the serialized attributes with one entry per frame
 
     def __init__(self,
                  *,
@@ -121,13 +123,19 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
                   input_movie: ArrayLike,
                   device: str | torch.device | None = None,
                   **kwargs):
-        """Load a stored registration and apply it to input_movie; device is where the shifts are applied."""
+        """
+        Load a stored registration and apply it to input_movie; device is where the shifts are applied.
+
+        input_movie can be the whole recording or only the frames the run kept. The whole recording is read in
+        the run's indicator polarity and returns a registration on its frame axis, with zeros at the frames left out.
+        """
         if cls._strategy_cls is None:
             raise NotImplementedError(
                 f"{cls.__name__} must set `_strategy_cls` to enable from_hdf5"
             )
         with h5py.File(path, "r") as f:
             has_strategy = cls._strategy_cls.__name__ in f
+            has_ophys = OphysArray.__name__ in f
         if has_strategy:
             kwargs_strategy = load_dict(path, cls._strategy_cls.__name__)
             if device is not None:
@@ -139,7 +147,40 @@ class BaseRegistrationArray(ArrayLike, Serializer, ABC):
             if device is not None:
                 kwargs.setdefault("compute_device", device) ##Tricky: above, strategy has a settable device property, for registration array it is compute_device
         reg_arr_dict = load_dict(path, cls.__name__)
+        if has_ophys:
+            # the stored shifts cover every raw frame
+            ophys_dict = load_dict(path, OphysArray.__name__)
+            good_frames = ophys_dict["good_frames"].astype(bool)
+            if not isinstance(input_movie, OphysArray) and input_movie.shape[0] == good_frames.shape[0]:
+                input_movie = OphysArray(input_movie,
+                                         negative_indicator=bool(ophys_dict["negative_indicator"]),
+                                         good_frames=good_frames,
+                                         mean_image=ophys_dict.get("mean_image")).infilled()
+            elif input_movie.shape[0] == int(good_frames.sum()):
+                for name in cls._per_frame:
+                    if name in reg_arr_dict:
+                        reg_arr_dict[name] = torch.as_tensor(reg_arr_dict[name])[torch.as_tensor(good_frames)]
         return cls(input_movie=input_movie, strategy=strat, **reg_arr_dict, **kwargs)
+
+    def infill_bad_frames(self) -> "BaseRegistrationArray":
+        """
+        Return this registration on the frame axis of the whole recording.
+
+        The frames its input OphysArray leaves out get zero shifts and read as zeros. Returns self if its input
+        movie leaves no frame out.
+        """
+        movie = self.input_movie
+        if not isinstance(movie, OphysArray) or movie.good_frames is None or movie.good_frames.all() or movie.infill:
+            return self
+        good_frames = torch.as_tensor(movie.good_frames)
+        stored = self._to_dict()
+        for name in self._per_frame:
+            if name in stored:
+                kept = torch.as_tensor(stored[name])
+                stored[name] = torch.zeros((good_frames.numel(), *kept.shape[1:]), dtype=kept.dtype, device=kept.device)
+                stored[name][good_frames.to(kept.device)] = kept
+        return type(self)(input_movie=movie.infilled(), strategy=self.strategy, batch_size=self.batch_size,
+                          compute_device=self.compute_device, output_device=self.output_device, **stored)
 
 
 

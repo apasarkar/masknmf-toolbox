@@ -1,8 +1,12 @@
+import copy
 import math
 import threading
+from pathlib import Path
 
+import h5py
 import numpy as np
 import torch
+from masknmf.utils._serialization import save_dict
 from masknmf.utils.display import progress
 
 from masknmf.arrays.array_interfaces import ArrayLike
@@ -22,6 +26,8 @@ class OphysArray(ArrayLike):
         - include_mean=False returns the mean-subtracted movie (the positive view minus mean_image).
         - good_frames crops the movie in time. Only frames labeled 1 exist as far as this array is concerned:
           shape, all temporal indexing and the mean image refer to the cropped movie.
+        - infilled() returns the cropped movie on the dataset's frame axis: shape and temporal indexing are the
+          dataset's, and the frames labeled 0 read as zeros.
 
     The mean image costs a full pass over the data, so it is only computed when the view depends on it:
         - At construction, if negative_indicator=True or include_mean=False.
@@ -36,7 +42,8 @@ class OphysArray(ArrayLike):
                  include_mean: bool = True,
                  device='cpu',
                  batch_size: int = 200,
-                 good_frames: np.ndarray | torch.Tensor | list | None = None):
+                 good_frames: np.ndarray | torch.Tensor | list | None = None,
+                 mean_image: np.ndarray | torch.Tensor | None = None):
         """
         Args:
             dataset (masknmf.ArrayLike): Shape (num_frames, height, width)
@@ -49,14 +56,17 @@ class OphysArray(ArrayLike):
             good_frames (np.ndarray | torch.Tensor | list | None): Optional 1D binary vector of length dataset.shape[0].
                 Only frames labeled 1 are exposed: shape[0] becomes good_frames.sum(), and all temporal indexing
                 and the mean image refer to this temporally cropped movie. None keeps every frame.
+            mean_image (np.ndarray | torch.Tensor | None): Mean over the good frames, shape (height, width), from an
+                earlier pass over this dataset with these good_frames. None computes it when it is first needed.
         """
         self._dataset = dataset
         self._device = device
         self._batch_size = batch_size
         self._negative_indicator = negative_indicator
         self._include_mean = include_mean
+        self._infill = False
         self._set_good_frames(good_frames)
-        self._mean_image = None
+        self._mean_image = None if mean_image is None else torch.as_tensor(mean_image, dtype=self.dtype, device=device)
         self._mean_lock = threading.Lock()
         if negative_indicator or not include_mean:
             self._get_mean()  # every frame read will need it, so pay for it now rather than on the first frame
@@ -78,7 +88,7 @@ class OphysArray(ArrayLike):
             if not mask.all():  # an all-ones mask is the identity, so keep the zero-overhead path
                 self._frame_map = np.flatnonzero(mask)
                 self._run_offset = self._frame_map - np.arange(self._frame_map.size)
-        num_frames = num_raw_frames if self._frame_map is None else int(self._frame_map.size)
+        num_frames = num_raw_frames if self._frame_map is None or self._infill else int(self._frame_map.size)
         self._shape = (num_frames, height, width)
 
     def _to_raw(self, idx: int | slice | list | np.ndarray) -> int | slice | list | np.ndarray:
@@ -118,7 +128,36 @@ class OphysArray(ArrayLike):
     @property
     def frame_indices(self) -> np.ndarray:
         """Index in the full dataset of each frame of this array"""
-        return np.arange(self._shape[0]) if self._frame_map is None else self._frame_map
+        return np.arange(self._shape[0]) if self._frame_map is None or self._infill else self._frame_map
+
+    @property
+    def infill(self) -> bool:
+        """True if this is the infilled view: the dataset's frame axis, with zeros at the frames labeled 0."""
+        return self._infill
+
+    def infilled(self) -> "OphysArray":
+        """
+        Return this movie on the dataset's frame axis, with zeros at the frames good_frames labels 0.
+
+        The copy shares the data and the mean image, which stays the mean of the frames labeled 1.
+        """
+        infilled = copy.copy(self)
+        infilled._infill = True
+        infilled._shape = (int(self._dataset.shape[0]), *self._shape[1:])
+        return infilled
+
+    def export(self, path: str | Path) -> None:
+        """
+        Write good_frames, the indicator polarity and the mean image to the OphysArray group of the hdf5 file at path.
+
+        The mean image is written only if it has been computed, which a negative indicator always has. An existing
+        group is replaced. masknmf.io.read_good_frames and the registration arrays' from_hdf5 read it.
+        """
+        good_frames = np.ones(self._dataset.shape[0], dtype=bool) if self._good_frames is None else self._good_frames
+        group = {"good_frames": good_frames, "negative_indicator": int(self._negative_indicator)}
+        if self._mean_image is not None:
+            group["mean_image"] = self._mean_image.cpu().numpy()
+        save_dict(group, filename=path, group=type(self).__name__, exists_ok=True)
 
     @property
     def batch_size(self) -> int:
@@ -130,12 +169,12 @@ class OphysArray(ArrayLike):
 
     def _compute_mean(self) -> torch.Tensor:
         """Full pass over the good frames of the raw data. Use mean_image / _get_mean, which cache the result."""
-        num_frames = self.shape[0]
+        num_frames = self.shape[0] if self._frame_map is None else int(self._frame_map.size)
         cumulated_mean = torch.zeros(self.shape[1], self.shape[2], dtype=self.dtype, device=self.device)
-        num_batches = math.ceil(self.shape[0] / self.batch_size)
+        num_batches = math.ceil(num_frames / self.batch_size)
         for ind in progress(range(num_batches), desc=f"mean image over {num_frames} frames"):
             start_pt = ind * self.batch_size
-            end_pt = min(self.shape[0], start_pt + self.batch_size)
+            end_pt = min(num_frames, start_pt + self.batch_size)
             frames = slice(start_pt, end_pt)
             data_subset = self._dataset[frames if self._frame_map is None else self._to_raw(frames)]
             if isinstance(data_subset, np.ndarray):
@@ -223,7 +262,7 @@ class OphysArray(ArrayLike):
 
         frame_indexer, item = self._parse_indices(item)  # validates and normalizes against the cropped shape
 
-        if self._frame_map is not None:
+        if self._frame_map is not None and not self._infill:
             # Translate the (already normalized) temporal index from the cropped movie to the underlying dataset
             frame_indexer = self._to_raw(frame_indexer)
             item = (frame_indexer,) + item[1:] if isinstance(item, tuple) else frame_indexer
@@ -232,7 +271,17 @@ class OphysArray(ArrayLike):
             frame_indexer = slice(i, i + 1)
         spatial = normalize_spatial_indexer(item, self.shape[1:])
         data_subset = torch.as_tensor(self._dataset[(frame_indexer, *spatial)]).to(self.device).to(self.dtype) #Ensures consistent indexing scheme
+        view = self._positive_view(data_subset, spatial, include_mean)
+        if self._frame_map is None or not self._infill:
+            return view
+        good = np.atleast_1d(self._good_frames[frame_indexer])
+        if good.all():
+            return view
+        # multiply out of place: view can share memory with the dataset
+        return view * torch.as_tensor(good, device=view.device).reshape(-1, *([1] * (view.ndim - 1)))
 
+    def _positive_view(self, data_subset: torch.Tensor, spatial: tuple, include_mean: bool) -> torch.Tensor:
+        """Return the frames in data_subset, read at the spatial crop, as the positively tuned view."""
         if not self.negative_indicator and include_mean:
             return data_subset  # already the positive view with its baseline: no mean needed
 

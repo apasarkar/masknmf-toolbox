@@ -10,6 +10,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 import pytest
+import torch
 
 import masknmf
 from masknmf.pipelines import scraper
@@ -159,9 +160,9 @@ class StubResults:
             file.create_group(masknmf.DemixingResults.__name__)
 
 
-def test_a_curated_file_keeps_the_registration_and_compression_so_a_run_resumes_from_it(tmp_path):
+def test_a_curated_file_keeps_every_group_the_curated_results_do_not_write(tmp_path):
     names = {"RigidMotionCorrector", "RigidRegistrationArray", masknmf.CompressionArray.__name__,
-             masknmf.DemixingResults.__name__}
+             masknmf.DemixingResults.__name__, "OphysArray", "global", "cross_channel_mask"}
     with h5py.File(tmp_path / "results.hdf5", "w") as file:
         for name in names:
             file.create_group(name)
@@ -229,7 +230,7 @@ def test_stop_after_registration_writes_the_shifts_and_resume_applies_them(tmp_p
     pipeline = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path), device="cpu")
     folder = pipeline.run(movie, frame_rate=30, stop_after="registration")
     with h5py.File(folder / "results.hdf5") as file:
-        assert set(file) == {"RigidMotionCorrector", "RigidRegistrationArray"}
+        assert set(file) == {"OphysArray", "RigidMotionCorrector", "RigidRegistrationArray"}
         shifts = file["RigidRegistrationArray/shifts"][()]
     config = json.loads((folder / "config.json").read_text())
     assert config["configs"]["stop_after"] == "registration" and config["run"]["status"] == "done"
@@ -250,13 +251,78 @@ def test_one_photon_saves_its_gradient_registration_and_applies_it_on_resume(tmp
     pipeline = masknmf.OnePhotonCulturePipeline(output_folder=str(tmp_path), device="cpu")
     folder = pipeline.run(movie, frame_rate=30, indicator_polarity="positive", active_frames=active, stop_after="registration")
     with h5py.File(folder / "results.hdf5") as file:
-        assert set(file) == {"GradientMotionCorrector", "GradientRegistrationArray"}
+        assert set(file) == {"GradientMotionCorrector", "GradientRegistrationArray", "OphysArray"}
         steps = file["GradientRegistrationArray/gradient_steps"][()]
     resumed = pipeline.run(movie, frame_rate=30, indicator_polarity="positive", active_frames=active,
                             stop_after="registration", resume=folder / "results.hdf5")
     with h5py.File(resumed / "results.hdf5") as file:
         assert np.array_equal(file["GradientRegistrationArray/gradient_steps"][()], steps)
     close_log(pipeline)
+
+
+def cells_movie() -> np.ndarray:
+    """Twelve cells with slow transients over noise, enough for the calcium pipeline to demix in a few seconds."""
+    rng = np.random.default_rng(0)
+    yy, xx = np.mgrid[:64, :64]
+    cells = np.array([np.exp(-((yy - y) ** 2 + (xx - x) ** 2) / 10.0) for y, x in rng.uniform(8, 56, (12, 2))])
+    kernel = np.exp(-np.arange(100) / 20.0)
+    traces = np.stack([np.convolve((rng.random(1500) < 0.01) * 3.0, kernel)[:1500] for _ in cells], axis=1)
+    return (100 + 60 * np.einsum("tk,kyx->tyx", traces, cells) + rng.normal(0, 5, (1500, 64, 64))).astype(np.float32)
+
+
+def test_a_resumed_run_without_a_movie_reads_the_one_its_config_records_and_skips_raw_traces_when_it_is_gone(tmp_path):
+    filepath_movie = tmp_path / "movie.hdf5"
+    with h5py.File(filepath_movie, "w") as file:
+        file["mov"] = cells_movie()
+
+    pipeline = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path / "runs"), device="cpu")
+    pipeline.inputs = {"data": {"path": str(filepath_movie), "dataset": "mov"}}
+    first = pipeline.run(masknmf.io.load_movie(filepath_movie, "mov"), frame_rate=30)
+    raw_first = masknmf.DemixingResults.from_hdf5(first / "results.hdf5").temporal_demixed_raw
+    close_log(pipeline)
+
+    resumed = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path / "runs"), compress_config="skip", device="cpu")
+    with_movie = resumed.run(None, frame_rate=30, resume=first / "results.hdf5", compute_raw_correlation=True)
+    results = masknmf.DemixingResults.from_hdf5(with_movie / "results.hdf5")
+    assert results.temporal_demixed_raw is not None and results.temporal_demixed_raw.shape[0] == raw_first.shape[0]
+    assert results.raw_residual_correlation_image is not None
+    close_log(resumed)
+
+    filepath_movie.unlink()
+    without_movie = resumed.run(None, frame_rate=30, resume=first / "results.hdf5", compute_raw_correlation=True)
+    results = masknmf.DemixingResults.from_hdf5(without_movie / "results.hdf5")
+    assert results.temporal_demixed_raw is None and results.raw_residual_correlation_image is None
+    close_log(resumed)
+
+
+def test_compute_raw_correlation_stores_the_raw_residuals_image_computed_without_the_excluded_frames(tmp_path):
+    movie = cells_movie()
+    good_frames = np.ones(movie.shape[0], dtype=bool)
+    good_frames[50:80] = False
+    corrupted = movie.copy()
+    corrupted[50:80] += 2000
+    pipeline = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path), device="cpu")
+
+    plain = masknmf.DemixingResults.from_hdf5(pipeline.run(movie, frame_rate=30) / "results.hdf5")
+    assert plain.raw_residual_correlation_image is None
+
+    folder = pipeline.run(corrupted, frame_rate=30, good_frames=good_frames, compute_raw_correlation=True)
+    assert json.loads((folder / "config.json").read_text())["configs"]["compute_raw_correlation"] is True
+    results = masknmf.DemixingResults.from_hdf5(folder / "results.hdf5")
+    image = results.raw_residual_correlation_image
+    assert image.shape == movie.shape[1:] and torch.isfinite(image).all() and image.abs().max() <= 1
+
+    # 0.14 here; the same image of the movie with its 2000-count excluded frames left in is 0.48
+    assert float(image.mean()) < 0.3
+    close_log(pipeline)
+
+
+@pytest.mark.parametrize("slug", [slug for slug in SLUGS if slug != "widefield-singlechannel"])
+def test_every_demixing_pipeline_takes_compute_raw_correlation_as_an_off_by_default_flag(slug):
+    spec = scraper.scrape(scraper.pipeline_registry()[slug])
+    param = next(p for p in spec.run_scalars if p.field == "compute_raw_correlation")
+    assert param.flag == "--compute-raw-correlation" and param.default is False
+    assert scraper.coerce(param=param, text="true") is True
 
 
 def test_stop_after_refuses_runs_with_nothing_to_write(tmp_path):

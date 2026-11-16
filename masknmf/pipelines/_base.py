@@ -11,6 +11,7 @@ import operator
 import os
 import threading
 import time
+import warnings
 import h5py
 import numpy as np
 import torch
@@ -29,7 +30,7 @@ from masknmf.pipelines.configs.motion_correction_configs import RigidMotionCorre
 from masknmf.pipelines.configs.compression_configs import CompressConfig, CompressDenoiseConfig
 from masknmf.pipelines.configs.demixing_configs import MultipassDemixingConfig, SinglepassDemixingConfig, SuperpixelInitConfig
 from masknmf.utils import display, get_timestamp, TIMESTAMP_FORMAT, torch_select_device
-from masknmf.io import REGISTRATION_ARRAYS, has_group, drop_group, create_run_folder, log_to, write_run_config
+from masknmf.io import REGISTRATION_ARRAYS, has_group, drop_group, create_run_folder, log_to, read_ophys_group, write_run_config, recorded_raw_movie, load_movie
 from masknmf.motion_correction.registration_arrays import FilteredArray
 from masknmf.motion_correction.spatial_filters import compute_highpass_filter_kernel, image_filter
 
@@ -65,10 +66,15 @@ class RecordsFailure:
         return self if pipeline is None else functools.partial(self, pipeline)
 
     def __call__(self, pipeline, *args, **kwargs):
+        if "good_frame_indicator" in kwargs:
+            if "good_frames" in kwargs:
+                raise TypeError("pass good_frames only; good_frame_indicator is its deprecated name")
+            warnings.warn("good_frame_indicator is deprecated; use good_frames", DeprecationWarning, stacklevel=2)
+            kwargs["good_frames"] = kwargs.pop("good_frame_indicator")
         # a folder left from an earlier run of the same pipeline is not this run's
         pipeline.run_folder = None
         try:
-            return self.run(pipeline, **pipeline.arguments_resumed(run=self.run, args=args, kwargs=kwargs))
+            return self.run(pipeline, **pipeline.get_run_args(run=self.run, args=args, kwargs=kwargs))
         except BaseException:
             if pipeline.run_folder is not None:
                 logger.exception(f"{type(pipeline).__name__} failed")
@@ -162,19 +168,15 @@ class BasePipeline(ABC):
                   for name, value in loaded["configs"].items() if name in parameters}
         return cls(**{**values, **overrides})
 
-    def arguments_resumed(self, run: Callable, args: tuple, kwargs: dict) -> dict:
+    def get_run_args(self, run: Callable, args: tuple, kwargs: dict) -> dict:
         """
-        The arguments of run by name. With a resume that has a config.json beside it, the run arguments not
-        given and the config arguments of __init__ not given take that run's values; stop_after is this run's own.
+        Return the keyword arguments to call run with.
 
-        Args:
-            run (Callable): The pipeline's run function, taking the pipeline first
-            args (tuple): The positional arguments run was called with, after the pipeline
-            kwargs (dict): The keyword arguments run was called with
-        Returns:
-            dict: Every argument run was given, and those taken from the earlier run, by name
+        A resumed run takes the run arguments and the pipeline's configs it was not given from the earlier run's
+        config.json. stop_after is never carried over.
+
         Raises:
-            ValueError: If the config.json is another pipeline's
+            ValueError: If the config.json belongs to another pipeline
         """
         parameters_run = inspect.signature(run).parameters
         arguments = inspect.signature(run).bind_partial(self, *args, **kwargs).arguments
@@ -379,6 +381,8 @@ class BasePipeline(ABC):
         names = [] if stored is None else [stored.__name__, stored._strategy_cls.__name__]
         if reuse_compression:
             names.append(CompressionArray.__name__)
+        if has_group(resume, OphysArray.__name__):
+            names.append(OphysArray.__name__)
         with h5py.File(resume, "r") as source, h5py.File(results_path, "a") as target:
             for name in names:
                 source.copy(source[name], target, name=name)
@@ -392,6 +396,17 @@ class BasePipeline(ABC):
         self.timings = {name: timing for name, timing in earlier.get("timings", {}).items() if name in steps}
         self.write_config()
         return stored
+
+    def recorded_movie(self, resume: Path | None) -> ArrayLike | None:
+        """
+        Returns the movie the config.json beside the earlier results file records as that run's input, opened lazily.
+        None when resume is None, the config records no movie, or the recorded file is gone.
+        """
+        entry = None if resume is None else recorded_raw_movie(resume)
+        if entry is None or not Path(entry["path"]).exists():
+            return None
+        logger.info(f"no movie given; reading the resumed run's movie {entry['path']}")
+        return load_movie(entry["path"], entry.get("dataset"))
 
     def read_into_ram(self, data: np.ndarray | ArrayLike) -> np.ndarray:
         """
@@ -425,6 +440,8 @@ class BasePipeline(ABC):
         results_path, that registration is applied to data instead. Also returns a pixel weighting that is 0 where
         the shifts moved pixels in from outside the fov and on the outer exclude_border_radius pixels.
         """
+        # written before the registration: its shifts cover every raw frame and are only readable with the mask
+        data.export(results_path)
         if stored is not None:
             logger.info(f"applying the stored {stored.__name__}")
             moco_data = stored.from_hdf5(results_path, input_movie=data, device=self.device)
@@ -454,7 +471,7 @@ class BasePipeline(ABC):
                     moco_strategy.compute_template(reference_data)
                 moco_data = moco_strategy.motion_correct(reference_data, target_movie=data)
                 moco_data.output_device = torch.device('cpu')
-                moco_data.export(results_path)
+                moco_data.infill_bad_frames().export(results_path)
 
         if isinstance(moco_data, BaseRegistrationArray):
             shift_mask = construct_moco_template(moco_data.shifts.cpu().numpy(), moco_data.shape[1:]).astype("float")
@@ -466,7 +483,7 @@ class BasePipeline(ABC):
             shift_mask[-1 * exclude_border_radius:, :] = 0
             shift_mask[:, -1 * exclude_border_radius:] = 0
         return moco_data, shift_mask
-    
+
     def _filtered_reference(self, data: ArrayLike, config: MotionCorrectionFilterConfig) -> FilteredArray:
         """Define a lazy transformation of the input dataset that we use to compute per-frame shifts, and we
         apply this to the original dataset
@@ -583,14 +600,29 @@ class BasePipeline(ABC):
     def _construct_ophys_array(self,
                                data: ArrayLike,
                                indicator_polarity: Literal["positive", "negative"],
-                               good_frame_indicator: torch.Tensor | np.ndarray | list | None):
+                               good_frames: torch.Tensor | np.ndarray | list | None,
+                               results_path: str | None = None):
+        """
+        Wrap data in the OphysArray the run works on: the positively tuned view of its good frames.
+
+        If good_frames is None, the good frames stored in results_path are used; resume copies them there
+        from the earlier run. A good_frames that differs from the stored good frames raises, because the
+        stored registration fits the stored ones. A stored mean image is reused instead of read from data again.
+        """
         if indicator_polarity.lower() not in {"positive", "negative"}:
             raise ValueError("indicator polarity can only be positive or negative")
+        stored = read_ophys_group(results_path)
+        if good_frames is None:
+            good_frames = stored.get("good_frames")
+        elif "good_frames" in stored and not np.array_equal(
+                torch.as_tensor(good_frames).cpu().numpy().astype(bool), stored["good_frames"]):
+            raise ValueError(f"good_frames differs from the good frames the resumed run stored in {results_path}")
         ophys_output = OphysArray(data,
                                   negative_indicator = True if indicator_polarity.lower() == "negative" else False,
                                   include_mean = True,
                                   device=self.torch_device,
-                                  good_frames = good_frame_indicator)
+                                  good_frames = good_frames,
+                                  mean_image = stored.get("mean_image"))
         return ophys_output
 
     @property

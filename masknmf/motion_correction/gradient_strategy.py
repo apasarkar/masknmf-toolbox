@@ -353,6 +353,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
     """
 
     _serialized = {"gradient_steps", "gradient", "shifts"}
+    _per_frame = ("gradient_steps", "shifts")
     _strategy_cls = GradientMotionCorrector
 
     def __init__(
@@ -370,7 +371,7 @@ class GradientRegistrationArray(BaseRegistrationArray):
         """
         Args:
             input_movie (OphysArray): Shape (num_frames, fov_height, fov_width). num_frames is the number of frames that are
-                actually analyzed (specified by good_frame_indicator in the OPhysArray constructor).
+                actually analyzed (specified by good_frames in the OphysArray constructor).
             gradient_steps (torch.Tensor): Shape (num_frames, 2). The per-frame gradient steps required to motion correct
                 the input movie.
             gradient (torch.Tensor): Shape (num_pixels, 2) or (height, width, 2). The gradients in both spatial dimensions. If flattened, the gradient
@@ -399,7 +400,13 @@ class GradientRegistrationArray(BaseRegistrationArray):
             self._shifts = self._gradient_steps
         else:
             self._shifts = torch.as_tensor(shifts, device=self.compute_device, dtype=self.dtype)
-        self._gradient_steps_mean = torch.mean(self._gradient_steps, dim=0)
+        # left-out frames of an infilled movie have zero steps: they are excluded from the mean and stay zero frames
+        self._infilled_good_frames = None
+        if (isinstance(input_movie, OphysArray) and input_movie.infill and input_movie.good_frames is not None
+                and not input_movie.good_frames.all()):
+            self._infilled_good_frames = torch.as_tensor(input_movie.good_frames, device=self.compute_device)
+        kept_steps = self._gradient_steps if self._infilled_good_frames is None else self._gradient_steps[self._infilled_good_frames]
+        self._gradient_steps_mean = torch.mean(kept_steps, dim=0)
         self._include_mean = True
 
     @property
@@ -499,6 +506,8 @@ class GradientRegistrationArray(BaseRegistrationArray):
             # purpose: OphysArray can return the caller's own buffer (positive indicator, float32, same device), and an
             # in-place subtract would overwrite the raw movie. The extra temporary is one batch, not the request.
             block = block - torch.einsum("hwk,tk->thw", gradient_crop, steps)
+            if self._infilled_good_frames is not None:
+                block = block * self._infilled_good_frames[torch.as_tensor(chunk, device=self.compute_device)][:, None, None]
 
             if select_rows:
                 block = block[:, row_local_t, :]

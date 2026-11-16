@@ -1,7 +1,7 @@
 from dataclasses import asdict
 import masknmf
 from masknmf.compression import CompressStrategy, CompressDenoiseStrategy
-from masknmf.arrays import LazyFrameLoader, ArrayLike
+from masknmf.arrays import LazyFrameLoader, ArrayLike, OphysArray
 from masknmf.motion_correction import BaseRegistrationArray, DummyMotionCorrector, RigidMotionCorrector, PiecewiseRigidMotionCorrector
 from masknmf.utils import display
 
@@ -19,6 +19,9 @@ from numbers import Integral
 import torch
 import cv2
 import h5py
+import logging
+
+logger = logging.getLogger(__name__)
 
 NMF_JUST_HALS = {'maxiter': 40,
                 'deletion_threshold': 0.2,
@@ -44,7 +47,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
     def __init__(self,
                  output_folder: str | Path | None = None,
                  motion_correct_config: MotionCorrectionConfigs | Literal["skip"] | None = None,
-                 compress_config: CompressionConfigs | None = None,
+                 compress_config: CompressionConfigs | Literal["skip"] | None = None,
                  demixing_config: MultipassDemixingConfigs | Literal["skip"] | None = None,
                  frame_batch_size: int = 300,
                  device: Literal["auto", "cuda", "cpu"] = "auto",
@@ -93,12 +96,27 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         """The spine passes; the whole-dendrite and calcium passes run NMF_JUST_HALS and are not listed."""
         return self.demixing_config
 
+    def apply_stored_registration(self,
+                                  movie: OphysArray,
+                                  stored: type[BaseRegistrationArray] | None,
+                                  results_path: str) -> np.ndarray:
+        """
+        movie registered with the registration resume copied into results_path, read into RAM. With stored None,
+        an earlier run that skipped motion correction, it is movie as recorded.
+        """
+        if stored is None:
+            return movie[:].cpu().numpy()
+        logger.info(f"applying the stored {stored.__name__}")
+        return stored.from_hdf5(results_path, input_movie=movie, device=self.device)[:].cpu().numpy()
+
     def run(self,
             glutamate_channel: np.ndarray | ArrayLike | None,
             calcium_channel: np.ndarray | ArrayLike | None,
             exclude_initial_frames: int = 200,
-            good_frame_indicator: torch.Tensor | np.ndarray | None = None,
-            stop_after: Literal["registration", "compression", "demixing"] = "demixing") -> Path:
+            good_frames: torch.Tensor | np.ndarray | None = None,
+            compute_raw_correlation: bool = False,
+            stop_after: Literal["registration", "compression", "demixing"] = "demixing",
+            resume: str | Path | None = None) -> Path:
         """
         This routine runs the pipeline for processing single-plane glutamate and calcium imaging videos.
         It can analyze joint calcium/glutamate recordings or just process a single channel of either glutamate or calcium data
@@ -109,18 +127,44 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         Args:
             glutamate_channel (np.ndarray | ArrayLike | None):
             calcium_channel (np.ndarray | ArrayLike | None):
-            exclude_initial_frames (int): the first frames, marked bad on top of good_frame_indicator
-            good_frame_indicator (torch.Tensor | np.ndarray | None): 1D bool over the raw frames, shared by both
+            exclude_initial_frames (int): the first frames, marked bad on top of good_frames
+            good_frames (torch.Tensor | np.ndarray | None): 1D bool over the raw frames, shared by both
                 channels. Only good frames are registered, compressed and demixed; the demixing results are infilled
-                with zeros at the bad frames so they keep the raw frame count. retained_frames holds the good ones
+                with zeros at the bad frames so they keep the raw frame count. The results file's OphysArray group holds this indicator
+            compute_raw_correlation (bool): also store raw_residual_correlation_image, the local correlation
+                image of the registered movie minus the raw-scale signals and background. Skipped when the run has no movie
             stop_after: the last stage to run: "registration" ends once both channels' shifts are written,
                 "compression" once their compressions are, "demixing" runs everything. A demixing_config "skip" ends
                 the run after compression too; a motion_correct_config "skip" compresses the channels as recorded
+            resume: either channel's results file of an earlier run; the other channel's file is read from the same
+                folder. Its registration and good frames are copied into the new run folder and applied to the
+                channels given, so exclude_initial_frames and good_frames are not used, and the run goes
+                on from compression. With compress_config "skip" its compression and mask are copied too and the run
+                goes on from demixing, on the channels the earlier run holds; a channel given is then only used for
+                the raw traces, which a channel left None goes without. The settings not given, all but stop_after,
+                are that run's, from the config.json beside it.
         """
-        if stop_after == "registration" and isinstance(self.motion_correct_config, str):
+        reuse_compression = isinstance(self.compress_config, str)
+        if reuse_compression and self.compress_config.lower() != "skip":
+            raise ValueError("If compress_config is a string, it can only be `skip`")
+        if reuse_compression and resume is None:
+            raise ValueError('compress_config "skip" reuses a compression; resume names the run that holds it')
+        if reuse_compression and stop_after != "demixing":
+            raise ValueError('compress_config "skip" reuses a compression for its demixing; stop_after leaves nothing to run')
+        if stop_after == "registration" and isinstance(self.motion_correct_config, str) and resume is None:
             raise ValueError('stop_after "registration" with motion_correct_config "skip" has nothing to write')
+        # the earlier results file of each channel this run works on, checked before anything is written
+        paths_resumed = {}
+        if resume is not None:
+            folder_resumed = Path(resume).expanduser().resolve().parent
+            for name, channel in (("glutamate", glutamate_channel), ("calcium", calcium_channel)):
+                path_resumed = folder_resumed / f"results.{name}.hdf5"
+                if channel is not None or (reuse_compression and path_resumed.is_file()):
+                    paths_resumed[name], _ = self.resume_source(path_resumed, reuse_compression)
         device = self.torch_device
-        self.run_config = {"exclude_initial_frames": exclude_initial_frames, "stop_after": stop_after}
+        self.run_config = {"exclude_initial_frames": exclude_initial_frames,
+                           "compute_raw_correlation": compute_raw_correlation, "stop_after": stop_after,
+                           "resume": None if resume is None else str(resume)}
         run_folder = self.create_run_folder()
         glu_path = os.path.join(run_folder, "results.glutamate.hdf5")
         ca_path = os.path.join(run_folder, "results.calcium.hdf5")
@@ -132,27 +176,34 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             if exclude_initial_frames <= 0:
                 exclude_initial_frames = 0
 
-        if glutamate_channel is None and calcium_channel is None:
+        if glutamate_channel is None and calcium_channel is None and len(paths_resumed) == 0:
             raise ValueError("No functional data was provided, both channels are None")
         if glutamate_channel is not None and calcium_channel is not None:
             if tuple(glutamate_channel.shape) != tuple(calcium_channel.shape):
                 raise ValueError("The shape of both channels should be identical")
 
-        num_raw_frames = (glutamate_channel if calcium_channel is None else calcium_channel).shape[0]
-        if good_frame_indicator is None:
-            good_frames = np.ones(num_raw_frames, dtype=bool)
+        movie_given = glutamate_channel if calcium_channel is None else calcium_channel
+        if resume is not None:
+            # the stored shifts fit the frames the earlier run kept
+            path_resumed = next(iter(paths_resumed.values()))
+            good_frames = masknmf.io.read_good_frames(path_resumed)
+            if good_frames is None:
+                raise ValueError(f"{path_resumed} stores no good frames; it predates the OphysArray group and needs migrating")
         else:
-            good_frames = torch.as_tensor(good_frame_indicator).cpu().numpy().astype(bool)
-        good_frames[:exclude_initial_frames] = False
+            if good_frames is None:
+                good_frames = np.ones(movie_given.shape[0], dtype=bool)
+            else:
+                good_frames = torch.as_tensor(good_frames).cpu().numpy().astype(bool)
+            good_frames[:exclude_initial_frames] = False
 
         if glutamate_channel is not None:
             glu = self._construct_ophys_array(self.read_into_ram(glutamate_channel), indicator_polarity="positive",
-                                              good_frame_indicator=good_frames)
+                                              good_frames=good_frames)
         else:
             glu = None
         if calcium_channel is not None:
             calcium = self._construct_ophys_array(self.read_into_ram(calcium_channel), indicator_polarity="positive",
-                                                  good_frame_indicator=good_frames)
+                                                  good_frames=good_frames)
         else:
             calcium = None
 
@@ -160,13 +211,22 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
             reference_input = calcium
         else:
             reference_input = glu
-        retained_frames = np.flatnonzero(good_frames)
-        for channel, path in ((glu, glu_path), (calcium, ca_path)):
-            if channel is not None:
-                with h5py.File(path, "w") as f:
-                    f["retained_frames"] = retained_frames
+        results_paths = {"glutamate": glu_path, "calcium": ca_path}
+        if resume is None:
+            # BasePipeline.resume copies the earlier run's OphysArray group
+            for name, channel in (("glutamate", glu), ("calcium", calcium)):
+                if channel is not None:
+                    channel.export(results_paths[name])
 
-        if isinstance(self.motion_correct_config, str):
+        registers = resume is None and not isinstance(self.motion_correct_config, str)
+        if resume is not None:
+            stored = {name: self.resume(path_resumed, results_paths[name], reuse_compression)
+                      for name, path_resumed in paths_resumed.items()}
+            glu_moco_array_dense = None if glu is None else self.apply_stored_registration(
+                glu, stored["glutamate"], glu_path)
+            calcium_moco_array_dense = None if calcium is None else self.apply_stored_registration(
+                calcium, stored["calcium"], ca_path)
+        elif isinstance(self.motion_correct_config, str):
             # unregistered: the channels go to compression as recorded
             glu_moco_array_dense = None if glu is None else glu[:].cpu().numpy()
             calcium_moco_array_dense = None if calcium is None else calcium[:].cpu().numpy()
@@ -194,25 +254,25 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
             corrector.compute_template(pmd_pre_moco_reference)
 
-        if isinstance(self.motion_correct_config, str):
+        if not registers:
             pass
         elif glu is not None:
             with self.step("glutamate motion correction"):
                 glu_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
                                                           target_movie=glu)
-                glu_moco_array.export(glu_path)
+                glu_moco_array.infill_bad_frames().export(glu_path)
                 glu_moco_array_dense = glu_moco_array[:].cpu().numpy() #Loads it all into RAM
         else:
             glu_moco_array = None
             glu_moco_array_dense = None
 
-        if isinstance(self.motion_correct_config, str):
+        if not registers:
             pass
         elif calcium is not None:
             with self.step("calcium motion correction"):
                 calcium_moco_array = corrector.motion_correct(reference_movie=pmd_pre_moco_reference,
                                                               target_movie=calcium)
-                calcium_moco_array.export(ca_path)
+                calcium_moco_array.infill_bad_frames().export(ca_path)
                 calcium_moco_array_dense = calcium_moco_array[:].cpu().numpy() #Loads it all into RAM
         else:
             calcium_moco_array = None
@@ -221,10 +281,20 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         if stop_after == "registration":
             return self.finish()
 
-        if calcium_moco_array_dense is not None:
+        if reuse_compression:
+            with h5py.File(next(iter(paths_resumed.values())), "r") as f:
+                if "cross_channel_mask" not in f:
+                    raise ValueError(f"{resume} was written before the mask was saved; resume from its registration "
+                                     f"with a compress_config instead")
+                cross_channel_mask = f["cross_channel_mask"][()]
+        elif calcium_moco_array_dense is not None:
             cross_channel_mask = get_std_based_mask(calcium_moco_array_dense)
         else:
             cross_channel_mask = get_std_based_mask(glu_moco_array_dense)
+        for name in results_paths:
+            if os.path.isfile(results_paths[name]):
+                with h5py.File(results_paths[name], "a") as f:
+                    f["cross_channel_mask"] = cross_channel_mask
 
         if glu_moco_array_dense is not None:
             glu_video =  glu_moco_array_dense * cross_channel_mask.astype(np.float32)[None, :, :]
@@ -236,21 +306,25 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
         else:
             calcium_video = None
 
-        compress_strat = self.compress_strategy(self.compress_config)
-
-        if glu_video is not None:
-            with self.step("glutamate compression"):
-                pmd_glu = compress_strat.compress(glu_video)
-                pmd_glu.export(glu_path)
+        if reuse_compression:
+            pmd_glu = masknmf.CompressionArray.from_hdf5(glu_path) if "glutamate" in paths_resumed else None
+            pmd_ca = masknmf.CompressionArray.from_hdf5(ca_path) if "calcium" in paths_resumed else None
         else:
-            pmd_glu = None
+            compress_strat = self.compress_strategy(self.compress_config)
 
-        if calcium_video is not None:
-            with self.step("calcium compression"):
-                pmd_ca = compress_strat.compress(calcium_video)
-                pmd_ca.export(ca_path)
-        else:
-            pmd_ca = None
+            if glu_video is not None:
+                with self.step("glutamate compression"):
+                    pmd_glu = compress_strat.compress(glu_video)
+                    pmd_glu.export(glu_path)
+            else:
+                pmd_glu = None
+
+            if calcium_video is not None:
+                with self.step("calcium compression"):
+                    pmd_ca = compress_strat.compress(calcium_video)
+                    pmd_ca.export(ca_path)
+            else:
+                pmd_ca = None
 
         if stop_after == "compression" or isinstance(self.demixing_config, str):
             return self.finish()
@@ -263,7 +337,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
             glu_pmd_demixer_results = self.run_multipass(glu_pmd_demixer, self.demixing_config, "glutamate spine demixing")
             # saved now so a failure in the steps after it still leaves the spines; written again with raw traces
-            masknmf.DemixingResults.infill_bad_frames(glu_pmd_demixer_results, good_frame_indicator=good_frames).export(glu_path)
+            masknmf.DemixingResults.infill_bad_frames(glu_pmd_demixer_results, good_frames=good_frames).export(glu_path)
 
             ## Now pull out "whole dendrite" events. Can refactor this to a helper function to keep the "run" function readable
             glu_pmd_demixer_global= masknmf.demixing.signal_demixer.SignalDemixer(
@@ -277,12 +351,19 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 glu_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
             glu_global_results = glu_pmd_demixer_global.results
-            with self.step("glutamate raw traces"):
-                for results in (glu_pmd_demixer_results, glu_global_results):
-                    results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
-                        results, glu_video, device=device, nonneg=True, frame_batch_size=self.frame_batch_size)
-            masknmf.DemixingResults.infill_bad_frames(glu_pmd_demixer_results, good_frame_indicator=good_frames).export(glu_path, overwrite=True)
-            masknmf.DemixingResults.infill_bad_frames(glu_global_results, good_frame_indicator=good_frames).export(glu_path, prefix="global")
+            # a compression resumed without the channel's movie has no registered movie to estimate raw traces from
+            if glu_video is not None:
+                with self.step("glutamate raw traces"):
+                    for results in (glu_pmd_demixer_results, glu_global_results):
+                        results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
+                            results, glu_video, device=device, nonneg=True, frame_batch_size=self.frame_batch_size)
+                if compute_raw_correlation:
+                    with self.step("glutamate raw residual correlation image"):
+                        for results in (glu_pmd_demixer_results, glu_global_results):
+                            results.raw_residual_correlation_image = masknmf.demixing.estimate_raw_residual_correlation_image(
+                                results, glu_video)
+            masknmf.DemixingResults.infill_bad_frames(glu_pmd_demixer_results, good_frames=good_frames).export(glu_path, overwrite=True)
+            masknmf.DemixingResults.infill_bad_frames(glu_global_results, good_frames=good_frames).export(glu_path, prefix="global")
 
             if pmd_ca is not None:
                 ## Pull out the spatial/temporal footprints from the glutamate movie
@@ -311,12 +392,18 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
                 ca_results = ca_pmd_demixer.results
                 ca_global_results = ca_pmd_demixer_global.results
-                with self.step("calcium raw traces"):
-                    for results in (ca_results, ca_global_results):
-                        results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
-                            results, calcium_video, device=device, nonneg=True, frame_batch_size=self.frame_batch_size)
-                masknmf.DemixingResults.infill_bad_frames(ca_results, good_frame_indicator=good_frames).export(ca_path)
-                masknmf.DemixingResults.infill_bad_frames(ca_global_results, good_frame_indicator=good_frames).export(ca_path, prefix="global")
+                if calcium_video is not None:
+                    with self.step("calcium raw traces"):
+                        for results in (ca_results, ca_global_results):
+                            results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
+                                results, calcium_video, device=device, nonneg=True, frame_batch_size=self.frame_batch_size)
+                    if compute_raw_correlation:
+                        with self.step("calcium raw residual correlation image"):
+                            for results in (ca_results, ca_global_results):
+                                results.raw_residual_correlation_image = masknmf.demixing.estimate_raw_residual_correlation_image(
+                                    results, calcium_video)
+                masknmf.DemixingResults.infill_bad_frames(ca_results, good_frames=good_frames).export(ca_path)
+                masknmf.DemixingResults.infill_bad_frames(ca_global_results, good_frames=good_frames).export(ca_path, prefix="global")
 
 
         else: #In this case there is only a calcium channel
@@ -326,7 +413,7 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
 
             ca_pmd_demixer_results = self.run_multipass(ca_pmd_demixer, self.demixing_config, "calcium spine demixing")
             # saved now so a failure in the steps after it still leaves the spines; written again with raw traces
-            masknmf.DemixingResults.infill_bad_frames(ca_pmd_demixer_results, good_frame_indicator=good_frames).export(ca_path)
+            masknmf.DemixingResults.infill_bad_frames(ca_pmd_demixer_results, good_frames=good_frames).export(ca_path)
 
 
             ## Now pull out "whole dendrite" events. Can refactor this to a helper function to keep the "run" function readable
@@ -341,12 +428,18 @@ class GlutamateCalciumSpinePipeline(BasePipeline):
                 ca_pmd_demixer_global.demix(**NMF_JUST_HALS)
 
             ca_global_results = ca_pmd_demixer_global.results
-            with self.step("calcium raw traces"):
-                for results in (ca_pmd_demixer_results, ca_global_results):
-                    results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
-                        results, calcium_video, device=device, nonneg=True, frame_batch_size=self.frame_batch_size)
-            masknmf.DemixingResults.infill_bad_frames(ca_pmd_demixer_results, good_frame_indicator=good_frames).export(ca_path, overwrite=True)
-            masknmf.DemixingResults.infill_bad_frames(ca_global_results, good_frame_indicator=good_frames).export(ca_path, prefix="global")
+            if calcium_video is not None:
+                with self.step("calcium raw traces"):
+                    for results in (ca_pmd_demixer_results, ca_global_results):
+                        results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
+                            results, calcium_video, device=device, nonneg=True, frame_batch_size=self.frame_batch_size)
+                if compute_raw_correlation:
+                    with self.step("calcium raw residual correlation image"):
+                        for results in (ca_pmd_demixer_results, ca_global_results):
+                            results.raw_residual_correlation_image = masknmf.demixing.estimate_raw_residual_correlation_image(
+                                results, calcium_video)
+            masknmf.DemixingResults.infill_bad_frames(ca_pmd_demixer_results, good_frames=good_frames).export(ca_path, overwrite=True)
+            masknmf.DemixingResults.infill_bad_frames(ca_global_results, good_frames=good_frames).export(ca_path, prefix="global")
 
         return self.finish()
 

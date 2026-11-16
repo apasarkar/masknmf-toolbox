@@ -224,13 +224,13 @@ class MiniALIResults(BaseResults):
         if raw.shape[0] < frames_analyzed:
             raise ValueError(f"the raw movie has {raw.shape[0]} frames, the results {frames_analyzed}")
         good_frames = np.arange(raw.shape[0]) < frames_analyzed
-        results = cls(path, indicator_polarity="negative", good_frame_indicator=good_frames, raw_video=raw, device=device)
+        results = cls(path, indicator_polarity="negative", good_frames=good_frames, raw_video=raw, device=device)
         return results, results.raw_array, []
 
     def __init__(self,
                  path: str | os.PathLike,
                  indicator_polarity: Literal["positive", "negative"],
-                 good_frame_indicator: np.ndarray | torch.Tensor,
+                 good_frames: np.ndarray | torch.Tensor,
                  raw_video: ArrayLike | np.ndarray,
                  device: str | torch.device = "auto",
                  background: np.ndarray | None = None,
@@ -243,7 +243,7 @@ class MiniALIResults(BaseResults):
                 cell_traces, reference_image, dfdx, dfdy and shift (mini_ali_run saves all of them).
             indicator_polarity (Literal["positive", "negative"]): Required specification whether data is negatively or positively tuned.
                 If the data is negatively tuned, this class will "invert" the results so that when viewed, positive fluctuations indicate activity
-            good_frame_indicator (np.ndarray | torch.Tensor): 1D boolean tensor or numpy.ndarray, length equal to number of frames
+            good_frames (np.ndarray | torch.Tensor): 1D boolean tensor or numpy.ndarray, length equal to number of frames
                 Value 1 if the frame is included in the analysis, 0 if it is not included in the analysis.
             raw_video (ArrayLike | np.ndarray): The movie miniALI read, shape (frames, height, width). This should be ALL frames, even the
                 ones that were not analyzed. This is a required parameter because so many voltage imaging analyses carefully required validation
@@ -271,14 +271,14 @@ class MiniALIResults(BaseResults):
         else:
             raise ValueError("indicator polarity can only be positive or negative, nothing else")
 
-        good_frame_indicator = torch.as_tensor(good_frame_indicator).bool()
-        self._num_frames_analyzed = int(torch.count_nonzero(good_frame_indicator))
-        self._num_frames_raw = int(good_frame_indicator.numel())
+        good_frames = torch.as_tensor(good_frames).bool()
+        self._num_frames_analyzed = int(torch.count_nonzero(good_frames))
+        self._num_frames_raw = int(good_frames.numel())
 
         self._raw_array = OphysArray(raw_video,
                                      negative_indicator = True if self._indicator_polarity == "negative" else False,
                                      device=self.device,
-                                     good_frames = good_frame_indicator,
+                                     good_frames = good_frames,
                                      include_mean = False)
 
         #This code loads the gradients,
@@ -346,7 +346,7 @@ class MiniALIResults(BaseResults):
         self._background_roi_averages = torch.from_numpy(
             (self._roi_average @ self._background.ravel()).astype(np.float32))
         self._registered_array = None
-        self._residual_array = None
+        self._raw_residual_array = None
         self._registered_roi_averages = None
 
 
@@ -364,8 +364,9 @@ class MiniALIResults(BaseResults):
         if residual_compress:
             residual = CompressStrategy(block_sizes=[32, 32],
                                         host_memory_gb=8).compress(residual)
-        self._residual_array = residual
+        self._raw_residual_array = residual
         self._global_residual_correlation_image = torch.zeros(self.fov_shape[0], self.fov_shape[1])
+        self._raw_residual_correlation_image =  torch.zeros(self.fov_shape[0], self.fov_shape[1])
         self.to(self._device)
 
     def to(self, new_device: str | torch.device):
@@ -378,6 +379,7 @@ class MiniALIResults(BaseResults):
         self._background_array.to(device)
         self._placeholder_background_array.to(device)
         self._global_residual_correlation_image.to(device)
+        self._raw_residual_correlation_image.to(device)
         self._device = device
 
 
@@ -490,9 +492,16 @@ class MiniALIResults(BaseResults):
         return self._background_array
 
     @property
-    def residual_array(self) -> ArrayLike | None:
+    def raw_residual_array(self) -> ArrayLike | None:
         """registered - background - signals; None without raw_movie."""
-        return self._residual_array
+        return self._raw_residual_array
+
+    @property
+    def demixed_residual_array(self):
+        """
+        For miniALI, the demixing occurs with respect to the raw data, so this is identical to the raw residual array
+        """
+        return self._raw_residual_array
 
     # ROI averages, all (cells, frames): each movie averaged uniformly over the support of spatial_demixed. Unlike
     # suite2p's, miniALI's 13 x 13 footprints can overlap, so the signal average includes neighbors.

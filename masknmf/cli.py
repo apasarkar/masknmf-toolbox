@@ -29,7 +29,7 @@ here enumerates a parameter by hand:
     masknmf classify "new_sessions/**/results.hdf5" --classifier cells.roicat_classifier
     masknmf track "sessions/*/results.hdf5" --out tracking
     masknmf run --pipeline two-photon-calcium "training/*.tif" --fs 30 --compress-kind compress --stop-after compression
-    masknmf train-denoiser "training_runs/*/results.hdf5" --out denoiser.pt --epochs 100
+    masknmf train-denoiser "training_runs/*/results.hdf5" --out denoiser.pt --steps 500
     masknmf run --pipeline two-photon-calcium movie.tif --fs 30 --denoiser denoiser.pt
 """
 
@@ -500,6 +500,9 @@ def command_run(args: argparse.Namespace) -> None:
         filepath_config_resumed = Path(resume).expanduser().resolve().parent / "config.json"
         if filepath_config_resumed.is_file():
             inputs_file = read_config_file(filepath=str(filepath_config_resumed)).get("inputs", {})
+    unknown = set(inputs_file) - {p.field for p in (*spec.movie_params, *spec.array_params)}
+    if len(unknown) > 0:
+        fail(f"the config file records inputs {', '.join(sorted(unknown))}, which {spec.slug} does not take")
     for param in (*spec.movie_params, *spec.array_params):
         positional = param.kind == "movie" and len(spec.movie_params) == 1
         if getattr(args, param.field, None) or param.field not in inputs_file:
@@ -932,7 +935,7 @@ def command_train_denoiser(args: argparse.Namespace) -> None:
         if isinstance(config, dict) and config.get("kind") == "compress-denoise":
             fail(f"{filepath} was compressed with a denoiser; a denoiser trains on compressions made without one, "
                  f"so run these with --compress-kind compress --stop-after compression")
-    masknmf.compression.pretrain_denoiser(files, args.out, num_epochs=args.epochs)
+    masknmf.compression.pretrain_denoiser(files, args.out, num_steps=args.steps)
     print(f"saved {args.out}; compress with it through masknmf run ... --denoiser {args.out}")
 
 
@@ -1070,8 +1073,8 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     )
     parser_denoiser.add_argument("--out", required=True, help="where the weights are saved, e.g. denoiser.pt")
     parser_denoiser.add_argument(
-        "--epochs", default=10, type=int,
-        help="passes over the pooled components; a few short recordings need many more than many long ones; default 10",
+        "--steps", default=500, type=int,
+        help="training steps, each on 128 windows of 900 frames; default 500",
     )
     parser_denoiser.set_defaults(handler=command_train_denoiser)
 

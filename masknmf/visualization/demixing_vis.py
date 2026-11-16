@@ -587,7 +587,7 @@ class SingleSessionDemixingVis:
             self._fluctuating_background_array = (
                 self.demixing_results.fluctuating_background_array
             )
-            self._residual_array = self.demixing_results.residual_array
+            self._residual_array = self.demixing_results.demixed_residual_array
             self._ac_array = self.demixing_results.signals_array
             # an all-zero background term means the demixer never fit one
             if self._is_masknmf_result:
@@ -627,8 +627,10 @@ class SingleSessionDemixingVis:
             stills["registration template"] = self._template
         if self._summary_img is not None:
             stills[self._summary_name] = self._summary_img
-        if self._has_ac and self.demixing_results.global_residual_correlation_image is not None:
+        if self._has_ac and getattr(self.demixing_results, "global_residual_correlation_image", None) is not None:
             stills["residual correlation image"] = self.demixing_results.global_residual_correlation_image.cpu().numpy()
+        if self._is_masknmf_result and self.demixing_results.raw_residual_correlation_image is not None:
+            stills["raw residual correlation image"] = self.demixing_results.raw_residual_correlation_image.cpu().numpy()
         if self._pmd_array is not None:
             stills["mean image"] = self._pmd_array.mean_image.cpu().numpy()
             stills["noise variance image"] = self._pmd_array.noise_variance_image.cpu().numpy()
@@ -955,7 +957,8 @@ class SingleSessionDemixingVis:
 
     def _update_traces(self):
         """
-        One signal: its compressed / signal / background / residual roi averages, and when the results hold
+        One signal: the compressed / background / residual roi averages over its footprint and its own demixed
+        trace scaled by its mean footprint weight, and when the results hold
         temporal_demixed_raw and "raw trace" is on, the signal line from those raw traces drawn under it. A group, or any pixel
         average or drawn roi: one line per member, colored like its mask or table row - a signal's
         demixed trace, a pixel average or drawn roi's compressed average.
@@ -995,14 +998,12 @@ class SingleSessionDemixingVis:
         elif self._active_component is not None:
             k = self._active_component
             self._selected_signals = None
-            ypix, xpix, _lam = self._footprints.footprints[k]
-            support = torch.as_tensor(
-                ypix.astype(np.int64) * self._shape[2] + xpix, device=results.spatial_demixed.device
-            )
-            # the signal movie averaged over the footprint's support, like the stored roi averages; averaging the
-            # footprints first keeps a huge roi from building a (pixels, frames) matrix
-            weights = torch.sparse.sum(torch.index_select(results.spatial_demixed, 0, support), dim=0).to_dense() / len(support)
-            signal = results.temporal_demixed @ weights
+            # this signal's own movie averaged over its footprint, the same line a group draws for it. The stored
+            # roi averages cover every signal on those pixels, so an overlapping neighbour's event shows in
+            # compressed and not here
+            _ypix, _xpix, lam = self._footprints.footprints[k]
+            scale = float(lam.mean())
+            signal = scale * results.temporal_demixed[:, k]
             # roi averages the results don't have are None and leave their line out
             traces = (
                 results.compression_array_roi_averages,
@@ -1018,7 +1019,7 @@ class SingleSessionDemixingVis:
                 if trace is not None
             ]
             if self._show_raw_trace and results.temporal_demixed_raw is not None:
-                raw = results.temporal_demixed_raw @ weights
+                raw = scale * results.temporal_demixed_raw[:, k]
                 # before the signal line so the signal draws over it
                 lines.insert(0 if traces[0] is None else 1, ("raw", raw.cpu().numpy(), _RAW_LINE_COLOR))
         else:

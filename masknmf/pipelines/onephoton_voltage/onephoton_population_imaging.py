@@ -238,8 +238,9 @@ class OnePhotonCulturePipeline(BasePipeline):
             frame_rate: float,
             active_frames: np.ndarray | None = None,
             indicator_polarity: Literal["positive", "negative"] = "negative",
-            good_frame_indicator: torch.Tensor | np.ndarray | list | None = None,
+            good_frames: torch.Tensor | np.ndarray | list | None = None,
             remove_intermediates: bool = False,
+            compute_raw_correlation: bool = False,
             stop_after: Literal["registration", "compression", "demixing"] = "demixing",
             resume: str | Path | None = None) -> Path:
         """
@@ -248,21 +249,20 @@ class OnePhotonCulturePipeline(BasePipeline):
                 The pipeline takes the compressed data and filters to suppress background and identify signal. After demixing
                 this filtered data, it returns to the unfiltered data to further demix.
                 Args:
-                    data (Union[np.ndarray, LazyFrameLoader, ArrayLike]): The raw (frames, height, width) data stack
+                    data (np.ndarray | LazyFrameLoader | ArrayLike): The raw (frames, height, width) data stack
                     frame_rate (float): The frame rate in Hz
                     active_frames (np.ndarray): Indicates frames where activity can occur (this is a hard constraint imposed for e.g.
                         if there is an optogenetic stimulus
                     indicator_polarity (Literal["positive", "negative"]): Whether the indicator is positively or negatively tuned
-                    good_frame_indicator (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
+                    good_frames (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
 
                     remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
                         results carry the pmd)
+                    compute_raw_correlation (bool): also store raw_residual_correlation_image, the local correlation
+                        image of the registered movie minus the raw-scale signals and background. Skipped when the run has no movie
                     stop_after: the last stage to run: "registration" writes the shifts and template and ends,
                         "compression" ends once the compression is written, "demixing" runs everything
-                    resume: an earlier results file copied into the new run folder: its registration is applied to
-                        data instead of estimating one, and with compress_config "skip" its compression is reused too.
-                        The settings not given, all but stop_after, are that run's, from the config.json beside it.
-                        The earlier file is left as it is
+                    resume (str | Path | None): path to a previous results file or it's parent folder.
 
                 The raw-scale footprints and the denoised and raw-regressed traces over all frames are written to the
                 RawScaleEstimates group as a, c_denoised and c_raw.
@@ -286,18 +286,22 @@ class OnePhotonCulturePipeline(BasePipeline):
         if not active.size == int(data.shape[0]):
             raise ValueError("Active must be a 1D boolean vector whose length is equal to number of frames in the data")
 
-        if good_frame_indicator is not None:
-            good = torch.as_tensor(good_frame_indicator).cpu().numpy().astype(bool)
+        if good_frames is not None:
+            good = torch.as_tensor(good_frames).cpu().numpy().astype(bool)
             if good.size != int(data.shape[0]):
-                raise ValueError("good_frame_indicator must be a 1D boolean vector whose length is equal to number of frames in the data")
+                raise ValueError("good_frames must be a 1D boolean vector whose length is equal to number of frames in the data")
             active_in_good = active[good]  # use for `v = ...` and expand_traces_to_all_frames
             demixed_frames = active & good  # use for DemixingResults.infill_bad_frames
         else:
             active_in_good, demixed_frames = active, active
 
         resume, base = self.resume_source(resume, reuse_compression)
+        good_frames_resumed = masknmf.io.read_good_frames(resume)
+        if good_frames is None and good_frames_resumed is not None and not good_frames_resumed.all():
+            raise ValueError(f"{resume} left frames out; pass the same good_frames to resume it")
         self.run_config = {"frame_rate": frame_rate, "indicator_polarity": indicator_polarity,
-                           "remove_intermediates": remove_intermediates, "stop_after": stop_after,
+                           "remove_intermediates": remove_intermediates,
+                           "compute_raw_correlation": compute_raw_correlation, "stop_after": stop_after,
                            "resume": None if resume is None else str(resume)}
         results_path = self.results_path(base)
         stored = None if resume is None else self.resume(resume, results_path, reuse_compression)
@@ -307,7 +311,9 @@ class OnePhotonCulturePipeline(BasePipeline):
             data = self.read_into_ram(data)
         mov = self._construct_ophys_array(data,
                                           indicator_polarity=indicator_polarity,
-                                          good_frame_indicator=good_frame_indicator)
+                                          good_frames=good_frames,
+                                          results_path=results_path)
+        mov.export(results_path)
         if stored is not None:
             display(f"Replaying the stored {stored.__name__}")
             moco_array = stored.from_hdf5(results_path, input_movie=mov, device=device)
@@ -316,11 +322,11 @@ class OnePhotonCulturePipeline(BasePipeline):
             moco_array = mov
         else:
             with self.step("motion correction"):
-                mean_img = torch.mean(mov[:self.motion_correct_config.num_frames_template], dim=0)
+                mean_img = torch.mean(mov[:min(self.motion_correct_config.num_frames_template, mov.shape[0])], dim=0)
                 corrector = GradientMotionCorrector(template=mean_img)
                 moco_array = corrector.motion_correct(mov)
                 moco_array.output_device=torch.device('cpu')
-                moco_array.export(results_path)
+                moco_array.infill_bad_frames().export(results_path)
         if stop_after == "registration":
             return self.finish()
 
@@ -328,7 +334,7 @@ class OnePhotonCulturePipeline(BasePipeline):
             ## Add the run-specific frame weighting to a copy of the config, so the pipeline's own is untouched
             if self.compress_config.frame_weighting is not None:
                 config_weighting = np.asarray(self.compress_config.frame_weighting)
-                if good_frame_indicator is not None:
+                if good_frames is not None:
                     config_weighting = config_weighting[good]
                 frame_weighting = config_weighting * active_in_good.astype(config_weighting.dtype)
             else:
@@ -421,12 +427,16 @@ class OnePhotonCulturePipeline(BasePipeline):
             curr_demix_results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
                 curr_demix_results, moco_array, device=self.torch_device, nonneg=False,
                 frame_batch_size=self.frame_batch_size)
+        if compute_raw_correlation:
+            with self.step("raw residual correlation image"):
+                curr_demix_results.raw_residual_correlation_image = masknmf.demixing.estimate_raw_residual_correlation_image(
+                    curr_demix_results, moco_array)
 
-        if good_frame_indicator is not None:
+        if good_frames is not None:
 
             #This expands from good frames to all frames
             curr_demix_results = masknmf.DemixingResults.infill_bad_frames(curr_demix_results,
-                                                                           good_frame_indicator=demixed_frames)
+                                                                           good_frames=demixed_frames)
 
 
         curr_demix_results.export(results_path)
