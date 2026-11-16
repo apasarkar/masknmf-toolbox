@@ -80,6 +80,7 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             indicator_polarity: Literal["positive", "negative"] = "positive",
             good_frames: torch.Tensor | np.ndarray | None = None,
             remove_intermediates: bool = False,
+            compute_raw_correlation: bool = False,
             stop_after: Literal["registration", "compression", "demixing"] = "demixing",
             resume: str | Path | None = None) -> Path:
         """
@@ -95,6 +96,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
                     good_frames (torch.Tensor | np.ndarray | None): An optional 1D vector indicating which frames are good vs. bad
                     remove_intermediates (bool): drop the PMDArray group once demixing is done (the demixing
                         results carry the pmd); the registration shifts stay
+                    compute_raw_correlation (bool): also store raw_residual_correlation_image, the local correlation
+                        image of the registered movie minus the raw-scale signals and background. Skipped when the run has no movie
                     stop_after: the last stage to run: "registration" writes the shifts and template and ends,
                         "compression" ends once the compression is written, "demixing" runs everything
                     resume: an earlier results file copied into the new run folder: its registration is applied to
@@ -114,7 +117,8 @@ class TwoPhotonCalciumPipeline(BasePipeline):
             raise ValueError("data is None starting from the motion correction step. Specify a dataset")
         resume, base = self.resume_source(resume, reuse_compression)
         self.run_config = {"frame_rate": frame_rate, "exclude_border_radius": exclude_border_radius,
-                           "indicator_polarity": indicator_polarity, "remove_intermediates": remove_intermediates, "stop_after": stop_after,
+                           "indicator_polarity": indicator_polarity, "remove_intermediates": remove_intermediates,
+                           "compute_raw_correlation": compute_raw_correlation, "stop_after": stop_after,
                            "resume": None if resume is None else str(resume)}
         results_path = self.results_path(base)
         stored = None if resume is None else self.resume(resume, results_path, reuse_compression)
@@ -209,6 +213,10 @@ class TwoPhotonCalciumPipeline(BasePipeline):
         with self.step("raw traces"):
             latest_demix_results.temporal_demixed_raw = masknmf.demixing.estimate_temporal_demixed_raw(
                 latest_demix_results, moco_data, device=self.torch_device, nonneg=True, frame_batch_size=self.frame_batch_size)
+        if compute_raw_correlation and moco_data is not None:
+            with self.step("raw residual correlation image"):
+                latest_demix_results.raw_residual_correlation_image = masknmf.demixing.estimate_raw_residual_correlation_image(
+                    latest_demix_results, moco_data)
 
         good_frames = masknmf.io.read_good_frames(results_path)
         if good_frames is not None and not good_frames.all():

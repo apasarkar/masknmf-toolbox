@@ -3,6 +3,7 @@ import torch
 import math
 from masknmf.arrays import ArrayLike
 from masknmf.demixing.demixing_results import DemixingResults
+from masknmf.demixing.local_correlation import local_correlation_image
 from masknmf.demixing.regression_update import _fast_a_squared_norm
 from masknmf.demixing.signal_demixer import _compute_hals_schedule
 from masknmf.demixing.demixing_utils import csr_index_select_rows, csr_index_select_cols
@@ -114,6 +115,21 @@ def estimate_temporal_demixed_raw(results: DemixingResults,
 
     return c_new
 
+
+
+def estimate_raw_residual_correlation_image(results: DemixingResults,
+                                            movie: np.ndarray | ArrayLike | None) -> torch.Tensor | None:
+    """
+    The local correlation image of the raw residual: movie minus the raw-scale signals and fluctuating background of
+    results. Shape (height, width). movie becomes the motion_corrected_array of results. None when movie is None or
+    results has no temporal_demixed_raw.
+    """
+    if movie is None:
+        return None
+    results.motion_corrected_array = movie
+    if results.raw_residual_array is None:
+        return None
+    return local_correlation_image(results.raw_residual_array)
 
 
 def _hals_on_a_trend(blocks: list[torch.Tensor],

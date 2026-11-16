@@ -10,6 +10,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 import pytest
+import torch
 
 import masknmf
 from masknmf.pipelines import scraper
@@ -259,16 +260,20 @@ def test_one_photon_saves_its_gradient_registration_and_applies_it_on_resume(tmp
     close_log(pipeline)
 
 
-def test_a_resumed_run_without_a_movie_reads_the_one_its_config_records_and_skips_raw_traces_when_it_is_gone(tmp_path):
+def cells_movie() -> np.ndarray:
+    """Twelve cells with slow transients over noise, enough for the calcium pipeline to demix in a few seconds."""
     rng = np.random.default_rng(0)
     yy, xx = np.mgrid[:64, :64]
     cells = np.array([np.exp(-((yy - y) ** 2 + (xx - x) ** 2) / 10.0) for y, x in rng.uniform(8, 56, (12, 2))])
     kernel = np.exp(-np.arange(100) / 20.0)
     traces = np.stack([np.convolve((rng.random(1500) < 0.01) * 3.0, kernel)[:1500] for _ in cells], axis=1)
-    movie = (100 + 60 * np.einsum("tk,kyx->tyx", traces, cells) + rng.normal(0, 5, (1500, 64, 64))).astype(np.float32)
+    return (100 + 60 * np.einsum("tk,kyx->tyx", traces, cells) + rng.normal(0, 5, (1500, 64, 64))).astype(np.float32)
+
+
+def test_a_resumed_run_without_a_movie_reads_the_one_its_config_records_and_skips_raw_traces_when_it_is_gone(tmp_path):
     filepath_movie = tmp_path / "movie.hdf5"
     with h5py.File(filepath_movie, "w") as file:
-        file["mov"] = movie
+        file["mov"] = cells_movie()
 
     pipeline = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path / "runs"), device="cpu")
     pipeline.inputs = {"data": {"path": str(filepath_movie), "dataset": "mov"}}
@@ -277,15 +282,47 @@ def test_a_resumed_run_without_a_movie_reads_the_one_its_config_records_and_skip
     close_log(pipeline)
 
     resumed = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path / "runs"), compress_config="skip", device="cpu")
-    with_movie = resumed.run(None, frame_rate=30, resume=first / "results.hdf5")
-    raw_resumed = masknmf.DemixingResults.from_hdf5(with_movie / "results.hdf5").temporal_demixed_raw
-    assert raw_resumed is not None and raw_resumed.shape[0] == raw_first.shape[0]
+    with_movie = resumed.run(None, frame_rate=30, resume=first / "results.hdf5", compute_raw_correlation=True)
+    results = masknmf.DemixingResults.from_hdf5(with_movie / "results.hdf5")
+    assert results.temporal_demixed_raw is not None and results.temporal_demixed_raw.shape[0] == raw_first.shape[0]
+    assert results.raw_residual_correlation_image is not None
     close_log(resumed)
 
     filepath_movie.unlink()
-    without_movie = resumed.run(None, frame_rate=30, resume=first / "results.hdf5")
-    assert masknmf.DemixingResults.from_hdf5(without_movie / "results.hdf5").temporal_demixed_raw is None
+    without_movie = resumed.run(None, frame_rate=30, resume=first / "results.hdf5", compute_raw_correlation=True)
+    results = masknmf.DemixingResults.from_hdf5(without_movie / "results.hdf5")
+    assert results.temporal_demixed_raw is None and results.raw_residual_correlation_image is None
     close_log(resumed)
+
+
+def test_compute_raw_correlation_stores_the_raw_residuals_image_computed_without_the_excluded_frames(tmp_path):
+    movie = cells_movie()
+    good_frames = np.ones(movie.shape[0], dtype=bool)
+    good_frames[50:80] = False
+    corrupted = movie.copy()
+    corrupted[50:80] += 2000
+    pipeline = masknmf.TwoPhotonCalciumPipeline(output_folder=str(tmp_path), device="cpu")
+
+    plain = masknmf.DemixingResults.from_hdf5(pipeline.run(movie, frame_rate=30) / "results.hdf5")
+    assert plain.raw_residual_correlation_image is None
+
+    folder = pipeline.run(corrupted, frame_rate=30, good_frames=good_frames, compute_raw_correlation=True)
+    assert json.loads((folder / "config.json").read_text())["configs"]["compute_raw_correlation"] is True
+    results = masknmf.DemixingResults.from_hdf5(folder / "results.hdf5")
+    image = results.raw_residual_correlation_image
+    assert image.shape == movie.shape[1:] and torch.isfinite(image).all() and image.abs().max() <= 1
+
+    # 0.14 here; the same image of the movie with its 2000-count excluded frames left in is 0.48
+    assert float(image.mean()) < 0.3
+    close_log(pipeline)
+
+
+@pytest.mark.parametrize("slug", [slug for slug in SLUGS if slug != "widefield-singlechannel"])
+def test_every_demixing_pipeline_takes_compute_raw_correlation_as_an_off_by_default_flag(slug):
+    spec = scraper.scrape(scraper.pipeline_registry()[slug])
+    param = next(p for p in spec.run_scalars if p.field == "compute_raw_correlation")
+    assert param.flag == "--compute-raw-correlation" and param.default is False
+    assert scraper.coerce(param=param, text="true") is True
 
 
 def test_stop_after_refuses_runs_with_nothing_to_write(tmp_path):

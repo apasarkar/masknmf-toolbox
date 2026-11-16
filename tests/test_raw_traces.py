@@ -31,7 +31,7 @@ def test_every_demixing_result_stores_raw_traces_that_the_compressed_movie_turns
         channels, with_glutamate, tmp_path):
     glutamate, calcium = channels
     run = GlutamateCalciumSpinePipeline(output_folder=str(tmp_path), device="cpu").run(
-        glutamate if with_glutamate else None, calcium)
+        glutamate if with_glutamate else None, calcium, compute_raw_correlation=True)
     for channel in ["glutamate", "calcium"] if with_glutamate else ["calcium"]:
         path = run / f"results.{channel}.hdf5"
         compressed = np.asarray(masknmf.CompressionArray.from_hdf5(path)[:])  # good frames only
@@ -39,6 +39,7 @@ def test_every_demixing_result_stores_raw_traces_that_the_compressed_movie_turns
         for prefix in ["", "global"]:
             results = masknmf.DemixingResults.from_hdf5(path, prefix=prefix)  # infilled to the raw frame count
             assert results.temporal_demixed_raw.shape == results.temporal_demixed.shape
+            assert results.raw_residual_correlation_image.shape == results.fov_shape
             assert np.isfinite(results.temporal_demixed_raw.numpy()).all()
             # put the compressed frames back at their raw frame indices so movie, background and traces line up
             movie = np.zeros((results.temporal_demixed.shape[0],) + compressed.shape[1:], dtype=np.float32)

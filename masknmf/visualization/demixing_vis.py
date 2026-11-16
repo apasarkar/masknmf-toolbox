@@ -629,6 +629,8 @@ class SingleSessionDemixingVis:
             stills[self._summary_name] = self._summary_img
         if self._has_ac and getattr(self.demixing_results, "global_residual_correlation_image", None) is not None:
             stills["residual correlation image"] = self.demixing_results.global_residual_correlation_image.cpu().numpy()
+        if self._is_masknmf_result and self.demixing_results.raw_residual_correlation_image is not None:
+            stills["raw residual correlation image"] = self.demixing_results.raw_residual_correlation_image.cpu().numpy()
         if self._pmd_array is not None:
             stills["mean image"] = self._pmd_array.mean_image.cpu().numpy()
             stills["noise variance image"] = self._pmd_array.noise_variance_image.cpu().numpy()
