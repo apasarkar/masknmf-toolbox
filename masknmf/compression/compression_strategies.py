@@ -277,7 +277,7 @@ class CompressDenoiseStrategy(CompressStrategy):
             trained_model, _ = masknmf.compression.denoising.train_total_variance_denoiser(temporal_compressed_no_denoiser,
                                                                                            num_steps=self.num_steps,
                                                                                            batch_size=128,
-                                                                                           learning_rate=1e-4)
+                                                                                           learning_rate=1e-3)
         else:
             masknmf.utils.display(f"using the pretrained temporal denoiser {self.filepath_denoiser}")
             trained_model = masknmf.compression.denoising.load_denoiser(self.filepath_denoiser)
