@@ -68,6 +68,10 @@ class BaseResults:
         return self._raw_residual_correlation_image
 
     @property
+    def global_residual_correlation_image(self) -> torch.Tensor | None:
+        return self.raw_residual_correlation_image
+
+    @property
     def signals_array(self) -> SignalsArray | None:
         """Across pipelines this term should be a factorized product (spatial components @ temporal components)"""
         raise NotImplementedError

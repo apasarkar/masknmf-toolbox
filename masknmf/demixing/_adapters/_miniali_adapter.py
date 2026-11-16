@@ -366,6 +366,7 @@ class MiniALIResults(BaseResults):
                                         host_memory_gb=8).compress(residual)
         self._raw_residual_array = residual
         self._global_residual_correlation_image = torch.zeros(self.fov_shape[0], self.fov_shape[1])
+        self._raw_residual_correlation_image =  torch.zeros(self.fov_shape[0], self.fov_shape[1])
         self.to(self._device)
 
     def to(self, new_device: str | torch.device):
@@ -378,6 +379,7 @@ class MiniALIResults(BaseResults):
         self._background_array.to(device)
         self._placeholder_background_array.to(device)
         self._global_residual_correlation_image.to(device)
+        self._raw_residual_correlation_image.to(device)
         self._device = device
 
 

@@ -55,7 +55,7 @@ _MOVIES = OrderedDict(
         ("compressed+denoised", ("compression_array", None)),
         ("all signals", ("signals_array", None)),
         ("background", ("fluctuating_background_array", "factorized_background_term1")),
-        ("residual", ("residual_array", None)),
+        ("residual", ("demixed_residual_array", None)),
         ("multiunit", ("multiunit_background_array", "multiunit_basis_term1")),
     ]
 )
