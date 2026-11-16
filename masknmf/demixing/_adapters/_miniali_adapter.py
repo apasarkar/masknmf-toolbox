@@ -346,7 +346,7 @@ class MiniALIResults(BaseResults):
         self._background_roi_averages = torch.from_numpy(
             (self._roi_average @ self._background.ravel()).astype(np.float32))
         self._registered_array = None
-        self._residual_array = None
+        self._raw_residual_array = None
         self._registered_roi_averages = None
 
 
@@ -364,8 +364,9 @@ class MiniALIResults(BaseResults):
         if residual_compress:
             residual = CompressStrategy(block_sizes=[32, 32],
                                         host_memory_gb=8).compress(residual)
-        self._residual_array = residual
+        self._raw_residual_array = residual
         self._global_residual_correlation_image = torch.zeros(self.fov_shape[0], self.fov_shape[1])
+        self._raw_residual_correlation_image =  torch.zeros(self.fov_shape[0], self.fov_shape[1])
         self.to(self._device)
 
     def to(self, new_device: str | torch.device):
@@ -378,6 +379,7 @@ class MiniALIResults(BaseResults):
         self._background_array.to(device)
         self._placeholder_background_array.to(device)
         self._global_residual_correlation_image.to(device)
+        self._raw_residual_correlation_image.to(device)
         self._device = device
 
 
@@ -490,9 +492,16 @@ class MiniALIResults(BaseResults):
         return self._background_array
 
     @property
-    def residual_array(self) -> ArrayLike | None:
+    def raw_residual_array(self) -> ArrayLike | None:
         """registered - background - signals; None without raw_movie."""
-        return self._residual_array
+        return self._raw_residual_array
+
+    @property
+    def demixed_residual_array(self):
+        """
+        For miniALI, the demixing occurs with respect to the raw data, so this is identical to the raw residual array
+        """
+        return self._raw_residual_array
 
     # ROI averages, all (cells, frames): each movie averaged uniformly over the support of spatial_demixed. Unlike
     # suite2p's, miniALI's 13 x 13 footprints can overlap, so the signal average includes neighbors.

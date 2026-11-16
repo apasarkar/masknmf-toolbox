@@ -132,7 +132,7 @@ global_res = masknmf.DemixingResults.from_hdf5(results, prefix="global", device=
 | `res.signals_array.export_a()` | `(H, W, K)` ndarray |
 | `res.c` | `(frames, K)` traces |
 | `res.mean_image` | `(H, W)` |
-| `res.compression_array`, `res.signals_array`, `res.residual_array` | lazy `(frames, H, W)` movies |
+| `res.compression_array`, `res.signals_array`, `res.demixed_residual_array` | lazy `(frames, H, W)` movies |
 
 ```python
 masknmf.SingleSessionDemixingVis(res, frame_timings=timings, device="cuda").show()

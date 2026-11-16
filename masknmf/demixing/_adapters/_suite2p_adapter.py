@@ -366,11 +366,11 @@ class Suite2pResults(BaseResults):
             if residual_compress:
                 compress_strat = CompressStrategy(block_sizes=[32, 32])
                 residual_array = compress_strat.compress(residual_array)
-            self._residual_array = residual_array
+            self._raw_residual_array = residual_array
 
         else:
             self._temporal_demixed_raw = None
-            self._residual_array = None
+            self._raw_residual_array = None
 
         self._device = torch.device(device)
         self.to(self._device)
@@ -434,8 +434,19 @@ class Suite2pResults(BaseResults):
         return self._fluctuating_background_array
 
     @property
-    def residual_array(self) -> ArrayLike | None:
-        return self._residual_array
+    def raw_residual_array(self) -> ArrayLike | None:
+        """
+        This is the movie formed by computing
+        Motion Corrected Movie - Signals - Background
+        """
+        return self._raw_residual_array
+
+    @property
+    def demixed_residual_array(self) -> ArrayLike | None:
+        """
+        Suite2p demixes with respect to the motion corrected array, so this is just an alias for the raw
+        """
+        return self._raw_residual_array
 
     # ROI averages, all (num_neurons, num_frames): each movie averaged uniformly over the support of
     # spatial_demixed (roi_average_operator). The supports don't share pixels, so a footprint only contributes to

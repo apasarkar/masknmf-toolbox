@@ -587,7 +587,7 @@ class SingleSessionDemixingVis:
             self._fluctuating_background_array = (
                 self.demixing_results.fluctuating_background_array
             )
-            self._residual_array = self.demixing_results.residual_array
+            self._residual_array = self.demixing_results.demixed_residual_array
             self._ac_array = self.demixing_results.signals_array
             # an all-zero background term means the demixer never fit one
             if self._is_masknmf_result:
@@ -627,7 +627,7 @@ class SingleSessionDemixingVis:
             stills["registration template"] = self._template
         if self._summary_img is not None:
             stills[self._summary_name] = self._summary_img
-        if self._has_ac and self.demixing_results.global_residual_correlation_image is not None:
+        if self._has_ac and getattr(self.demixing_results, "global_residual_correlation_image", None) is not None:
             stills["residual correlation image"] = self.demixing_results.global_residual_correlation_image.cpu().numpy()
         if self._pmd_array is not None:
             stills["mean image"] = self._pmd_array.mean_image.cpu().numpy()

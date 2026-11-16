@@ -454,7 +454,7 @@ class ClassificationVis:
                         "mean img (global)",
                         mean_img,
                     )
-                    if dmr.global_residual_correlation_image is not None:
+                    if getattr(dmr, "global_residual_correlation_image", None) is not None:
                         add_bg(
                             "resid corr img (global)",
                             dmr.global_residual_correlation_image.cpu().numpy(),

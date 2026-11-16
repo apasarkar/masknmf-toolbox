@@ -10,11 +10,29 @@ from masknmf.demixing.demixing_arrays import SignalsArray, ResidualCorrelationIm
 import torch
 from masknmf.utils import Serializer, SparseCOOTensor
 from masknmf.utils._serialization import save_dict, load_dict
-from masknmf.arrays.array_interfaces import TensorFlyWeight
+from masknmf.arrays.array_interfaces import TensorFlyWeight, ArrayLike
 from masknmf.utils import infill_bad_timepoints
 from masknmf.demixing._base_results import BaseResults
 
 logger = logging.getLogger(__name__)
+
+class _FloatTensorView:
+    """
+    Indexes a movie (numpy array, h5py dataset, registration array, ...) and returns float32 torch tensors on the device
+    of a reference array, so LinearCombinationArray can add it to the signal and background arrays.
+    """
+    def __init__(self, movie: ArrayLike, reference: ArrayLike):
+        self._movie = movie
+        self._reference = reference
+        self.shape = tuple(movie.shape)
+        self.dtype = torch.float32
+
+    def __getitem__(self, item):
+        frames = self._movie[item]
+        if not torch.is_tensor(frames):
+            frames = torch.from_numpy(np.asarray(frames))
+        return frames.to(device=self._reference.device, dtype=torch.float32)
+
 
 class DemixingResults(Serializer, BaseResults):
     _serialized = {
@@ -93,6 +111,7 @@ class DemixingResults(Serializer, BaseResults):
             temporal_demixed_raw: torch.Tensor | None = None,
             temporal_demixed_trend: torch.Tensor | None = None,
             device: torch.device | str ="cpu",
+            motion_corrected_movie: ArrayLike | None = None,
             **kwargs
     ):
         """
@@ -132,8 +151,6 @@ class DemixingResults(Serializer, BaseResults):
                 re-estimated from the registered raw movie, with no compression or denoising
             temporal_demixed_trend (torch.Tensor | None): shape (number of frames, number of neural signals).
             device (str): 'cpu' or 'cuda'. used to manage where the tensors reside
-            good_frames (torch.Tensor | None): A 1D boolean indicator, describing which timepoints from the raw data
-                were processed (good frames) and which were ignored.
         """
         self._device = device
         self._shape = tuple(shape)
@@ -243,6 +260,10 @@ class DemixingResults(Serializer, BaseResults):
 
         # Move all tracked tensors to desired location so everything is on one device
         self.to(self._device)
+        self._raw_residual_array = None
+        self._motion_corrected_array = None
+        if motion_corrected_movie is not None:
+            self.motion_corrected_array = motion_corrected_movie
 
     def export(self, path: str | Path, prefix: str = "", overwrite: bool = False):
         """
@@ -404,7 +425,6 @@ class DemixingResults(Serializer, BaseResults):
             raise ValueError(
                 f"temporal_demixed_raw has shape {tuple(value.shape)}, temporal_demixed {tuple(self.temporal_demixed.shape)}")
         self.flyweight.temporal_demixed_trend = None if value is None else value.to(self._device).float()
-
 
     @property
     def shape(self):
@@ -694,7 +714,7 @@ class DemixingResults(Serializer, BaseResults):
         return self._static_background_array
 
     @property
-    def residual_array(self) -> LinearCombinationArray:
+    def demixed_residual_array(self) -> LinearCombinationArray:
         if self._residual_array is None:
             data_list = [self.compression_array,
                          self.fluctuating_background_array,
@@ -703,6 +723,46 @@ class DemixingResults(Serializer, BaseResults):
             self._residual_array = LinearCombinationArray(data_list,
                                                           alphas=[1, -1, -1, -1])
         return self._residual_array
+
+    @property
+    def motion_corrected_array(self):
+        """
+        This is the motion corrected array used in the data processing
+        """
+        return self._motion_corrected_array
+
+    @motion_corrected_array.setter
+    def motion_corrected_array(self, motion_array: ArrayLike):
+        if motion_array is not None and tuple(motion_array.shape) != tuple(self.shape):
+            raise ValueError(f"motion corrected array has shape {tuple(motion_array.shape)}, "
+                             f"the demixing results {tuple(self.shape)}")
+        self._motion_corrected_array = motion_array
+        self._raw_residual_array = None  # built from the old movie
+
+    @property
+    def raw_residual_array(self) -> ArrayLike | None:
+        """
+        The final decomposition here is:
+        motion corrected - raw data scale signal array - raw data scale fluctuating background
+        """
+        if self.motion_corrected_array is None or self.temporal_demixed_raw is None:
+            return None
+        if self._raw_residual_array is None:
+            noise = self.noise_variance_image.clone()
+            noise[noise <= 0] = 1.0  # same guard as estimate_temporal_demixed_raw
+            raw_scale_signals = SignalsArray.from_tensors(self.fov_shape,
+                                                          self.spatial_demixed_raw,
+                                                          self.temporal_demixed_raw)
+            raw_scale_background = FluctuatingBackgroundArray.from_tensors(self.fov_shape,
+                                                                           self.spatial_compressed,
+                                                                           self.factorized_background_term1,
+                                                                           self.factorized_background_term2,
+                                                                           normalizer=noise,
+                                                                           rescale=True)
+            self._raw_residual_array = LinearCombinationArray(
+                [_FloatTensorView(self.motion_corrected_array, raw_scale_signals),
+                 raw_scale_signals, raw_scale_background], alphas=[1, -1, -1])
+        return self._raw_residual_array
 
     @property
     def colorful_signals_array(self) -> ColorfulSignalsArray:
