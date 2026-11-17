@@ -93,7 +93,7 @@ def estimate_temporal_demixed_raw(results: DemixingResults,
     if noise is None:
         noise = results.noise_variance_image.flatten().to(device=a.device, dtype=torch.float32, copy=True)
     else:
-        noise = noise.to(device=a.device, dtype=torch.float32, copy=True)
+        noise = noise.to(device=a.device, dtype=torch.float32, copy=True).flatten()
     noise[noise <= 0] = 1.0
 
     # Per run, not per batch: everything below depends on the footprints and background factors only
