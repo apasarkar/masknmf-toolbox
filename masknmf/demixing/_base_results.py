@@ -48,6 +48,14 @@ class BaseResults:
         raise NotImplementedError
 
     @property
+    def spatial_demixed_raw(self) -> SparseCOOTensor:
+        """
+        The footprints that pair with temporal_demixed_raw at the scale of the motion corrected movie.
+        By default a pipeline demixes the motion corrected movie itself, so this is spatial_demixed
+        """
+        return self.spatial_demixed
+
+    @property
     def temporal_demixed(self) -> torch.Tensor:
         raise NotImplementedError
 
@@ -109,6 +117,14 @@ class BaseResults:
         By default this is not implemented
         """
         raise NotImplementedError
+
+    @property
+    def demixed_residual_array(self) -> ArrayLike | None:
+        """
+        This is the residual with respect to the movie the pipeline demixed.
+        By default a pipeline demixes the motion corrected movie itself, so this is raw_residual_array
+        """
+        return self.raw_residual_array
 
     @property
     def compression_array_roi_averages(self) -> torch.Tensor | None:
