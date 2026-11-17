@@ -64,6 +64,11 @@ class BaseResults:
         raise NotImplementedError
 
     @property
+    def noise_variance_image(self) -> torch.Tensor | None:
+        """By default, a pipeline does NOT noise normalize the movie"""
+        return None
+
+    @property
     def raw_residual_correlation_image(self) -> torch.Tensor | None:
         """
         Each pixel's mean correlation with its eight neighbours in the residual movie, after MAD thresholding;

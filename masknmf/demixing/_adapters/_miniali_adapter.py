@@ -438,9 +438,9 @@ class MiniALIResults(BaseResults):
         return self._temporal_demixed
 
     @property
-    def temporal_demixed_raw(self) -> None:
-        """None: miniALI's traces are already fit to the registered raw movie, with no compression or denoising."""
-        return None
+    def temporal_demixed_raw(self) -> torch.Tensor:
+        """temporal_demixed: miniALI's traces are already fit to the registered raw movie, with no compression or denoising."""
+        return self._temporal_demixed
 
     @property
     def reference_image(self) -> np.ndarray:
