@@ -1913,6 +1913,49 @@ def superpixel_init(
 #     return rows[good_comps], cols[good_comps]
 
 
+def merge_signal_groups(
+        a: SparseCSRTensor,
+        c: torch.Tensor,
+        groups: Sequence[Sequence[int]],
+) -> tuple[SparseCSRTensor, torch.Tensor]:
+    """
+    Replaces each group of signals with its rank-1 fit, placed after the signals in no group.
+
+    Args:
+        a (torch.sparse_csr_tensor): Shape (pixels, signals). The spatial footprints
+        c (torch.Tensor): Shape (frames, signals). The temporal traces
+        groups (Sequence[Sequence[int]]): Disjoint groups of signal indices; each group becomes one signal
+    Returns:
+        a (torch.sparse_csr_tensor): Shape (pixels, signals in no group + number of groups)
+        c (torch.Tensor): Shape (frames, signals in no group + number of groups)
+    """
+    device = c.device
+    keep = torch.ones(c.shape[1], dtype=torch.bool, device=device)
+    keep[torch.as_tensor([int(k) for group in groups for k in group], dtype=torch.long, device=device)] = False
+    keep = torch.nonzero(keep).squeeze(1)
+    a_kept = csr_index_select_cols(a, keep)
+    rows = [decompress_csr_rows(a_kept.crow_indices(), a_kept.values().numel())]
+    cols = [a_kept.col_indices()]
+    values = [a_kept.values()]
+    traces = [torch.index_select(c, 1, keep)]
+    for i, group in enumerate(groups):
+        logger.debug(f"merging {group}")
+        members = torch.as_tensor(sorted(int(k) for k in group), dtype=torch.long, device=device)
+        a_rank1, c_rank1 = rank_1_NMF_fit(csr_index_select_cols(a, members), torch.index_select(c, 1, members))
+        pixels = torch.nonzero(a_rank1[:, 0]).squeeze(1)
+        rows.append(pixels)
+        cols.append(torch.full_like(pixels, keep.numel() + i))
+        values.append(a_rank1[pixels, 0])
+        traces.append(c_rank1)
+    c = torch.cat(traces, dim=1)
+    a = torch.sparse_coo_tensor(
+        torch.stack([torch.cat(rows), torch.cat(cols)]),
+        torch.cat(values),
+        (a.shape[0], c.shape[1]),
+    ).coalesce().to_sparse_csr()
+    return a, c
+
+
 def merge_components(
         a: SparseCOOTensor,
         c: torch.Tensor,
@@ -1966,63 +2009,15 @@ def merge_components(
                 )
             )
         )
-        comps = list(nx.connected_components(merge_graph))
-        remove_indices = torch.unique(torch.concatenate([row_comps, col_comps]).flatten())
-        all_indices = torch.ones([c.shape[1]], device=device)
-        all_indices[remove_indices] = 0
-        all_indices = all_indices.bool()
-
-        indices_arange = torch.arange(a.shape[1], device=device)[all_indices]
-
-        a_preserved = csr_index_select_cols(a, indices_arange)
-        c_preserved = torch.index_select(c, 1, indices_arange)
-
-        c_append_list = [c_preserved]
-
-        row_indices = [decompress_csr_rows(a_preserved.crow_indices(), a_preserved.values().numel())]
-        col_indices = [a_preserved.col_indices()]
-        values_indices = [a_preserved.values()]
-        num_preserved_comps = a_preserved.shape[1]
-        added_counter = 0
-        for comp in comps:
-            logger.debug(f"merging {comp}")
-            comp = sorted(comp)
-            good_comps = torch.Tensor(comp).to(device).long()
-
-            a_merge = csr_index_select_cols(a, good_comps)
-            c_merge = torch.index_select(c, 1, good_comps)
-
-            a_rank1, c_rank1 = rank_1_NMF_fit(a_merge, c_merge)
-
-            if plot_en:
+        comps = [sorted(comp) for comp in nx.connected_components(merge_graph)]
+        if plot_en:
+            for comp in comps:
                 spatial_comp_plot(
-                    a_merge.cpu().to_dense().numpy(),
+                    csr_index_select_cols(a, torch.as_tensor(comp, device=device)).cpu().to_dense().numpy(),
                     standard_correlation_image[comp].cpu().numpy(),
                     ini=False,
                 )
-
-            nonzero_indices = torch.nonzero(a_rank1)
-            row_temp = nonzero_indices[:, 0]
-            col_temp = nonzero_indices[:, 1]
-
-            nonzero_values = a_rank1[row_temp, col_temp]
-
-            row_indices.append(row_temp)
-            col_indices.append(col_temp + num_preserved_comps + added_counter)
-            added_counter += 1
-            values_indices.append(nonzero_values)
-
-            c_append_list.append(c_rank1)
-
-        row_indices_net = torch.cat(row_indices, dim=0)
-        col_indices_net = torch.cat(col_indices, dim=0)
-        value_indices_net = torch.cat(values_indices, dim=0)
-        c = torch.cat(c_append_list, dim=1)
-        a = torch.sparse_coo_tensor(
-            torch.stack([row_indices_net, col_indices_net]),
-            value_indices_net,
-            (a.shape[0], c.shape[1]),
-        ).coalesce().to_sparse_csr()
+        a, c = merge_signal_groups(a, c, comps)
 
         standard_correlation_image.temporal_demixed = c
     return a, c, a.bool(), standard_correlation_image
@@ -2377,6 +2372,7 @@ class SignalDemixer:
             device: str = "cpu",
             frame_batch_size: int = 5000,
             drop: Sequence[int] | None = None,
+            merge_indices: Sequence[Sequence[int]] = (),
     ) -> "SignalDemixer":
         """
         Resume demixing from saved results: the signals and fluctuating background become the starting point of the
@@ -2384,6 +2380,8 @@ class SignalDemixer:
 
         Args:
             drop (Sequence[int] | None): indices of signals to leave out of the resumed pass
+            merge_indices (Sequence[Sequence[int]]): disjoint groups of signal indices; each group enters the
+                resumed pass as one signal, its rank-1 fit, placed after the signals that were not merged
         """
         if results.factorized_background_term1 is not None and results.factorized_background_term2 is not None:
             ring_term = (results.factorized_background_term1.to(device), results.factorized_background_term2.to(device))
@@ -2391,6 +2389,12 @@ class SignalDemixer:
             ring_term = None
         a = results.spatial_demixed.coalesce().to_sparse_csr()
         c = results.temporal_demixed
+        if merge_indices:
+            is_merged = np.zeros(a.shape[1], dtype=bool)
+            is_merged[[int(k) for group in merge_indices for k in group]] = True
+            a, c = merge_signal_groups(a, c.to(a.device), merge_indices)
+            # NOTE: the merged signals left their columns, so each dropped index moves down past them
+            drop = [int(k) - int(is_merged[: int(k)].sum()) for k in drop or ()]
         if drop:
             keep = torch.ones(a.shape[1], dtype=torch.bool, device=a.device)
             keep[torch.as_tensor(list(drop), dtype=torch.long, device=a.device)] = False
