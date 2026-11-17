@@ -785,6 +785,8 @@ def view_each(args: argparse.Namespace, files: list[str]) -> None:
     one crashing leaves the rest open. Waits for them and reports any that fail; ctrl+c stops waiting, not the windows.
     """
     options = ["--device", args.device]
+    if args.raw_correlation:
+        options.append("--raw-correlation")
     if args.fs is not None:
         options += ["--fs", str(args.fs)]
     if args.prefix:
@@ -868,6 +870,8 @@ def command_view(args: argparse.Namespace) -> None:
     adapter = adapter_for(filepath_results)
     if args.prefix and adapter is not None:
         fail(f"{filepath_results} holds {adapter.pipeline} results, which take no prefix")
+    if args.raw_correlation and adapter is None:
+        fail("--raw-correlation is for other pipelines' results; a masknmf run stores the image with compute_raw_correlation")
     name_demixing = f"{args.prefix}/{group_name_demixing()}" if args.prefix else group_name_demixing()
     if name_demixing not in names_present and args.prefix:
         fail(f"{filepath_results} holds no {name_demixing}")
@@ -890,6 +894,8 @@ def command_view(args: argparse.Namespace) -> None:
         fail(f"{filepath_results} holds no compression")
     if args.compression and raw is None:
         fail("--compression needs --raw, the movie the compression saw, with the results' frame count")
+    if args.raw_correlation and results.compute_raw_residual_correlation_image() is None:
+        print(f"{filepath_results} has no residual movie, so no raw residual correlation image")
     frame_rate = args.fs if args.fs is not None else getattr(results, "frame_rate", None)
     viewer = masknmf.SingleSessionDemixingVis(
         demixing_results=results,
@@ -1036,6 +1042,11 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
         "--compression",
         action="store_true",
         help="also compute the lag-1 autocorrelation images of the registered (else raw), compressed and residual movies into the Static images window (needs --raw and a compression)",
+    )
+    parser_view.add_argument(
+        "--raw-correlation",
+        action="store_true",
+        help="for another pipeline's results, also compute the residual correlation image into the Static images window: one pass over the residual movie",
     )
     parser_view.add_argument(
         "--classify",

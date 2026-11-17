@@ -32,7 +32,6 @@ from masknmf.compression.compression_strategies import CompressStrategy
 from masknmf.demixing._base_results import BaseResults
 from masknmf.demixing.demixing_arrays import SignalsArray
 from masknmf.demixing.demixing_utils import scipy_sparse_to_torch
-from masknmf.demixing.local_correlation import local_correlation_image
 from masknmf.utils import SparseCOOTensor, torch_select_device
 RESULT_FILE_NAME = "ALI_Result_new.mat"
 METADATA_FILE_NAME = "output_data.mat"
@@ -492,20 +491,6 @@ class MiniALIResults(BaseResults):
     def raw_residual_array(self) -> ArrayLike | None:
         """registered - background - signals; None without raw_movie."""
         return self._raw_residual_array
-
-    @property
-    def raw_residual_correlation_image(self) -> torch.Tensor | None:
-        """
-        The local correlation image of raw_residual_array, shape (height, width). It is stored, never computed on
-        access, because the pass over the movie is too slow to run every time a result is opened: None until
-        compute_raw_residual_correlation_image is called.
-        """
-        return self._raw_residual_correlation_image
-
-    def compute_raw_residual_correlation_image(self) -> torch.Tensor:
-        """Computes and stores raw_residual_correlation_image, one pass over the residual movie in pixel tiles."""
-        self._raw_residual_correlation_image = local_correlation_image(self.raw_residual_array)
-        return self._raw_residual_correlation_image
 
     @property
     def demixed_residual_array(self):

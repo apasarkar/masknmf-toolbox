@@ -71,14 +71,25 @@ class BaseResults:
     @property
     def raw_residual_correlation_image(self) -> torch.Tensor | None:
         """
-        Each pixel's mean correlation with its eight neighbours in the residual movie, after MAD thresholding;
-        ``None`` without a residual movie. Computed from ``residual_array`` on first access, one pass in pixel tiles.
+        Each pixel's mean correlation with its eight neighbours in the residual movie, after MAD thresholding.
+        It is stored, never computed on access, because the pass over the movie is too slow to run every time a
+        result is opened: ``None`` until compute_raw_residual_correlation_image is called.
+        """
+        return self._raw_residual_correlation_image
+
+    @raw_residual_correlation_image.setter
+    def raw_residual_correlation_image(self, value: torch.Tensor | None):
+        self._raw_residual_correlation_image = value
+
+    def compute_raw_residual_correlation_image(self) -> torch.Tensor | None:
+        """
+        Computes and stores raw_residual_correlation_image from raw_residual_array, one pass over the movie in
+        pixel tiles. ``None`` without a residual movie.
         """
         if self.raw_residual_array is None:
             return None
-        if self._raw_residual_correlation_image is None:
-            self._raw_residual_correlation_image = local_correlation_image(self.raw_residual_array)
-        return self._raw_residual_correlation_image
+        self.raw_residual_correlation_image = local_correlation_image(self.raw_residual_array)
+        return self.raw_residual_correlation_image
 
     @property
     def global_residual_correlation_image(self) -> torch.Tensor | None:
