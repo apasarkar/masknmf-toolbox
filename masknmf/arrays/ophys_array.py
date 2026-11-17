@@ -43,7 +43,8 @@ class OphysArray(ArrayLike):
                  device='cpu',
                  batch_size: int = 200,
                  good_frames: np.ndarray | torch.Tensor | list | None = None,
-                 mean_image: np.ndarray | torch.Tensor | None = None):
+                 mean_image: np.ndarray | torch.Tensor | None = None,
+                 invert_negative: bool = True):
         """
         Args:
             dataset (masknmf.ArrayLike): Shape (num_frames, height, width)
@@ -58,17 +59,19 @@ class OphysArray(ArrayLike):
                 and the mean image refer to this temporally cropped movie. None keeps every frame.
             mean_image (np.ndarray | torch.Tensor | None): Mean over the good frames, shape (height, width), from an
                 earlier pass over this dataset with these good_frames. None computes it when it is first needed.
+            invert_negative (bool): If the indicator is negative, this parameter decides whether to invert the data
         """
         self._dataset = dataset
         self._device = device
         self._batch_size = batch_size
         self._negative_indicator = negative_indicator
+        self._invert_negative = invert_negative
         self._include_mean = include_mean
         self._infill = False
         self._set_good_frames(good_frames)
         self._mean_image = None if mean_image is None else torch.as_tensor(mean_image, dtype=self.dtype, device=device)
         self._mean_lock = threading.Lock()
-        if negative_indicator or not include_mean:
+        if (negative_indicator and invert_negative) or not include_mean:
             self._get_mean()  # every frame read will need it, so pay for it now rather than on the first frame
 
     def _set_good_frames(self, good_frames):
@@ -218,6 +221,10 @@ class OphysArray(ArrayLike):
         return self._negative_indicator
 
     @property
+    def invert_negative(self) -> bool:
+        return self._invert_negative
+
+    @property
     def device(self) -> str:
         return self._device
 
@@ -271,7 +278,7 @@ class OphysArray(ArrayLike):
             frame_indexer = slice(i, i + 1)
         spatial = normalize_spatial_indexer(item, self.shape[1:])
         data_subset = torch.as_tensor(self._dataset[(frame_indexer, *spatial)]).to(self.device).to(self.dtype) #Ensures consistent indexing scheme
-        view = self._positive_view(data_subset, spatial, include_mean)
+        view = self._displayed_view(data_subset, spatial, include_mean)
         if self._frame_map is None or not self._infill:
             return view
         good = np.atleast_1d(self._good_frames[frame_indexer])
@@ -280,9 +287,9 @@ class OphysArray(ArrayLike):
         # multiply out of place: view can share memory with the dataset
         return view * torch.as_tensor(good, device=view.device).reshape(-1, *([1] * (view.ndim - 1)))
 
-    def _positive_view(self, data_subset: torch.Tensor, spatial: tuple, include_mean: bool) -> torch.Tensor:
-        """Return the frames in data_subset, read at the spatial crop, as the positively tuned view."""
-        if not self.negative_indicator and include_mean:
+    def _displayed_view(self, data_subset: torch.Tensor, spatial: tuple, include_mean: bool) -> torch.Tensor:
+        """Return the frames in data_subset, read at the spatial crop, optionally inverted if the indicator is negative"""
+        if not (self.invert_negative and self.negative_indicator) and include_mean:
             return data_subset  # already the positive view with its baseline: no mean needed
 
         # Check if spatial cropping occurred, deal with mean image accordingly
@@ -297,8 +304,9 @@ class OphysArray(ArrayLike):
 
         # Out-of-place ops: one full-size pass instead of two, and never writes into the dataset's own memory
         # (torch.as_tensor and .to() return the dataset's buffer when no conversion is needed)
-        if self.negative_indicator:
+        if self.negative_indicator and self.invert_negative:
             if include_mean:
                 return 2 * mean_crop - data_subset  # reflect about the mean: dips become rises, baseline unchanged
             return mean_crop - data_subset
+
         return data_subset - mean_crop
