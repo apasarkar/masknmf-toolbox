@@ -22,6 +22,7 @@ here enumerates a parameter by hand:
     masknmf view cnmf.hdf5
     masknmf view results.hdf5 --classify --labels soma,dendrite,junk
     masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
+    masknmf serve results.hdf5 --raw movie.tif
     masknmf view tracking_folder
     masknmf view tracking_folder/20261001T180415_roicat-tracking-manifest.json
     masknmf view old_tracking_folder day1/results.hdf5 day2/results.hdf5
@@ -77,6 +78,8 @@ from masknmf.utils.display import handler as handler_console
 GLOB_TRACKING_MANIFEST = "*_roicat-tracking-manifest.json"
 
 NAMES_ALIAS = {"frame_rate": "--fs"}
+
+PORT_SERVE = 8810
 
 CHARACTERS_NEEDING_QUOTES = set(" \t\\'&|;<>()$`!*?[]{}~#")
 
@@ -860,8 +863,26 @@ def command_view(args: argparse.Namespace) -> None:
             fail("--raw and --compression name one movie; open its results file on its own")
         view_each(args=args, files=files)
         return
-    filepath_results = files[0]
-    names_present = present[filepath_results]
+    import fastplotlib as fpl
+
+    open_demixing_viewer(args=args, filepath_results=files[0], names_present=present[files[0]]).show()
+    fpl.loop.run()
+
+
+def open_demixing_viewer(
+    args: argparse.Namespace, filepath_results: str, names_present: list[str], canvas=None
+) -> "masknmf.SingleSessionDemixingVis":
+    """
+    Build the demixing viewer of one results file from the view options, not yet shown.
+
+    Args:
+        args (argparse.Namespace): The parsed ``view`` or ``serve`` options
+        filepath_results (str): The results file
+        names_present (list[str]): The stages the file holds, from ``describe_source``
+        canvas: The rendercanvas the viewer draws on; None opens a window
+    Returns:
+        masknmf.SingleSessionDemixingVis: The viewer
+    """
     if len(names_present) == 0:
         fail(f"{filepath_results} holds no masknmf results")
 
@@ -871,8 +892,6 @@ def command_view(args: argparse.Namespace) -> None:
     name_demixing = f"{args.prefix}/{group_name_demixing()}" if args.prefix else group_name_demixing()
     if name_demixing not in names_present and args.prefix:
         fail(f"{filepath_results} holds no {name_demixing}")
-
-    import fastplotlib as fpl
 
     device = (
         str(masknmf.utils.torch_select_device()) if args.device == "auto" else args.device
@@ -898,11 +917,50 @@ def command_view(args: argparse.Namespace) -> None:
         results_path=filepath_results,
         raw=raw,
         registered=registered,
+        canvas=canvas,
     )
     if args.compression:
         viewer.compute_lag1_acf()
-    viewer.show()
-    fpl.loop.run()
+    return viewer
+
+
+def command_serve(args: argparse.Namespace) -> None:
+    """
+    Serve the demixing viewer of one results file to a browser: rendered on this machine, streamed as frames, with
+    the browser's pointer and keys sent back. It listens on localhost; from another machine, tunnel the port over ssh.
+    """
+    if os.environ.get("RENDERCANVAS_BACKEND") != "http":
+        # NOTE: importing masknmf imports fastplotlib, which fixes its event loop then, so the http loop has to be
+        # chosen before this process starts
+        env = {k: v for k, v in os.environ.items() if k not in ("RENDERCANVAS_FORCE_OFFSCREEN", "WGPU_FORCE_OFFSCREEN")}
+        env["RENDERCANVAS_BACKEND"] = "http"
+        os.execve(sys.executable, [sys.executable, "-m", "masknmf.cli", *args.argv], env)
+
+    from masknmf.visualization.canvas_server import SESSION_KEY_ENV, BrowserCanvas, CanvasServer
+    from masknmf.visualization.imgui.options import OPTIONS
+
+    handler_console.setFormatter(logging.Formatter("%(message)s"))
+    # a second figure would open on this machine, where no one sees it
+    OPTIONS.separate_image_window = False
+    filepath_results = args.results
+    viewer = open_demixing_viewer(
+        args=args,
+        filepath_results=filepath_results,
+        names_present=describe_source(filepath=filepath_results),
+        canvas=BrowserCanvas(size=(1600, 1000), max_fps=60.0),
+    )
+    name = Path(filepath_results).name
+    server = CanvasServer(
+        viewer,
+        title=f"{name} - masknmf",
+        waiting=f"Opening {name} ...",
+        host=args.host,
+        port=args.port,
+        key=os.environ.get(SESSION_KEY_ENV),
+    )
+    print(f"{Path(filepath_results).resolve()} at {server.url}")
+    print(f"from another machine: ssh -L {args.port}:localhost:{args.port} <this machine>, then open that address there", flush=True)
+    server.serve()
 
 
 def command_train_classifier(args: argparse.Namespace) -> None:
@@ -1055,6 +1113,17 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     )
     parser_view.set_defaults(handler=command_view)
 
+    parser_serve = subparsers.add_parser("serve", help="serve the demixing viewer of one results file to a browser")
+    parser_serve.add_argument("results", help="a results .hdf5 file")
+    parser_serve.add_argument("--raw", default=None, help=f"the raw movie the results came from; {adapter_raw_sources()}")
+    parser_serve.add_argument("--dataset", default=None)
+    parser_serve.add_argument("--fs", default=None, type=float, help="acquisition rate in Hz")
+    parser_serve.add_argument("--prefix", default="", help="group the demixing results sit under, as for view")
+    parser_serve.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
+    parser_serve.add_argument("--host", default="127.0.0.1", help="interface to listen on; there is no login, so keep localhost and tunnel")
+    parser_serve.add_argument("--port", default=PORT_SERVE, type=int)
+    parser_serve.set_defaults(handler=command_serve, compression=False, raw_correlation=False)
+
     parser_train = subparsers.add_parser(
         "train-classifier", help="train a ROI classifier on the labels saved with masknmf view --classify"
     )
@@ -1130,6 +1199,7 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     args = build_parser(spec=spec).parse_args(argv)
     args.command = f"masknmf {format_command(argv=argv)}"
+    args.argv = argv
     args.handler(args)
 
 
