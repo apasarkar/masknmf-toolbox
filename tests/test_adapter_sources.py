@@ -264,6 +264,16 @@ def test_a_suite2p_plane_opens_with_its_data_bin_as_the_residuals_movie_and_its_
     assert OpenedResults.open(plane / "stat.npy").results.shape == (FRAMES, HEIGHT, WIDTH)
 
 
+def test_raw_traces_of_a_suite2p_plane_are_the_least_squares_fit_of_its_footprints_to_the_movie_minus_its_neuropil(plane):
+    results = OpenedResults.open(plane).results
+    movie = results.motion_corrected_data
+    raw = masknmf.demixing.estimate_temporal_demixed_raw(results, movie, device="cpu", nonneg=False)
+    footprints = results.spatial_demixed.to_dense().numpy()
+    target = np.asarray(movie[:], np.float32) - results.fluctuating_background_array[:].numpy()
+    expected = np.linalg.lstsq(footprints, target.reshape(FRAMES, -1).T, rcond=None)[0].T
+    np.testing.assert_allclose(raw.numpy(), expected, rtol=1e-4, atol=1e-2)
+
+
 def test_a_suite2p_plane_without_data_bin_opens_without_a_residual(tmp_path):
     folder = tmp_path / "plane0"
     write_suite2p_plane(folder, with_bin=False)
@@ -361,10 +371,36 @@ def test_a_miniali_file_opens_with_its_recording_folder_and_drops_the_frames_pas
     assert opened.raw is opened.results.raw_array and opened.raw_source == tmp_path / "recording"
     assert opened.shifts.shape == (FRAMES, 2) and isinstance(opened.registered, masknmf.GradientRegistrationArray)
     assert opened.results.raw_residual_array.shape == (FRAMES, HEIGHT, WIDTH) and opened.skipped == []
+    assert opened.results.temporal_demixed_raw is opened.results.temporal_demixed
+    assert opened.results.raw_residual_correlation_image is None
+    image = opened.results.compute_raw_residual_correlation_image()
+    assert image.shape == (HEIGHT, WIDTH) and image.any() and opened.results.global_residual_correlation_image is image
     with pytest.raises(ValueError, match="need the raw movie"):
         OpenedResults.open(miniali)
     with pytest.raises(ValueError, match="the results 40"):
         OpenedResults.open(miniali, raw=np.zeros((FRAMES - 1, HEIGHT, WIDTH), np.uint8))
+
+
+class RecordingViewer:
+    """Stands in for the demixing viewer and keeps the results it was opened on."""
+    results = None
+
+    def __init__(self, demixing_results, **kwargs):
+        RecordingViewer.results = demixing_results
+
+    def show(self):
+        pass
+
+
+@pytest.mark.parametrize("flag, computed", [(["--raw-correlation"], True), ([], False)], ids=["asked", "not asked"])
+def test_view_computes_the_residual_correlation_image_only_with_raw_correlation(tmp_path, miniali, monkeypatch, flag, computed):
+    import fastplotlib as fpl
+
+    monkeypatch.setattr(masknmf, "SingleSessionDemixingVis", RecordingViewer)
+    monkeypatch.setattr(fpl.loop, "run", lambda: None)
+    cli.main(["view", str(miniali), "--raw", str(tmp_path / "recording"), "--device", "cpu", *flag])
+    image = RecordingViewer.results.global_residual_correlation_image
+    assert (image is not None and image.shape == (HEIGHT, WIDTH)) if computed else image is None
 
 
 def test_view_lists_a_miniali_file_and_the_launcher_opens_it(tmp_path, miniali, capsys):
@@ -421,6 +457,8 @@ def test_a_giant_run_opens_with_its_footprints_traces_shifts_and_activity_channe
     assert frames.shape == (2, HEIGHT, WIDTH)
     np.testing.assert_array_equal(frames[:, 0, 0], [31, 111])
     assert results.raw_residual_array is None and results.fluctuating_background_array is None
+    assert results.demixed_residual_array is None and results.raw_residual_correlation_image is None
+    assert results.spatial_demixed_raw is results.spatial_demixed
     assert results.signals_array[5].shape == (1, HEIGHT, WIDTH)
 
 
