@@ -10,7 +10,7 @@ import pytest
 pytest.importorskip("uvicorn")
 
 sys.path.insert(0, str(Path(__file__).parent))
-from asgi_client import Browser, Lifespan, frame_of_size, get, ws_reply  # noqa: E402
+from asgi_client import Browser, Lifespan, frame_of_size, get, request, ws_reply  # noqa: E402
 
 from masknmf.visualization.canvas_server import SESSION_KEY_HEADER, BrowserCanvas, CanvasServer, client_js, page_html  # noqa: E402
 
@@ -68,3 +68,58 @@ def test_a_served_figure_streams_frames_only_to_the_key_and_goes_still():
     server = CanvasServer(FigureVis(canvas), title="figure", waiting="Opening ...", host="127.0.0.1", port=0, key="sesame")
     asyncio.run(stream(server))
 
+
+def write_results(path, groups):
+    import h5py
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(path, "w") as f:
+        for group in groups:
+            f.create_group(group)
+
+
+def test_the_picker_lists_one_row_per_results_file_grouped_by_top_folder_newest_run_first(tmp_path):
+    from masknmf.io import group_name_compression, group_name_demixing
+    from masknmf.visualization.results_picker import find_results, picker_html
+
+    stages = [group_name_compression(), group_name_demixing()]
+    old = tmp_path / "mouse" / "fov1" / "20260101T000000_two-photon-calcium"
+    new = tmp_path / "mouse" / "fov1" / "20260202T000000_two-photon-calcium"
+    write_results(old / "results.hdf5", stages)
+    write_results(old / "results.20260101T010000.curated.hdf5", stages)
+    write_results(new / "results.hdf5", stages[:1])
+    write_results(tmp_path / "mouse" / "other.results.hdf5", [])
+    write_results(tmp_path / "_archive" / "run" / "results.hdf5", stages)
+    write_results(tmp_path / "store.zarr" / "results.hdf5", stages)
+
+    files = find_results(tmp_path)
+    assert [(f.group, f.subfolder, f.run, f.name) for f in files] == [
+        ("mouse", "fov1", new.name, "results.hdf5"),
+        ("mouse", "fov1", old.name, "results.20260101T010000.curated.hdf5"),
+    ]
+    assert files[0].stages == ["compression"] and files[1].stages == ["compression", "demixing"]
+    assert files[1].num_curated == 1 and files[0].pipeline == "two-photon-calcium"
+
+    page = picker_html(str(tmp_path), files, path_open=files[1].path, error="a <b>")
+    assert page.count("class='file") == 2 and page.count("class='file open'") == 1
+    assert "a &lt;b&gt;" in page and "curated (1)" in page
+
+
+async def picker_requests(server):
+    status, headers, _ = await request(server.asgi, "GET", "/")
+    assert status == 303 and headers[b"location"] == b"files"
+    status, body = await get(server.asgi, "/files")
+    assert status == 200 and "results.hdf5" in body.decode()
+    status, body = await get(server.asgi, "/open?path=/etc/passwd")
+    assert status == 200 and "is not a results file below" in body.decode()
+
+
+def test_the_picker_sends_a_browser_to_the_list_and_refuses_a_path_outside_it(tmp_path):
+    from masknmf.io import group_name_demixing
+    from masknmf.visualization.results_picker import PickerServer
+
+    write_results(tmp_path / "mouse" / "results.hdf5", [group_name_demixing()])
+    server = PickerServer(tmp_path, open_viewer=None, args=None, host="127.0.0.1", port=0)
+
+    asyncio.run(picker_requests(server))
+    server.close()

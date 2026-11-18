@@ -23,6 +23,7 @@ here enumerates a parameter by hand:
     masknmf view results.hdf5 --classify --labels soma,dendrite,junk
     masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
     masknmf serve results.hdf5 --raw movie.tif
+    masknmf serve data_folder
     masknmf view tracking_folder
     masknmf view tracking_folder/20261001T180415_roicat-tracking-manifest.json
     masknmf view old_tracking_folder day1/results.hdf5 day2/results.hdf5
@@ -927,7 +928,8 @@ def open_demixing_viewer(
 def command_serve(args: argparse.Namespace) -> None:
     """
     Serve the demixing viewer of one results file to a browser: rendered on this machine, streamed as frames, with
-    the browser's pointer and keys sent back. It listens on localhost; from another machine, tunnel the port over ssh.
+    the browser's pointer and keys sent back. A folder serves a page listing the results files below it, and the
+    viewer on the one picked there. It listens on localhost; from another machine, tunnel the port over ssh.
     """
     if os.environ.get("RENDERCANVAS_BACKEND") != "http":
         # NOTE: importing masknmf imports fastplotlib, which fixes its event loop then, so the http loop has to be
@@ -942,23 +944,31 @@ def command_serve(args: argparse.Namespace) -> None:
     handler_console.setFormatter(logging.Formatter("%(message)s"))
     # a second figure would open on this machine, where no one sees it
     OPTIONS.separate_image_window = False
-    filepath_results = args.results
-    viewer = open_demixing_viewer(
-        args=args,
-        filepath_results=filepath_results,
-        names_present=describe_source(filepath=filepath_results),
-        canvas=BrowserCanvas(size=(1600, 1000), max_fps=60.0),
-    )
-    name = Path(filepath_results).name
-    server = CanvasServer(
-        viewer,
-        title=f"{name} - masknmf",
-        waiting=f"Opening {name} ...",
-        host=args.host,
-        port=args.port,
-        key=os.environ.get(SESSION_KEY_ENV),
-    )
-    print(f"{Path(filepath_results).resolve()} at {server.url}")
+    if Path(args.results).expanduser().is_dir():
+        if args.raw is not None:
+            fail("--raw names one file's movie; serve that results file on its own")
+        from masknmf.visualization.results_picker import PickerServer
+
+        server = PickerServer(args.results, open_viewer=open_demixing_viewer, args=args, host=args.host, port=args.port)
+        print(f"results files below {server.folder} at {server.url}")
+    else:
+        filepath_results = args.results
+        viewer = open_demixing_viewer(
+            args=args,
+            filepath_results=filepath_results,
+            names_present=describe_source(filepath=filepath_results),
+            canvas=BrowserCanvas(size=(1600, 1000), max_fps=60.0),
+        )
+        name = Path(filepath_results).name
+        server = CanvasServer(
+            viewer,
+            title=f"{name} - masknmf",
+            waiting=f"Opening {name} ...",
+            host=args.host,
+            port=args.port,
+            key=os.environ.get(SESSION_KEY_ENV),
+        )
+        print(f"{Path(filepath_results).resolve()} at {server.url}")
     print(f"from another machine: ssh -L {args.port}:localhost:{args.port} <this machine>, then open that address there", flush=True)
     server.serve()
 
@@ -1113,8 +1123,8 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     )
     parser_view.set_defaults(handler=command_view)
 
-    parser_serve = subparsers.add_parser("serve", help="serve the demixing viewer of one results file to a browser")
-    parser_serve.add_argument("results", help="a results .hdf5 file")
+    parser_serve = subparsers.add_parser("serve", help="serve the demixing viewer to a browser")
+    parser_serve.add_argument("results", help="a results .hdf5 file, or a folder: its results files are listed in the browser to pick from")
     parser_serve.add_argument("--raw", default=None, help=f"the raw movie the results came from; {adapter_raw_sources()}")
     parser_serve.add_argument("--dataset", default=None)
     parser_serve.add_argument("--fs", default=None, type=float, help="acquisition rate in Hz")
