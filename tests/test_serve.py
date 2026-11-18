@@ -78,9 +78,9 @@ def write_results(path, groups):
             f.create_group(group)
 
 
-def test_the_picker_lists_one_row_per_results_file_grouped_by_top_folder_newest_run_first(tmp_path):
+def test_the_picker_lists_one_row_per_results_file_by_folder_newest_run_first(tmp_path, monkeypatch):
     from masknmf.io import group_name_compression, group_name_demixing
-    from masknmf.visualization.results_picker import find_results, picker_html
+    from masknmf.visualization import results_picker
 
     stages = [group_name_compression(), group_name_demixing()]
     old = tmp_path / "mouse" / "fov1" / "20260101T000000_two-photon-calcium"
@@ -89,20 +89,41 @@ def test_the_picker_lists_one_row_per_results_file_grouped_by_top_folder_newest_
     write_results(old / "results.20260101T010000.curated.hdf5", stages)
     write_results(new / "results.hdf5", stages[:1])
     write_results(tmp_path / "mouse" / "other.results.hdf5", [])
-    write_results(tmp_path / "_archive" / "run" / "results.hdf5", stages)
-    write_results(tmp_path / "store.zarr" / "results.hdf5", stages)
+    for skipped in ("_archive/run", "store.zarr", "movie.n5", "node_modules/pkg", "remote"):
+        write_results(tmp_path / skipped / "results.hdf5", stages)
+    write_results(tmp_path / "unnamed_store" / "results.hdf5", stages)
+    (tmp_path / "unnamed_store" / "zarr.json").write_text("{}")
+    monkeypatch.setattr(results_picker, "fuse_mounts", lambda: {str(tmp_path / "remote")})
 
-    files = find_results(tmp_path)
-    assert [(f.group, f.subfolder, f.run, f.name) for f in files] == [
-        ("mouse", "fov1", new.name, "results.hdf5"),
-        ("mouse", "fov1", old.name, "results.20260101T010000.curated.hdf5"),
+    files = results_picker.find_results(tmp_path)
+    assert [(f.folder, f.run, f.name) for f in files] == [
+        ("mouse/fov1", new.name, "results.hdf5"),
+        ("mouse/fov1", old.name, "results.20260101T010000.curated.hdf5"),
     ]
     assert files[0].stages == ["compression"] and files[1].stages == ["compression", "demixing"]
     assert files[1].num_curated == 1 and files[0].pipeline == "two-photon-calcium"
 
-    page = picker_html(str(tmp_path), files, path_open=files[1].path, error="a <b>")
+    page = results_picker.picker_html(str(tmp_path), files, path_open=files[1].path, error="a <b>")
     assert page.count("class='file") == 2 and page.count("class='file open'") == 1
     assert "a &lt;b&gt;" in page and "curated (1)" in page
+    # mouse holds only fov1, so the tree shows them as one folder
+    assert "<summary>mouse/fov1<" in page and "id='recent'" not in page
+
+
+def test_the_picker_tree_sorts_folders_by_number_and_lists_the_newest_files_on_top():
+    from masknmf.visualization.results_picker import ResultsFile, folder_tree, picker_html
+
+    files = [
+        ResultsFile(f"/data/sweep/epochs_{n}/results.hdf5", f"sweep/epochs_{n}", f"epochs_{n}", ["compression"], 0, 1, float(n))
+        for n in (100, 10, 30, 5, 50, 1000, 20, 40, 60)
+    ]
+    tree = folder_tree(files)
+    assert list(tree["folders"]) == ["sweep"]
+    page = picker_html("/data", files)
+    order = [page.index(f"<summary>epochs_{n}<") for n in (5, 10, 20, 30, 40, 50, 60, 100, 1000)]
+    assert order == sorted(order)
+    recent = page[page.index("id='recent'") : page.index("id='tree'")]
+    assert recent.count("class='file") == 8 and "epochs_1000/results.hdf5" in recent and "epochs_5/" not in recent
 
 
 async def picker_requests(server):

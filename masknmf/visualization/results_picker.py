@@ -1,8 +1,9 @@
 """Serve a folder of results files to a browser: a page listing them, and the demixing viewer on the one picked.
 
-``masknmf serve FOLDER`` runs this. ``files`` lists every results file below the folder, one table per folder
-directly under it, the runs of each subfolder together and newest first; a click on a row opens the file in the one viewer this process holds, at ``/``.
-The first pick builds the viewer, later picks load into it in place.
+``masknmf serve FOLDER`` runs this. ``files`` lists every results file below the folder as a tree of folders, the
+runs in each newest first, under the most recently changed files; a filter box narrows it and a click or Enter
+opens a file in the one viewer this process holds, at ``/``. The first pick builds the viewer, later picks load
+into it in place.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from string import Template
 from typing import Callable
 from urllib.parse import parse_qs, quote
 
+import psutil
 from rendercanvas.http import resources
 
 from masknmf.demixing.curation import CURATED_SUFFIX, latest_results, results_stem
@@ -30,6 +32,13 @@ __all__ = ["PickerServer", "ResultsFile", "find_results", "picker_html"]
 PATTERNS_RESULTS = ("*results*.hdf5", "*results*.h5")
 # a run folder is named <timestamp>_<pipeline>
 PATTERN_RUN = re.compile(r"^(\d{8}T\d{6})_(.+)$")
+# folders of chunked arrays, code or caches: thousands of entries and never a results file
+SUFFIXES_STORE = (".zarr", ".n5")
+NAMES_SKIPPED = {"node_modules", "__pycache__", "site-packages"}
+MARKERS_ZARR = {".zgroup", ".zarray", "zarr.json"}
+NUM_RECENT = 8
+# a folder holding this many files or fewer starts with its subfolders open
+NUM_FILES_OPEN_ALL = 30
 
 _PICKER = Template("""<!DOCTYPE html>
 <html>
@@ -37,26 +46,33 @@ _PICKER = Template("""<!DOCTYPE html>
     <meta charset='utf-8'>
     <title>$title</title>
     <style>
-        body { margin: 0; padding: 16px 24px; background: #1e1f22; color: #ddd; font: 14px system-ui, sans-serif; }
+        body { margin: 0; padding: 0 24px 24px; background: #1e1f22; color: #ddd; font: 14px system-ui, sans-serif; }
         a { color: #7ab4ff; text-decoration: none; }
-        header { display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; margin-bottom: 12px; }
+        [hidden] { display: none !important; }
+        header { position: sticky; top: 0; z-index: 1; display: flex; gap: 16px; align-items: baseline;
+                 flex-wrap: wrap; padding: 14px 0 10px; background: #1e1f22; }
         header .root { font: 13px monospace; color: #999; }
-        #filter { flex: 1; min-width: 200px; padding: 6px 10px; background: #2b2d31; color: #ddd;
+        header .muted, summary .muted { color: #888; font-weight: 400; }
+        #filter { flex: 1; min-width: 240px; padding: 6px 10px; background: #2b2d31; color: #ddd;
                   border: 1px solid #444; border-radius: 4px; font: inherit; }
+        header button { padding: 2px 8px; background: none; color: #aaa; border: 1px solid #444; border-radius: 4px;
+                        font: 12px system-ui, sans-serif; cursor: pointer; }
         .error { padding: 8px 12px; margin-bottom: 12px; background: #4a2326; border-radius: 4px; }
-        details { margin-bottom: 10px; }
-        summary { padding: 6px 0; font-weight: 600; cursor: pointer; }
-        summary span { font-weight: 400; color: #888; margin-left: 8px; }
+        h2 { margin: 8px 0 4px; font-size: 13px; font-weight: 600; color: #999; text-transform: uppercase; }
         .scroll { overflow-x: auto; }
-        table { border-collapse: collapse; width: 100%; min-width: 900px; table-layout: fixed; }
-        td { padding: 5px 12px 5px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        details > .children { margin-left: 18px; }
+        summary { padding: 4px 0; font-weight: 600; cursor: pointer; }
+        summary .muted { margin-left: 10px; font-size: 12px; }
+        table { border-collapse: collapse; width: 100%; min-width: 860px; table-layout: fixed; margin-bottom: 4px; }
+        td { padding: 4px 12px 4px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
              border-top: 1px solid #2f3136; }
-        td.when { width: 130px; } td.pipeline { width: 190px; } td.name { width: 230px; }
-        td.stages { width: 250px; } td.curated { width: 90px; } td.num { width: 70px; }
+        td.when { width: 130px; } td.pipeline { width: 190px; } td.stages { width: 260px; }
+        td.curated { width: 90px; } td.num { width: 70px; }
         tr.file { cursor: pointer; }
-        tr.file:hover { background: #2b2d31; }
+        tr.file:hover, tr.file.active { background: #2b2d31; }
+        tr.file.active td:first-child { box-shadow: inset 2px 0 #aaa; padding-left: 8px; }
         tr.open td:first-child { box-shadow: inset 3px 0 #7ab4ff; padding-left: 8px; }
-        td.stages, td.curated, td.num { color: #999; }
+        td.folder, td.stages, td.curated, td.num { color: #999; }
         td.num { text-align: right; font-variant-numeric: tabular-nums; }
         body.opening { cursor: progress; opacity: 0.6; }
     </style>
@@ -65,30 +81,75 @@ _PICKER = Template("""<!DOCTYPE html>
     <header>
         <strong>masknmf results</strong>
         <span class='root'>$root</span>
-        <input id='filter' placeholder='filter by dataset, run, pipeline or stage' autofocus>
+        <span class='muted'>$count</span>
+        <input id='filter' placeholder='filter by folder, run, pipeline or stage; arrows and Enter open' autofocus>
+        <button id='expand'>expand all</button>
+        <button id='collapse'>collapse all</button>
         $viewer
     </header>
     $error
-    $groups
+    $recent
+    $tree
     <script>
         const filter = document.getElementById('filter')
+        const recent = document.getElementById('recent')
+        const folders = [...document.querySelectorAll('#tree details')]
+        let active = null
+
+        function visibleRows () {
+            // NOTE: offsetParent stays set inside a closed details in Chrome, so ancestors are checked instead
+            return [...document.querySelectorAll('tr.file')].filter((row) => row.closest('[hidden], details:not([open])') === null)
+        }
+        function setActive (row) {
+            if (active !== null) { active.classList.remove('active') }
+            active = row === undefined ? null : row
+            if (active !== null) {
+                active.classList.add('active')
+                active.scrollIntoView({ block: 'nearest' })
+            }
+        }
+        function openRow (row) {
+            document.body.classList.add('opening')
+            window.location = row.dataset.href
+        }
+
         filter.addEventListener('input', () => {
             const words = filter.value.toLowerCase().split(/\\s+/).filter(Boolean)
-            for (const group of document.querySelectorAll('details')) {
-                let shown = 0
-                for (const row of group.querySelectorAll('tr.file')) {
-                    const hit = words.every((word) => row.dataset.text.includes(word))
-                    row.style.display = hit ? '' : 'none'
-                    shown += hit
-                }
-                group.style.display = shown ? '' : 'none'
+            if (recent !== null) { recent.hidden = words.length > 0 }
+            for (const row of document.querySelectorAll('#tree tr.file')) {
+                row.hidden = !words.every((word) => row.dataset.text.includes(word))
+            }
+            for (const folder of folders) {
+                const hit = folder.querySelector('tr.file:not([hidden])') !== null
+                folder.hidden = !hit
+                folder.open = words.length > 0 ? hit : folder.dataset.open === '1'
+            }
+            setActive(visibleRows()[0])
+        })
+        filter.addEventListener('keydown', (event) => {
+            const rows = visibleRows()
+            const index = rows.indexOf(active)
+            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault()
+                const step = event.key === 'ArrowDown' ? 1 : -1
+                setActive(rows[Math.min(rows.length - 1, Math.max(0, index + step))])
+            } else if (event.key === 'Enter' && rows.length > 0) {
+                openRow(index >= 0 ? active : rows[0])
+            } else if (event.key === 'Escape') {
+                filter.value = ''
+                filter.dispatchEvent(new Event('input'))
             }
         })
+        document.addEventListener('keydown', (event) => {
+            if (event.key === '/' && document.activeElement !== filter) {
+                event.preventDefault()
+                filter.focus()
+            }
+        })
+        document.getElementById('expand').addEventListener('click', () => folders.forEach((folder) => { folder.open = true }))
+        document.getElementById('collapse').addEventListener('click', () => folders.forEach((folder) => { folder.open = false }))
         for (const row of document.querySelectorAll('tr.file')) {
-            row.addEventListener('click', () => {
-                document.body.classList.add('opening')
-                window.location = row.dataset.href
-            })
+            row.addEventListener('click', () => openRow(row))
         }
     </script>
 </body>
@@ -98,11 +159,14 @@ _PICKER = Template("""<!DOCTYPE html>
 
 @dataclass
 class ResultsFile:
-    """One results file below the served folder, with what its row on the page shows."""
+    """One results file below the served folder, with what its row on the page shows.
+
+    ``folder`` is the folder it is listed under, relative to the served one: the folder holding its run folder,
+    or the folder holding the file when that is not a run folder.
+    """
 
     path: str
-    group: str
-    subfolder: str
+    folder: str
     run: str
     stages: list[str]
     num_curated: int
@@ -135,7 +199,9 @@ def find_results(folder: str | os.PathLike) -> list[ResultsFile]:
     """
     Find the masknmf results files below a folder, one per results file: its newest curated file when it has one.
 
-    Hidden folders, folders starting with ``_`` (archives) and .zarr stores are not entered.
+    Not entered: hidden folders, folders starting with ``_`` (archives), zarr and n5 stores (by name or by a
+    zarr's own marker files), ``node_modules``, ``__pycache__``, ``site-packages`` and FUSE mounts such as sshfs,
+    where a sleeping remote blocks the listing. Symlinked folders are not followed.
 
     Parameters
     ----------
@@ -145,12 +211,23 @@ def find_results(folder: str | os.PathLike) -> list[ResultsFile]:
     Returns
     -------
     list[ResultsFile]
-        Sorted by the folder directly under ``folder``, then subfolder, then newest run first.
+        Sorted by folder, then newest run first.
     """
     folder = Path(folder).expanduser().resolve()
+    mounts_fuse = fuse_mounts()
     paths = []
     for dirpath, dirnames, filenames in os.walk(folder):
-        dirnames[:] = [name for name in dirnames if not name.startswith((".", "_")) and not name.endswith(".zarr")]
+        if MARKERS_ZARR.intersection(filenames):
+            dirnames[:] = []
+            continue
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if not name.startswith((".", "_"))
+            and not name.endswith(SUFFIXES_STORE)
+            and name not in NAMES_SKIPPED
+            and os.path.join(dirpath, name) not in mounts_fuse
+        ]
         paths += [
             os.path.join(dirpath, name)
             for name in filenames
@@ -168,13 +245,12 @@ def find_results(folder: str | os.PathLike) -> list[ResultsFile]:
             continue
         folder_run = Path(path).parent
         is_run = PATTERN_RUN.match(folder_run.name) is not None
-        parts = (folder_run.parent if is_run and folder_run != folder else folder_run).relative_to(folder).parts
+        folder_listed = folder_run.parent if is_run and folder_run != folder else folder_run
         stat = os.stat(path)
         files.append(
             ResultsFile(
                 path=path,
-                group=parts[0] if parts else ".",
-                subfolder="/".join(parts[1:]),
+                folder=folder_listed.relative_to(folder).as_posix(),
                 run=folder_run.name,
                 stages=[stage_label(stage) for stage in stages],
                 num_curated=num_curated[(os.path.dirname(path), results_stem(path))],
@@ -182,7 +258,12 @@ def find_results(folder: str | os.PathLike) -> list[ResultsFile]:
                 time_modified=stat.st_mtime,
             )
         )
-    return sorted(files, key=lambda file: (file.group, file.subfolder, -file.time_run, file.name))
+    return sorted(files, key=lambda file: (file.folder, -file.time_run, file.name))
+
+
+def fuse_mounts() -> set[str]:
+    """Returns the mount points of FUSE filesystems (sshfs, rclone and the like)."""
+    return {partition.mountpoint for partition in psutil.disk_partitions(all=True) if "fuse" in partition.fstype}
 
 
 def stage_label(stage: str) -> str:
@@ -202,9 +283,115 @@ def format_bytes(num_bytes: int) -> str:
     return f"{size:.1f} TB"
 
 
+def folder_tree(files: list[ResultsFile]) -> dict:
+    """
+    Nest files by their folder, merging a folder whose only content is one folder into it (``a/b``).
+
+    Parameters
+    ----------
+    files : list[ResultsFile]
+        What ``find_results`` returned.
+
+    Returns
+    -------
+    dict
+        ``{"folders": {name: subtree}, "files": [...]}``; the served folder's own files are at the top.
+    """
+    root = {"folders": {}, "files": []}
+    for file in files:
+        node = root
+        for part in Path(file.folder).parts:
+            node = node["folders"].setdefault(part, {"folders": {}, "files": []})
+        node["files"].append(file)
+    return merge_chains(root)
+
+
+def merge_chains(node: dict) -> dict:
+    """Returns ``node`` with every child folder that holds only one folder merged with it."""
+    folders = {}
+    for name, child in node["folders"].items():
+        child = merge_chains(child)
+        # NOTE: one merge suffices; merge_chains(child) has already merged child's own children
+        if len(child["folders"]) == 1 and len(child["files"]) == 0:
+            name_sub, child = next(iter(child["folders"].items()))
+            name = f"{name}/{name_sub}"
+        folders[name] = child
+    return {"folders": folders, "files": node["files"]}
+
+
+def files_below(node: dict) -> list[ResultsFile]:
+    """Returns the files of a tree node and of every folder below it."""
+    return node["files"] + [file for child in node["folders"].values() for file in files_below(child)]
+
+
+def natural_key(name: str) -> list:
+    """Sorts ``epochs_10`` before ``epochs_100``: digit runs compare as numbers."""
+    return [int(token) if token.isdigit() else token.lower() for token in re.split(r"(\d+)", name)]
+
+
+def format_time(timestamp: float) -> str:
+    """A timestamp as the page shows it, to the minute."""
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
+
+
+def rows_html(files: list[ResultsFile], path_open: str | None, with_folder: bool) -> str:
+    """A table with one row per file; ``with_folder`` adds the folder each is listed under."""
+    rows = []
+    for file in files:
+        curated = f"curated ({file.num_curated})" if file.is_curated else ""
+        text = " ".join([file.folder, file.run, file.name, *file.stages, curated]).lower()
+        cell_folder = f"<td class='folder'>{html.escape(file.folder)}</td>" if with_folder else ""
+        rows.append(
+            f"<tr class='file{' open' if file.path == path_open else ''}' data-text='{html.escape(text, quote=True)}' "
+            f"data-href='open?path={quote(file.path, safe='')}' title='{html.escape(file.path, quote=True)}'>"
+            f"{cell_folder}<td class='when'>{format_time(file.time_run)}</td>"
+            f"<td class='pipeline'>{html.escape(file.pipeline)}</td><td class='name'>{html.escape(file.name)}</td>"
+            f"<td class='stages'>{html.escape(', '.join(file.stages))}</td><td class='curated'>{curated}</td>"
+            f"<td class='num'>{format_bytes(file.num_bytes)}</td></tr>"
+        )
+    return f"<table>{''.join(rows)}</table>"
+
+
+def folder_html(name: str, node: dict, path_open: str | None, is_open: bool) -> str:
+    """
+    One folder of the tree: a collapsible header with its file count and newest change, its runs, its subfolders.
+
+    Parameters
+    ----------
+    name : str
+        The folder's name, or ``a/b`` for merged folders.
+    node : dict
+        Its subtree from ``folder_tree``.
+    path_open : str, optional
+        The file the viewer holds; the folders above it start open.
+    is_open : bool
+        Start open whatever ``path_open`` is. Subfolders start open when this folder holds at most
+        ``NUM_FILES_OPEN_ALL`` files.
+
+    Returns
+    -------
+    str
+        The html.
+    """
+    below = files_below(node)
+    is_open = is_open or any(file.path == path_open for file in below)
+    files = sorted(node["files"], key=lambda file: (-file.time_run, file.name))
+    table = rows_html(files, path_open, with_folder=False) if files else ""
+    children = "".join(
+        folder_html(name_child, child, path_open, is_open=len(below) <= NUM_FILES_OPEN_ALL)
+        for name_child, child in sorted(node["folders"].items(), key=lambda item: natural_key(item[0]))
+    )
+    newest = max(file.time_modified for file in below)
+    return (
+        f"<details data-open='{int(is_open)}'{' open' if is_open else ''}><summary>{html.escape(name)}"
+        f"<span class='muted'>{len(below)} · {format_time(newest)}</span></summary>"
+        f"<div class='children'>{table}{children}</div></details>"
+    )
+
+
 def picker_html(folder: str, files: list[ResultsFile], path_open: str | None = None, error: str = "") -> str:
     """
-    The page listing the results files: one table per top-level folder, a row per file, a filter box on top.
+    The page listing the results files: the most recently changed on top, then all of them as a folder tree.
 
     Parameters
     ----------
@@ -222,35 +409,28 @@ def picker_html(folder: str, files: list[ResultsFile], path_open: str | None = N
     str
         The html.
     """
-    groups = {}
-    for file in files:
-        groups.setdefault(file.group, []).append(file)
-    blocks = []
-    # the folder with the newest run comes first
-    for group, members in sorted(groups.items(), key=lambda item: -max(file.time_run for file in item[1])):
-        rows = []
-        for file in members:
-            when = datetime.fromtimestamp(file.time_run).strftime("%Y-%m-%d %H:%M")
-            curated = f"curated ({file.num_curated})" if file.is_curated else ""
-            text = " ".join([group, file.subfolder, file.run, file.name, *file.stages, curated]).lower()
-            rows.append(
-                f"<tr class='file{' open' if file.path == path_open else ''}' data-text='{html.escape(text, quote=True)}' "
-                f"data-href='open?path={quote(file.path, safe='')}' title='{html.escape(file.path, quote=True)}'>"
-                f"<td>{html.escape(file.subfolder)}</td><td class='when'>{when}</td>"
-                f"<td class='pipeline'>{html.escape(file.pipeline)}</td><td class='name'>{html.escape(file.name)}</td>"
-                f"<td class='stages'>{html.escape(', '.join(file.stages))}</td><td class='curated'>{curated}</td>"
-                f"<td class='num'>{format_bytes(file.num_bytes)}</td></tr>"
-            )
-        blocks.append(
-            f"<details open><summary>{html.escape(group)}<span>{len(members)}</span></summary>"
-            f"<div class='scroll'><table>{''.join(rows)}</table></div></details>"
-        )
+    tree = folder_tree(files)
+    recent = ""
+    if len(files) > NUM_RECENT:
+        newest = sorted(files, key=lambda file: -file.time_modified)[:NUM_RECENT]
+        recent = f"<section id='recent'><h2>recent</h2><div class='scroll'>{rows_html(newest, path_open, with_folder=True)}</div></section>"
+    blocks = [rows_html(tree["files"], path_open, with_folder=False)] if tree["files"] else []
+    blocks += [
+        folder_html(name, child, path_open, is_open=True)
+        for name, child in sorted(tree["folders"].items(), key=lambda item: natural_key(item[0]))
+    ]
     return _PICKER.substitute(
         title=f"{Path(folder).name} - masknmf",
         root=html.escape(folder),
+        count=f"{len(files)} files",
         viewer="" if path_open is None else f"<a href='./'>viewer: {html.escape(Path(path_open).name)}</a>",
         error=f"<div class='error'>{html.escape(error)}</div>" if error else "",
-        groups="".join(blocks) if blocks else "<p>No masknmf results files below this folder.</p>",
+        recent=recent,
+        tree=(
+            f"<section id='tree'><h2>all</h2><div class='scroll'>{''.join(blocks)}</div></section>"
+            if files
+            else "<p>No masknmf results files below this folder.</p>"
+        ),
     )
 
 
