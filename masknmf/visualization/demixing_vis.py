@@ -167,7 +167,7 @@ class SingleSessionDemixingVis:
     the drawn rois. A registration array has no compressed movie to average, so pixel traces and drawn rois
     are off for it.
     ``panel_names`` maps any of those names to the one shown in its place (panel title, Panels matrix,
-    right-click menu).
+    right-click menu). ``canvas`` is the rendercanvas the figure draws on; None opens a window.
 
     The Signals table always carries the results' own stats (:meth:`CellStats.from_results`: mean, std, snr
     and skew of each demixed trace; fit, resid and bkgd from the roi averages the results hold), hidden until
@@ -210,7 +210,9 @@ class SingleSessionDemixingVis:
         cell_order: Sequence[int] | np.ndarray | str | os.PathLike | None = None,
         frame_batch_size: int = 300,
         panel_names: dict[str, str] | None = None,
+        canvas=None,
     ):
+        self._canvas = canvas
         self._results_path = None if results_path is None else str(results_path)
         self._nmf_config_given = nmf_config is not None
         if nmf_config is None:
@@ -462,6 +464,7 @@ class SingleSessionDemixingVis:
                     tuple(self._panels),
                 ],
                 size=(1200, 800),
+                canvas=self._canvas,
             )
             self._reference_index = self._ndw_fov.indices
             self._panel_graphics = OrderedDict()
@@ -2167,6 +2170,10 @@ class SingleSessionDemixingVis:
     @property
     def fov_widget(self) -> fpl.NDWidget:
         return self._ndw_fov
+
+    @property
+    def figure(self) -> fpl.Figure:
+        return self._ndw_fov.figure
 
     @property
     def traces(self) -> TracePlot:
