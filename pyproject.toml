@@ -59,6 +59,8 @@ dev = [
     "masknmf[docs]",
 ]
 
+server = ["uvicorn>=0.30", "websockets>=13", "av>=14"]
+
 
 
 [project.scripts]
