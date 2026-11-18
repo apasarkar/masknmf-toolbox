@@ -24,6 +24,8 @@ here enumerates a parameter by hand:
     masknmf view "sessions/*/results.hdf5" --classify --classifier cells.roicat_classifier
     masknmf serve results.hdf5 --raw movie.tif
     masknmf serve data_folder
+    masknmf serve --kill 8810
+    masknmf serve --kill-all
     masknmf view tracking_folder
     masknmf view tracking_folder/20261001T180415_roicat-tracking-manifest.json
     masknmf view old_tracking_folder day1/results.hdf5 day2/results.hdf5
@@ -925,12 +927,53 @@ def open_demixing_viewer(
     return viewer
 
 
+def serving_port(cmdline: list[str]) -> Optional[int]:
+    """The port a process serves on when its command line is a running ``masknmf serve``, else None."""
+    # NOTE: command_serve re-executes itself, so every server's command line has exactly this shape
+    if cmdline[1:4] != ["-m", "masknmf.cli", "serve"] or "--kill" in cmdline or "--kill-all" in cmdline:
+        return None
+    return int(cmdline[cmdline.index("--port") + 1]) if "--port" in cmdline else PORT_SERVE
+
+
+def stop_servers(port: Optional[int]) -> None:
+    """
+    Stop this user's running ``masknmf serve`` processes and print each.
+
+    Args:
+        port (Optional[int]): Stop only the server on this port; None stops every one
+    """
+    import psutil
+
+    user = psutil.Process().username()
+    servers = []
+    for process in psutil.process_iter(["cmdline", "username"]):
+        port_process = serving_port(cmdline=process.info["cmdline"] or [])
+        if process.info["username"] == user and port_process is not None and port in (None, port_process):
+            servers.append((process, port_process))
+    if len(servers) == 0:
+        print("no masknmf serve is running" if port is None else f"no masknmf serve is running on port {port}")
+        return
+    for process, port_process in servers:
+        print(f"stopping port {port_process} (pid {process.pid}): {format_command(argv=process.info['cmdline'][4:])}")
+        process.terminate()
+    _, alive = psutil.wait_procs([process for process, _ in servers], timeout=10)
+    for process in alive:
+        print(f"pid {process.pid} did not stop in 10 s; killed")
+        process.kill()
+
+
 def command_serve(args: argparse.Namespace) -> None:
     """
     Serve the demixing viewer of one results file to a browser: rendered on this machine, streamed as frames, with
     the browser's pointer and keys sent back. A folder serves a page listing the results files below it, and the
     viewer on the one picked there. It listens on localhost; from another machine, tunnel the port over ssh.
+    --kill and --kill-all stop running servers instead.
     """
+    if args.kill is not None or args.kill_all:
+        stop_servers(port=None if args.kill_all else args.kill)
+        return
+    if args.results is None:
+        fail("serve needs a results file or a folder")
     if os.environ.get("RENDERCANVAS_BACKEND") != "http":
         # NOTE: importing masknmf imports fastplotlib, which fixes its event loop then, so the http loop has to be
         # chosen before this process starts
@@ -1124,7 +1167,7 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_view.set_defaults(handler=command_view)
 
     parser_serve = subparsers.add_parser("serve", help="serve the demixing viewer to a browser")
-    parser_serve.add_argument("results", help="a results .hdf5 file, or a folder: its results files are listed in the browser to pick from")
+    parser_serve.add_argument("results", nargs="?", default=None, help="a results .hdf5 file, or a folder: its results files are listed in the browser to pick from")
     parser_serve.add_argument("--raw", default=None, help=f"the raw movie the results came from; {adapter_raw_sources()}")
     parser_serve.add_argument("--dataset", default=None)
     parser_serve.add_argument("--fs", default=None, type=float, help="acquisition rate in Hz")
@@ -1132,6 +1175,11 @@ def build_parser(spec: Optional[scraper.PipelineSpec]) -> argparse.ArgumentParse
     parser_serve.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     parser_serve.add_argument("--host", default="127.0.0.1", help="interface to listen on; there is no login, so keep localhost and tunnel")
     parser_serve.add_argument("--port", default=PORT_SERVE, type=int)
+    parser_serve.add_argument(
+        "--kill", nargs="?", type=int, const=PORT_SERVE, default=None, metavar="PORT",
+        help=f"stop the masknmf serve running on PORT (default {PORT_SERVE}) and exit",
+    )
+    parser_serve.add_argument("--kill-all", action="store_true", help="stop every masknmf serve you are running and exit")
     parser_serve.set_defaults(handler=command_serve, compression=False, raw_correlation=False)
 
     parser_train = subparsers.add_parser(
