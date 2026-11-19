@@ -101,7 +101,7 @@ def test_a_pick_lands_though_the_dialog_helper_never_exits(window, tmp_path, mon
 
 def test_escape_held_in_the_parameters_popup_closes_only_the_popup(window):
     window.page = "run"
-    window.parameters_requested = True
+    window.parameters.open()
     draw(window=window, frames=4)
     assert imgui.is_popup_open("", imgui.PopupFlags_.any_popup_id)
 
