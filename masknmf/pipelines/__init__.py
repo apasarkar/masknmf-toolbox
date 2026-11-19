@@ -1,4 +1,5 @@
 from masknmf.pipelines.widefield.widefield_calcium import WidefieldSinglechannelPipeline
+from masknmf.pipelines.widefield.widefield_hemocorrection import WidefieldHemocorrectionPipeline
 from masknmf.pipelines.twophoton_calcium.twophoton_population_imaging import TwoPhotonCalciumPipeline
 from masknmf.pipelines.onephoton_calcium.onephoton_calcium_population_imaging import OnePhotonCalciumPipeline
 from masknmf.pipelines.onephoton_voltage.onephoton_population_imaging import OnePhotonCulturePipeline
@@ -8,6 +9,7 @@ from masknmf.pipelines.configs import *
 __all__ = [
     "TwoPhotonCalciumPipeline",
     "WidefieldSinglechannelPipeline",
+    "WidefieldHemocorrectionPipeline",
     "OnePhotonCulturePipeline",
     "GlutamateCalciumSpinePipeline",
     "OnePhotonCalciumPipeline"
