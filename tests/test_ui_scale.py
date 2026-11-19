@@ -1,6 +1,7 @@
 """The UI scale: where it starts, what it saves, and how an imgui context, its edge windows and its fonts follow it."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from imgui_bundle import imgui
@@ -8,6 +9,8 @@ from rendercanvas.offscreen import RenderCanvas
 
 from masknmf import launcher
 from masknmf.visualization.imgui import scale
+
+DESKTOP_SCALE = scale.desktop_scale.__wrapped__  # the settings fixture replaces scale.desktop_scale
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +29,69 @@ def test_auto_is_the_desktop_scale_over_the_pixel_ratio():
     assert scale.auto_scale(2.0) == 1.0
     # a canvas drawn finer than the desktop is never shrunk
     assert scale.auto_scale(3.0) == 1.0
+
+
+@pytest.mark.parametrize(
+    ("zero_scaling", "expected"),
+    [('{"option": "xwayland:force_zero_scaling", "bool": true}', 1.25), ('{"option": "xwayland:force_zero_scaling", "int": 0}', 1.0)],
+)
+def test_hyprland_scale_comes_before_gdk_scale(monkeypatch, zero_scaling, expected):
+    """GDK_SCALE is 1 at a monitor scale of 1.25; Hyprland only leaves XWayland windows unscaled with zero scaling on."""
+    answers = {"getoption": zero_scaling, "monitors": '[{"scale": 1.0}, {"scale": 1.25}]'}
+    monkeypatch.setenv("HYPRLAND_INSTANCE_SIGNATURE", "test")
+    monkeypatch.setenv("GDK_SCALE", "1")
+    monkeypatch.setattr(scale.subprocess, "run", lambda command, **kwargs: SimpleNamespace(stdout=answers[command[1]]))
+    assert DESKTOP_SCALE() == expected
+
+
+def test_gdk_scale_is_the_desktop_scale_off_hyprland(monkeypatch):
+    monkeypatch.delenv("HYPRLAND_INSTANCE_SIGNATURE", raising=False)
+    monkeypatch.setenv("GDK_SCALE", "2")
+    assert DESKTOP_SCALE() == 2.0
+
+
+def edge_window(location: str, size: int) -> SimpleNamespace:
+    return SimpleNamespace(location=location, size=size, window_flags=0, _separator_thickness=14.0)
+
+
+class Figure:
+    """What fit_windows reads of a figure: the canvas size, the edge windows and three panels side by side."""
+
+    def __init__(self, size: tuple[int, int], windows: dict):
+        self.canvas = SimpleNamespace(get_logical_size=lambda: size)
+        self.size = size
+        self.imgui_windows = windows
+
+    def get_pygfx_render_area(self) -> tuple:
+        used = {location: 0 if w is None else w.size for location, w in self.imgui_windows.items()}
+        width = self.size[0] - used["left"] - used["right"]
+        height = self.size[1] - used["top"] - used["bottom"]
+        return used["left"], used["top"], max(width, 1), max(height, 1)
+
+    def __iter__(self):
+        _, _, width, height = self.get_pygfx_render_area()
+        return iter([SimpleNamespace(frame=SimpleNamespace(rect=(0, 0, width / 3, height)))] * 3)
+
+
+def test_edge_windows_give_way_to_the_panels_and_grow_back():
+    windows = {"top": edge_window("top", 440), "bottom": edge_window("bottom", 100), "left": None, "right": edge_window("right", 441)}
+    scaler = scale.Scaler(Figure((700, 420), windows))
+    scaler.fit_windows()
+    # 150 px for the one row and for each of the three columns; the bottom controls keep their height
+    assert (windows["top"].size, windows["bottom"].size, windows["right"].size) == (170, 100, 250)
+    scaler.figure = Figure((2000, 1200), windows)
+    scaler.fit_windows()
+    assert (windows["top"].size, windows["right"].size) == (440, 441)
+
+
+def test_a_resized_edge_window_keeps_its_new_size():
+    windows = {"top": edge_window("top", 440), "bottom": None, "left": None, "right": None}
+    scaler = scale.Scaler(Figure((700, 420), windows))
+    scaler.fit_windows()
+    windows["top"].size = 60
+    scaler.figure = Figure((2000, 1200), windows)
+    scaler.fit_windows()
+    assert windows["top"].size == 60
 
 
 def test_initial_size_takes_the_env_over_the_saved_and_clamps(settings, monkeypatch):

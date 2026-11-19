@@ -221,7 +221,8 @@ class TracePlot:
             self._menu()
             imgui.end_main_menu_bar()
         # the handle's thickness grows with the UI scale
-        moved = self.draw(reserve=self._window._separator_thickness)
+        collapsed = self._window._collapsed
+        moved = None if collapsed else self.draw(reserve=self._window._separator_thickness)
         draw_edge_handle(self._window)
         if moved is not None and self.on_frame is not None:
             self.on_frame(moved)
