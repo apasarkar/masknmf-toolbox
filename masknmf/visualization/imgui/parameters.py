@@ -351,6 +351,19 @@ class Parameters:
         values = {p.field: scraper.coerce(param=p, text=self.texts[p.name]) for p in self.params_runtime() if self.is_changed(param=p)}
         return json.loads(json.dumps(values, default=scraper.config_json_value))
 
+    def run_args(self) -> dict:
+        """
+        Returns the run arguments that differ from their defaults, by field, in json types, for the pipeline's run():
+        a required one such as frame_rate once typed in, never resume.
+
+        Raises:
+            ValueError: If one of them does not parse
+        """
+        params = [p for p in self.spec.run_scalars if p.field != "resume"]
+        given = [p for p in params if (self.texts[p.name] != "" if p.required else self.is_changed(param=p))]
+        values = {p.field: scraper.coerce(param=p, text=self.texts[p.name]) for p in given}
+        return json.loads(json.dumps(values, default=scraper.config_json_value))
+
     def load(self, config: dict) -> None:
         """
         Set every value from a config as config() returns it or a run folder's config.json holds it, the rest back at

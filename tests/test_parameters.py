@@ -5,6 +5,7 @@ pipeline, a changed value reaches config() and BasePipeline.from_config, and the
 
 import dataclasses
 import json
+import logging
 
 import numpy as np
 import pytest
@@ -70,6 +71,31 @@ def test_runtime_carries_changed_constructor_arguments_and_load_reads_them():
     loaded = parameters.Parameters(slug="two-photon-calcium")
     loaded.load(config={"pipeline": "TwoPhotonCalciumPipeline", "configs": popup.runtime()})
     assert loaded.runtime() == popup.runtime()
+
+
+def test_run_args_carry_changed_run_arguments_and_a_typed_frame_rate_but_never_resume():
+    popup = parameters.Parameters(slug="two-photon-calcium")
+    assert popup.run_args() == {}
+    popup.texts["frame-rate"] = "30"
+    popup.texts["stop-after"] = "compression"
+    popup.texts["exclude-border-radius"] = "4"
+    popup.texts["resume"] = "/somewhere/results.hdf5"
+    assert popup.run_args() == {"frame_rate": 30.0, "stop_after": "compression", "exclude_border_radius": 4}
+
+
+def test_load_restores_run_arguments_from_a_run_folders_config_json(tmp_path):
+    cls = scraper.pipeline_registry()["two-photon-calcium"]
+    pipeline = cls(output_folder=str(tmp_path), device="cpu")
+    pipeline.run_config = {"frame_rate": 7.5, "stop_after": "registration", "remove_intermediates": True}
+    folder = pipeline.create_run_folder()
+    pipeline.write_config()
+    logging.getLogger("masknmf").removeHandler(pipeline.log_handler)
+    pipeline.log_handler.close()
+
+    popup = parameters.Parameters(slug="two-photon-calcium")
+    popup.load(config=json.loads((folder / "config.json").read_text()))
+    assert popup.run_args() == {"frame_rate": 7.5, "stop_after": "registration", "remove_intermediates": True}
+    assert popup.runtime() == {"device": "cpu"}
 
 
 def test_load_refuses_another_pipelines_config():
