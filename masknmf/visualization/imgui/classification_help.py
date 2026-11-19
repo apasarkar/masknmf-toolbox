@@ -438,12 +438,13 @@ def draw_classification_help(is_open: bool, keys_open: bool) -> tuple[bool, bool
     x += 10 * em
     box(dl, x, y, 13 * em, bh, "results.labels.hdf5", KEY)
     imgui.dummy(imgui.ImVec2(w, 1.4 * em + bh + 1.4 * em))
-    imgui.text_colored(
-        DIM,
-        "the results file is never written; the sidecar beside it holds the labels, their names, the masks, "
-        "the predictions and the classifier's path; train saves the classifier to the CLASSIFIER card's "
-        "path, with a .training.json of what it learned from",
-    )
+    imgui.text_colored(DIM, "Labels go in a sidecar file; the results file is never written.")
+    for line in (
+        "the sidecar holds the labels, class names, masks, predictions and the classifier's path",
+        "Train saves the classifier to the CLASSIFIER card's path, plus a .training.json of its training data",
+    ):
+        imgui.bullet()
+        imgui.text_colored(DIM, line)
 
     imgui.pop_text_wrap_pos()
     imgui.dummy(imgui.ImVec2(0, 0.4 * em))

@@ -2,12 +2,19 @@
 Picking a path without depending on a native file dialog.
 
 A dialog opens where the process runs, so a viewer driven from a notebook on another machine has nowhere
-to draw one, and a linux box without zenity or kdialog on PATH cannot draw one at all. Every path a viewer
+to draw one, and a linux box without a helper or a desktop portal cannot draw one at all. Every path a viewer
 asks for goes through :func:`draw_path_prompt`: a typed field first, with the native dialog as a browse
 shortcut that is disabled when nothing can draw it. ``mbo_utilities.gui._files`` mirrors this module so
 the two GUIs behave the same way on the same machine.
+
+What draws the dialog, by platform:
+
+- windows, macos: portable-file-dialogs (the system's own dialog).
+- linux with zenity, matedialog, qarma or kdialog on PATH (Ubuntu / GNOME, KDE): that helper.
+- linux without one (Omarchy, other Hyprland or sway setups): xdg-desktop-portal, see ``portal_dialog``.
 """
 
+import json
 import os
 import select
 import shutil
@@ -18,66 +25,110 @@ from typing import Optional, Sequence
 
 from imgui_bundle import imgui, portable_file_dialogs as pfd
 
+from masknmf.visualization.imgui import portal_dialog
 from masknmf.visualization.imgui.theme import em, popup, tooltip
 
 # the helpers portable-file-dialogs shells out to on linux, in the order it prefers them
 HELPERS_LINUX = ("zenity", "matedialog", "qarma", "kdialog")
+PORTAL = "portal"
+# zenity's separator between several picks: a character no path holds in practice
+SEPARATOR_PICKS = "\x1f"
+
+
+def linux_backend() -> Optional[str]:
+    """Returns the dialog backend of this linux machine: a helper on PATH, else the desktop portal, else None."""
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return None
+    helper = next((name for name in HELPERS_LINUX if shutil.which(name)), None)
+    if helper is not None:
+        return helper
+    return PORTAL if portal_dialog.portal_available() else None
 
 
 def native_dialogs_available() -> bool:
-    """Whether a file dialog can appear where this process runs: always on windows and macos, on linux with a display and one of the helpers portable-file-dialogs shells out to."""
-    if sys.platform in ("win32", "darwin"):
-        return True
-    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        return False
-    return any(shutil.which(name) for name in HELPERS_LINUX)
+    """Returns True when a file dialog can appear: always on windows and macos, on linux with a display and a helper or the desktop portal."""
+    return sys.platform in ("win32", "darwin") or linux_backend() is not None
 
 
 NATIVE_DIALOGS = native_dialogs_available()
 
 
+def helper_command(backend: str, kind: str, title: str, start: str, filters: Sequence[str], multiple: bool) -> list[str]:
+    """The command line that opens one dialog with ``backend``; arguments as :class:`Picker`."""
+    pairs = list(zip(filters[::2], filters[1::2]))
+    if backend == PORTAL:
+        command = [sys.executable, "-I", portal_dialog.__file__, kind, title, start]
+        return command + (["--multiple"] if multiple else []) + list(filters)
+    if backend == "kdialog":
+        mode = {"folder": "--getexistingdirectory", "save": "--getsavefilename", "open": "--getopenfilename"}[kind]
+        command = [backend, mode, start]
+        if kind != "folder" and len(pairs) > 0:
+            command.append(" | ".join(f"{name}({patterns})" for name, patterns in pairs))
+        if multiple:
+            command += ["--multiple", "--separate-output"]
+        return command + ["--title", title]
+    # zenity opens a file dialog in the folder's parent unless the folder ends in a separator
+    if kind != "folder" and not start.endswith("/") and os.path.isdir(start):
+        start += "/"
+    command = [backend, "--file-selection", f"--filename={start}", "--title", title]
+    if kind != "folder":
+        command += [f"--file-filter={name}|{patterns}" for name, patterns in pairs]
+    if kind == "folder":
+        command.append("--directory")
+    if kind == "save":
+        command += ["--save", "--confirm-overwrite"]
+    if multiple:
+        command += ["--multiple", f"--separator={SEPARATOR_PICKS}"]
+    return command
+
+
 class Picker:
     """
-    A native dialog for one file or one folder, polled like a portable-file-dialogs dialog: ready, result, kill.
+    A native dialog for a file, several files, a file to save or a folder, polled like a portable-file-dialogs
+    dialog: ready, result, kill.
 
     On linux portable-file-dialogs runs zenity or kdialog and hands over the pick only once that process has
     exited. A zenity with a thread hung on an unresponsive network mount (a dropped sshfs, nfs) prints the pick
     and never finishes exiting, so the pick never arrives and the dialog's destructor blocks the process at exit.
     Here the helper's output is read as it comes, the pick lands at its newline, and kill does not wait on the
-    helper. Windows and macos keep portable-file-dialogs.
+    helper. Without a helper on PATH the desktop portal draws the dialog (``portal_dialog``, run as a helper too).
+    Windows and macos keep portable-file-dialogs.
 
     Args:
         title (str): The dialog's title
-        start (str): The folder it opens in
-        filters (Sequence[str] | None): portable-file-dialogs name / pattern pairs; None picks a folder
+        start (str): The folder it opens in, or a file in it
+        filters (Sequence[str] | None): portable-file-dialogs name / pattern pairs
+        kind (str | None): "open", "save" or "folder"; None is "folder" without filters, else "open"
+        multiple (bool): Whether an open dialog takes several files; result is then a list
     """
 
-    def __init__(self, title: str, start: str, filters: Optional[Sequence[str]] = None):
+    def __init__(
+        self,
+        title: str,
+        start: str,
+        filters: Optional[Sequence[str]] = None,
+        kind: Optional[str] = None,
+        multiple: bool = False,
+    ):
         self.dialog = None
         self.process = None
         self.output = b""
         self.closed = False
+        self.kind = kind if kind is not None else ("folder" if filters is None else "open")
+        self.multiple = multiple and self.kind == "open"
+        filters = [] if filters is None else list(filters)
         if sys.platform in ("win32", "darwin"):
-            if filters is None:
-                self.dialog = pfd.select_folder(title, start)
+            if self.kind == "folder":
+                self.dialog = pfd.select_folder(title, start if os.path.isdir(start) else os.path.dirname(start))
+            elif self.kind == "save":
+                self.dialog = pfd.save_file(title, start, filters)
             else:
-                self.dialog = pfd.open_file(title, start, list(filters), pfd.opt.none)
+                self.dialog = pfd.open_file(title, start, filters, pfd.opt.multiselect if self.multiple else pfd.opt.none)
             return
-        helper = next(name for name in HELPERS_LINUX if shutil.which(name))
-        pairs = list(zip(filters[::2], filters[1::2])) if filters is not None else []
-        if helper == "kdialog":
-            command = [helper, "--getexistingdirectory" if filters is None else "--getopenfilename", start]
-            if filters is not None:
-                command.append(" | ".join(f"{name}({patterns})" for name, patterns in pairs))
-            command += ["--title", title]
-        else:
-            # zenity opens a file dialog in the folder's parent unless the folder ends in a separator
-            if filters is not None and not start.endswith("/") and os.path.isdir(start):
-                start += "/"
-            command = [helper, "--file-selection", f"--filename={start}", "--title", title]
-            command += [f"--file-filter={name}|{patterns}" for name, patterns in pairs]
-            if filters is None:
-                command.append("--directory")
+        self.backend = linux_backend()
+        if self.backend is None:
+            raise RuntimeError("no file dialog on this machine: no zenity or kdialog on PATH and no desktop portal")
+        command = helper_command(self.backend, self.kind, title, start, filters, self.multiple)
         self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     def ready(self) -> bool:
@@ -85,17 +136,28 @@ class Picker:
         if self.dialog is not None:
             return self.dialog.ready(0)
         fd = self.process.stdout.fileno()
+        # kdialog prints several picks one per line, so only the end of its output closes those
+        lines = self.backend == "kdialog" and self.multiple
         while not self.closed and len(select.select([fd], [], [], 0)[0]) > 0:
             chunk = os.read(fd, 65536)
             self.output += chunk
-            self.closed = len(chunk) == 0 or b"\n" in self.output
+            self.closed = len(chunk) == 0 or (b"\n" in self.output and not lines)
         return self.closed
 
     def result(self):
-        """The pick, "" when the dialog was cancelled; a list from portable-file-dialogs' open_file."""
+        """The pick, "" when the dialog was cancelled; a list of picks when ``multiple``."""
         if self.dialog is not None:
             return self.dialog.result()
-        return os.fsdecode(self.output.split(b"\n")[0])
+        text = os.fsdecode(self.output)
+        if self.backend == PORTAL:
+            picks = json.loads(text) if text.strip() else []
+        elif self.backend == "kdialog":
+            picks = [line for line in text.split("\n") if line]
+        else:
+            picks = [pick for pick in text.split("\n")[0].split(SEPARATOR_PICKS) if pick]
+        if self.multiple:
+            return picks
+        return picks[0] if len(picks) > 0 else ""
 
     def kill(self) -> None:
         """Close the dialog without waiting on a helper that will not exit."""
@@ -149,7 +211,7 @@ def draw_path_prompt(prompt: PathPrompt) -> Optional[str]:
     The caller closes the popup by setting ``prompt.open``, so a failed action can leave it up with a
     message in ``prompt.status``. A pick in the native dialog lands in the field, for the action to take.
     """
-    if prompt.dialog is not None and prompt.dialog.ready(0):
+    if prompt.dialog is not None and prompt.dialog.ready():
         result = prompt.dialog.result()
         prompt.dialog = None
         if result:
@@ -172,14 +234,7 @@ def draw_path_prompt(prompt: PathPrompt) -> Optional[str]:
         imgui.begin_disabled(not NATIVE_DIALOGS or prompt.dialog is not None)
         if imgui.button("browse", imgui.ImVec2(em(6), 0)):
             start = prompt.path.strip().strip('"') or os.getcwd()
-            if prompt.kind == "folder":
-                prompt.dialog = pfd.select_folder(prompt.title, start if os.path.isdir(start) else os.path.dirname(start))
-            elif prompt.kind == "save":
-                prompt.dialog = pfd.save_file(prompt.title, start, prompt.filters)
-            else:
-                prompt.dialog = pfd.open_file(
-                    prompt.title, start, prompt.filters, pfd.opt.multiselect if prompt.multiple else pfd.opt.none
-                )
+            prompt.dialog = Picker(prompt.title, start, prompt.filters, kind=prompt.kind, multiple=prompt.multiple)
         imgui.end_disabled()
         tooltip(
             "pick it in a file dialog on the machine running python"

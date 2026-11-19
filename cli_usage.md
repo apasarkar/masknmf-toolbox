@@ -45,6 +45,7 @@ Pipelines: `two-photon-calcium`, `one-photon-culture`, `glutamate-calcium-spine`
 - Run folder goes next to the movie (inside it for a directory of tiffs), in the working directory with no movie, or under `--output-folder`
 - Config arguments left out take the pipeline's `default_configs()`, as printed by `masknmf params`
 - `--<section>-kind` naming the default kind keeps the pipeline's defaults; another kind gets that config's own defaults
+- The launcher's Parameters popup shows the same sections, one column per stage. The column comes from the module defining the section's configs (`motion_correction_configs`, `compression_configs`, `demixing_configs`; any other module lands in an Other column). Labels, tooltips and the Advanced and Stable folds come from `masknmf/visualization/imgui/param_hints.py`, keyed by config class, so a new pipeline reusing existing configs needs no GUI code
 
 Parsing:
 - booleans take `true/false/1/0/yes/no/on/off`: `--remove-intermediates true`

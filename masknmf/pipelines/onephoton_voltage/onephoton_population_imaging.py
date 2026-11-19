@@ -436,7 +436,7 @@ class OnePhotonCulturePipeline(BasePipeline):
 
             #This expands from good frames to all frames
             curr_demix_results = masknmf.DemixingResults.infill_bad_frames(curr_demix_results,
-                                                                           good_frames=demixed_frames)
+                                                                           good_frames=good_frames)
 
 
         curr_demix_results.export(results_path)

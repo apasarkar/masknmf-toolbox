@@ -63,6 +63,7 @@ def estimate_temporal_demixed_raw(results: BaseResults,
                                   device: torch.device | str,
                                   nonneg: bool = True,
                                   frame_batch_size: int = 300,
+                                  noise: torch.Tensor | None = None,
                                   num_iters: int = 10) -> torch.Tensor | None:
     """
     temporal_demixed re-estimated from the registered raw movie with the spatial footprints, background and baseline
@@ -93,11 +94,13 @@ def estimate_temporal_demixed_raw(results: BaseResults,
 
     a = results.spatial_demixed.coalesce().float()                            # (pixels, signals)
     rows, cols = a.indices()
-    if results.noise_variance_image is None:
-        noise = torch.ones(a.shape[0], device=a.device)
+    if noise is not None:
+        noise = noise.to(device=a.device, dtype=torch.float32, copy=True).flatten()
+    elif results.noise_variance_image is not None:
+        noise = results.noise_variance_image.flatten().to(device=a.device, dtype=torch.float32, copy=True)
     else:
-        noise = results.noise_variance_image.flatten().to(a.device).float().clone()
-        noise[noise <= 0] = 1.0
+        noise = torch.ones(a.shape[0], device=a.device)
+    noise[noise <= 0] = 1.0
 
     # Per run, not per batch: everything below depends on the footprints and background factors only
     at_div_noise = torch.sparse_coo_tensor(torch.stack([cols, rows]), a.values() / noise[rows],
