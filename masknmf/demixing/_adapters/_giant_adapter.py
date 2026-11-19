@@ -347,12 +347,6 @@ class GiantResults(BaseResults):
         return None
 
     @property
-    def demixed_residual_array(self) -> None:
-        """
-        None for now, needs to be populated
-        """
-
-    @property
     def fluctuating_background_roi_averages(self) -> None:
         return None
 

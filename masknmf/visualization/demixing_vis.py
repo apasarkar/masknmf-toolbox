@@ -2008,7 +2008,7 @@ class SingleSessionDemixingVis:
                         "\n- off: selecting only highlights",
                     ),
                 ]
-            if isinstance(self.demixing_results, masknmf.DemixingResults) and self.demixing_results.temporal_demixed_raw is not None:
+            if self.demixing_results.temporal_demixed_raw is not None:
                 buttons.append(
                     (
                         fa.ICON_FA_WAVE_SQUARE,

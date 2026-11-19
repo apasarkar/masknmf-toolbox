@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+import torch
 
 import masknmf
 from masknmf.pipelines.subcellular import GlutamateCalciumSpinePipeline
@@ -48,6 +49,10 @@ def test_every_demixing_result_stores_raw_traces_that_the_compressed_movie_turns
             # the raw movie differs from the compressed one only by the noise compression removed
             from_compressed = masknmf.demixing.estimate_temporal_demixed_raw(results, movie, device="cpu").numpy()
             np.testing.assert_array_equal(movie, untouched)  # the caller's movie is not modified
+            # an explicit noise image is the same as the results' own
+            with_noise = masknmf.demixing.estimate_temporal_demixed_raw(
+                results, movie, device="cpu", noise=results.noise_variance_image).numpy()
+            np.testing.assert_array_equal(with_noise, from_compressed)
             # raw traces carry each signal's share of the mean image: the least-squares projection of
             # mean_image / noise_variance_image onto the footprints, one constant per signal
             footprints = results.spatial_demixed.to_dense().numpy()
@@ -56,3 +61,18 @@ def test_every_demixing_result_stores_raw_traces_that_the_compressed_movie_turns
             baseline = np.linalg.lstsq(footprints, results.mean_image.numpy().ravel() / normalizer, rcond=None)[0]
             np.testing.assert_allclose(from_compressed[retained] - baseline, results.temporal_demixed.numpy()[retained],
                                        atol=1e-3)
+
+
+def test_results_without_a_noise_image_are_estimated_at_the_scale_of_the_movie(tmp_path):
+    from masknmf.io import OpenedResults
+    from test_adapter_sources import FRAMES, write_suite2p_plane
+
+    write_suite2p_plane(tmp_path / "plane0")
+    results = OpenedResults.open(tmp_path / "plane0").results
+    assert results.noise_variance_image is None
+    movie = np.asarray(results.motion_corrected_data[:], dtype=np.float32)
+    traces = masknmf.demixing.estimate_temporal_demixed_raw(results, movie, device="cpu")
+    assert traces.shape == (FRAMES, results.temporal_demixed.shape[1]) and torch.isfinite(traces).all()
+    ones = torch.ones(movie.shape[1] * movie.shape[2])
+    with_ones = masknmf.demixing.estimate_temporal_demixed_raw(results, movie, device="cpu", noise=ones)
+    np.testing.assert_array_equal(traces.numpy(), with_ones.numpy())

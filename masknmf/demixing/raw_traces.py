@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import math
 from masknmf.arrays import ArrayLike
+from masknmf.demixing._base_results import BaseResults
 from masknmf.demixing.demixing_results import DemixingResults
 from masknmf.demixing.local_correlation import local_correlation_image
 from masknmf.demixing.regression_update import _fast_a_squared_norm
@@ -57,7 +58,7 @@ def _hals_on_raw(blocks: list[torch.Tensor],
 
 
 
-def estimate_temporal_demixed_raw(results: DemixingResults,
+def estimate_temporal_demixed_raw(results: BaseResults,
                                   movie: np.ndarray | ArrayLike | None,
                                   device: torch.device | str,
                                   nonneg: bool = True,
@@ -75,6 +76,9 @@ def estimate_temporal_demixed_raw(results: DemixingResults,
     (a^T U) term1 term2, and the HALS sweeps then only touch (signals, frames) matrices:
 
         c[block] += (a^T movie / noise - a^T background - (a^T a)[block] c) / ||a_block||^2
+
+    Results of another pipeline have no noise image, so noise is 1 and the traces are at the scale of the movie.
+    Their background is the frames of fluctuating_background_array, subtracted from each batch of the movie.
     """
     if hasattr(movie, "output_device"):
         original_device = movie.output_device
@@ -90,10 +94,12 @@ def estimate_temporal_demixed_raw(results: DemixingResults,
 
     a = results.spatial_demixed.coalesce().float()                            # (pixels, signals)
     rows, cols = a.indices()
-    if noise is None:
+    if noise is not None:
+        noise = noise.to(device=a.device, dtype=torch.float32, copy=True).flatten()
+    elif results.noise_variance_image is not None:
         noise = results.noise_variance_image.flatten().to(device=a.device, dtype=torch.float32, copy=True)
     else:
-        noise = noise.to(device=a.device, dtype=torch.float32, copy=True).flatten()
+        noise = torch.ones(a.shape[0], device=a.device)
     noise[noise <= 0] = 1.0
 
     # Per run, not per batch: everything below depends on the footprints and background factors only
@@ -106,18 +112,22 @@ def estimate_temporal_demixed_raw(results: DemixingResults,
     ata_rows = [csr_index_select_rows(ata, block) for block in blocks]
     norm_rows = [a_sq_norm[block][:, None] for block in blocks]
 
-    term1, term2 = results.factorized_background_term1, results.factorized_background_term2
-    if term1 is not None and term2 is not None:
-        # a^T (U term1 term2[:, frames]); U and term1 are fixed, so a^T U term1 is (signals, background rank)
-        at_u = torch.sparse.mm(a.t().coalesce(), results.spatial_compressed.coalesce().float())
-        at_background = (at_u.to_dense() if at_u.is_sparse else at_u) @ term1.float()
+    at_background, background_array = None, None
+    if isinstance(results, DemixingResults):
+        term1, term2 = results.factorized_background_term1, results.factorized_background_term2
+        if term1 is not None and term2 is not None:
+            # a^T (U term1 term2[:, frames]); U and term1 are fixed, so a^T U term1 is (signals, background rank)
+            at_u = torch.sparse.mm(a.t().coalesce(), results.spatial_compressed.coalesce().float())
+            at_background = (at_u.to_dense() if at_u.is_sparse else at_u) @ term1.float()
     else:
-        at_background = None
+        background_array = results.fluctuating_background_array
 
-    c_new = results.temporal_demixed.clone()
+    c_new = results.temporal_demixed.clone().float()
     for start_pt in range(0, num_frames, frame_batch_size):
         end_pt = min(start_pt + frame_batch_size, num_frames)
         data = torch.as_tensor(movie[start_pt:end_pt], device=device, dtype=torch.float32)
+        if background_array is not None:
+            data = data - torch.as_tensor(background_array[start_pt:end_pt], device=device, dtype=torch.float32)
         rhs = torch.sparse.mm(at_div_noise, data.reshape(end_pt - start_pt, -1).T)  # (signals, frames)
         if at_background is not None:
             rhs -= at_background @ term2[:, start_pt:end_pt].float()

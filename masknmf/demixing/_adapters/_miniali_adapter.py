@@ -365,8 +365,6 @@ class MiniALIResults(BaseResults):
             residual = CompressStrategy(block_sizes=[32, 32],
                                         host_memory_gb=8).compress(residual)
         self._raw_residual_array = residual
-        self._global_residual_correlation_image = torch.zeros(self.fov_shape[0], self.fov_shape[1])
-        self._raw_residual_correlation_image =  torch.zeros(self.fov_shape[0], self.fov_shape[1])
         self.to(self._device)
 
     def to(self, new_device: str | torch.device):
@@ -378,8 +376,6 @@ class MiniALIResults(BaseResults):
         self._signals_array.to(device)
         self._background_array.to(device)
         self._placeholder_background_array.to(device)
-        self._global_residual_correlation_image.to(device)
-        self._raw_residual_correlation_image.to(device)
         self._device = device
 
 
@@ -442,9 +438,9 @@ class MiniALIResults(BaseResults):
         return self._temporal_demixed
 
     @property
-    def temporal_demixed_raw(self) -> None:
-        """None: miniALI's traces are already fit to the registered raw movie, with no compression or denoising."""
-        return None
+    def temporal_demixed_raw(self) -> torch.Tensor:
+        """temporal_demixed: miniALI's traces are already fit to the registered raw movie, with no compression or denoising."""
+        return self._temporal_demixed
 
     @property
     def reference_image(self) -> np.ndarray:

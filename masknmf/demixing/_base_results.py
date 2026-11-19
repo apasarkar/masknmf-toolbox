@@ -48,6 +48,14 @@ class BaseResults:
         raise NotImplementedError
 
     @property
+    def spatial_demixed_raw(self) -> SparseCOOTensor:
+        """
+        The footprints that pair with temporal_demixed_raw at the scale of the motion corrected movie.
+        By default a pipeline demixes the motion corrected movie itself, so this is spatial_demixed
+        """
+        return self.spatial_demixed
+
+    @property
     def temporal_demixed(self) -> torch.Tensor:
         raise NotImplementedError
 
@@ -56,16 +64,32 @@ class BaseResults:
         raise NotImplementedError
 
     @property
+    def noise_variance_image(self) -> torch.Tensor | None:
+        """By default, a pipeline does NOT noise normalize the movie"""
+        return None
+
+    @property
     def raw_residual_correlation_image(self) -> torch.Tensor | None:
         """
-        Each pixel's mean correlation with its eight neighbours in the residual movie, after MAD thresholding;
-        ``None`` without a residual movie. Computed from ``residual_array`` on first access, one pass in pixel tiles.
+        Each pixel's mean correlation with its eight neighbours in the residual movie, after MAD thresholding.
+        It is stored, never computed on access, because the pass over the movie is too slow to run every time a
+        result is opened: ``None`` until compute_raw_residual_correlation_image is called.
+        """
+        return self._raw_residual_correlation_image
+
+    @raw_residual_correlation_image.setter
+    def raw_residual_correlation_image(self, value: torch.Tensor | None):
+        self._raw_residual_correlation_image = value
+
+    def compute_raw_residual_correlation_image(self) -> torch.Tensor | None:
+        """
+        Computes and stores raw_residual_correlation_image from raw_residual_array, one pass over the movie in
+        pixel tiles. ``None`` without a residual movie.
         """
         if self.raw_residual_array is None:
             return None
-        if self._raw_residual_correlation_image is None:
-            self._raw_residual_correlation_image = local_correlation_image(self.raw_residual_array)
-        return self._raw_residual_correlation_image
+        self.raw_residual_correlation_image = local_correlation_image(self.raw_residual_array)
+        return self.raw_residual_correlation_image
 
     @property
     def global_residual_correlation_image(self) -> torch.Tensor | None:
@@ -109,6 +133,14 @@ class BaseResults:
         By default this is not implemented
         """
         raise NotImplementedError
+
+    @property
+    def demixed_residual_array(self) -> ArrayLike | None:
+        """
+        This is the residual with respect to the movie the pipeline demixed.
+        By default a pipeline demixes the motion corrected movie itself, so this is raw_residual_array
+        """
+        return self.raw_residual_array
 
     @property
     def compression_array_roi_averages(self) -> torch.Tensor | None:
