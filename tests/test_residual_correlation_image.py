@@ -55,26 +55,27 @@ class ResultsWithAResidual(BaseResults):
         return self._residual
 
 
-def test_the_base_class_computes_the_image_from_the_residual_once_and_gives_none_without_one():
+def test_the_base_class_stores_the_image_it_computes_from_the_residual_and_gives_none_without_one():
     movie = movie_with_a_correlated_blob()
     results = ResultsWithAResidual(movie)
-    image = results.raw_residual_correlation_image
+    assert results.raw_residual_correlation_image is None
+    image = results.compute_raw_residual_correlation_image()
     assert image.shape == movie.shape[1:] and results.raw_residual_correlation_image is image
     np.testing.assert_allclose(image.numpy(), local_correlation_image(movie).numpy())
-    assert ResultsWithAResidual(None).raw_residual_correlation_image is None
+    assert ResultsWithAResidual(None).compute_raw_residual_correlation_image() is None
     # the old name stays an alias, so the viewers keep working with every adapter
     assert results.global_residual_correlation_image is image
 
 
 def test_suite2p_and_caiman_results_have_the_image_when_they_have_a_residual(tmp_path):
     write_suite2p_plane(tmp_path / "plane0")
-    image = OpenedResults.open(tmp_path / "plane0").results.raw_residual_correlation_image
+    image = OpenedResults.open(tmp_path / "plane0").results.compute_raw_residual_correlation_image()
     assert image.shape == (HEIGHT, WIDTH) and torch.isfinite(image).all() and image.abs().max() <= 1
     write_suite2p_plane(tmp_path / "plane1", with_bin=False)
-    assert OpenedResults.open(tmp_path / "plane1").results.raw_residual_correlation_image is None
+    assert OpenedResults.open(tmp_path / "plane1").results.compute_raw_residual_correlation_image() is None
 
     write_caiman_file(tmp_path / "cnmfe.hdf5", with_ring_model=True)
     opened = OpenedResults.open(tmp_path / "cnmfe.hdf5", raw=np.zeros((FRAMES, HEIGHT, WIDTH), np.float32))
-    assert opened.results.raw_residual_correlation_image.shape == (HEIGHT, WIDTH)
+    assert opened.results.compute_raw_residual_correlation_image().shape == (HEIGHT, WIDTH)
     write_caiman_file(tmp_path / "cnmf.hdf5")
-    assert OpenedResults.open(tmp_path / "cnmf.hdf5").results.raw_residual_correlation_image is None
+    assert OpenedResults.open(tmp_path / "cnmf.hdf5").results.compute_raw_residual_correlation_image() is None
