@@ -1,3 +1,18 @@
+"""
+Every session of a tracking run on one screen, as static images.
+
+One panel per session shows the session's aligned FOV with its ROIs on top. A cell tracked across sessions has
+the same color in every panel. Pan and zoom are shared by all panels. Double-click a cell to mark it in every
+session; the controls on the right filter cells by the number of sessions they were found in, step through
+them, zoom every panel onto the selected one and save the grid as a png.
+
+It reads only the tracking folder (ROICaT's aligned footprints, labels and FOV images), so it needs neither the
+sessions' results files nor a GPU.
+
+    python examples/multiview.py tracking_folder
+    python examples/multiview.py tracking_folder --save grid.png
+"""
+
 from typing import List, Optional, Tuple
 
 import argparse
