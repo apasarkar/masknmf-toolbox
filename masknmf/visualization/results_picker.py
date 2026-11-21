@@ -1,6 +1,7 @@
 """Serve a folder of results files to a browser: a page listing them, and the demixing viewer on the one picked.
 
-``masknmf serve FOLDER`` runs this. ``files`` lists every results file below the folder as a tree of folders, the
+``masknmf serve FOLDER`` runs this. ``files`` lists every results file below the folder, and every other pipeline's
+results an adapter finds by file name (miniALI's ALI_Result_new.mat, suite2p's stat.npy), as a tree of folders, the
 runs in each newest first, under the most recently changed files; a filter box narrows it and a click or Enter
 opens a file in the one viewer this process holds, at ``/``. The first pick builds the viewer, later picks load
 into it in place.
@@ -23,6 +24,7 @@ from urllib.parse import parse_qs, quote
 import psutil
 from rendercanvas.http import resources
 
+from masknmf.demixing._adapters import adapter_for, adapter_patterns
 from masknmf.demixing.curation import CURATED_SUFFIX, latest_results, results_stem
 from masknmf.io import stage_groups
 from masknmf.visualization.canvas_server import BrowserCanvas, CanvasServer, page_html
@@ -162,7 +164,8 @@ class ResultsFile:
     """One results file below the served folder, with what its row on the page shows.
 
     ``folder`` is the folder it is listed under, relative to the served one: the folder holding its run folder,
-    or the folder holding the file when that is not a run folder.
+    or the folder holding the file when that is not a run folder. ``adapter`` names the pipeline of results an
+    adapter opens, empty for masknmf's.
     """
 
     path: str
@@ -172,6 +175,7 @@ class ResultsFile:
     num_curated: int
     num_bytes: int
     time_modified: float
+    adapter: str = ""
 
     @property
     def name(self) -> str:
@@ -192,12 +196,13 @@ class ResultsFile:
     @property
     def pipeline(self) -> str:
         match = PATTERN_RUN.match(self.run)
-        return "" if match is None else match.group(2)
+        return self.adapter or ("" if match is None else match.group(2))
 
 
 def find_results(folder: str | os.PathLike) -> list[ResultsFile]:
     """
-    Find the masknmf results files below a folder, one per results file: its newest curated file when it has one.
+    Find the masknmf results files below a folder, one per results file: its newest curated file when it has one;
+    and the files of other pipelines' results an adapter opens, by the adapters' file patterns.
 
     Not entered: hidden folders, folders starting with ``_`` (archives), zarr and n5 stores (by name or by a
     zarr's own marker files), ``node_modules``, ``__pycache__``, ``site-packages`` and FUSE mounts such as sshfs,
@@ -215,7 +220,9 @@ def find_results(folder: str | os.PathLike) -> list[ResultsFile]:
     """
     folder = Path(folder).expanduser().resolve()
     mounts_fuse = fuse_mounts()
+    patterns_adapter = adapter_patterns()
     paths = []
+    paths_adapter = []
     for dirpath, dirnames, filenames in os.walk(folder):
         if MARKERS_ZARR.intersection(filenames):
             dirnames[:] = []
@@ -232,6 +239,11 @@ def find_results(folder: str | os.PathLike) -> list[ResultsFile]:
             os.path.join(dirpath, name)
             for name in filenames
             if any(fnmatch.fnmatch(name, pattern) for pattern in PATTERNS_RESULTS)
+        ]
+        paths_adapter += [
+            os.path.join(dirpath, name)
+            for name in filenames
+            if any(fnmatch.fnmatch(name, pattern) for pattern in patterns_adapter)
         ]
     num_curated = {}
     for path in paths:
@@ -256,6 +268,23 @@ def find_results(folder: str | os.PathLike) -> list[ResultsFile]:
                 num_curated=num_curated[(os.path.dirname(path), results_stem(path))],
                 num_bytes=stat.st_size,
                 time_modified=stat.st_mtime,
+            )
+        )
+    for path in paths_adapter:
+        adapter = adapter_for(path)
+        if adapter is None:
+            continue
+        stat = os.stat(path)
+        files.append(
+            ResultsFile(
+                path=path,
+                folder=Path(path).parent.relative_to(folder).as_posix(),
+                run=Path(path).parent.name,
+                stages=[adapter.describe(Path(path))],
+                num_curated=0,
+                num_bytes=stat.st_size,
+                time_modified=stat.st_mtime,
+                adapter=adapter.pipeline,
             )
         )
     return sorted(files, key=lambda file: (file.folder, -file.time_run, file.name))
@@ -339,7 +368,7 @@ def rows_html(files: list[ResultsFile], path_open: str | None, with_folder: bool
     rows = []
     for file in files:
         curated = f"curated ({file.num_curated})" if file.is_curated else ""
-        text = " ".join([file.folder, file.run, file.name, *file.stages, curated]).lower()
+        text = " ".join([file.folder, file.run, file.pipeline, file.name, *file.stages, curated]).lower()
         cell_folder = f"<td class='folder'>{html.escape(file.folder)}</td>" if with_folder else ""
         rows.append(
             f"<tr class='file{' open' if file.path == path_open else ''}' data-text='{html.escape(text, quote=True)}' "
@@ -490,8 +519,10 @@ class PickerServer(CanvasServer):
         if path not in [file.path for file in find_results(folder=self.folder)]:
             raise ValueError(f"{path} is not a results file below {self.folder}")
         if self.vis.viewer is None:
+            adapter = adapter_for(path)
+            names_present = stage_groups(path) if adapter is None else [adapter.describe(Path(path))]
             self.vis.viewer = self.open_viewer(
-                args=self.args, filepath_results=path, names_present=stage_groups(path), canvas=self.canvas
+                args=self.args, filepath_results=path, names_present=names_present, canvas=self.canvas
             )
             self.vis.show()
         else:

@@ -57,25 +57,50 @@ def write_caiman_file(path, with_ring_model: bool = False) -> None:
             est["b0"] = np.zeros(pixels, np.float32)
 
 
+def write_footprint_cell(f, rng, num_cells: int) -> None:
+    """Writes miniALI's footprint, a cell of {idx, values} cells, into an open -v7.3 file."""
+    refs = f.create_group("#refs#")
+    cells = []
+    for k, (r0, c0) in enumerate(((4, 5), (10, 13))[:num_cells]):
+        rows, cols = np.meshgrid(np.arange(r0 - 2, r0 + 3), np.arange(c0 - 2, c0 + 3), indexing="ij")
+        idx = (cols * HEIGHT + rows).ravel(order="F") + 1  # 1-based, column-major
+        d_idx = refs.create_dataset(f"idx{k}", data=idx.astype(np.float64)[:, None])
+        d_val = refs.create_dataset(f"val{k}", data=rng.random(idx.size)[None, :])
+        pair = refs.create_dataset(f"pair{k}", data=np.array([d_idx.ref, d_val.ref], dtype=h5py.ref_dtype)[:, None])
+        cells.append(pair.ref)
+    f.create_dataset("footprint", data=np.array(cells, dtype=h5py.ref_dtype)[None, :])
+
+
 def write_miniali_file(path, num_cells: int = 2) -> None:
     """Writes ALI_Result_new.mat as mini_ali_run saves it with -v7.3: arrays transposed, footprint a cell of {idx, values} cells."""
     rng = np.random.default_rng(2)
     with h5py.File(path, "w") as f:
-        refs = f.create_group("#refs#")
         f["reference_image"] = (rng.random((HEIGHT, WIDTH)) * 100).T
         f["dfdx"] = rng.standard_normal((HEIGHT, WIDTH)).T
         f["dfdy"] = rng.standard_normal((HEIGHT, WIDTH)).T
         f["shift"] = (rng.standard_normal((2, FRAMES)) * 0.1).T
         f["cell_traces"] = rng.standard_normal((num_cells, FRAMES)).T
-        cells = []
-        for k, (r0, c0) in enumerate(((4, 5), (10, 13))[:num_cells]):
-            rows, cols = np.meshgrid(np.arange(r0 - 2, r0 + 3), np.arange(c0 - 2, c0 + 3), indexing="ij")
-            idx = (cols * HEIGHT + rows).ravel(order="F") + 1  # 1-based, column-major
-            d_idx = refs.create_dataset(f"idx{k}", data=idx.astype(np.float64)[:, None])
-            d_val = refs.create_dataset(f"val{k}", data=rng.random(idx.size)[None, :])
-            pair = refs.create_dataset(f"pair{k}", data=np.array([d_idx.ref, d_val.ref], dtype=h5py.ref_dtype)[:, None])
-            cells.append(pair.ref)
-        f.create_dataset("footprint", data=np.array(cells, dtype=h5py.ref_dtype)[None, :])
+        write_footprint_cell(f, rng, num_cells)
+
+
+def write_miniali_split(folder, num_cells: int = 2) -> None:
+    """
+    Writes the split files of the miniALI V2 scripts: footprints.mat, reference_image.mat and signals.h5 with -v7.3,
+    fov_metadata.mat with -v7. The DMD-off frames are 41-42, so the first FRAMES are raw frames, and signals.h5 holds
+    one more, a pulse frame.
+    """
+    import scipy.io
+
+    folder.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(4)
+    with h5py.File(folder / "footprints.mat", "w") as f:
+        write_footprint_cell(f, rng, num_cells)
+    with h5py.File(folder / "reference_image.mat", "w") as f:
+        f["reference_image"] = (rng.random((HEIGHT, WIDTH)) * 100).astype(np.float32).T
+    with h5py.File(folder / "signals.h5", "w") as f:
+        f["traces/raw"] = rng.standard_normal((FRAMES + 1, num_cells)).astype(np.float32)
+    parameters = {"motion_reference_frames": np.array([1, 20], np.uint16), "DMD_off_frames": np.array([FRAMES + 1, FRAMES + 2], np.uint16)}
+    scipy.io.savemat(folder / "fov_metadata.mat", {"fov_metadata": {"fps": 800.0, "analysis_parameters": parameters}})
 
 
 def write_miniali_recording(folder, frames: int = FRAMES + 4) -> None:
@@ -357,6 +382,45 @@ def test_a_miniali_file_is_found_from_the_file_or_its_folder(tmp_path, miniali):
         f["x"] = 1
     assert adapter_for(tmp_path / "other.mat") is None and adapter_for(tmp_path / "recording") is None
     assert MiniALIResults.describe(miniali) == "miniali: 2 cells, 40 frames, no Background, recomputed"
+
+
+def test_a_miniali_file_opens_with_the_recording_beside_it_or_where_analysis_mirrors_it(tmp_path):
+    root = tmp_path / "run"
+    write_miniali_recording(root / "plate" / "rec")
+    (root / "Analysis" / "plate" / "rec").mkdir(parents=True)
+    write_miniali_file(root / "Analysis" / "plate" / "rec" / "ALI_Result_new.mat")
+    opened = OpenedResults.open(root / "Analysis" / "plate" / "rec" / "ALI_Result_new.mat")
+    assert opened.raw_source == root / "plate" / "rec" and opened.results.num_frames_raw == FRAMES + 4
+    write_miniali_file(root / "plate" / "rec" / "ALI_Result_new.mat")
+    assert MiniALIResults.find_raw(root / "plate" / "rec") == root / "plate" / "rec"
+
+
+def test_miniali_v2_split_files_open_with_their_raw_frames_recomputed_shifts_and_no_background(tmp_path):
+    root = tmp_path / "run"
+    write_miniali_recording(root / "plate" / "rec")
+    write_miniali_split(root / "Analysis" / "plate" / "rec")
+    folder = root / "Analysis" / "plate" / "rec"
+    assert adapter_for(folder) is MiniALIResults and MiniALIResults.expand(folder) == [folder / "signals.h5"]
+    assert adapter_for(folder / "footprints.mat") is None
+    assert MiniALIResults.describe(folder) == f"miniali: 2 cells, the first {FRAMES} of {FRAMES + 1} frames, shifts recomputed, background 0"
+
+    opened = OpenedResults.open(folder)
+    results = opened.results
+    assert opened.raw_source == root / "plate" / "rec" and results.shape == (FRAMES, HEIGHT, WIDTH)
+    assert results.num_frames_raw == FRAMES + 4 and results.frame_rate == 800.0 and not results.background_image.any()
+    with h5py.File(folder / "signals.h5", "r") as f:
+        saved = f["traces/raw"][:FRAMES]
+    np.testing.assert_allclose(results.temporal_demixed.numpy(), 2 * saved.mean(axis=0) - saved, rtol=1e-5, atol=1e-5)
+
+    movie = load_movie(root / "plate" / "rec").astype(np.float64)
+    dark = np.round(np.median(movie[FRAMES:FRAMES + 2], axis=0))
+    frames = np.clip(movie[:FRAMES] - dark, 0, None)
+    reference = frames[:20].mean(axis=0)
+    dfdx = np.pad((reference[:, 2:] - reference[:, :-2]) / 2, ((0, 0), (1, 1)), mode="edge")
+    dfdy = np.pad((reference[2:] - reference[:-2]) / 2, ((1, 1), (0, 0)), mode="edge")
+    expected = np.linalg.lstsq(np.stack([dfdx.ravel(), dfdy.ravel()], 1), frames.reshape(FRAMES, -1).T, rcond=None)[0].T
+    np.testing.assert_allclose(results.gradient.numpy(), np.stack([dfdx, dfdy], axis=-1), rtol=1e-5, atol=1e-4)
+    np.testing.assert_allclose(results.shifts.numpy(), 2 * expected.mean(axis=0) - expected, rtol=1e-4, atol=1e-5)
 
 
 def test_a_miniali_recording_folder_loads_as_a_movie(tmp_path, miniali):

@@ -357,7 +357,8 @@ class OpenedResults:
         path : str | Path
             The results file, or a path an adapter reads.
         raw : ArrayLike | np.ndarray | str | Path | None
-            The raw movie, or a path :func:`load_movie` reads.
+            The raw movie, or a path :func:`load_movie` reads. None with an adapter's results takes the movie its
+            ``find_raw`` finds, e.g. miniALI's recording folder.
         prefix : str
             Read the DemixingResults under ``<prefix>/``, e.g. "global".
         device : str
@@ -380,6 +381,7 @@ class OpenedResults:
         if adapter is not None:
             if prefix:
                 raise ValueError(f"{path} holds {adapter.pipeline} results, which take no prefix")
+            raw = adapter.find_raw(path) if raw is None else raw
             raw_source = Path(raw) if isinstance(raw, (str, Path)) else None
             results, raw, skipped = adapter.from_path(path, raw=raw, device=device)
             opened = cls.resolve(results, raw=raw, device=device)

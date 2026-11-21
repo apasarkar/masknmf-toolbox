@@ -126,6 +126,47 @@ def test_the_picker_tree_sorts_folders_by_number_and_lists_the_newest_files_on_t
     assert recent.count("class='file") == 8 and "epochs_1000/results.hdf5" in recent and "epochs_5/" not in recent
 
 
+class StubViewer:
+    """Stands in for the demixing viewer and keeps what it was opened with."""
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+    def show(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_the_picker_lists_and_opens_miniali_results_beside_masknmf_ones(tmp_path):
+    import h5py
+    from test_adapter_sources import write_miniali_file, write_miniali_split
+
+    from masknmf.io import group_name_demixing
+    from masknmf.visualization import results_picker
+
+    write_results(tmp_path / "rec" / "20260101T000000_one-photon-culture" / "results.hdf5", [group_name_demixing()])
+    (tmp_path / "Analysis" / "rec").mkdir(parents=True)
+    write_miniali_file(tmp_path / "Analysis" / "rec" / "ALI_Result_new.mat")
+    write_miniali_split(tmp_path / "Analysis" / "rec2")
+    with h5py.File(tmp_path / "rec" / "output_data.mat", "w") as f:
+        f["x"] = 1
+
+    files = results_picker.find_results(tmp_path)
+    assert [(f.folder, f.pipeline, f.name) for f in files] == [
+        ("Analysis/rec", "miniali", "ALI_Result_new.mat"),
+        ("Analysis/rec2", "miniali", "signals.h5"),
+        ("rec", "one-photon-culture", "results.hdf5"),
+    ]
+    assert files[0].stages == ["miniali: 2 cells, 40 frames, no Background, recomputed"]
+
+    server = results_picker.PickerServer(tmp_path, open_viewer=StubViewer, args=None, host="127.0.0.1", port=0)
+    server.open(files[0].path)
+    assert server.vis.viewer.kwargs["names_present"] == files[0].stages
+    server.close()
+
+
 async def picker_requests(server):
     status, headers, _ = await request(server.asgi, "GET", "/")
     assert status == 303 and headers[b"location"] == b"files"

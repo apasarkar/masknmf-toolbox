@@ -35,6 +35,11 @@ class BaseResults:
         return cls.pipeline
 
     @classmethod
+    def find_raw(cls, path: Path) -> Path | None:
+        """The raw movie of the results at path, found beside them, for when none is given; None by default."""
+        return None
+
+    @classmethod
     def from_path(cls, path: Path, raw: ArrayLike | str | Path | None = None, device: str = "cpu") -> tuple["BaseResults", ArrayLike | None, list[str]]:
         """The results at path, the raw movie to show, and notes on what was found but not used."""
         raise NotImplementedError

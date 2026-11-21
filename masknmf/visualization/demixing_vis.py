@@ -326,9 +326,14 @@ class SingleSessionDemixingVis:
         """
         Open another results file of any stage in place. The selection, drawn rois and marks are dropped. The
         current raw movie is kept when its shape matches the new results, else the only .tif in the new file's
-        folder is used; shifts are read from the new file.
+        folder is used; shifts are read from the new file. Another pipeline's results take the raw movie their
+        adapter finds, never the current one.
         """
-        self._load(masknmf.io.OpenedResults.open(path, raw=self._raw, device=self.device))
+        from masknmf.demixing._adapters import adapter_for
+
+        # NOTE: the current raw may be another recording's, or an OphysArray already inverted, which miniALI inverts again
+        raw = self._raw if adapter_for(path) is None else None
+        self._load(masknmf.io.OpenedResults.open(path, raw=raw, device=self.device))
 
     def _load(
         self,
